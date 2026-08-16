@@ -151,7 +151,9 @@ type BlockedOutcome struct {
 	// Blockers are the blocking issue numbers the stage referenced via the
 	// documented outputs.blockedBy convention (comma-separated numbers in a
 	// scalar string — see docs/stage-contract.md). Empty when the stage named
-	// none in machine-readable form.
+	// none in machine-readable form. Any reference to the driving item itself
+	// is dropped before the handler sees it (#2961); handlers resolving items
+	// from the claim ledger must apply FilterSelfBlockers per resolved item.
 	Blockers []string
 }
 
@@ -671,16 +673,16 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			}
 		}
 
-		seed := walkSeed{}
+		ws := newWalkState(jr, in, registrar, in.Machine.Def.Spec.Start)
 		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
 			if err := r.recordRunBranch(jr, in); err != nil {
 				span.Fail(err)
 				return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
 			}
-			seed.branchRecorded = true
+			ws.branchRecorded = true
 		}
 
-		result, err = r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
+		result, err = r.walk(ctx, ws)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -835,30 +837,47 @@ type baseSyncConflictArtifact struct {
 	ConflictingFiles []string `json:"conflictingFiles"`
 }
 
-// walkSeed carries the walk-local state a resumed run must NOT start empty —
-// Start's fresh walk always begins with the zero value. pointers is the
-// upstream ContextPointers every already-finished stage produced (#107);
-// lastStage/lastResult is the subject a resumed gate evaluates against
-// (#108) — both reconstructed from the journal by Resume (see
-// lastFinishedSubject, reconstructPointers in resume.go), since walk's own
-// in-memory accumulation of them is exactly what a crash wipes.
-// workspaceBranch is the same for the run-scoped branch rebinding below
-// (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
-// provenance across a resume without duplicating ref.touched.
-type walkSeed struct {
+// walkState owns the execution frame carried between workflow steps. Resume
+// reconstructs the same frame from the journal that Start initializes empty.
+type walkState struct {
+	jr  *journal.Run
+	in  StartInput
+	reg SecretRegistrar
+	ex  *executors
+
+	gateEval *gate.Evaluator
+
+	state      string
+	resume     *resumeContext
+	rerun      *rerunContext
+	steps      int
+	stepBudget atomic.Int64
+
 	pointers   []apiv1.ContextPointer
 	lastStage  string
 	lastResult apiv1.ResultEnvelope
-	// stageOutputs is every completed stage's journaled Outputs, so a
+	// completed contains every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	stageOutputs         stageOutputs
+	completed            stageOutputs
 	parallel             *parallelExec
 	parallelRootPointers []apiv1.ContextPointer
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
 	humanDecision        *HumanGateDecision
+	gateAttempts         map[string]int
+	gateDiffDigests      map[string]string
+}
+
+func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
+	return &walkState{
+		jr:        jr,
+		in:        in,
+		reg:       reg,
+		state:     state,
+		completed: stageOutputs{},
+	}
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -884,7 +903,7 @@ type walkSeed struct {
 //
 // The rebinding is sticky for the remainder of the run and survives a crash:
 // stage outputs are journaled on stage.finished, so Resume recovers the most
-// recent binding (lastWorkspaceBranch) into walkSeed rather than silently
+// recent binding (lastWorkspaceBranch) into walkState rather than silently
 // reverting a resumed run to the default branch mid-chain.
 //
 // A rebound branch must already exist (worktree.CreateOptions.RequireExistingBranch
@@ -984,217 +1003,187 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk. Start
-// always begins at the machine's declared start state with resume=nil,
-// gateAttempts=nil, gateDiffDigests=nil, and a zero-value seed; Resume
-// (resume.go) begins at the journal's checkpointed state, optionally with a
+// always begins with an empty walkState at the machine's declared start state;
+// Resume (resume.go) reconstructs that state from the journal, optionally with a
 // resumeContext for an interrupted task attempt, gateAttempts seeded from
 // each gate's last gate.started/gate.evaluated event so a resumed run's repass
 // budget continues rather than resetting (#89/#263), gateDiffDigests likewise
 // seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
-// too (#316), and seed reconstructed from the journal (#107/#108). reg is the
-// run's SecretRegistrar (see Start), threaded to every executor constructed
-// here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, rerun *rerunContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
-	ex := newExecutors(r.cfg, jr, reg)
-	gateEval := &gate.Evaluator{
+// too (#316), and context reconstructed from the journal (#107/#108).
+func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
+	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
+	ws.gateEval = &gate.Evaluator{
 		Automated:      r.cfg.Automated,
-		Journal:        jr,
-		MaxRepasses:    int(in.RunControls.MaxRepasses),
-		Attempts:       gateAttempts,
-		LastDiffDigest: gateDiffDigests,
+		Journal:        ws.jr,
+		MaxRepasses:    int(ws.in.RunControls.MaxRepasses),
+		Attempts:       ws.gateAttempts,
+		LastDiffDigest: ws.gateDiffDigests,
 	}
-
-	state := startState
-	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
-	lastStage := seed.lastStage
-	lastResult := seed.lastResult
-	completed := seed.stageOutputs
-	if completed == nil {
-		completed = stageOutputs{}
-	}
-	// The branch every stage's worktree is provisioned against, rebindable
-	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
-	// "the run's own branch", resolved per stage in createStageWorkspace.
-	workspaceBranch := seed.workspaceBranch
-	branchRecorded := seed.branchRecorded
-	humanDecision := seed.humanDecision
-	// Live parallel state. nil whenever the run is single-cursor, which is
-	// every run that never forks — so the sequential path is untouched.
-	par := seed.parallel
-	fanIn := seed.fanIn
-	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
-	steps := 0
-	var stepBudget atomic.Int64
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
-		if err := validateConcurrentParallelWorkspaces(in.Machine, p); err != nil {
-			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, fmt.Errorf("runner: %w", err))
+		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
+			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
 			return res, true, failErr
 		}
-		if !branchRecorded && machineUsesRepo(in.Machine) {
-			if err := r.recordRunBranch(jr, in); err != nil {
-				res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps,
-					fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err))
+		if !ws.branchRecorded && machineUsesRepo(ws.in.Machine) {
+			if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
+				res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps,
+					fmt.Errorf("runner: journal run branch for %q: %w", ws.in.RunID, err))
 				return res, true, failErr
 			}
-			branchRecorded = true
+			ws.branchRecorded = true
 		}
 		outcome, err := r.runConcurrentParallel(
-			ctx, jr, in, p, existing, pointers, lastStage, lastResult,
-			completed, workspaceBranch, reg, &stepBudget,
+			ctx, ws.jr, ws.in, p, existing, ws.pointers, ws.lastStage, ws.lastResult,
+			ws.completed, ws.workspaceBranch, ws.reg, &ws.stepBudget,
 		)
-		steps = int(stepBudget.Load())
+		ws.steps = int(ws.stepBudget.Load())
 		if err != nil {
-			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, p.Name, steps); stalled {
+			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, p.Name, ws.steps); stalled {
 				return stalledResult, true, stalledErr
 			}
-			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, err)
+			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, err)
 			return res, true, failErr
 		}
 		if outcome.paused {
-			if err := jr.Checkpoint(); err != nil {
+			if err := ws.jr.Checkpoint(); err != nil {
 				return Result{}, true, fmt.Errorf("runner: checkpoint parallel drain at %q: %w", p.Name, err)
 			}
-			return Result{Phase: journal.PhaseRunning, FinalState: p.Name, Steps: steps}, true, nil
+			return Result{Phase: journal.PhaseRunning, FinalState: p.Name, Steps: ws.steps}, true, nil
 		}
-		pointers, completed = outcome.pointers, outcome.completed
-		lastStage, lastResult = outcome.lastStage, outcome.lastResult
-		par = nil
+		ws.pointers, ws.completed = outcome.pointers, outcome.completed
+		ws.lastStage, ws.lastResult = outcome.lastStage, outcome.lastResult
+		ws.parallel = nil
 		if outcome.runJoin {
-			fanIn = outcome.parallel
+			ws.fanIn = outcome.parallel
 		} else {
-			fanIn = nil
+			ws.fanIn = nil
 		}
 		if terminal := outcome.terminalTask; terminal != nil {
-			next, res, advance, transitionErr := r.taskOutcome(
-				ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item,
-				terminal.task, terminal.result, steps,
-			)
+			next, res, advance, transitionErr := r.taskOutcome(ctx, ws, taskTransition{terminal.task, terminal.result})
 			if transitionErr != nil || !advance {
 				return res, true, transitionErr
 			}
-			state = next
+			ws.state = next
 			return Result{}, false, nil
 		}
 		if terminal := outcome.terminalGate; terminal != nil {
-			next, res, advance, transitionErr := r.gateTransition(
-				ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item,
-				terminal.result, terminal.lastStage, terminal.lastResult, steps,
-			)
+			ws.lastStage, ws.lastResult = terminal.lastStage, terminal.lastResult
+			next, res, advance, transitionErr := r.gateTransition(ctx, ws, terminal.result)
 			if transitionErr != nil || !advance {
 				return res, true, transitionErr
 			}
-			state = next
+			ws.state = next
 			return Result{}, false, nil
 		}
 		switch outcome.target {
 		case workflow.TargetAbort:
-			res, finishErr := r.finish(in.RunID, jr, journal.PhaseAborted, p.Name, steps)
+			res, finishErr := r.finish(ws.in.RunID, ws.jr, journal.PhaseAborted, p.Name, ws.steps)
 			return res, true, finishErr
 		case workflow.TargetEscalate:
-			res, finishErr := r.finish(in.RunID, jr, journal.PhaseEscalated, p.Name, steps)
+			res, finishErr := r.finish(ws.in.RunID, ws.jr, journal.PhaseEscalated, p.Name, ws.steps)
 			return res, true, finishErr
 		}
-		state = outcome.target
+		ws.state = outcome.target
 		return Result{}, false, nil
 	}
-	if par != nil && par.spec.MaxConcurrentBranches > 1 {
-		result, done, err := runConcurrent(par.spec, par)
+	if ws.parallel != nil && ws.parallel.spec.MaxConcurrentBranches > 1 {
+		result, done, err := runConcurrent(ws.parallel.spec, ws.parallel)
 		if done || err != nil {
 			return result, err
 		}
 	}
-	if par != nil {
-		jr.SetBranchCursors(par.cursors())
-		if current := par.current(); current != nil {
+	if ws.parallel != nil {
+		ws.jr.SetBranchCursors(ws.parallel.cursors())
+		if current := ws.parallel.current(); current != nil {
 			if !current.started {
-				if err := jr.Append(journal.Event{
+				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchStarted, Branch: current.id,
-					Parallel: par.spec.Name, BranchName: current.name, Stage: current.start,
+					Parallel: ws.parallel.spec.Name, BranchName: current.name, Stage: current.start,
 				}); err != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, startState, steps, err)
+					return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 				}
 				current.started = true
 				current.startedAt = time.Now()
 			}
-			jr.SetBranch(current.id)
+			ws.jr.SetBranch(current.id)
 		}
 	}
 
 	for {
-		if stepBudget.Add(1) > int64(r.maxSteps) {
-			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", in.RunID, r.maxSteps))
+		if ws.stepBudget.Add(1) > int64(r.maxSteps) {
+			return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, fmt.Errorf("runner: run %q exceeded max steps (%d): possible loop", ws.in.RunID, r.maxSteps))
 		}
-		steps = int(stepBudget.Load())
+		ws.steps = int(ws.stepBudget.Load())
 		// A branch that exceeded branchTimeoutSeconds terminates at its next
 		// stage boundary (never mid-stage), is recorded timed-out, and is
 		// then handled as an ordinary branch failure under the declared
 		// policy — so route it through the same @join settle-and-advance
 		// path below rather than starting the stage it was about to run.
-		if par != nil && state != workflow.TargetJoin {
-			if deadline := par.currentDeadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
-				par.markCurrentTimedOut()
-				state = workflow.TargetJoin
+		if ws.parallel != nil && ws.state != workflow.TargetJoin {
+			if deadline := ws.parallel.currentDeadline(); !deadline.IsZero() && !time.Now().Before(deadline) {
+				ws.parallel.markCurrentTimedOut()
+				ws.state = workflow.TargetJoin
 			}
 		}
 		// A branch reached @join: settle it and move to the next declared
 		// branch, or close the parallel and continue at its join state.
-		if state == workflow.TargetJoin {
-			if par == nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+		if ws.state == workflow.TargetJoin {
+			if ws.parallel == nil {
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
 					fmt.Errorf("runner: reached %q outside a parallel branch", workflow.TargetJoin))
 			}
-			settling := par.current()
-			status := par.currentStatus()
+			settling := ws.parallel.current()
+			status := ws.parallel.currentStatus()
 			if !settling.settled {
-				if err := jr.Append(journal.Event{
+				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchFinished, Branch: settling.id,
-					Parallel: par.spec.Name, BranchName: settling.name,
+					Parallel: ws.parallel.spec.Name, BranchName: settling.name,
 					BranchStatus: status,
 				}); err != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+					return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 				}
 			}
-			next, more := par.advance(status)
+			next, more := ws.parallel.advance(status)
 			// fail_fast abandons the branches that have not started. At
 			// maxConcurrentBranches=1 that is all cancellation can mean —
 			// nothing is in flight to interrupt — and each abandonment is
 			// journaled so the record shows why a branch never ran.
-			if more && par.spec.FailurePolicy == apiv1.BranchFailFast && par.anyFailed() {
-				for _, cancelled := range par.cancelRemaining() {
-					if err := jr.Append(journal.Event{
+			if more && ws.parallel.spec.FailurePolicy == apiv1.BranchFailFast && ws.parallel.anyFailed() {
+				for _, cancelled := range ws.parallel.cancelRemaining() {
+					if err := ws.jr.Append(journal.Event{
 						Type: journal.EventBranchFinished, Branch: cancelled.id,
-						Parallel: par.spec.Name, BranchName: cancelled.name,
+						Parallel: ws.parallel.spec.Name, BranchName: cancelled.name,
 						BranchStatus: journal.BranchCancelled,
 					}); err != nil {
-						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+						return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 					}
 				}
 				next, more = nil, false
 			}
-			jr.SetBranchCursors(par.cursors())
+			ws.jr.SetBranchCursors(ws.parallel.cursors())
 			if more {
-				if err := jr.Append(journal.Event{
+				if err := ws.jr.Append(journal.Event{
 					Type: journal.EventBranchStarted, Branch: next.id,
-					Parallel: par.spec.Name, BranchName: next.name, Stage: next.start,
+					Parallel: ws.parallel.spec.Name, BranchName: next.name, Stage: next.start,
 				}); err != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+					return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 				}
 				next.started = true
 				next.startedAt = time.Now()
-				jr.SetBranch(next.id)
-				state = next.start
+				ws.jr.SetBranch(next.id)
+				ws.state = next.start
 				continue
 			}
-			joined := par
-			par = nil
-			jr.SetBranch(0)
-			jr.SetBranchCursors(nil)
+			joined := ws.parallel
+			ws.parallel = nil
+			ws.jr.SetBranch(0)
+			ws.jr.SetBranchCursors(nil)
 			target, runJoin := joined.route()
-			if err := jr.Append(journal.Event{
+			if err := ws.jr.Append(journal.Event{
 				Type: journal.EventParallelFinished, Parallel: joined.spec.Name,
 				Completeness: joined.completeness(), Target: target,
 			}); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 			}
 			if !runJoin {
 				// The failure policy routed past the join. onFailure is a
@@ -1203,25 +1192,25 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				// branch failure is always a DEFINED branch (GT-002's rule).
 				switch target {
 				case workflow.TargetAbort:
-					res, ferr := r.finish(in.RunID, jr, journal.PhaseAborted, joined.spec.Name, steps)
+					res, ferr := r.finish(ws.in.RunID, ws.jr, journal.PhaseAborted, joined.spec.Name, ws.steps)
 					return res, ferr
 				case workflow.TargetEscalate:
-					res, ferr := r.finish(in.RunID, jr, journal.PhaseEscalated, joined.spec.Name, steps)
+					res, ferr := r.finish(ws.in.RunID, ws.jr, journal.PhaseEscalated, joined.spec.Name, ws.steps)
 					return res, ferr
 				}
-				fanIn = nil
+				ws.fanIn = nil
 			} else {
-				pointers = joined.joinPointers(parallelRootPointers)
-				fanIn = joined
+				ws.pointers = joined.joinPointers(ws.parallelRootPointers)
+				ws.fanIn = joined
 			}
-			state = target
+			ws.state = target
 			continue
 		}
 
 		// Entering a parallel: fan out into its declared branches.
-		if p, ok := in.Machine.Parallel(state); ok {
+		if p, ok := ws.in.Machine.Parallel(ws.state); ok {
 			if err := supportedFailurePolicy(p.FailurePolicy); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
 					fmt.Errorf("runner: parallel %q: %w", p.Name, err))
 			}
 			if p.MaxConcurrentBranches > 1 {
@@ -1231,34 +1220,34 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 				continue
 			}
-			par = newParallelExec(p)
-			fanIn = nil
-			parallelRootPointers = append([]apiv1.ContextPointer(nil), pointers...)
-			jr.SetMachineState(state)
-			if err := jr.Append(journal.Event{
+			ws.parallel = newParallelExec(p)
+			ws.fanIn = nil
+			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
+			ws.jr.SetMachineState(ws.state)
+			if err := ws.jr.Append(journal.Event{
 				Type: journal.EventParallelStarted, Parallel: p.Name,
-				Completeness: par.completeness(),
+				Completeness: ws.parallel.completeness(),
 			}); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 			}
-			first := par.current()
-			jr.SetBranchCursors(par.cursors())
-			if err := jr.Append(journal.Event{
+			first := ws.parallel.current()
+			ws.jr.SetBranchCursors(ws.parallel.cursors())
+			if err := ws.jr.Append(journal.Event{
 				Type: journal.EventBranchStarted, Branch: first.id,
 				Parallel: p.Name, BranchName: first.name, Stage: first.start,
 			}); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, err)
+				return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, err)
 			}
 			first.started = true
 			first.startedAt = time.Now()
-			jr.SetBranch(first.id)
-			state = first.start
+			ws.jr.SetBranch(first.id)
+			ws.state = first.start
 			continue
 		}
 
-		jr.SetMachineState(state)
+		ws.jr.SetMachineState(ws.state)
 
-		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, state, steps); stalled {
+		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, ws.state, ws.steps); stalled {
 			return stalledResult, stalledErr
 		}
 
@@ -1270,156 +1259,39 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		// `state`, the next stage to run) is what makes this a resumable
 		// pause, not a failure: journal.Recover replays straight back to it.
 		if err := ctx.Err(); err != nil {
-			if cerr := jr.Checkpoint(); cerr != nil {
-				return Result{}, fmt.Errorf("runner: checkpoint drain at %q: %w", state, cerr)
+			if cerr := ws.jr.Checkpoint(); cerr != nil {
+				return Result{}, fmt.Errorf("runner: checkpoint drain at %q: %w", ws.state, cerr)
 			}
-			return Result{Phase: journal.PhaseRunning, FinalState: state, Steps: steps}, nil
+			return Result{Phase: journal.PhaseRunning, FinalState: ws.state, Steps: ws.steps}, nil
 		}
 
-		if t, ok := in.Machine.Task(state); ok {
-			startAttempt := int32(1)
-			var firstClass journal.AttemptClass
-			var instructionAddendum string
-			var taskRerun *rerunContext
-			var resumedResult *apiv1.ResultEnvelope
-			var infraFailedAttemptCommittedWork bool
-			if rerun != nil && rerun.stage == t.Name {
-				taskRerun = rerun
-				startAttempt = int32(rerun.attempt)
-				firstClass = journal.AttemptHuman
-				instructionAddendum = rerun.instructionAddendum
-			}
-			if resume != nil && resume.stage == t.Name {
-				infraFailedAttemptCommittedWork = resume.committedWorkOnInfra
-				interruptedClass := journal.AttemptInfra
-				if rerun != nil && rerun.stage == t.Name {
-					interruptedClass = resume.class
-				}
-				var interruptedBudgetResult apiv1.ResultEnvelope
-				if t.Type == apiv1.TaskAgentic {
-					limits, err := workflow.TaskLimits(in.Machine, t)
-					if err != nil {
-						return Result{}, fmt.Errorf("project stage %q limits: %w", t.Name, err)
-					}
-					if usageBudgetConfigured(limits) {
-						interruptedBudgetResult = interruptedStageBudgetFailure(limits)
-						resumedResult = &interruptedBudgetResult
-					}
-				}
-				// The attempt in flight when the runner was interrupted is
-				// terminal now. Preserve a human rerun's class for an auditable
-				// matched start/finish; ordinary crash recovery remains infra-
-				// tagged. The next dispatch advances the attempt count.
-				if !resume.recorded {
-					errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
-					runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
-					if resumedResult != nil {
-						errorDetail = errorDetailFrom(interruptedBudgetResult)
-						// This is the stage's terminal budget result, not the
-						// retryable interruption marker recovery skips.
-						runnerDetail = nil
-					}
-					if err := jr.Append(journal.Event{
-						Type: journal.EventStageFinished, Stage: t.Name, Attempt: resume.attempt, AttemptClass: interruptedClass,
-						Status: string(apiv1.ResultFailure),
-						Error:  errorDetail,
-						Runner: runnerDetail,
-					}); err != nil {
-						return Result{}, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
-					}
-				}
-				// An interrupted deferred attempt cannot be proven to have been
-				// an empty tick. Preserve its branch before runTask can reject an
-				// exhausted retry budget without dispatching another attempt.
-				if !branchRecorded && machineUsesRepo(in.Machine) {
-					if err := r.recordRunBranch(jr, in); err != nil {
-						return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
-					}
-					branchRecorded = true
-				}
-				if resumedResult == nil {
-					startAttempt = int32(resume.attempt) + 1
-					if rerun != nil && rerun.stage == t.Name {
-						firstClass = journal.AttemptHuman
-					} else {
-						firstClass = journal.AttemptInfra
-					}
-				}
-				resume = nil
-			}
-			var result apiv1.ResultEnvelope
-			var produced []apiv1.ContextPointer
-			var err error
-			if resumedResult != nil {
-				result = *resumedResult
-			} else {
-				branch := 0
-				if par != nil && par.current() != nil {
-					branch = par.current().id
-				}
-				upstreamPointers := pointers
-				if par != nil {
-					upstreamPointers = par.currentPointers(parallelRootPointers)
-				}
-				result, produced, err = r.runTask(ctx, jr, in, ex, t, branch, upstreamPointers, lastResult, completed, fanIn, startAttempt, firstClass, instructionAddendum, workspaceBranch, taskRerun, &branchRecorded, infraFailedAttemptCommittedWork)
-			}
-			if rerun != nil && rerun.stage == t.Name {
-				rerun = nil
-			}
-			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
-				return stalledResult, stalledErr
-			}
-			if err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, t.Name, steps, err)
-			}
-			lastStage, lastResult = t.Name, result
-			outputs := result.Outputs
-			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
-				outputs = nil
-			}
-			if par != nil {
-				par.recordCurrent(outputs, produced)
-			} else {
-				pointers = append(pointers, produced...)
-			}
-			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
-				completed.clear(t.Name)
-			} else {
-				completed.record(t.Name, outputs, result.Integrity)
-			}
-			// Sticky for the rest of the run, and only ever set by a stage
-			// that actually emitted the key — see WorkspaceBranchOutput. This
-			// runs AFTER the stage that emits it, so that stage itself still
-			// gets the previous binding (gather-pr-context is provisioned on
-			// the run's own branch and checks the PR's branch out for itself;
-			// every stage after it is provisioned on the PR's branch directly).
-			if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
-				if b := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(in.Gaggle)); b != "" {
-					workspaceBranch = b
-				}
+		if t, ok := ws.in.Machine.Task(ws.state); ok {
+			result, terminal, done, err := r.stepTask(ctx, ws, t)
+			if done || err != nil {
+				return terminal, err
 			}
 
-			if par != nil {
+			if ws.parallel != nil {
 				switch result.Status {
 				case apiv1.ResultFailure:
 					if !t.ContinueOnError {
-						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
-							par.markCurrentFailed()
-							lastResult.Outputs = nil
-							state = workflow.TargetJoin
+						if _, nextIsGate := ws.in.Machine.Gate(t.Next); !nextIsGate {
+							ws.parallel.markCurrentFailed()
+							ws.lastResult.Outputs = nil
+							ws.state = workflow.TargetJoin
 							continue
 						}
 					}
 				case apiv1.ResultNoWork:
-					par.markCurrentNoOutput()
-					state = workflow.TargetJoin
+					ws.parallel.markCurrentNoOutput()
+					ws.state = workflow.TargetJoin
 					continue
 				}
 			}
 
-			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item, t, result, steps)
+			next, res, advance, oerr := r.taskOutcome(ctx, ws, taskTransition{t, result})
 			if res.Phase == "" {
-				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
 					return stalledResult, stalledErr
 				}
 			}
@@ -1427,111 +1299,27 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				return res, oerr
 			}
 			if result.Status == apiv1.ResultFailure && t.ContinueOnError {
-				lastResult.Outputs = nil
+				ws.lastResult.Outputs = nil
 			}
 			if !advance {
 				return res, nil
 			}
-			if fanIn != nil && t.Name == fanIn.spec.Join {
-				fanIn = nil
+			if ws.fanIn != nil && t.Name == ws.fanIn.spec.Join {
+				ws.fanIn = nil
 			}
-			state = next
+			ws.state = next
 			continue
 		}
 
-		if g, ok := in.Machine.Gate(state); ok {
-			if !branchRecorded && machineUsesRepo(in.Machine) {
-				if err := r.recordRunBranch(jr, in); err != nil {
-					return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
-				}
-				branchRecorded = true
+		if g, ok := ws.in.Machine.Gate(ws.state); ok {
+			gr, retry, terminal, done, err := r.stepGate(ctx, ws, g)
+			if done || err != nil {
+				return terminal, err
 			}
-			if g.Evaluator == apiv1.EvaluatorHuman && humanDecision == nil {
-				// A human gate executes nothing. Its durable pause is the
-				// checkpoint an external decision must explicitly resolve.
-				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
-					return Result{}, fmt.Errorf("runner: journal pause at human gate %q: %w", g.Name, err)
-				}
-				return Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: steps}, nil
-			}
-			if g.Evaluator != apiv1.EvaluatorHuman {
-				// The machine remains at this gate until its evaluator records
-				// a verdict. Persist that wait before dispatch so observers can
-				// distinguish it from an active stage.
-				if err := jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
-					return Result{}, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
-				}
-			}
-
-			var instructionAddendum string
-			if rerun != nil && rerun.stage == g.Name {
-				instructionAddendum = rerun.instructionAddendum
-				rerun = nil
-			}
-			retryClass, knownOutcome, retryable := retryFailureClass(g, lastResult)
-			var gr gate.Result
-			var err, removeErr error
-			if g.Evaluator == apiv1.EvaluatorHuman {
-				if humanDecision.Gate != g.Name {
-					return Result{}, fmt.Errorf("runner: human decision for gate %q reached gate %q", humanDecision.Gate, g.Name)
-				}
-				gr, err = gateEval.EvaluateHuman(g, humanDecision.Decision, humanDecision.Actor)
-				humanDecision = nil
-			} else {
-				gatePointers := pointers
-				if par != nil {
-					gatePointers = par.currentPointers(parallelRootPointers)
-				}
-				gateSubject := lastResult
-				if fanIn != nil && g.Name == fanIn.spec.Join {
-					// gatePointers already contains the declaration-ordered,
-					// branch-qualified artifact union. ReviewerInvocation must
-					// not append the final branch's artifacts a second time.
-					gateSubject.Artifacts = nil
-				}
-				gr, err, removeErr = r.evaluateGate(ctx, jr, gateEval, ex, in, g, lastStage, gateSubject, gatePointers, fanIn, instructionAddendum, workspaceBranch, knownOutcome)
-			}
-			if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, g.Name, steps); stalled {
-				return stalledResult, stalledErr
-			}
-			if removeErr != nil {
-				// Non-fatal (issue #136), same rationale as runTask's own
-				// worktree_remove_failed journaling — the teardown failure
-				// itself doesn't change this gate's outcome, but the append
-				// recording it must not itself be silently discarded
-				// (#243): a journal that cannot be written is fatal (§2.6),
-				// and a gate's own outcome may `continue` the walk without
-				// any further append until the next stage dispatches, so
-				// this can be the only append for an arbitrarily long
-				// stretch — there is no guaranteed nearby append to also
-				// catch the same failure.
-				if aerr := jr.Append(journal.Event{
-					Type: journal.EventError, Gate: g.Name,
-					Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
-				}); aerr != nil {
-					return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, aerr))
-				}
-			}
-			if err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
-			}
-			if retryTarget, retry, err := routeRetryDecision(jr, gr, lastStage, lastResult, retryClass, retryable); err != nil {
-				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
-			} else if retry {
-				if gr.VerdictArtifact != nil {
-					pointer := apiv1.ContextPointer{
-						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-					}
-					if par != nil {
-						par.recordCurrentPointer(pointer)
-					} else {
-						pointers = append(pointers, pointer)
-					}
-				}
-				state = retryTarget
+			if retry {
 				continue
 			}
-			if par != nil {
+			if ws.parallel != nil {
 				switch gr.Target {
 				case workflow.TargetAbort, workflow.TargetEscalate:
 					// A gate inside a branch routing directly to a reserved
@@ -1546,14 +1334,14 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					// itself as the completeness Target — NOT route()'s
 					// policy-derived target, which would silently discard
 					// this gate's own explicit choice.
-					if err := r.closeParallelForLoudExit(jr, par, gr.Target); err != nil {
-						return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, g.Name, steps, err)
+					if err := r.closeParallelForLoudExit(ws.jr, ws.parallel, gr.Target); err != nil {
+						return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 					}
-					par = nil
-					fanIn = nil
+					ws.parallel = nil
+					ws.fanIn = nil
 				}
 			}
-			next, res, advance, oerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item, gr, lastStage, lastResult, steps)
+			next, res, advance, oerr := r.gateTransition(ctx, ws, gr)
 			if oerr != nil {
 				return res, oerr
 			}
@@ -1573,19 +1361,19 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 				}
-				if par != nil {
-					par.recordCurrentPointer(pointer)
+				if ws.parallel != nil {
+					ws.parallel.recordCurrentPointer(pointer)
 				} else {
-					pointers = append(pointers, pointer)
+					ws.pointers = append(ws.pointers, pointer)
 				}
 			}
-			if par != nil && next == workflow.TargetJoin && lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
-				par.markCurrentFailed()
+			if ws.parallel != nil && next == workflow.TargetJoin && ws.lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
+				ws.parallel.markCurrentFailed()
 			}
-			if fanIn != nil && g.Name == fanIn.spec.Join {
-				fanIn = nil
+			if ws.fanIn != nil && g.Name == ws.fanIn.spec.Join {
+				ws.fanIn = nil
 			}
-			state = next
+			ws.state = next
 			continue
 		}
 
@@ -1593,13 +1381,216 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		// single-cursor, so executing one is not yet possible. Fail closed with
 		// a message that names the reason rather than the generic
 		// unknown-state error a reader would otherwise take for a config bug.
-		if _, ok := in.Machine.Parallel(state); ok {
-			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps,
-				fmt.Errorf("runner: workflow state %q is a parallel; executing parallel branches is not yet implemented", state))
+		if _, ok := ws.in.Machine.Parallel(ws.state); ok {
+			return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps,
+				fmt.Errorf("runner: workflow state %q is a parallel; executing parallel branches is not yet implemented", ws.state))
 		}
 
-		return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, state, steps, fmt.Errorf("runner: unknown state %q", state))
+		return r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, ws.state, ws.steps, fmt.Errorf("runner: unknown state %q", ws.state))
 	}
+}
+
+func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (apiv1.ResultEnvelope, Result, bool, error) {
+	startAttempt := int32(1)
+	var firstClass journal.AttemptClass
+	var instructionAddendum string
+	var taskRerun *rerunContext
+	var resumedResult *apiv1.ResultEnvelope
+	var infraFailedAttemptCommittedWork bool
+	if ws.rerun != nil && ws.rerun.stage == t.Name {
+		taskRerun = ws.rerun
+		startAttempt = int32(ws.rerun.attempt)
+		firstClass = journal.AttemptHuman
+		instructionAddendum = ws.rerun.instructionAddendum
+	}
+	if ws.resume != nil && ws.resume.stage == t.Name {
+		infraFailedAttemptCommittedWork = ws.resume.committedWorkOnInfra
+		interruptedClass := journal.AttemptInfra
+		if ws.rerun != nil && ws.rerun.stage == t.Name {
+			interruptedClass = ws.resume.class
+		}
+		var interruptedBudgetResult apiv1.ResultEnvelope
+		if t.Type == apiv1.TaskAgentic {
+			limits, err := workflow.TaskLimits(ws.in.Machine, t)
+			if err != nil {
+				return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf("project stage %q limits: %w", t.Name, err)
+			}
+			if usageBudgetConfigured(limits) {
+				interruptedBudgetResult = interruptedStageBudgetFailure(limits)
+				resumedResult = &interruptedBudgetResult
+			}
+		}
+		if !ws.resume.recorded {
+			errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
+			runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
+			if resumedResult != nil {
+				errorDetail = errorDetailFrom(interruptedBudgetResult)
+				runnerDetail = nil
+			}
+			if err := ws.jr.Append(journal.Event{
+				Type: journal.EventStageFinished, Stage: t.Name, Attempt: ws.resume.attempt, AttemptClass: interruptedClass,
+				Status: string(apiv1.ResultFailure),
+				Error:  errorDetail,
+				Runner: runnerDetail,
+			}); err != nil {
+				return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf("runner: journal interrupted attempt for %q: %w", t.Name, err)
+			}
+		}
+		if !ws.branchRecorded && machineUsesRepo(ws.in.Machine) {
+			if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
+				return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf("runner: journal run branch for %q: %w", ws.in.RunID, err)
+			}
+			ws.branchRecorded = true
+		}
+		if resumedResult == nil {
+			startAttempt = int32(ws.resume.attempt) + 1
+			if ws.rerun != nil && ws.rerun.stage == t.Name {
+				firstClass = journal.AttemptHuman
+			} else {
+				firstClass = journal.AttemptInfra
+			}
+		}
+		ws.resume = nil
+	}
+
+	var result apiv1.ResultEnvelope
+	var produced []apiv1.ContextPointer
+	var err error
+	if resumedResult != nil {
+		result = *resumedResult
+	} else {
+		branch := 0
+		if ws.parallel != nil && ws.parallel.current() != nil {
+			branch = ws.parallel.current().id
+		}
+		upstreamPointers := ws.pointers
+		if ws.parallel != nil {
+			upstreamPointers = ws.parallel.currentPointers(ws.parallelRootPointers)
+		}
+		result, produced, err = r.runTask(
+			ctx, ws.jr, ws.in, ws.ex, t, branch, upstreamPointers, ws.lastResult,
+			ws.completed, ws.fanIn, startAttempt, firstClass, instructionAddendum,
+			ws.workspaceBranch, taskRerun, &ws.branchRecorded, infraFailedAttemptCommittedWork,
+		)
+	}
+	if ws.rerun != nil && ws.rerun.stage == t.Name {
+		ws.rerun = nil
+	}
+	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, t.Name, ws.steps); stalled {
+		return result, stalledResult, true, stalledErr
+	}
+	if err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, t.Name, ws.steps, err)
+		return result, terminal, true, failErr
+	}
+
+	ws.lastStage, ws.lastResult = t.Name, result
+	outputs := result.Outputs
+	if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+		outputs = nil
+	}
+	if ws.parallel != nil {
+		ws.parallel.recordCurrent(outputs, produced)
+	} else {
+		ws.pointers = append(ws.pointers, produced...)
+	}
+	if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+		ws.completed.clear(t.Name)
+	} else {
+		ws.completed.record(t.Name, outputs, result.Integrity)
+	}
+	if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
+		if branch := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(ws.in.Gaggle)); branch != "" {
+			ws.workspaceBranch = branch
+		}
+	}
+	return result, Result{}, false, nil
+}
+
+func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gate.Result, bool, Result, bool, error) {
+	if !ws.branchRecorded && machineUsesRepo(ws.in.Machine) {
+		if err := r.recordRunBranch(ws.jr, ws.in); err != nil {
+			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: journal run branch for %q: %w", ws.in.RunID, err)
+		}
+		ws.branchRecorded = true
+	}
+	if g.Evaluator == apiv1.EvaluatorHuman && ws.humanDecision == nil {
+		if err := ws.jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: journal pause at human gate %q: %w", g.Name, err)
+		}
+		return gate.Result{}, false, Result{Phase: journal.PhaseRunning, FinalState: g.Name, Steps: ws.steps}, true, nil
+	}
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		if err := ws.jr.Append(journal.Event{Type: journal.EventGatePaused, Gate: g.Name}); err != nil {
+			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: journal pause at gate %q: %w", g.Name, err)
+		}
+	}
+
+	var instructionAddendum string
+	if ws.rerun != nil && ws.rerun.stage == g.Name {
+		instructionAddendum = ws.rerun.instructionAddendum
+		ws.rerun = nil
+	}
+	retryClass, knownOutcome, retryable := retryFailureClass(g, ws.lastResult)
+	var gr gate.Result
+	var err, removeErr error
+	if g.Evaluator == apiv1.EvaluatorHuman {
+		if ws.humanDecision.Gate != g.Name {
+			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: human decision for gate %q reached gate %q", ws.humanDecision.Gate, g.Name)
+		}
+		gr, err = ws.gateEval.EvaluateHuman(g, ws.humanDecision.Decision, ws.humanDecision.Actor)
+		ws.humanDecision = nil
+	} else {
+		gatePointers := ws.pointers
+		if ws.parallel != nil {
+			gatePointers = ws.parallel.currentPointers(ws.parallelRootPointers)
+		}
+		gateSubject := ws.lastResult
+		if ws.fanIn != nil && g.Name == ws.fanIn.spec.Join {
+			gateSubject.Artifacts = nil
+		}
+		gr, err, removeErr = r.evaluateGate(
+			ctx, ws.jr, ws.gateEval, ws.ex, ws.in, g, ws.lastStage, gateSubject,
+			gatePointers, ws.fanIn, instructionAddendum, ws.workspaceBranch, knownOutcome,
+		)
+	}
+	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, ws.in.RunID, ws.jr, g.Name, ws.steps); stalled {
+		return gr, false, stalledResult, true, stalledErr
+	}
+	if removeErr != nil {
+		if appendErr := ws.jr.Append(journal.Event{
+			Type: journal.EventError, Gate: g.Name,
+			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: removeErr.Error()},
+		}); appendErr != nil {
+			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+				fmt.Errorf("runner: journal worktree removal error for gate %q: %w", g.Name, appendErr))
+			return gr, false, terminal, true, failErr
+		}
+	}
+	if err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
+		return gr, false, terminal, true, failErr
+	}
+	retryTarget, retry, err := routeRetryDecision(ws.jr, gr, ws.lastStage, ws.lastResult, retryClass, retryable)
+	if err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+			fmt.Errorf("runner: journal retry decision for gate %q: %w", g.Name, err))
+		return gr, false, terminal, true, failErr
+	}
+	if retry {
+		if gr.VerdictArtifact != nil {
+			pointer := apiv1.ContextPointer{
+				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+			}
+			if ws.parallel != nil {
+				ws.parallel.recordCurrentPointer(pointer)
+			} else {
+				ws.pointers = append(ws.pointers, pointer)
+			}
+		}
+		ws.state = retryTarget
+	}
+	return gr, retry, Result{}, false, nil
 }
 
 // closeParallelForLoudExit journals the current branch's terminal settlement,
@@ -1642,7 +1633,10 @@ func (r *Runner) closeParallelForLoudExit(jr *journal.Run, par *parallelExec, ta
 	})
 }
 
-func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID string, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, lastStage string, lastResult apiv1.ResultEnvelope, steps int) (string, Result, bool, error) {
+func (r *Runner) gateTransition(ctx context.Context, ws *walkState, gr gate.Result) (string, Result, bool, error) {
+	jr, in := ws.jr, ws.in
+	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
+	lastStage, lastResult, steps := ws.lastStage, ws.lastResult, ws.steps
 	if reason, ok := terminalGateNotificationReason(gr); ok {
 		notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, runID, repoRef, item, gr, reason)
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, gr.Gate, steps); stalled {
@@ -1994,6 +1988,52 @@ func parseBlockedBy(outputs map[string]interface{}) []string {
 // convention.
 const OutputBlockedBy = "blockedBy"
 
+// SelfBlockerDroppedKind tags the runner.annotation recording that a stage
+// named its own driving item in outputs.blockedBy and the self-reference was
+// dropped before persistence (#2961).
+const SelfBlockerDroppedKind = "blocked_by.self_reference_dropped"
+
+// FilterSelfBlockers removes blockers naming the driving item itself, which an
+// item can never depend on (#2961). Admitting a self-reference writes a
+// one-node self-edge into scheduler/blocked.json that the cycle detector then
+// correctly reports as a circular dependency, parking the issue for human
+// resolution over a dependency that does not exist. The detector is not the
+// bug — the missing validation at the point model-authored blocker output is
+// admitted is, so this filters on the way in and leaves persisted-graph
+// self-loop handling intact for legacy or corrupt records.
+//
+// Both sides are normalized (repository qualifier and "#" prefix stripped) so
+// "#441", "owner/repo#441" and "441" all match item 441. Matching is exact
+// after normalization: a pull-request item ("pr/536") is never considered
+// self-blocked by issue 536, which is a legitimate dependency.
+// Returns the blockers to keep and those dropped, in first-seen order.
+func FilterSelfBlockers(blockers []string, itemID string) (kept, dropped []string) {
+	self := normalizeBlockerToken(itemID)
+	if self == "" {
+		return blockers, nil
+	}
+	for _, blocker := range blockers {
+		if normalizeBlockerToken(blocker) == self {
+			dropped = append(dropped, blocker)
+			continue
+		}
+		kept = append(kept, blocker)
+	}
+	return kept, dropped
+}
+
+// normalizeBlockerToken reduces an item id or blocker reference to the bare
+// identifier both sides of a self-comparison can be keyed on, mirroring the
+// CLI's normalizeBlockedReference: drop any repository qualifier ahead of the
+// last "#", then any leading "#".
+func normalizeBlockerToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if separator := strings.LastIndex(raw, "#"); separator >= 0 {
+		raw = raw[separator+1:]
+	}
+	return strings.TrimSpace(strings.TrimPrefix(raw, "#"))
+}
+
 // failTerminal journals the run's terminal run.finished(PhaseFailed) event
 // before surfacing origErr, so a walk-level error never leaves phase=running
 // forever — the daemon auto-resumes every PhaseRunning run on restart
@@ -2107,7 +2147,15 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 // right after runTask returned. ctx/repoRef/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
-func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+type taskTransition struct {
+	task   apiv1.Task
+	result apiv1.ResultEnvelope
+}
+
+func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {
+	jr, in := ws.jr, ws.in
+	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
+	t, result, steps := transition.task, transition.result, ws.steps
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
 		return "", stalledResult, false, stalledErr
 	}
@@ -2132,6 +2180,26 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		}
 		if item != nil {
 			o.ItemID = item.ID
+			// #2961: an item cannot block itself. Drop the self-reference
+			// before it reaches the blocked record, and leave an
+			// operator-visible note naming the run, stage and item so the
+			// dropped edge is diagnosable rather than silent.
+			if kept, dropped := FilterSelfBlockers(o.Blockers, item.ID); len(dropped) > 0 {
+				o.Blockers = kept
+				if aerr := jr.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: t.Name,
+					Runner: map[string]any{
+						"kind":              SelfBlockerDroppedKind,
+						"runID":             runID,
+						"itemID":            item.ID,
+						"droppedBlockers":   dropped,
+						"remainingBlockers": len(kept),
+					},
+				}); aerr != nil {
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal self-referential blockedBy for %q: %w", t.Name, aerr))
+					return "", res, false, err
+				}
+			}
 		}
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name,

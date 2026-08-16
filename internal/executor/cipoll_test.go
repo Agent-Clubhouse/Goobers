@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -812,10 +813,42 @@ func TestCIPollExecutor_AnnotationsAreBounded(t *testing.T) {
 	if len(got) != maxCICheckAnnotations {
 		t.Fatalf("annotations = %d, want capped at %d", len(got), maxCICheckAnnotations)
 	}
+	if artifact.Metadata.AnnotationsDropped != len(flood)-maxCICheckAnnotations ||
+		artifact.Metadata.AnnotationMessagesTruncated != maxCICheckAnnotations ||
+		!artifact.Metadata.Truncated {
+		t.Fatalf("metadata = %+v, want every annotation bound recorded", artifact.Metadata)
+	}
 	for i, annotation := range got {
 		if len(annotation.Message) > maxCIAnnotationMessageBytes {
 			t.Fatalf("annotation %d message = %d bytes, want <= %d", i, len(annotation.Message), maxCIAnnotationMessageBytes)
 		}
+	}
+}
+
+func TestCIPollExecutor_FailureEvidenceDistinguishesHostReproduction(t *testing.T) {
+	otherPlatform := "linux"
+	if runtime.GOOS == otherPlatform {
+		otherPlatform = "windows"
+	}
+	checks := []providers.CheckDetail{
+		{Name: "unit behavioral suite (" + runtime.GOOS + ")", State: providers.CheckStateFailing},
+		{Name: otherPlatform + " gate (build and runtime smoke)", State: providers.CheckStateFailing},
+		{Name: "provider policy", State: providers.CheckStateFailing},
+	}
+
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: checks}
+	artifact := runFailureEvidence(t, poller)
+	if got := artifact.Checks[0].HostReproduction; got.Status != "reproducible" ||
+		got.HostPlatform != runtime.GOOS || got.CheckPlatform != runtime.GOOS {
+		t.Fatalf("same-platform reproduction = %+v", got)
+	}
+	if got := artifact.Checks[1].HostReproduction; got.Status != "not-reproducible" ||
+		got.CheckPlatform != otherPlatform || !strings.Contains(got.Diagnostic, "cannot be reproduced") {
+		t.Fatalf("other-platform reproduction = %+v", got)
+	}
+	if got := artifact.Checks[2].HostReproduction; got.Status != "unknown" ||
+		!strings.Contains(got.Diagnostic, "unknown") {
+		t.Fatalf("unspecified-platform reproduction = %+v", got)
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,13 +16,10 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
-	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/speechnotify"
 )
 
@@ -1353,376 +1349,38 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
-	if c.Workcopies != nil && c.Workcopies.Root != "" && !filepath.IsAbs(c.Workcopies.Root) {
-		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Workcopies.Root)
-	}
-	if err := c.validateAPIConfig(); err != nil {
+	if err := validateInOrder(
+		c.Workcopies.validate,
+		func() error { return c.API.validate(c.APIListenAddress()) },
+		c.validateWorkflowSource,
+		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
+	); err != nil {
 		return err
 	}
-	if c.WorkflowSource != nil {
-		if err := c.WorkflowSource.Validate(); err != nil {
-			return fmt.Errorf("workflowSource: %w", err)
-		}
-	}
-	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
-		return fmt.Errorf("webhook.listen: %w", err)
-	}
-	// Secret stores validate before any token ref so a store-backed ref can be
-	// checked against the declared store names below.
+
+	// Store declarations must validate before any section checks a store-backed token.
 	stores, err := c.validateSecretStores()
 	if err != nil {
 		return err
 	}
-	if err := c.Portal.Validate(); err != nil {
-		return fmt.Errorf("portal: %w", err)
-	}
-	if c.Speech != nil {
-		if err := c.Speech.Validate(); err != nil {
-			return fmt.Errorf("speech: %w", err)
-		}
-	}
-	if c.Webhook.Secret.sourceCount() > 1 {
-		return fmt.Errorf("webhook.secret must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
-	}
-
-	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
-		return err
-	}
-	if c.Timezone != "" {
-		if _, err := time.LoadLocation(c.Timezone); err != nil {
-			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
-		}
-	}
-	// Checked here, not only where it is applied: the value is consumed once
-	// per run when the deterministic executor is built, so a malformed duration
-	// would otherwise fail every run at dispatch instead of failing `goobers
-	// validate` once.
-	if _, err := c.Runner.DefaultStageTimeoutDuration(); err != nil {
-		return err
-	}
-	if c.Telemetry.OTLP != nil {
-		if err := c.Telemetry.OTLP.Validate(); err != nil {
-			return fmt.Errorf("telemetry.otlp: %w", err)
-		}
-		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
-			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
-		}
-		names := make([]string, 0, len(c.Telemetry.OTLP.Headers))
-		for name := range c.Telemetry.OTLP.Headers {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			if err := validateStoreRef(fmt.Sprintf("telemetry.otlp.headers[%q]", name), c.Telemetry.OTLP.Headers[name], stores); err != nil {
-				return err
-			}
-		}
-	}
-	if err := c.ExternalTelemetry.Validate(); err != nil {
-		return fmt.Errorf("externalTelemetry: %w", err)
-	}
-	for i, connector := range c.ExternalTelemetry.Connectors {
-		if connector.Auth.Token != nil &&
-			connector.Auth.Token.Env != "" &&
-			stageEnvironmentAllows(connector.Auth.Token.Env, c.Runner.EnvPassthrough) {
-			return fmt.Errorf(
-				"externalTelemetry.connectors[%d] (%s): auth.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-				i, connector.Name, connector.Auth.Token.Env,
-			)
-		}
-	}
-	if c.Telemetry.Retention != nil {
-		if _, err := c.Telemetry.Retention.WindowDuration(); err != nil {
-			return err
-		}
-		if c.Telemetry.Retention.MaxRuns < 0 {
-			return fmt.Errorf("telemetry.retention.maxRuns must not be negative")
-		}
-	}
-	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {
-		return err
-	}
-	if err := runcontrol.Validate("runConditions", c.RunConditions.RunControls()); err != nil {
-		return err
-	}
-	if _, err := c.RunConditions.ClaimsLockTimeoutDuration(); err != nil {
-		return err
-	}
-	if c.Retention.MaxRetainedWorktreeBytes < 0 {
-		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
-	}
-	if _, err := c.Retention.RetainedWorktreeMaxAgeDuration(); err != nil {
-		return err
-	}
-	if c.Retention.Enabled && c.Retention.MaxRetainedWorktreeBytes == 0 && c.Retention.RetainedWorktreeMaxAge == "" {
-		return fmt.Errorf("retention.enabled requires at least one of retention.maxRetainedWorktreeBytes or retention.retainedWorktreeMaxAge to be set (enabling retention with no limits prunes nothing)")
-	}
-	for i, r := range c.Repos {
-		if r.Provider != "github" && r.Provider != "ado" && r.Provider != "gitea" {
-			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\", \"gitea\")", i, r.Provider)
-		}
-		if r.Owner == "" || r.Name == "" {
-			return fmt.Errorf("repos[%d]: owner and name are required", i)
-		}
-		if r.PathLength != nil {
-			if r.PathLength.MaxPathLength < 0 {
-				return fmt.Errorf("repos[%d] (%s/%s): pathLength.maxPathLength must not be negative", i, r.Owner, r.Name)
-			}
-			if r.PathLength.BuildOutputAllowance < 0 {
-				return fmt.Errorf("repos[%d] (%s/%s): pathLength.buildOutputAllowance must not be negative", i, r.Owner, r.Name)
-			}
-		}
-		if r.DefaultStageTimeout != "" {
-			if _, err := (RunnerConfig{DefaultStageTimeout: r.DefaultStageTimeout}).DefaultStageTimeoutDuration(); err != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): %w", i, r.Owner, r.Name, err)
-			}
-		}
-		if r.RunControls != nil {
-			if err := runcontrol.Validate(fmt.Sprintf("repos[%d].runControls", i), *r.RunControls); err != nil {
-				return err
-			}
-		}
-		if r.Workspace != nil {
-			if r.Workspace.Pinned && r.Workspace.Worktrees {
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.pinned and workspace.worktrees are mutually exclusive", i, r.Owner, r.Name)
-			}
-			switch policy := r.Workspace.CleanPolicy; policy {
-			case "", WorkspaceCleanNone, WorkspaceCleanIgnoredSafe, WorkspaceCleanFull:
-			default:
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy %q must be one of none, ignored-safe, or full", i, r.Owner, r.Name, policy)
-			}
-			if !r.Pinned() && r.Workspace.CleanPolicy != "" {
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy requires workspace.pinned", i, r.Owner, r.Name)
-			}
-		}
-		if r.Token.sourceCount() > 1 {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
-				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-		}
-		if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores); err != nil {
-			return err
-		}
-		switch r.Provider {
-		case "github":
-			if r.Project != "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			kind := GitHubAuthPAT
-			if r.Auth != nil {
-				kind = r.Auth.Kind
-			}
-			switch kind {
-			case GitHubAuthPAT:
-				if r.Auth != nil && r.Auth.hasGitHubAppFields() {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
-						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-				}
-			case GitHubAuthApp:
-				// Exactly one identity mechanism per repo: the minted
-				// installation token replaces the static token entirely — a
-				// token configured alongside it could only ever act as a
-				// silent fallback, which the minting design forbids (#686,
-				// no implicit PAT fallback).
-				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.tenant and auth.clientId are only valid for ADO auth kinds", i, r.Owner, r.Name)
-				}
-				if r.Auth.AppID == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.appId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if r.Auth.InstallationID == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if _, err := strconv.ParseUint(string(r.Auth.InstallationID), 10, 64); err != nil {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId %q must be the numeric installation ID", i, r.Owner, r.Name, r.Auth.InstallationID)
-				}
-				if r.Auth.PrivateKey == nil || r.Auth.PrivateKey.sourceCount() != 1 {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, keychain, or store — "+
-						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-				}
-				if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): auth.privateKey", i, r.Owner, r.Name), *r.Auth.PrivateKey, stores); err != nil {
-					return err
-				}
-				// The App key can mint tokens for every repo the installation
-				// covers — never allow the stage environment to carry it, the
-				// same fail-closed posture workflowSource.token.env gets below.
-				if r.Auth.PrivateKey.Env != "" && stageEnvironmentAllows(r.Auth.PrivateKey.Env, c.Runner.EnvPassthrough) {
-					return fmt.Errorf(
-						"repos[%d] (%s/%s): auth.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-						i, r.Owner, r.Name, r.Auth.PrivateKey.Env,
-					)
-				}
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
-			}
-		case "ado":
-			if r.Project == "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is required for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			if r.Auth != nil && r.Auth.hasGitHubAppFields() {
-				return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for provider \"github\"", i, r.Owner, r.Name)
-			}
-			kind := ADOAuthPAT
-			if r.Auth != nil {
-				kind = r.Auth.Kind
-			}
-			switch kind {
-			case ADOAuthPAT:
-				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
-				}
-			case ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity:
-				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name, kind)
-				}
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
-			}
-			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
-				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
-			}
-		case "gitea":
-			if r.BaseURL == "" {
-				return fmt.Errorf("repos[%d] (%s/%s): baseUrl is required for provider \"gitea\" (self-hosted Gitea has no fixed host)", i, r.Owner, r.Name)
-			}
-			if r.Project != "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			if r.Auth != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): provider \"gitea\" supports only a static token; remove the auth block", i, r.Owner, r.Name)
-			}
-			if !r.Token.Configured() {
-				return fmt.Errorf("repos[%d] (%s/%s): gitea auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
-			}
-		}
-		if r.Policy != nil {
-			if r.Provider != "github" {
-				return fmt.Errorf("repos[%d] (%s/%s): policy is only supported for provider \"github\" (issue #916 V1 scope)", i, r.Owner, r.Name)
-			}
-			switch r.Policy.RequiredMergeMethod {
-			case "", "merge", "squash", "rebase":
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): policy.requiredMergeMethod must be \"\", \"merge\", \"squash\", or \"rebase\"", i, r.Owner, r.Name)
-			}
-			for _, check := range r.Policy.RequiredStatusChecks {
-				if strings.TrimSpace(check) == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): policy.requiredStatusChecks entries must not be empty", i, r.Owner, r.Name)
-				}
-			}
-		}
-	}
-	if c.DaemonIdentity != nil {
-		if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
-			return fmt.Errorf("daemonIdentity: %w", err)
-		}
-	}
-	seen := make(map[string]bool, len(c.Credentials))
-	for i, cg := range c.Credentials {
-		// Fail closed at load, not at the first stage that tries to resolve a
-		// bad grant: credentials are instance config rather than workflow input,
-		// and a malformed token ref can never resolve.
-		var key, label string
-		switch {
-		case cg.Capability != "" && cg.MCP == "":
-			if !capability.Known(cg.Capability) {
-				return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
-			}
-			if !capability.StageDeclarable(cg.Capability) {
-				return fmt.Errorf(
-					"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
-					i,
-					cg.Capability,
-				)
-			}
-			key, label = cg.Capability, "capability "+strconv.Quote(cg.Capability)
-		case cg.Capability == "" && mcpconfig.ValidBYOCredentialName(cg.MCP):
-			key, label = mcpconfig.BYOCredentialKey(cg.MCP), "MCP credential "+strconv.Quote(cg.MCP)
-		case cg.Capability == "" && cg.MCP != "":
-			return fmt.Errorf("credentials[%d]: MCP credential name %q must be a lowercase DNS label", i, cg.MCP)
-		default:
-			return fmt.Errorf("credentials[%d]: set exactly one of capability or mcp", i)
-		}
-		if seen[key] {
-			return fmt.Errorf("credentials[%d]: %s is sourced more than once", i, label)
-		}
-		seen[key] = true
-		if cg.Token.sourceCount() != 1 {
-			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
-				"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
-		}
-		if cg.Token.Env != "" &&
-			stageEnvironmentAllows(cg.Token.Env, c.Runner.EnvPassthrough) {
-			return fmt.Errorf(
-				"credentials[%d] (%s): token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-				i, label, cg.Token.Env,
-			)
-		}
-		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), cg.Token, stores); err != nil {
-			return err
-		}
-	}
-	// Fail closed at load on a malformed runner capability claim (RRQ-1): a
-	// claim that can never string-match a requirement is a typo the scheduler
-	// would otherwise turn into an every-run schedule refusal at 3am, not a
-	// startup error. Duplicates collapse harmlessly (set membership), so only
-	// the token shape is enforced here.
-	for i, c := range c.Runner.Capabilities {
-		if err := runnercap.ValidateToken(c); err != nil {
-			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
-		}
-	}
-	if _, err := c.Runner.LivenessTimeoutDuration(); err != nil {
-		return err
-	}
-	// Fail closed at load on a malformed env-passthrough name (#736): a name
-	// carrying '=', NUL, or shell metacharacters could never be a real env var
-	// and, unchecked, would silently mis-split at stage launch. Default-deny is
-	// unaffected — this only validates the shape of an explicit opt-in name.
-	for i, name := range c.Runner.EnvPassthrough {
-		if !procenv.ValidName(name) {
-			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
-		}
-	}
-	// Fail closed on a malformed harness launcher override: an unknown harness
-	// key can never take effect (silent no-op that hides an adopter typo), and
-	// an empty argv or empty program name would fail at exec time on every run
-	// of that harness. Validate the shape here, at load, not mid-run.
-	for name, command := range c.Runner.HarnessCommand {
-		if !knownHarnessName(name) {
-			return fmt.Errorf("runner.harnessCommand[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
-		}
-		if len(command) == 0 {
-			return fmt.Errorf("runner.harnessCommand[%q]: command must not be empty", name)
-		}
-		if strings.TrimSpace(command[0]) == "" {
-			return fmt.Errorf("runner.harnessCommand[%q]: program name (first element) must not be empty", name)
-		}
-	}
-	if c.WorkflowSource != nil && c.WorkflowSource.Token != nil {
-		if err := validateStoreRef("workflowSource.token", *c.WorkflowSource.Token, stores); err != nil {
-			return err
-		}
-	}
-	if c.WorkflowSource != nil &&
-		c.WorkflowSource.Token != nil &&
-		c.WorkflowSource.Token.Env != "" &&
-		stageEnvironmentAllows(c.WorkflowSource.Token.Env, c.Runner.EnvPassthrough) {
-		return fmt.Errorf(
-			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-			c.WorkflowSource.Token.Env,
-		)
-	}
-	if c.Sandbox != nil {
-		if err := c.Sandbox.Validate(); err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-	}
-	return nil
+	return validateInOrder(
+		func() error { return c.Portal.validate() },
+		c.validateSpeech,
+		func() error { return c.Webhook.validateSecret(stores) },
+		c.validateTimezone,
+		c.Runner.validateDefaultStageTimeout,
+		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
+		c.validateExternalTelemetry,
+		c.Telemetry.Retention.validate,
+		c.RunConditions.validate,
+		c.Retention.validate,
+		func() error { return c.validateRepos(stores) },
+		func() error { return c.validateDaemonIdentity(stores) },
+		func() error { return c.validateCredentials(stores) },
+		c.Runner.validate,
+		func() error { return c.validateWorkflowSourceToken(stores) },
+		c.validateSandbox,
+	)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load
@@ -1735,38 +1393,8 @@ func (c *Config) validateSecretStores() (map[string]bool, error) {
 	}
 	stores := make(map[string]bool, len(c.SecretStores))
 	for i, s := range c.SecretStores {
-		if s.Name == "" {
-			return nil, fmt.Errorf("secretStores[%d]: name is required", i)
-		}
-		if !validSecretStoreName(s.Name) {
-			return nil, fmt.Errorf("secretStores[%d]: name %q must be a lowercase DNS label (letters, digits, and interior hyphens, at most 63 characters)", i, s.Name)
-		}
-		if stores[s.Name] {
-			return nil, fmt.Errorf("secretStores[%d]: name %q is declared more than once", i, s.Name)
-		}
-		stores[s.Name] = true
-		if s.Kind != SecretStoreKindAzureKeyVault {
-			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q)", i, s.Name, s.Kind, SecretStoreKindAzureKeyVault)
-		}
-		if err := validateVaultURI(s.VaultURI); err != nil {
-			return nil, fmt.Errorf("secretStores[%d] (%s): vaultURI: %w", i, s.Name, err)
-		}
-		if s.Auth == nil {
-			return nil, fmt.Errorf("secretStores[%d] (%s): auth is required (kind: one of %q, %q, %q) — store access always authenticates through an ambient identity, never a token ref",
-				i, s.Name, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
-		}
-		switch s.Auth.Kind {
-		case SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity:
-		case SecretStoreAuthAzureCLI:
-			if s.Auth.ClientID != "" {
-				return nil, fmt.Errorf("secretStores[%d] (%s): auth.clientId is not valid for auth kind %q", i, s.Name, s.Auth.Kind)
-			}
-		default:
-			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported auth kind %q (supported: %q, %q, %q)",
-				i, s.Name, s.Auth.Kind, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
-		}
-		if s.CacheTTLSeconds < 0 {
-			return nil, fmt.Errorf("secretStores[%d] (%s): cacheTTLSeconds must not be negative", i, s.Name)
+		if err := s.validate(i, stores); err != nil {
+			return nil, err
 		}
 	}
 	return stores, nil
@@ -1893,6 +1521,10 @@ func (p PortalConfig) Validate() error {
 // Validate checks workflow-source shape without resolving credentials or
 // accessing the source.
 func (s WorkflowSource) Validate() error {
+	return s.validate()
+}
+
+func (s WorkflowSource) validate() error {
 	hasPath := s.Path != ""
 	hasURL := s.URL != ""
 
@@ -2210,47 +1842,6 @@ func validHeaderName(name string) bool {
 		}
 	}
 	return true
-}
-
-// validateAPIConfig checks the API listener posture. A loopback bind keeps
-// the tier-1 local-trust default. A non-loopback bind is refused unless BOTH
-// TLS and an authenticator are configured (#640, SEC-043): the daemon must
-// never expose an unauthenticated or plaintext API off-box by accident, and
-// there is deliberately no insecure override.
-func (c *Config) validateAPIConfig() error {
-	address := c.APIListenAddress()
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("api.listen: must be a host:port address: %w", err)
-	}
-	if host == "" {
-		return fmt.Errorf("api.listen: host is required; wildcard listeners are not allowed")
-	}
-	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
-		return fmt.Errorf("api.listen: port %q must be a number from 0 through 65535", port)
-	}
-	if c.API.TLS != nil {
-		if c.API.TLS.CertFile == "" || c.API.TLS.KeyFile == "" {
-			return fmt.Errorf("api.tls: certFile and keyFile are both required")
-		}
-	}
-	if c.API.Auth != nil {
-		if c.API.Auth.OIDC == nil {
-			return fmt.Errorf("api.auth: oidc is required — it is the only supported authenticator (SEC-043)")
-		}
-		if err := c.API.Auth.OIDC.Validate(); err != nil {
-			return fmt.Errorf("api.auth.oidc: %w", err)
-		}
-	}
-	if isLoopbackHost(host) {
-		return nil
-	}
-	if c.API.TLS == nil || c.API.Auth == nil {
-		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
-			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
-			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
-	}
-	return nil
 }
 
 // Validate checks the OIDC issuer/audience/role-mapping shape without
