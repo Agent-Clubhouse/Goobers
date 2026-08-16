@@ -120,6 +120,10 @@ type RunRequest struct {
 	// Nil (the default, and always the value under a "disabled" posture)
 	// leaves the launch path byte-identical to the pre-sandbox behavior.
 	Sandbox sandbox.Sandbox
+	// HarnessVersion is the CLI version captured by startup preflight, passed
+	// through so an adapter can record it alongside the effective invocation
+	// in run diagnostics (#2962). Empty when preflight did not report one.
+	HarnessVersion string
 }
 
 // Outcome is what an Adapter hands back after a harness session ends.
