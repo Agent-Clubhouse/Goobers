@@ -353,6 +353,49 @@ func TestStatusJSON(t *testing.T) {
 	}
 }
 
+func TestStatusDefaultsToNewestFiftyRuns(t *testing.T) {
+	root := initScheduledDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	for i := range 51 {
+		writeStatusRun(t, root, fmt.Sprintf("run-%02d", i), "implementation", "goobers", startedAt.Add(time.Duration(i)*time.Minute))
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "run-00") || !strings.Contains(stdout, "run-50") {
+		t.Fatalf("stdout = %q, want newest 50 runs", stdout)
+	}
+	if !strings.Contains(stdout, "1 older runs; use --limit 0 for all") {
+		t.Fatalf("stdout = %q, want older-runs hint", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 50 || strings.Contains(stderr, "older runs") {
+		t.Fatalf("runs = %d, stderr = %q; want 50 runs and no hint", len(got.Runs), stderr)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", "--limit=0", root)
+	if code != 0 {
+		t.Fatalf("status --json --limit=0: code = %d, stderr = %q", code, stderr)
+	}
+	got = statusJSONOutput{}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 51 {
+		t.Fatalf("runs = %d, want all 51", len(got.Runs))
+	}
+}
+
 func TestListRunsSkipsNonRunEntry(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
