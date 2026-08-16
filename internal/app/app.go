@@ -57,7 +57,7 @@ func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scru
 	if scrubber != nil {
 		logOut = scrubbedWriter{dst: logOut, scrubber: scrubber}
 	}
-	options, err := parseArgs(name, args, logOut, false)
+	options, err := ParseArgs(name, args, logOut, false)
 	if err != nil {
 		return 2
 	}
@@ -87,14 +87,8 @@ type cliOptions struct {
 	logFormat   string
 }
 
-// ValidateArgs parses control-plane binary arguments using the same flag set as
-// Main without starting the binary.
-func ValidateArgs(name string, args []string, output io.Writer) error {
-	_, err := parseArgs(name, args, output, true)
-	return err
-}
-
-func parseArgs(name string, args []string, output io.Writer, rejectPositionals bool) (cliOptions, error) {
+// ParseArgs parses control-plane binary arguments without starting the binary.
+func ParseArgs(name string, args []string, output io.Writer, rejectPositionals bool) (cliOptions, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(output)
 	var options cliOptions

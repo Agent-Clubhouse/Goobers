@@ -31,7 +31,8 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		"goobers-operator": {
 			binary: "goobers-operator",
 			validateArgs: func(args []string) error {
-				return app.ValidateArgs("operator", args, io.Discard)
+				_, err := app.ParseArgs("operator", args, io.Discard, true)
+				return err
 			},
 		},
 		"goobers-worker": {
@@ -107,7 +108,7 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 	if err := validateManifestArgs([]string{"--instance", "/instance", "--drain-timeout", "eventually"}, workerFlags, []string{"instance"}, 0); err == nil {
 		t.Error("invalid worker flag value was accepted")
 	}
-	if err := app.ValidateArgs("operator", []string{"--version=eventually"}, io.Discard); err == nil {
+	if _, err := app.ParseArgs("operator", []string{"--version=eventually"}, io.Discard, true); err == nil {
 		t.Error("invalid operator flag value was accepted")
 	}
 }
