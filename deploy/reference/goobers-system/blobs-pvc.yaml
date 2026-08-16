@@ -13,8 +13,8 @@
 # Safe on storage without dependable POSIX locking, unlike the journal: a
 # content-addressed store never locks. A digest is written once, published by
 # rename, and two writers racing on one digest are by construction writing
-# identical bytes. (cf. #2854 — `doctor --k8s` blessing such classes is a false
-# green for the journal, and irrelevant here.)
+# identical bytes. `doctor --k8s` warns about these classes because they are
+# unsafe for the journal; that warning does not apply to this lock-free store.
 #
 # Omit this entirely if you run a single worker.
 apiVersion: v1
