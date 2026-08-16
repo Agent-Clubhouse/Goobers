@@ -652,6 +652,12 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
+      # Named rather than the whole package: the Windows-only regression guard
+      # verifies that legacy migrations create an NTFS junction without
+      # requiring the symlink privilege (#2862).
+      - name: Windows instance runtime alias
+        run: go test ./internal/instance -run '^TestCreateLegacyRuntimeAliasCreatesJunction$'
+
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
       # POSIX — and none of these packages were covered here until #1997.
@@ -700,8 +706,11 @@ jobs:
       # model and intake store handles used to leak: harmless on POSIX, but
       # on Windows the open handles keep the temp dir's *.db files locked and
       # the test's own cleanup then fails (#2031).
+      # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
+      # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
+      # Windows must use the CLI's embedded time/tzdata import (#2863).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
