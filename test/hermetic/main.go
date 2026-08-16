@@ -392,6 +392,10 @@ func platformToolSpecs(goos string) []toolSpec {
 		return []toolSpec{
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
+			// Both spellings: internal/platform/secfile execs bare "icacls",
+			// internal/credentials execs "icacls.exe". The audit matches the
+			// literal argv[0], so dropping either one fails that package.
+			{name: "icacls", required: true},
 			{name: "icacls.exe", required: true},
 			{name: "node", required: true},
 			{name: "npm.cmd", required: true},
