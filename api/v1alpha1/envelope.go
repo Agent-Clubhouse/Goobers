@@ -68,6 +68,14 @@ type InvocationEnvelope struct {
 	// "main" (#2087). Empty means the default branch.
 	BaseBranch string `json:"baseBranch,omitempty"`
 	// Goal is the intended outcome of this stage (from the stage definition).
+	// Goober names the goober this invocation is for, empty for a
+	// deterministic stage or an automated gate. The local runner never needed
+	// it on the wire — it dispatches from the workflow Definition and passes
+	// the name to its executor factory directly. A Temporal worker has only
+	// the envelope, so without this the agentic seam cannot know WHICH goober
+	// to construct: invoke.Goober.Invoke(ctx, env) is the whole signature.
+	Goober string `json:"goober,omitempty"`
+	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the
 	// agent's instructions for this invocation. It is never part of the workflow

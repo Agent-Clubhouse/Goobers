@@ -70,6 +70,10 @@ type Reader interface {
 	// one request, with no per-workflow follow-up read.
 	LatestPerWorkflow(ctx context.Context, options AggregateOptions) ([]WorkflowLatest, error)
 
+	// CreditAssignment ranks graph nodes by their contribution to adverse run
+	// outcomes and repeated attempts.
+	CreditAssignment(ctx context.Context, options CreditOptions) ([]NodeCredit, error)
+
 	// GetRun returns one projected run. The bool distinguishes absent from
 	// failed — a run that is not in the read model is an ordinary answer, and
 	// collapsing it into an error would make retention indistinguishable from

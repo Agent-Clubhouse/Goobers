@@ -48,10 +48,13 @@ const (
 	// invoke.Timeout — a policy-classed stage failure, exactly like the local
 	// runner's dispatch (#724/#622) — so the grace guarantees that
 	// self-enforcement wins the race against Temporal's own timeout. A
-	// temporal.TimeoutError is thereby reserved for genuine worker loss
-	// (attemptFailureClass's infra arm), never a stage merely overrunning its
-	// declared budget.
-	stageTimeoutGrace = 5 * time.Minute
+	// temporal.TimeoutError is thereby reserved for genuine worker loss, never
+	// a stage merely overrunning its declared budget.
+	// stageScheduleToStart bounds how long a stage may sit on a task queue no
+	// worker is serving. The SDK default is unlimited, so an unroutable stage
+	// would hang the run silently rather than fail with the queue named.
+	stageScheduleToStart = 15 * time.Minute
+	stageTimeoutGrace    = 5 * time.Minute
 )
 
 // RunInput is the pinned input to a workflow run. Spec is a snapshot of the
@@ -435,7 +438,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)
 	}
-	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream)
+	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream, t.Goober)
 	env.MinimumIntegrity = t.MinimumIntegrity
 	// Both admission checks run before dispatch, matching the local runner.
 	// The engine resolves inputsFrom only against the immediately preceding
@@ -467,7 +470,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
-	ctx = stageActivityContext(ctx, env.Limits)
+	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)
 	if t.Type == apiv1.TaskAgentic {
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
@@ -521,8 +524,11 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// subject stage's ResultEnvelope over the wire envelope (§2.4), so
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil)
-		env.Inputs = gate.AutomatedInputs(subject)
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil, "")
+		env.Inputs, err = gate.AutomatedInputs(subject)
+		if err != nil {
+			return "", nil, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
+		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var outcome string
@@ -539,10 +545,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// (#294). AgenticGate carries no stage-level capabilities, so they are
 		// sourced from the reviewer goober's own grants, pinned at start.
 		var gateCaps []string
+		var reviewerGoober string
 		if g.Agentic != nil {
-			gateCaps = in.GateGooberCapabilities[g.Agentic.Goober]
+			reviewerGoober = g.Agentic.Goober
+			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream)
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		var verdict apiv1.Verdict
@@ -597,7 +605,16 @@ func selectedWorkspaceBranch(t apiv1.Task, result apiv1.ResultEnvelope, namespac
 // host provisions one fresh per attempt and stamps it into the envelope
 // before the stage executes (Activities.provisionWorkspace) — failing closed,
 // never dispatching a partial envelope.
-func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
+//
+// goober is the ONE field the local runner's buildEnvelope deliberately
+// omits and the engine must set (#2904): the local runner dispatches from
+// the workflow Definition and hands the goober name to its executor factory
+// directly, so its envelope never needed to carry it. A Temporal worker has
+// only the envelope — invoke.Goober.Invoke(ctx, env) is the whole signature
+// the worker seam dispatches through — so leaving it empty here strands
+// every agentic activity with no goober identity to route on. Empty for a
+// deterministic task or an automated gate.
+func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer, goober string) apiv1.InvocationEnvelope {
 	inputs := make(map[string]interface{}, len(taskInputs))
 	for k, v := range taskInputs {
 		inputs[k] = v
@@ -618,6 +635,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		BranchNamespace: in.BranchNamespace,
 		BaseBranch:      baseBranch,
 		Goal:            goal,
+		Goober:          goober,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
 		ContextPointers: upstream,
@@ -673,7 +691,7 @@ func sortedKeys(m map[string]string) []string {
 }
 
 func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Context {
-	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits))
+	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, ""))
 }
 
 // stageActivityOptions builds the options every engine activity dispatches
@@ -683,15 +701,68 @@ func stageActivityContext(ctx workflow.Context, limits apiv1.Limits) workflow.Co
 // which enforces the local runner's split policy/infrastructure budgets. A
 // declared duration limit is padded with stageTimeoutGrace so the worker's
 // own policy-classed enforcement of that limit always fires first.
-func stageActivityOptions(limits apiv1.Limits) workflow.ActivityOptions {
+// taskQueue empty means inherit the workflow's queue, which is what every
+// stage did before per-stage placement existed and what an all-linux instance
+// still does.
+//
+// ScheduleToStartTimeout is set because the SDK's default is unlimited: a stage
+// routed to a queue no worker serves would otherwise wait forever, with the run
+// simply never progressing and nothing to look at. Bounded, it fails with a
+// timeout naming the queue.
+func stageActivityOptions(limits apiv1.Limits, taskQueue string) workflow.ActivityOptions {
 	timeout := activityTimeout
 	if limits.MaxDurationSeconds > 0 {
 		timeout = time.Duration(limits.MaxDurationSeconds)*time.Second + stageTimeoutGrace
 	}
 	return workflow.ActivityOptions{
-		StartToCloseTimeout: timeout,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		TaskQueue:              taskQueue,
+		StartToCloseTimeout:    timeout,
+		ScheduleToStartTimeout: stageScheduleToStart,
+		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 1},
 	}
+}
+
+// stageActivityContextOn is stageActivityContext with per-stage placement: the
+// activity is dispatched to the task queue its platform capability names,
+// instead of inheriting the workflow's.
+//
+// This is the whole of per-stage routing. Temporal supports a TaskQueue per
+// ACTIVITY (ActivityOptions.TaskQueue), so the workflow keeps running on one
+// queue while individual stages are polled by workers elsewhere — which is why
+// engine.NewTemporalStarter taking a single queue was never the obstacle it
+// looked like. It is the workflow's queue, and that is correct.
+func stageActivityContextOn(ctx workflow.Context, limits apiv1.Limits, capabilities []string) workflow.Context {
+	return workflow.WithActivityOptions(ctx, stageActivityOptions(limits, stageTaskQueue(ctx, capabilities)))
+}
+
+// stageTaskQueue derives a stage's task queue from its declared platform
+// capability: a stage naming os=<goos> is polled from "<workflow queue>-<goos>",
+// and anything else inherits the workflow's own queue. Unlabelled therefore
+// means linux, which is the documented default, and an all-linux instance needs
+// no extra queues.
+//
+// Returning empty means inherit; it is not an error. A workflow with no
+// platform capabilities behaves exactly as before this existed.
+func stageTaskQueue(ctx workflow.Context, capabilities []string) string {
+	suffix := platformQueueSuffix(capabilities)
+	if suffix == "" {
+		return ""
+	}
+	return workflow.GetInfo(ctx).TaskQueueName + "-" + suffix
+}
+
+// platformQueueSuffix is the queue suffix a stage's capabilities ask for, or
+// empty to inherit. Split out from stageTaskQueue so the placement rule is
+// testable as a pure function rather than only through a workflow environment.
+func platformQueueSuffix(capabilities []string) string {
+	for _, c := range capabilities {
+		goos, ok := strings.CutPrefix(c, "os=")
+		if !ok || goos == "" || goos == "linux" {
+			continue
+		}
+		return goos
+	}
+	return ""
 }
 
 // engineInputGrades maps each inputsFrom entry to the provenance of the task

@@ -14,7 +14,7 @@ and [`docs/VISION.md`](docs/VISION.md).
 
 ## Development setup
 
-You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.5),
+You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.6),
 Node.js 24 with npm, Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)).
@@ -107,6 +107,13 @@ cross-platform implementation of `make ci`; it launches tools without Bash or
 POSIX-shell syntax. On Windows, stock `cmd.exe` is used only for Node's
 `npm.cmd` shim, and GNU Make is not required. Other convenience targets can
 still use a POSIX shell.
+
+Micro-benchmarks for journal event encoding, scrubbing, parsing, and read-model
+projection are opt-in and do not run with ordinary tests:
+
+```sh
+go test -run=^$ -bench=. ./internal/journal ./internal/readmodel
+```
 
 ### Platform prerequisites
 
@@ -229,7 +236,7 @@ become unsupported.
 
 **Current state:** DSL `2.0` is the supported authoring version; every
 shipped, reference, and example workflow pins it. DSL `1.4` is `deprecated`
-(replacement `2.0`, unsupported after `v0.2.0`) — a workflow pinned to `1.4`
+(replacement `2.0`, unsupported after `v0.5.0`) — a workflow pinned to `1.4`
 still loads and runs, but `goobers validate` emits a `DVL020` warning. Migrate
 a pinned workflow mechanically with `goobers fix --to 2.0`; the only semantic
 delta the migrator pins is `automated.pollIntervalSeconds: 10` on gates fed by

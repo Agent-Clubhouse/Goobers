@@ -46,7 +46,7 @@ func TestLockHelperProcess(t *testing.T) {
 	if os.Getenv(lockHelperEnv) != "1" {
 		return
 	}
-	held, err := Acquire(os.Getenv(lockHelperPathEnv))
+	held, err := TryAcquire(os.Getenv(lockHelperPathEnv))
 	if err != nil {
 		t.Fatalf("helper acquire: %v", err)
 	}

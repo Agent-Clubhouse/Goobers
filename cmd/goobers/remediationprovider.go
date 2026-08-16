@@ -26,9 +26,12 @@ type remediationProvider interface {
 	DeleteComment(ctx context.Context, repo providers.RepositoryRef, commentID string) error
 	AuthenticatedLogin(ctx context.Context) (string, error)
 	SubmitPullRequestReview(ctx context.Context, req providers.PullRequestReviewRequest) (providers.PullRequestReviewResult, error)
+	ListWorkItems(ctx context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
 	GetWorkItem(ctx context.Context, repo providers.RepositoryRef, id string) (providers.WorkItem, error)
+	CreateWorkItem(ctx context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItemStatus(ctx context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
+	ClaimWorkItem(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.ClaimResult, error)
 	BranchTipSHA(ctx context.Context, repo providers.RepositoryRef, branch string) (string, error)
 	CompareCommits(ctx context.Context, repo providers.RepositoryRef, base, head string) (providers.CompareResult, error)
 	PullRequestMergeable(ctx context.Context, repo providers.RepositoryRef, pullID string) (*bool, error)

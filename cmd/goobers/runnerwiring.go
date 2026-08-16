@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1006,6 +1007,26 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
 }
 
+func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
+	if repository.Provider == providers.ProviderADO {
+		return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+	}
+	ref := repository.Owner + "/" + repository.Name
+	token, err := c.resolver.Resolve(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+	}
+	c.reg.Register([]byte(token))
+	if repository.Provider == providers.ProviderGitea {
+		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+		if err != nil {
+			return fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+		}
+		return provider.UpdateComment(ctx, repository, commentID, body)
+	}
+	return newEscalationPoster(token).UpdateComment(ctx, repository, commentID, body)
+}
+
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
 // composition root — a complete, tested implementation that was never
 // constructed, so runner.Config.Escalation stayed nil and a repass-budget
@@ -1050,10 +1071,14 @@ func buildEscalationNotifier(l instance.Layout, cfg *instance.Config, resolver c
 //
 // When the stage also references blockers through outputs.blockedBy, record
 // them in scheduler/blocked.json so #552's selection guard still protects the
-// issue if a human re-promotes it before every dependency closes. If a new
-// record closes a cycle, every issue in that cycle is parked goobers:needs-human
-// and receives a cycle-specific comment for human resolution. The runner's
-// shared EscalationNotifier owns the normal explanatory provider comment.
+// issue if a human re-promotes it before every dependency closes. Blockers
+// naming the driving item itself are dropped first (#2961) — an item cannot
+// depend on itself, and persisting that self-edge makes findBlockedCycle
+// report a one-node cycle and park the issue needs-human over a dependency
+// that does not exist. If a new record closes a real cycle, every issue in
+// that cycle is parked goobers:needs-human and receives a cycle-specific
+// comment for human resolution. The runner's shared EscalationNotifier owns
+// the normal explanatory provider comment.
 //
 // The handler runs before FinalizeTerminal releases the run's claims, so a
 // run with no StartInput.Item (scheduled/fan-out implementation runs claim
@@ -1107,12 +1132,21 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		// escalationCommenter before the work-item call.
 		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
+			// #2961: an item can never be its own blocker. The runner already
+			// drops the self-reference when the run carried its driving item,
+			// but a run that claims its item(s) mid-run resolves them here, so
+			// the same guard has to apply per item — otherwise a self-edge
+			// reaches blocked.json and findBlockedCycle parks the issue
+			// needs-human for a dependency cycle that does not exist.
+			blockers, _ := runner.FilterSelfBlockers(o.Blockers, itemID)
 			// #2028: a named blocker is a self-healing dependency park
 			// (blocked-on-sibling), not a human decision; only an
 			// unattributed block stays needs-human. A detected cycle
 			// overrides this below with its own needs-human cycleReq.
+			// A block whose only named blocker was the item itself is
+			// unattributed once filtered, so it correctly stays needs-human.
 			label := providers.LabelNeedsHuman
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				label = blockedOnSiblingLabel
 			}
 			req := providers.UpdateWorkItemRequest{
@@ -1121,14 +1155,14 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				AddLabels:    []string{label},
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recordKey := blockedRecordKey(repoRef, itemID)
 					recs[recordKey] = blockedRecord{
 						Repository: repoRef,
 						ItemID:     itemID,
-						Blockers:   o.Blockers,
+						Blockers:   blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,
@@ -1175,19 +1209,17 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 // Detailed causes remain in the local run trace because execution errors can
 // contain harness argv, prompts, credentials, environment values, or context.
 //
-// Deliberately does NOT apply goobers:needs-human: that label is reserved for
-// the escalated/park path (buildEscalationNotifier / buildBlockedHandler's
-// no-blockers park), keeping a `failed` terminal distinct from an escalation.
-// Comment-only, via the same escalationCommenter/UpdateWorkItem seam (which
-// normalizes a pr/<n> claim to its bare number).
+// Circuit breaker: after failureStreakThreshold consecutive terminal failures
+// on the same item, applies goobers:needs-human and removes goobers:ready so
+// the retry loop stops. The threshold is counted via a single editable
+// failure-streak comment on the issue (one comment, updated in place, instead
+// of one per run).
 //
 // Like buildBlockedHandler, the handler runs before FinalizeTerminal releases
 // the run's claims, so it resolves the driving item(s) from the claim ledger by
-// run id — implementation and pr-remediation runs (the two workflows that hit
-// this) self-select their item mid-run, so they never carry a StartInput.Item
-// snapshot and the ledger is the only source. Best-effort per item: one item's
-// provider failure doesn't skip the rest; the joined error is journaled by the
-// runner (failed_handling_failed), never fatal to the terminal transition.
+// run id. Best-effort per item: one item's provider failure doesn't skip the
+// rest; the joined error is journaled by the runner (failed_handling_failed),
+// never fatal to the terminal transition.
 func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.FailedHandler {
 	if len(cfg.Repos) == 0 {
 		return nil
@@ -1200,33 +1232,100 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
-		itemIDs, err := claimedItemIDsForRun(l, o.RunID)
-		if err != nil {
-			return err
-		}
-		if len(itemIDs) == 0 {
-			// No driving item anywhere (a producer/schedule run, or a run whose
-			// claim was already released) — nothing to trace; the journaled
-			// run_failed cause and the failed phase are the whole story.
-			return nil
-		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
 			Name:     o.RepoRef.Name,
 		}
-		var errs []error
-		for _, itemID := range itemIDs {
-			comment := fmt.Sprintf(
-				"Goobers run %s terminated `failed` (`RUN_FAILED`). Failure details are available only in the local run trace. The run released its claim and this issue returned to the backlog; this comment records the terminal failure so repeated failures on this item are visible instead of silently recurring. No `%s` applied — a `failed` terminal is distinct from an escalation.",
-				o.RunID, providers.LabelNeedsHuman,
-			)
-			if err := gate.PostRunComment(ctx, poster, repoRef, itemID, o.RunID, o.Seq, comment); err != nil {
-				errs = append(errs, fmt.Errorf("notify failed on %s#%s: %w", repoRef.Name, itemID, err))
+		runURL, _ := failureRunURL(l, cfg, o.RunID)
+		return applyCircuitBreaker(ctx, poster, l, repoRef, o.RunID, o.Stage, runURL)
+	}
+}
+
+const failureStreakThreshold = 3
+
+// applyCircuitBreaker increments the failure streak for each claimed item and
+// parks the issue (needs-human + remove ready) once the threshold is reached.
+// Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
+// (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
+// toward the same streak.
+func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, stage, runURL string) error {
+	itemIDs, err := claimedItemIDsForRun(l, runID)
+	if err != nil {
+		return err
+	}
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, itemID := range itemIDs {
+		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
+		if countErr != nil {
+			errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
+			prevCount = 0
+		}
+		count := prevCount + 1
+
+		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
+		}
+
+		if count >= failureStreakThreshold {
+			if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository:   repoRef,
+				ID:           itemID,
+				AddLabels:    []string{providers.LabelNeedsHuman},
+				RemoveLabels: []string{providers.LabelReady},
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 		}
-		return errors.Join(errs...)
 	}
+	return errors.Join(errs...)
+}
+
+// buildTerminalCircuitBreaker wraps an existing TerminalNotifier with circuit
+// breaker logic for PhaseEscalated and PhaseAborted. PhaseFailed is handled by
+// buildFailedHandler (which calls applyCircuitBreaker directly), so this
+// wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
+// is configured.
+func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
+	if len(cfg.Repos) == 0 {
+		return inner
+	}
+	poster := &escalationCommenter{
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
+	}
+	repo := cfg.Repos[0]
+	repoRef := providers.RepositoryRef{
+		Provider: providers.ProviderKind(repo.Provider),
+		Owner:    repo.Owner,
+		Name:     repo.Name,
+	}
+
+	return func(runID string, phase journal.RunPhase, finalState string) error {
+		if phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			runURL, _ := failureRunURL(l, cfg, runID)
+			_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+		}
+		if inner != nil {
+			return inner(runID, phase, finalState)
+		}
+		return nil
+	}
+}
+
+func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {
+	address, err := dashboardDaemonAPIAddress(l, cfg.APIListenAddress())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s://%s/#/run/%s", daemonAPIScheme(cfg), address, url.PathEscape(runID)), nil
 }
 
 // buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
@@ -2396,6 +2495,10 @@ func buildRunnerConfig(l instance.Layout, cfg *instance.Config, goobers map[stri
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
+		// covers PhaseFailed; this covers the remaining non-completed terminals
+		// so that a repeating escalation loop doesn't churn indefinitely.
+		NotifyTerminal: buildTerminalCircuitBreaker(l, cfg, resolver, sharedReg, nil),
 		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —

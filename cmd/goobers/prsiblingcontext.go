@@ -155,12 +155,14 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runGatherSiblingContextADO(root, repo, stdout, stderr)
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
 
 	selectedNumberStr := providerInput("selectedNumber", "")
 	if selectedNumberStr == "" {
@@ -523,7 +525,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 // (#2061). It never resolves a github:* capability token — the ADO provider
 // resolves its own org-scoped auth from instance config.
 func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newADOProviderForStage(root, repo)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

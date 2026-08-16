@@ -210,6 +210,13 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			continue
 		}
+		parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		if parked {
+			continue
+		}
 		if isTutorBranch(pr.Head, providerBranchNamespace()) {
 			classification, classifyErr := classifyRemoteTutorChanges(
 				ctx, provider, repo, strconv.Itoa(pr.Number), pr.BaseSHA, pr.HeadSHA,
@@ -385,7 +392,7 @@ func pullRequestsForSelection(
 // provider-neutral *Dispatcher rather than a concrete *providers.GitHubProvider:
 //
 //   - The provider is built from config-sourced ADO auth via
-//     newADOProviderForStage — no github:pr:write token is resolved. The
+//     the shared stage provider factory — no github:pr:write token is resolved. The
 //     GitHubPRWrite grant maps to ado:pr:write on ADO, carried by the configured
 //     auth source; pr-select performs no merge/completion, so it needs no
 //     ado:pr:complete authority (that grant gates merge-pr/queue-watch only).
@@ -402,7 +409,7 @@ func pullRequestsForSelection(
 //     satisfy, and several would otherwise issue a PR-as-work-item write against
 //     wit/workitems (wrong-object hazard). No sibling is parked here.
 func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newADOProviderForStage(root, repo)
+	adoProvider, err := newProviderForStage(root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -752,4 +759,41 @@ func hasPRSelectExclusion(labels, excludeLabels []string) bool {
 		}
 	}
 	return false
+}
+
+// scopeGateVerdictStillParks skips only the exact PR state that was already
+// reviewed as parked. A head/base change or operator acknowledgement changes
+// the digest and makes the PR eligible for another review.
+func scopeGateVerdictStillParks(
+	ctx context.Context,
+	provider authenticatedBacklogProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+) (bool, error) {
+	if !hasAnyLabel(pr.Labels, []string{scopeGateLabel}) ||
+		hasAnyLabel(pr.Labels, []string{scopeGateAckLabel}) {
+		return false, nil
+	}
+	digest := computeReviewDigest(pr.HeadSHA, pr.BaseSHA, pr.Labels)
+	if digest == "" {
+		return false, nil
+	}
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("resolve merge-review verdict author: %w", err)
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return false, fmt.Errorf("list comments: %w", err)
+	}
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+			continue
+		}
+		verdict, ok := parseVerdictComment(comment.Body)
+		return ok &&
+			strings.Contains(comment.Body, scopeGateParkedCommentMarker) &&
+			cachedVerdictUsable(verdict, digest, pr.HeadSHA, pr.BaseSHA), nil
+	}
+	return false, nil
 }

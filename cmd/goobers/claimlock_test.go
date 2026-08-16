@@ -49,7 +49,7 @@ func TestClaimLockDelayedHolderReportsSlowWaitAndOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	holder, err := lock.Acquire(lockPath)
+	holder, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestClaimLockTimeoutIsJournaledRetryableAndDoesNotReleaseHolder(t *testing.
 	t.Setenv("GOOBERS_GAGGLE", "example")
 
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	holder, err := lock.Acquire(lockPath)
+	holder, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestClaimLockTimeoutWithoutDeclaredResultFileIsInfrastructureRetryableThrou
 	}
 
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	holder, err := lock.Acquire(lockPath)
+	holder, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}

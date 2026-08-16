@@ -25,8 +25,8 @@ import (
 //   - env.Inputs[InputKeyErrorCode] = subject.Error.Code (empty when absent)
 //   - env.Inputs[InputKeyErrorMessage] = subject.Error.Message (empty when absent)
 //   - env.Inputs[InputKeyErrorRetryable] = subject.Error.Retryable (false when absent)
-//   - every k/v in subject.Outputs copied into env.Inputs as-is (Outputs are
-//     already documented as "small, named scalar values downstream
+//   - every non-reserved k/v in subject.Outputs copied into env.Inputs as-is
+//     (Outputs are already documented as "small, named scalar values downstream
 //     stages/gates can consume directly" — api/v1alpha1.ResultEnvelope)
 //
 // This keeps the checker registry pure (no journal/filesystem access) and
@@ -94,12 +94,19 @@ type CheckFunc func(inputs map[string]interface{}, params map[string]string) (ou
 
 // AutomatedInputs flattens the subject result into the scalar input contract
 // shared by every runner.
-func AutomatedInputs(subject apiv1.ResultEnvelope) map[string]interface{} {
+func AutomatedInputs(subject apiv1.ResultEnvelope) (map[string]interface{}, error) {
 	inputs := make(map[string]interface{}, 4+len(subject.Outputs))
-	inputs[InputKeyStatus] = string(subject.Status)
 	for k, v := range subject.Outputs {
 		inputs[k] = v
 	}
+	var collisions []string
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if _, ok := subject.Outputs[key]; ok {
+			collisions = append(collisions, key)
+		}
+	}
+
+	inputs[InputKeyStatus] = string(subject.Status)
 	inputs[InputKeyErrorCode] = ""
 	inputs[InputKeyErrorMessage] = ""
 	inputs[InputKeyErrorRetryable] = false
@@ -108,7 +115,10 @@ func AutomatedInputs(subject apiv1.ResultEnvelope) map[string]interface{} {
 		inputs[InputKeyErrorMessage] = subject.Error.Message
 		inputs[InputKeyErrorRetryable] = subject.Error.Retryable
 	}
-	return inputs
+	if len(collisions) > 0 {
+		return inputs, fmt.Errorf("gate: subject outputs use reserved automated input keys: %s", strings.Join(collisions, ", "))
+	}
+	return inputs, nil
 }
 
 // DefaultChecks is the minimal, documented set of automated checks available
@@ -126,7 +136,8 @@ func DefaultChecks() map[string]CheckFunc {
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
 		},
 		// "failure-class": pass for success, infra for a retryable failure or
-		// a generic command failure carrying a known host-contention signature,
+		// a generic command failure carrying a known host-contention or
+		// dependency-transport signature,
 		// and fail for every other status. No params.
 		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			status := stringField(inputs, InputKeyStatus)
@@ -134,7 +145,7 @@ func DefaultChecks() map[string]CheckFunc {
 				return OutcomePass, nil
 			}
 			retryable, _ := inputs[InputKeyErrorRetryable].(bool)
-			if status == string(apiv1.ResultFailure) && (retryable || isHostContentionFailure(inputs)) {
+			if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
 				return OutcomeInfra, nil
 			}
 			return OutcomeFail, nil
@@ -319,7 +330,7 @@ func DefaultChecks() map[string]CheckFunc {
 	}
 }
 
-func isHostContentionFailure(inputs map[string]interface{}) bool {
+func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
 		return false
 	}
@@ -334,7 +345,8 @@ func isHostContentionFailure(inputs map[string]interface{}) bool {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(message, "npm error openssl/") &&
+		strings.Contains(message, "tls alert handshake failure")
 }
 
 func boolOutcome(pass bool) string {

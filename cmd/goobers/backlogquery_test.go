@@ -20,30 +20,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestBacklogQueryTokenUsesLeastPrivilegeCredential(t *testing.T) {
-	readEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesRead))
-	writeEnv := executor.CredentialEnvVar(string(capability.GitHubIssuesWrite))
-	t.Setenv(readEnv, "read-token")
-	t.Setenv(writeEnv, "write-token")
-
-	if token, err := backlogQueryToken(true); err != nil || token != "read-token" {
-		t.Fatalf("read-only token = %q, %v; want read-token", token, err)
-	}
-	if token, err := backlogQueryToken(false); err != nil || token != "write-token" {
-		t.Fatalf("legacy token = %q, %v; want write-token", token, err)
-	}
-
-	t.Setenv(readEnv, "")
-	if token, err := backlogQueryToken(true); err == nil || token != "" {
-		t.Fatalf("read-only token without read authority = %q, %v; want credential error", token, err)
-	}
-
-	t.Setenv(writeEnv, "")
-	if token, err := backlogQueryToken(false); err == nil || token != "" {
-		t.Fatalf("legacy token without write authority = %q, %v; want credential error", token, err)
-	}
-}
-
 func TestBacklogQueryReadOnlyDoesNotMutateProviderOrScheduler(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -1359,5 +1335,30 @@ func TestBacklogQueryClaimAndReleaseAreMutuallyExclusive(t *testing.T) {
 	code, _, _ := runArgs(t, "backlog-query", "--claim", "--release", root)
 	if code != 2 {
 		t.Fatalf("code = %d, want 2 (usage error)", code)
+	}
+}
+
+func TestSelectBacklogQueryMode(t *testing.T) {
+	tests := []struct {
+		name                       string
+		readOnly, claim, reconcile bool
+		release                    bool
+		want                       backlogQueryMode
+		ok                         bool
+	}{
+		{name: "plain", want: backlogQueryModePlain, ok: true},
+		{name: "read only", readOnly: true, want: backlogQueryModeReadOnly, ok: true},
+		{name: "claim", claim: true, want: backlogQueryModeClaim, ok: true},
+		{name: "reconcile", reconcile: true, want: backlogQueryModeReconcile, ok: true},
+		{name: "release", release: true, want: backlogQueryModeRelease, ok: true},
+		{name: "conflicting modes", claim: true, reconcile: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := selectBacklogQueryMode(test.readOnly, test.claim, test.reconcile, test.release)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("selectBacklogQueryMode() = (%v, %v), want (%v, %v)", got, ok, test.want, test.ok)
+			}
+		})
 	}
 }

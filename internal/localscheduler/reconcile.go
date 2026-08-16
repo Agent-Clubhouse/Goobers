@@ -71,17 +71,32 @@ func visitActiveRuns(runsDir string, visit func(journal.RunIdentity)) error {
 			continue // not a run directory
 		}
 		readprobe.RecordActiveScanOpen()
+		// Phase first, identity second. Both are ordered by cost against how
+		// many runs reach them: phase comes from a bounded tail read that
+		// decides essentially every run from its last record (#2755), while
+		// identity is a YAML parse of run.yaml — and on a long-lived instance
+		// all but a handful of runs are terminal, so parsing every run.yaml
+		// buys nothing. The old order paid both for all 54,333 of them.
+		phase, err := rd.PhaseBounded()
+		if err != nil {
+			// The old order read run.yaml first and skipped any directory whose
+			// identity would not parse, so a phase failure was only ever
+			// reported for a run this scan could name. Keep that: a directory
+			// this reconciliation cannot attribute to a workflow is not one it
+			// should refuse to boot over.
+			if _, idErr := rd.Identity(); idErr != nil {
+				continue
+			}
+			return fmt.Errorf("read phase for run %q: %w", e.Name(), err)
+		}
+		if phase != journal.PhaseRunning {
+			continue
+		}
 		id, err := rd.Identity()
 		if err != nil {
 			continue
 		}
-		phase, err := rd.Phase()
-		if err != nil {
-			return fmt.Errorf("read phase for run %q: %w", id.RunID, err)
-		}
-		if phase == journal.PhaseRunning {
-			visit(id)
-		}
+		visit(id)
 	}
 	return nil
 }

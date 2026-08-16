@@ -733,9 +733,41 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > blocker instead parks `goobers:blocked-on-sibling` (#2028: a self-healing
 > dependency wait, not a decision), and `blockedBy` additionally prevents
 > premature re-selection if the item is re-promoted while a named dependency
-> remains open. See `docs/design/needs-human-taxonomy.md` for the full model,
+> remains open. **Never name the driving issue itself (#2961)** — an issue
+> cannot be its own dependency. A self-reference is normalized away before the
+> block is recorded (`#441`, `owner/repo#441` and `441` all match item 441), a
+> `runner.annotation` of kind `blocked_by.self_reference_dropped` records the
+> run, stage and item, and if it was the only entry the block is treated as
+> unattributed and parks `goobers:needs-human`. Persisted-graph self-loop
+> handling is unchanged, so legacy or corrupt records still surface as cycles.
+> See `docs/design/needs-human-taxonomy.md` for the full model,
 > including the circular-dependency exception (still `goobers:needs-human` —
 > it can't self-heal).
+
+> **A tool you could not call is not an organization policy (#2962).** Do not
+> report `blocked` on organization content exclusion because a tool call was
+> refused. Content exclusion is a policy fact the runtime states explicitly;
+> a bare permission refusal (e.g. `Permission denied and could not request
+> permission from user`) is an infrastructure fault an operator can fix, and
+> reporting it as a policy block parks the driving issue for a human who has
+> nothing to decide. The executor enforces this rather than trusting the
+> classification: a `blocked` result whose prose claims content exclusion is
+> rejected unless the captured transcript or stderr carries an explicit
+> runtime content-exclusion signal, and becomes a `failure` carrying
+>
+> | Observed | `error.code` | Meaning |
+> |---|---|---|
+> | a runtime tool-permission refusal | `HARNESS_TOOL_PERMISSION_DENIED` | grant the tool to the goober, or fix the harness invocation; `outputs.toolPermissionDenied` is `true` and the refusal lines are quoted in `error.message` |
+> | no runtime signal at all | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
+>
+> Both are non-retryable (the identical invocation reproduces the identical
+> refusal), both set `outputs.contentExclusionClaimRejected: true`, and both
+> preserve your original summary and error detail inside `error.message` — no
+> cause is ever invented or discarded. Blocks that do not mention content
+> exclusion are untouched. The effective CLI version and tool/permission
+> arguments for every Copilot session are recorded at
+> `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
+> attributed to the invocation after the fact.
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a

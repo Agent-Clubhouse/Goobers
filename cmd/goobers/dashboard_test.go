@@ -90,10 +90,10 @@ func TestListenDashboardReportsConflictAndCanIncrement(t *testing.T) {
 	occupied, port := listenFixedTestPort(t, 23456)
 	defer func() { _ = occupied.Close() }()
 
-	if _, err := listenDashboard(dashboardPort{number: port}); err == nil || !strings.Contains(err.Error(), "--port=auto") {
+	if _, err := listenDashboard("127.0.0.1", dashboardPort{number: port}); err == nil || !strings.Contains(err.Error(), "--port=auto") {
 		t.Fatalf("exact-port error = %v", err)
 	}
-	incremented, err := listenDashboard(dashboardPort{number: port, auto: true})
+	incremented, err := listenDashboard("127.0.0.1", dashboardPort{number: port, auto: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +129,288 @@ func listenFixedTestPort(t *testing.T, base int) (net.Listener, int) {
 	return nil, 0
 }
 
+func TestParseDashboardListen(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		wantHost string
+		wantPort int
+		wantErr  string
+	}{
+		{name: "loopback host and port", value: "127.0.0.1:9000", wantHost: "127.0.0.1", wantPort: 9000},
+		{name: "non-loopback host", value: "0.0.0.0:9000", wantHost: "0.0.0.0", wantPort: 9000},
+		{name: "hostname", value: "dashboard.internal:9000", wantHost: "dashboard.internal", wantPort: 9000},
+		{name: "missing port", value: "0.0.0.0", wantErr: "host:port"},
+		{name: "wildcard empty host", value: ":9000", wantErr: "host is required"},
+		{name: "auto is not a supported port value", value: "0.0.0.0:auto", wantErr: "number from 1 through 65535"},
+		{name: "port out of range", value: "0.0.0.0:70000", wantErr: "number from 1 through 65535"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host, port, err := parseDashboardListen(test.value)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("parseDashboardListen(%q) error = %v, want containing %q", test.value, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseDashboardListen(%q) = %v", test.value, err)
+			}
+			if host != test.wantHost || port.number != test.wantPort || port.auto {
+				t.Fatalf("parseDashboardListen(%q) = (%q, %+v), want (%q, %d)", test.value, host, port, test.wantHost, test.wantPort)
+			}
+		})
+	}
+}
+
+// TestValidateDashboardListenHostFailsClosedOffLoopback mirrors
+// TestValidateAPIListenFailClosedOffLoopback (internal/instance) for the
+// portal's own gate (#2884): a non-loopback bind is refused unless
+// api.auth.oidc is configured, and there is no insecure override. Unlike the
+// API gate, api.tls is irrelevant here — the dashboard never terminates TLS
+// itself (see validateDashboardListenHost's doc comment).
+func TestValidateDashboardListenHostFailsClosedOffLoopback(t *testing.T) {
+	authenticated := &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "api://goobers",
+		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
+	}}
+	tests := []struct {
+		name    string
+		host    string
+		auth    *instance.APIAuthConfig
+		wantErr string
+	}{
+		{name: "loopback IPv4 stays valid unconfigured", host: "127.0.0.1"},
+		{name: "loopback IPv6 stays valid unconfigured", host: "::1"},
+		{name: "localhost stays valid unconfigured", host: "localhost"},
+		{name: "non-loopback without auth is refused", host: "0.0.0.0", wantErr: "not loopback"},
+		{name: "hostname bind counts as non-loopback", host: "dashboard.internal", wantErr: "not loopback"},
+		{name: "non-loopback with auth configured is accepted", host: "0.0.0.0", auth: authenticated},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := &instance.Config{API: instance.APIConfig{Auth: test.auth}}
+			err := validateDashboardListenHost(test.host, config)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateDashboardListenHost(%q) = %v, want nil", test.host, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateDashboardListenHost(%q) = %v, want error containing %q", test.host, err, test.wantErr)
+			}
+		})
+	}
+}
+
+// setDashboardAPIAuth writes a valid api.auth.oidc block into instance.yaml,
+// the same authenticator surface validateDashboardListenHost gates on.
+func setDashboardAPIAuth(t *testing.T, root string) {
+	t.Helper()
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.Auth = &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "api://goobers",
+		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
+	}}
+	if err := instance.WriteConfig(layout.ConfigFile(), config); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// freeNonLoopbackTestPort finds a currently-free port by binding loopback
+// (like freeLoopbackAddress) and handing back just the port number, for
+// tests that then bind a non-loopback host at that port explicitly.
+func freeNonLoopbackTestPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth pins the
+// fail-closed CLI behaviour (#2884): --listen to a non-loopback host is
+// refused at startup, before anything is served, when instance.yaml has no
+// api.auth configured — the tier-1 default posture.
+func TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth(t *testing.T) {
+	root := initDemo(t)
+	port := freeNonLoopbackTestPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stderr bytes.Buffer
+	code := runDashboardContext(ctx, []string{"--listen=0.0.0.0:" + strconv.Itoa(port), "--no-open", root}, io.Discard, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, stderr = %q, want 2", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "api.auth") || !strings.Contains(stderr.String(), "not loopback") {
+		t.Fatalf("stderr = %q, want a fail-closed api.auth/loopback refusal", stderr.String())
+	}
+}
+
+// TestRunDashboardContextAcceptsNonLoopbackListenWithAuth is the accepted
+// counterpart (#2884): once api.auth.oidc is configured, --listen to a
+// non-loopback host is allowed to bind and actually serves the portal.
+func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
+	root := initDemo(t)
+	setDashboardAPIAuth(t, root)
+	port := freeNonLoopbackTestPort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &dashboardURLWriter{url: make(chan string, 1)}
+	done := make(chan int, 1)
+	go func() {
+		done <- runDashboardContext(ctx, []string{"--listen=0.0.0.0:" + strconv.Itoa(port), "--no-open", root}, started, io.Discard)
+	}()
+
+	var address string
+	select {
+	case address = <-started.url:
+	case code := <-done:
+		t.Fatalf("dashboard exited before startup: code = %d", code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for dashboard URL")
+	}
+	if !strings.HasPrefix(address, "http://0.0.0.0:") {
+		cancel()
+		t.Fatalf("dashboard URL = %q, want the configured non-loopback host", address)
+	}
+	// 0.0.0.0 binds every interface including loopback, so a loopback client
+	// exercises the same listener without depending on outbound reachability
+	// to the literal 0.0.0.0 destination.
+	loopbackAddress := "http://127.0.0.1:" + strings.TrimPrefix(address, "http://0.0.0.0:")
+	// Unauthenticated: the standalone handler enforces api.auth even when the
+	// bind itself was permitted, so a bare request is refused.
+	response, err := http.Get(loopbackAddress + "api/v1/health")
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		cancel()
+		t.Fatalf("unauthenticated API status = %d, want 401", response.StatusCode)
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("dashboard exit code = %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard did not stop after cancellation")
+	}
+}
+
+// TestStandaloneDashboardAPIEnforcesConfiguredAuthenticator confirms
+// api.auth is a real, request-level gate on the standalone handler, not just
+// a config-presence check that only feeds validateDashboardListenHost
+// (#2884): the same block that opens the non-loopback bind must also make
+// the handler it opens actually refuse unauthenticated requests.
+func TestStandaloneDashboardAPIEnforcesConfiguredAuthenticator(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.API.Auth = &instance.APIAuthConfig{OIDC: &instance.OIDCAuthConfig{
+		Issuer:   "https://issuer.example.com",
+		Audience: "api://goobers",
+		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
+	}}
+
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := api.close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	response := httptest.NewRecorder()
+	api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated request status = %d, want 401", response.Code)
+	}
+}
+
+// TestStandaloneDashboardAPIWithholdsRevealOffLoopback locks in the guard
+// added alongside #2884's --listen gate: the reveal-in-Finder action shells
+// out on the dashboard process's own machine (#2306), which is only
+// guaranteed to be the requesting user's machine when the listener is
+// loopback. `goobers up` already withholds the same capability from the API
+// once its own listen address is non-loopback
+// (docs/design/portal-reveal-remote-posture.md); standaloneDashboardAPI's
+// new loopback parameter must do the same for the dashboard's handler,
+// mirrored through the portal/config capabilities.revealRun flag the portal
+// frontend reads to decide whether to render the button.
+func TestStandaloneDashboardAPIWithholdsRevealOffLoopback(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		loopback       bool
+		wantRevealable bool
+	}{
+		{name: "loopback keeps reveal available", loopback: true, wantRevealable: true},
+		{name: "non-loopback withholds reveal", loopback: false, wantRevealable: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			config, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), test.loopback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := api.close(); err != nil {
+					t.Fatal(err)
+				}
+			}()
+
+			response := httptest.NewRecorder()
+			api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.PortalConfigPath, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("portal config status = %d, body = %q", response.Code, response.Body.String())
+			}
+			var decoded struct {
+				Capabilities struct {
+					RevealRun bool `json:"revealRun"`
+				} `json:"capabilities"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Capabilities.RevealRun != test.wantRevealable {
+				t.Fatalf("capabilities.revealRun = %t, want %t", decoded.Capabilities.RevealRun, test.wantRevealable)
+			}
+		})
+	}
+}
+
 func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
@@ -152,12 +434,12 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err != nil {
 		release()
 		t.Fatal(err)
@@ -177,7 +459,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	standalone, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	standalone, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +490,7 @@ func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
 		Audience: "api://goobers",
 		Roles:    instance.OIDCRoleMapping{View: []string{"team-viewers"}},
 	}}
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +499,7 @@ func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
 	// The refusal must name the cause up front — not probe a 401ing health
 	// endpoint until the attach timeout.
 	start := time.Now()
-	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err == nil || !strings.Contains(err.Error(), "bearer token") {
 		t.Fatalf("prepareDashboardAPI error = %v, want bearer-token refusal", err)
 	}
@@ -239,7 +521,7 @@ func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.API.TLS = &instance.APITLSConfig{CertFile: "cert.pem", KeyFile: "key.pem"}
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +534,7 @@ func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
 	// would report a protocol error, never a certificate one) and fails fast
 	// on the untrusted test certificate instead of spinning to the attach
 	// timeout, whose message says "unavailable" rather than "does not trust".
-	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err == nil || !strings.Contains(err.Error(), "does not trust") {
 		t.Fatalf("prepareDashboardAPI error = %v, want fail-fast certificate trust error", err)
 	}
@@ -289,7 +571,7 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +580,7 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +679,7 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +744,7 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 	}))
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +848,7 @@ func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0))
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +887,7 @@ func TestStandaloneDashboardAPILeavesInstanceUnchanged(t *testing.T) {
 	}
 	before := snapshotDashboardInstance(t, root)
 
-	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0))
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1026,7 +1026,10 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
-	m := newTestManager(t)
+	m, err := NewManager(t.TempDir(), WithWriterIdentity("worker-pod-a"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 	runIDs := []string{
 		"short-stage",
 		strings.Repeat("a", 80) + "-ref-" + strings.Repeat("reference", 10),
@@ -1051,7 +1054,7 @@ func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T)
 		if err != nil {
 			t.Fatalf("read marker for %q: %v", runID, err)
 		}
-		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory {
+		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.Writer != "worker-pod-a" {
 			t.Fatalf("marker lost ownership identity: %+v", mk)
 		}
 		directories = append(directories, directory)

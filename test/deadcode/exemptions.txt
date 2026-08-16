@@ -31,15 +31,14 @@ github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inve
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory, exercised by telemetry_test.go and otlp_test.go's attribute-coverage checks (#2044 audit).
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
-github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy facade, exercised by api/validate/validate_test.go and both interpreters' features_test.go (#2044 audit).
-github.com/goobers/goobers/internal/workflow.FeaturesForGaggle # Gaggle feature-resolution facade retained for API symmetry and exercised by both interpreters' feature inventory tests (#2046).
+github.com/goobers/goobers/internal/workflow.FeatureRegistry.Lookup # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.All for immutable lookup parity (#2981).
+github.com/goobers/goobers/internal/workflow.FeatureRegistry.All # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.Lookup for immutable lookup parity (#2981).
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow/v_current.CheckGaggleFeatureSupport # Current-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2981).
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
 github.com/goobers/goobers/internal/workflow/v_next.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
-github.com/goobers/goobers/internal/workflow/v_next.FeaturesForGaggle # Next-interpreter Gaggle feature resolver retained for versioned-interpreter parity and exercised by feature inventory tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
-github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
@@ -115,6 +114,7 @@ github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transc
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-workspace process-termination injection seam retained for the lock-aware reset lifecycle test.
+github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # Object-cache lock-timeout test seam (#2905), used only from objectcachelock_test.go — mirrors internal/journal.SetLockTimeoutForTest.
 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # DEC-3 shared target lease implementation ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
@@ -163,23 +163,13 @@ github.com/goobers/goobers/internal/notification.TerminalSink.Version # Developm
 github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
-github.com/goobers/goobers/internal/engine.Registry.Register # Name+spec registration convenience wrapper over RegisterDefinition (#1251 moved production callers to RegisterDefinition for DSL-version plumbing), retained for tier 3 and exercised by registry package tests.
-github.com/goobers/goobers/internal/engine.Registry.Get # Version-pinned Temporal engine registry seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine run-start seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.ProjectRun # Temporal history->journal projection (#629) retained for tier 3, exercised by the dual-runner conformance harness.
-github.com/goobers/goobers/internal/engine.ProjectCompletedRun # Temporal history->journal projection entrypoint (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
-github.com/goobers/goobers/internal/engine.queryProjection # Temporal projection query helper shared by quarantined tier-3 entrypoints, exercised by projection and schedule tests.
-github.com/goobers/goobers/internal/engine.validateProjection # Projection fail-closed validator (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.validateOp # Projection op validator (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.projectionClock.set # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.projectionClock.now # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
+github.com/goobers/goobers/internal/engine.WithSpanSource # Span-adoption seam (#2907) shipped ahead of its caller: no process wires a fleet blob store into the projection driver yet, so only projection tests configure a SpanSource today. Exercised by spanprojection_test.go; goes stale when a production caller (e.g. cmd/goobers's projection driver) lands.
 github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
 github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
@@ -208,6 +198,7 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
+github.com/goobers/goobers/internal/temporaltest.ProjectionQuerier.QueryWorkflow # Adapts the test environment to engine's projectionQuerier shape so ProjectCompletedRun* can run hermetically (#2903); used by test/e2e's engine-start/engine-project round trip.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 
@@ -264,3 +255,9 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+
+
+# constructed by `goobers worker --blob-store`, which lands with the worker
+# runtime-seams slice; MaterializeContext already consumes the Store interface.
+# These exemptions become stale the moment that slice merges, and test/deadcode
+# rejects stale entries — so removing them is part of that change, by design.

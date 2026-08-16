@@ -68,6 +68,30 @@ type mergeQueuePollServerState struct {
 	dequeueFailures         int
 }
 
+func TestMergeQueuePollBackoffJittersWithinCappedExponentialRange(t *testing.T) {
+	const base = 10 * time.Second
+	const max = 100 * time.Second
+	cases := []struct {
+		attempt int
+		ceiling time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 20 * time.Second},
+		{2, 40 * time.Second},
+		{3, 80 * time.Second},
+		{4, 100 * time.Second},
+		{100, 100 * time.Second},
+	}
+	for _, tc := range cases {
+		for range 100 {
+			got := mergeQueuePollBackoff(base, max, tc.attempt)
+			if floor := tc.ceiling / 2; got < floor || got > tc.ceiling {
+				t.Errorf("mergeQueuePollBackoff(%s, %s, %d) = %s, want range [%s, %s]", base, max, tc.attempt, got, floor, tc.ceiling)
+			}
+		}
+	}
+}
+
 func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePollServerState) *httptest.Server {
 	t.Helper()
 	if st.headBranch == "" {

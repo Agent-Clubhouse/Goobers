@@ -313,11 +313,11 @@ type adoWorkItemCloser interface {
 // here: each takes a concrete *GitHubProvider and issues a PR-number-as-work-item
 // write (UpdateWorkItem(ID: pr.Number, …)) that on ADO would mutate the unrelated
 // work item sharing the PR's numeric id (wrong-object hazard, §8). The provider
-// is built via newADOProviderForStage (never providerToken(github:*)); work-item
+// is built via the shared stage provider factory (never providerToken(github:*)); work-item
 // calls target backlogRepoRefForStage so they hit the backlog project, not the
 // routed code-repo project (§6). The reconcile-lock idempotency is unchanged.
 func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newADOProviderForStage(root, repo)
+	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

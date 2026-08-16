@@ -182,7 +182,21 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"service status": {
 		{name: "json", desc: "Emit JSON"},
 	},
+	"engine-start": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the workflow"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+	},
+	"engine-project": {
+		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+	},
 	"worker": {
+		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
+		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
@@ -197,6 +211,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
+		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 	},

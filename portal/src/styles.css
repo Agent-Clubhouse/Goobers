@@ -573,6 +573,12 @@ summary:focus-visible {
   justify-content: space-between;
 }
 
+.daemon-state-auth {
+  align-items: end;
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  justify-content: space-between;
+}
+
 .empty-state img {
   height: 64px;
   object-fit: contain;
@@ -904,7 +910,7 @@ summary:focus-visible {
 }
 
 .attention-row {
-  align-items: center;
+  align-items: start;
   background: var(--danger-soft);
   border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
   border-radius: 11px;
@@ -1549,6 +1555,32 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
+}
+
+.credit-assignment-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(80px, 1fr));
+  padding: 12px 14px;
+}
+
+.credit-assignment-header {
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.credit-assignment-link {
+  border-top: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+}
+
+.credit-assignment-link:hover {
+  background: var(--surface);
 }
 
 .insight-outcome-header,
@@ -3035,13 +3067,92 @@ a.telemetry-error-row:hover {
   overflow-wrap: anywhere;
 }
 
-.workflow-node-agentic {
-  border-left: 3px solid var(--accent);
+/* #2693: a stage's kind reads from its silhouette before its label — an
+   agentic stage is the round-cornered card, a deterministic one is
+   square-cornered, a parallel keeps its double border, and a gate takes the
+   decision shape below. Each card kind also carries a left rail whose pattern
+   differs (solid vs. hatched), so the distinction survives without color. */
+.workflow-node-agentic,
+.workflow-node-deterministic {
+  overflow: hidden;
+  padding-left: 18px;
 }
 
-.workflow-node-gate {
-  border-color: var(--warning);
-  border-style: dashed;
+/* The rail is a pseudo-element rather than a border-left stripe because the
+   run-state overlays repaint border-color, which would erase the kind cue. */
+.workflow-node-agentic::before,
+.workflow-node-deterministic::before {
+  bottom: 0;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 6px;
+}
+
+.workflow-node-agentic {
+  border-radius: 16px;
+}
+
+.workflow-node-agentic::before {
+  background: var(--accent);
+}
+
+.workflow-node-deterministic {
+  border-radius: 0;
+}
+
+.workflow-node-deterministic::before {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--muted-strong) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+/* A gate is a decision point, so it drops the shared rounded rectangle for the
+   flowchart decision shape drawn by .workflow-node-shape. The button's own
+   border and background go transparent at two-class specificity, so the
+   run-state overlays cannot repaint a rectangle behind the shape, while the
+   box keeps carrying the focus, selection, and escalation-cause rings that a
+   clip-path on the button itself would have cut away. */
+.workflow-graph-node.workflow-node-gate {
+  background: transparent;
+  border-color: transparent;
+  padding-left: 26px;
+  padding-right: 26px;
+}
+
+.workflow-node-gate > strong,
+.workflow-node-gate > span {
+  position: relative;
+}
+
+.workflow-node-shape {
+  height: 100%;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
+
+/* The dashed edge is the gate's established non-color cue and stays, now on
+   the decision shape instead of the rectangle. */
+.workflow-node-shape polygon {
+  fill: var(--panel);
+  stroke: var(--warning);
+  stroke-dasharray: 5 4;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.workflow-graph-node.workflow-node-gate:hover .workflow-node-shape polygon,
+.workflow-graph-node.workflow-node-gate[aria-pressed="true"]
+  .workflow-node-shape
+  polygon {
+  stroke: var(--accent);
 }
 
 .workflow-node-parallel {
@@ -4686,6 +4797,30 @@ a.telemetry-error-row:hover {
   color: var(--muted);
 }
 
+/* A gate's border box is transparent (#2693), so the same run-state vocabulary
+   paints onto its decision shape instead — stroke for the border treatment,
+   fill for the tint. */
+.workflow-graph-node[data-run-state="pending"] .workflow-node-shape polygon {
+  stroke-dasharray: 2 4;
+}
+.workflow-graph-node.run-node-state-running .workflow-node-shape polygon {
+  fill: var(--active-soft);
+  stroke: var(--active);
+}
+.workflow-graph-node.run-node-state-completed .workflow-node-shape polygon {
+  stroke: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+.workflow-graph-node.run-node-state-failed .workflow-node-shape polygon,
+.workflow-graph-node.run-node-state-aborted .workflow-node-shape polygon,
+.workflow-graph-node.run-node-state-escalated .workflow-node-shape polygon {
+  fill: var(--danger-soft);
+  stroke: var(--danger);
+}
+.workflow-graph-node.run-node-state-blocked .workflow-node-shape polygon {
+  fill: var(--warning-soft);
+  stroke: var(--warning);
+}
+
 /* The single node the authoritative escalation cause points at (DASH-21).
    Emphasis is an outline + ring plus the node's "escalation cause" label, so it
    reads without relying on color. */
@@ -5708,7 +5843,8 @@ a.telemetry-error-row:hover {
     grid-template-columns: 1fr;
   }
 
-  .daemon-state-error {
+  .daemon-state-error,
+  .daemon-state-auth {
     align-items: start;
     display: grid;
   }

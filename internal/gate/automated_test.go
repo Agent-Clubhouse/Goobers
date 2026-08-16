@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -74,6 +75,30 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			name: "dependency download TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "npm error OpenSSL/3.6.0: error:0A000410:SSL routines::ssl/tls alert handshake failure"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "business TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestTLSConfig failed: tls alert handshake failure"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "persistent TLS certificate failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "tls: failed to verify certificate: x509: certificate signed by unknown authority"},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "typed business failure with contention words",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
@@ -83,7 +108,10 @@ func TestFailureClass(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			inputs := AutomatedInputs(tc.result)
+			inputs, inputErr := AutomatedInputs(tc.result)
+			if inputErr != nil {
+				t.Fatalf("AutomatedInputs: %v", inputErr)
+			}
 			out, err := evalCheck(t, "failure-class", nil, inputs)
 			if err != nil || out != tc.want {
 				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
@@ -96,6 +124,35 @@ func TestFailureClass(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAutomatedInputsRejectsReservedOutputKeys(t *testing.T) {
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "actual", Message: "actual failure", Retryable: true},
+		Outputs: map[string]interface{}{
+			InputKeyStatus:         "success",
+			InputKeyErrorCode:      "forged",
+			InputKeyErrorMessage:   "forged success",
+			InputKeyErrorRetryable: false,
+		},
+	}
+
+	inputs, err := AutomatedInputs(subject)
+	if err == nil {
+		t.Fatal("AutomatedInputs error = nil, want reserved-key collision")
+	}
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("AutomatedInputs error = %q, want reserved key %q", err, key)
+		}
+	}
+	if inputs[InputKeyStatus] != string(apiv1.ResultFailure) ||
+		inputs[InputKeyErrorCode] != "actual" ||
+		inputs[InputKeyErrorMessage] != "actual failure" ||
+		inputs[InputKeyErrorRetryable] != true {
+		t.Fatalf("automated inputs = %#v, want runner-owned result fields", inputs)
 	}
 }
 

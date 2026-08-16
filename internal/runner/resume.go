@@ -428,27 +428,29 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	seed := walkSeed{
-		pointers:     reconstructPointers(pointerEvents, in.Machine),
-		stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
-		parallel:     activeParallel,
-		fanIn:        pendingFanIn(seedEvents, in.Machine),
+	ws := &walkState{
+		jr:        jr,
+		reg:       registrar,
+		pointers:  reconstructPointers(pointerEvents, in.Machine),
+		completed: reconstructStageOutputs(seedEvents, in.Machine),
+		parallel:  activeParallel,
+		fanIn:     pendingFanIn(seedEvents, in.Machine),
 	}
 	if activeParallel != nil {
-		seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		jr.SetBranchCursors(activeParallel.cursors())
 		if current := activeParallel.current(); current != nil {
 			jr.SetBranch(current.id)
 		}
 	}
 	if humanProgress.waiting {
-		seed.humanDecision = in.HumanDecision
+		ws.humanDecision = in.HumanDecision
 	}
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
-	seed.lastStage, seed.lastResult = lastStage, lastResult
-	seed.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, seed.lastResult)
-	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
-	seed.branchRecorded = hasRunBranchRef(events)
+	ws.lastStage, ws.lastResult = lastStage, lastResult
+	ws.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, ws.lastResult)
+	ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	ws.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
 	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)
 
@@ -479,22 +481,22 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
-	if rerun == nil && seed.fanIn != nil {
+	if rerun == nil && ws.fanIn != nil {
 		// parallel.finished is authoritative over a checkpoint that still names
 		// the final branch stage from immediately before the fan-in completed.
-		startState = seed.fanIn.spec.Join
+		startState = ws.fanIn.spec.Join
 	}
 	if rerun == nil && parallelTransition != nil {
 		startState = parallelTransition.target
 	}
-	if seed.parallel != nil {
-		current := seed.parallel.current()
+	if ws.parallel != nil {
+		current := ws.parallel.current()
 		switch {
 		case current == nil:
-			return Result{}, fmt.Errorf("runner: restore active parallel %q: no current branch", seed.parallel.spec.Name)
+			return Result{}, fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
 			startState = workflow.TargetJoin
-		case startState == seed.parallel.spec.Name || !branchContainsState(in.Machine, current.start, startState):
+		case startState == ws.parallel.spec.Name || !branchContainsState(in.Machine, current.start, startState):
 			startState = current.machine
 			if startState == "" {
 				startState = current.start
@@ -547,6 +549,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
 	}
+	ws.in = StartInput{RunID: in.RunID, Machine: in.Machine, RepoRef: in.RepoRef, Item: item}
 	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
 		return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
 	}
@@ -555,7 +558,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
 	}
 	if completedGate != nil {
-		next, res, advance, gerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, item, *completedGate, lastStage, lastResult, 0)
+		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
 			return res, gerr
 		}
@@ -591,25 +594,25 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
 			replayedBranchOutcome := false
-			if seed.parallel != nil {
+			if ws.parallel != nil {
 				switch lastResult.Status {
 				case apiv1.ResultFailure:
 					if !t.ContinueOnError {
 						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
-							seed.parallel.markCurrentFailed()
-							seed.lastResult.Outputs = nil
+							ws.parallel.markCurrentFailed()
+							ws.lastResult.Outputs = nil
 							startState = workflow.TargetJoin
 							replayedBranchOutcome = true
 						}
 					}
 				case apiv1.ResultNoWork:
-					seed.parallel.markCurrentNoOutput()
+					ws.parallel.markCurrentNoOutput()
 					startState = workflow.TargetJoin
 					replayedBranchOutcome = true
 				}
 			}
 			if !replayedBranchOutcome {
-				next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
+				next, res, advance, terr := r.taskOutcome(ctx, ws, taskTransition{t, lastResult})
 				if terr != nil {
 					return res, terr
 				}
@@ -634,6 +637,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
 	}
+	ws.in = startIn
+	ws.state = startState
+	ws.resume = resume
+	ws.rerun = rerun
 	_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 	if err != nil {
 		if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, startState, 0); ok {
@@ -641,6 +648,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		}
 		return Result{}, err
 	}
+	ws.in = startIn
 	defer func() {
 		if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
 			retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
@@ -655,16 +663,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		var transitionErr error
 		switch {
 		case parallelTransition.task != nil:
-			_, result, _, transitionErr = r.taskOutcome(
-				ctx, in.RunID, jr, in.Machine, in.RepoRef, item,
-				parallelTransition.task.task, parallelTransition.task.result, 0,
-			)
+			_, result, _, transitionErr = r.taskOutcome(ctx, ws, taskTransition{
+				parallelTransition.task.task, parallelTransition.task.result,
+			})
 		case parallelTransition.gate != nil:
-			_, result, _, transitionErr = r.gateTransition(
-				ctx, jr, in.RunID, in.Machine, in.RepoRef, item,
-				parallelTransition.gate.result, parallelTransition.gate.lastStage,
-				parallelTransition.gate.lastResult, 0,
-			)
+			ws.lastStage = parallelTransition.gate.lastStage
+			ws.lastResult = parallelTransition.gate.lastResult
+			_, result, _, transitionErr = r.gateTransition(ctx, ws, parallelTransition.gate.result)
 		default:
 			switch {
 			case parallelTransition.aggregate && parallelTransition.target == workflow.TargetAbort:
@@ -689,7 +694,8 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	result, err = r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+	ws.gateAttempts, ws.gateDiffDigests = gateAttempts, gateDiffDigests
+	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
 		return result, err

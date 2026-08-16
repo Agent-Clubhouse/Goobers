@@ -57,6 +57,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
+| [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
@@ -859,11 +861,14 @@ $ goobers connect acme/web --json ./my-instance
 serve and open the local operations portal
 
 ~~~text
-Usage: goobers dashboard [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [path]
+Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
 
 Serve the embedded portal against the live daemon when `goobers up` is
 running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
+--listen overrides the full bind address (host:port) and takes the place
+of --port when given; binding a non-loopback host requires api.auth to be
+configured in instance.yaml (SEC-043) — there is no insecure override.
 Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or
 browser failure, 2 = usage/IO error.
 ~~~
@@ -997,6 +1002,44 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers elect-lander
+~~~
+
+## `goobers engine-project`
+
+write a completed engine run's journal into the instance (experimental)
+
+~~~text
+Usage: goobers engine-project [flags] <run-id> [path]
+
+Write a completed engine run's standard journal into the instance.
+
+Exit codes: 0 = projected or already present, 1 = query/write failure,
+2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-project --gaggle example <run-id>
+~~~
+
+## `goobers engine-start`
+
+dispatch one run onto the tier-3 engine via Temporal (experimental)
+
+~~~text
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental). The run id is
+derived from gaggle, workflow, and --dedupe-key.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-start default-implement
 ~~~
 
 ## `goobers escalations`
@@ -2761,7 +2804,7 @@ Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--work
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
-With --daemon, report daemon health instead.
+With --daemon, report daemon health, identity, and effective behavior settings instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -3025,6 +3068,14 @@ forces every list request onto the journal-derived paths for this run,
 leaving read.db itself untouched. A flag flip and a restart, not a
 deploy — use it if the read-model list path is ever suspected of
 serving wrong or incomplete results.
+
+These five behavior controls are intentionally flag-only: --watch-config
+selects a process-local development watcher, --diagnostics is temporary
+debug capture, --drain-timeout applies only after this process receives a
+shutdown signal, --skip-preflight is an unsafe startup escape hatch, and
+--disable-read-model-reads is an emergency rollback. Keeping them out of
+instance.yaml prevents temporary operational overrides from becoming
+durable policy. `goobers status --daemon` reports their effective values.
 ~~~
 
 **Examples**
@@ -3180,13 +3231,19 @@ wired; agentic and deterministic executor seams arrive with the runtime
 wiring slice, and stages needing them fail closed with a clear error.
 
 Flags:
-  --task-queue <queue>       task queue to serve; repeatable for multiple
-                             queues (default $GOOBERS_TASK_QUEUE, else
-                             "goobers-engine")
-  --temporal-hostport <h:p>  Temporal frontend (default
-                             $GOOBERS_TEMPORAL_HOSTPORT, else 127.0.0.1:7233)
-  --temporal-namespace <ns>  Temporal namespace (default
-                             $GOOBERS_TEMPORAL_NAMESPACE, else "default")
+  --instance <dir>           instance root; wires the real agentic and
+                             deterministic executors (default
+                             $GOOBERS_INSTANCE_ROOT)
+  --blob-store <dir>         directory backing the fleet-wide
+                             content-addressed artifact store; required
+                             for a run whose stages are served by more
+                             than one worker (default $GOOBERS_BLOB_STORE)
+  --task-queue <queue>       task queue to serve; repeatable (default
+                             engine.taskQueue, with env override)
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,
+                             with env override)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace,
+                             with env override)
   --drain-timeout <dur>      graceful-drain bound after a shutdown signal
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a

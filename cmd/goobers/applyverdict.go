@@ -739,7 +739,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := validateVerdictForPublish(posted); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
 	}
-	comment := renderVerdictComment(posted)
+	comment := renderScopeGateStateComment(
+		renderVerdictComment(posted),
+		providerInput("scopeGateParked", "") == "true",
+	)
 	historyPayload, err := findingSetHistoryComment(history)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)
@@ -945,7 +948,10 @@ func applyAdvisoryVerdict(
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
 	}
-	comment := renderVerdictComment(verdict)
+	comment := renderScopeGateStateComment(
+		renderVerdictComment(verdict),
+		providerInput("scopeGateParked", "") == "true",
+	)
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
@@ -1726,6 +1732,15 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 		return "", fmt.Errorf("marshal verdict payload: %w", err)
 	}
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
+}
+
+const scopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+
+func renderScopeGateStateComment(comment string, parked bool) string {
+	if !parked {
+		return comment
+	}
+	return comment + "\n\n" + scopeGateParkedCommentMarker
 }
 
 func validateVerdictForPublish(v apiv1.Verdict) error {

@@ -1,16 +1,16 @@
 FEATURE                                    DSL VERSION  FEATURE SUPPORT  VERSION SUPPORT  SINCE
-goober.spec.capabilities                   1.4          ga               deprecated       dev
-goober.spec.displayName                    1.4          ga               deprecated       dev
-goober.spec.gaggle                         1.4          ga               deprecated       dev
-goober.spec.harness.copilot                1.4          ga               deprecated       dev
-goober.spec.harnessOptions                 1.4          ga               deprecated       dev
-goober.spec.instructions                   1.4          ga               deprecated       dev
-goober.spec.model                          1.4          ga               deprecated       dev
-goober.spec.role                           1.4          ga               deprecated       dev
-goober.spec.scaleFactor                    1.4          ga               deprecated       dev
-goober.spec.skills                         1.4          ga               deprecated       dev
-goober.spec.tools                          1.4          ga               deprecated       dev
-goober.spec.workflows                      1.4          ga               deprecated       dev
+goober.spec.capabilities                   2.0          ga               supported        dev
+goober.spec.displayName                    2.0          ga               supported        dev
+goober.spec.gaggle                         2.0          ga               supported        dev
+goober.spec.harness.copilot                2.0          ga               supported        dev
+goober.spec.harnessOptions                 2.0          ga               supported        dev
+goober.spec.instructions                   2.0          ga               supported        dev
+goober.spec.model                          2.0          ga               supported        dev
+goober.spec.role                           2.0          ga               supported        dev
+goober.spec.scaleFactor                    2.0          ga               supported        dev
+goober.spec.skills                         2.0          ga               supported        dev
+goober.spec.tools                          2.0          ga               supported        dev
+goober.spec.workflows                      2.0          ga               supported        dev
 stage.resultFile                           2.0          ga               supported        dev
 stage.run.command                          2.0          ga               supported        dev
 stage.run.workspace.repo                   2.0          ga               supported        dev
@@ -25,6 +25,7 @@ task.inputs                                2.0          ga               support
 task.name                                  2.0          ga               supported        dev
 task.next                                  2.0          ga               supported        dev
 task.onTimeout.fail                        2.0          ga               supported        dev
+task.policyActions                         2.0          ga               supported        dev
 trigger.schedule                           2.0          ga               supported        dev
 workflow.spec.displayName                  2.0          ga               supported        dev
 workflow.spec.gaggle                       2.0          ga               supported        dev
@@ -36,4 +37,4 @@ workflow.spec.tasks                        2.0          ga               support
 workflow.spec.triggers                     2.0          ga               supported        dev
 workflow.terminal.complete                 2.0          ga               supported        dev
 
-36 feature/version row(s)
+37 feature/version row(s)

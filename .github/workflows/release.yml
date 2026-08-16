@@ -227,6 +227,13 @@ jobs:
     needs: sign-macos
     runs-on: windows-latest
     timeout-minutes: 30
+    # Entra federated identity credentials match the OIDC subject claim
+    # exactly — there is no wildcard support, so a per-tag subject
+    # (refs/tags/*) never matches a real tag push. Scoping to a GitHub
+    # Environment gives a stable, exact subject regardless of which tag
+    # triggered the run. Matches the sibling Clubhouse product's working
+    # setup (repo:Agent-Clubhouse/Clubhouse:environment:release).
+    environment: release
     steps:
       - name: Download signed artifacts
         uses: actions/download-artifact@v8
@@ -294,23 +301,27 @@ jobs:
             throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
           }
 
+      # bash on the windows-latest image has no `zip`; Compress-Archive is
+      # built into Windows and needs no extra install.
       - name: Repackage signed archive
-        shell: bash
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          ARCHIVE="dist/goobers_${TAG}_windows_amd64.zip"
-          rm -f "$ARCHIVE"
-          (cd winsign && zip -qr "../$ARCHIVE" .)
-          rm -rf winsign
+          $Archive = "dist\goobers_${env:TAG}_windows_amd64.zip"
+          Remove-Item -ErrorAction SilentlyContinue $Archive
+          Compress-Archive -Path (Join-Path winsign '*') -DestinationPath $Archive
+          Remove-Item -Recurse -Force winsign
 
+      # --text forces GNU coreutils' non-asterisk "<hex>  <filename>" marker;
+      # its Windows build defaults to binary-mode "<hex> *<filename>", which
+      # breaks the later `grep --fixed-strings "  <filename>"` checks in
+      # "Verify release artifacts" (shasum never adds this marker at all).
       - name: Recompute SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
           if command -v sha256sum >/dev/null 2>&1; then
-            cksum() { sha256sum "$1"; }
+            cksum() { sha256sum --text "$1"; }
           else
             cksum() { shasum -a 256 "$1"; }
           fi
@@ -409,23 +420,8 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
-          printf '%s\n' \
-            'new-local' \
-            'smoke/quickstart-config' \
-            'Agent-Clubhouse/Goobers' \
-            '' \
-            'implementation' \
-            '' \
-            '' \
-            '' \
-            '' \
-            '' \
-            '' \
-            '' \
-            'no' \
-            'yes' \
-            '' |
-            goobers init --guided smoke/quickstart-instance
+          goobers init --guided smoke/quickstart-instance \
+            < cmd/goobers/testdata/guided-init-release.answers
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
           test -f smoke/quickstart-config/instance.yaml.example

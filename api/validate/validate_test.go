@@ -9,8 +9,10 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -633,6 +635,30 @@ func TestWorkflowSchemaAcceptsPollingPriority(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaAcceptsScheduleIdleBackoff(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "adaptive-poll"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "schedule", "schedule": "* * * * *",
+				"idleBackoff": {"enabled": true, "floor": "1m", "ceiling": "15m"}}],
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Poll for work.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
+		t.Fatalf("schedule idle backoff failed schema validation: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesBacklogTrustLabel(t *testing.T) {
 	v := newV(t)
 	workflow := `{
@@ -1219,6 +1245,35 @@ func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	}
 }
 
+func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
+	ix := newIndex()
+	for _, definition := range []apiv1.Workflow{
+		{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
+			ObjectMeta: metav1.ObjectMeta{Name: "legacy"},
+			DSLVersion: supportmatrix.CurrentDSLVersion,
+			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
+		},
+		{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
+			ObjectMeta: metav1.ObjectMeta{Name: "next"},
+			DSLVersion: supportmatrix.NextDSLVersion,
+			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
+		},
+	} {
+		identity := workflowIdentity{gaggle: definition.Spec.Gaggle, name: definition.Name}
+		ix.workflows[identity] = indexedWorkflow{definition: definition}
+	}
+
+	definitions := ix.featureDefinitionsForGoober(apiv1.GooberSpec{
+		Gaggle:    "example",
+		Workflows: []string{"next"},
+	})
+	if len(definitions) != 1 || definitions[0].DSLVersion != supportmatrix.NextDSLVersion {
+		t.Fatalf("feature definitions = %+v, want only DSL %q", definitions, supportmatrix.NextDSLVersion)
+	}
+}
+
 func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-warnings")
@@ -1581,7 +1636,7 @@ func TestFeatureSupportLevelsUseIssueChannel(t *testing.T) {
 				"example",
 				"Workflow",
 				"feature-level",
-				wf.CheckFeatureSupport([]wf.Feature{tc.feature}, tc.allowPreview),
+				wf.CheckFeatureSupport(wf.Definition{}, []wf.Feature{tc.feature}, tc.allowPreview),
 			)
 			if !tc.wantIssue {
 				if len(report.Issues) != 0 {

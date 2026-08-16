@@ -4,6 +4,7 @@ import type {
   TelemetryErrorSignature,
   TelemetryCurationStats,
   TelemetryGaggleStats,
+  NodeCredit,
   TelemetryReadyPool,
   TelemetryRunStats,
   TelemetryStageStats,
@@ -202,6 +203,7 @@ function InsightContent({
         left.stage.localeCompare(right.stage),
     );
   const hasOutcomes = Boolean(summary) || breakdown.length > 0;
+  const creditAssignment = creditsInScope(scope, snapshot.stats.creditAssignment);
   const hasFailureReasons =
     (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
     errorSignatures.data.result.items.length > 0;
@@ -218,6 +220,7 @@ function InsightContent({
 
   const isEmpty =
     !hasOutcomes &&
+    creditAssignment.length === 0 &&
     !usage &&
     stages.length === 0 &&
     !hasFailureReasons &&
@@ -274,6 +277,10 @@ function InsightContent({
         />
       )}
 
+      {creditAssignment.length > 0 && (
+        <CreditAssignment credits={creditAssignment} filters={snapshot.filters} />
+      )}
+
       {usage && (
         <section className="content-section">
           <div className="section-heading">
@@ -320,6 +327,72 @@ function InsightContent({
       )}
     </>
   );
+}
+
+function CreditAssignment({
+  credits,
+  filters,
+}: {
+  credits: NodeCredit[];
+  filters: TelemetryStatsOptions;
+}) {
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Credit assignment</p>
+          <h2>Highest-contributing nodes</h2>
+        </div>
+        <span className="section-count">Failure, escalation, and retry waste</span>
+      </div>
+      <div className="insight-outcomes">
+        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
+          <span>Node</span>
+          <span>Failure share</span>
+          <span>Failures</span>
+          <span>Escalations</span>
+          <span>Retry waste</span>
+        </div>
+        {credits.map((credit) => (
+          <a
+            aria-label={`View runs behind ${credit.gaggle} ${credit.workflow} ${credit.stage}: ${credit.failureRuns} failures, ${credit.escalationRuns} escalations, ${credit.retryWasteAttempts} wasted attempts`}
+            className="credit-assignment-row credit-assignment-link"
+            href={routeHash({
+              page: "runs",
+              filters: drillFilters(
+                filters,
+                credit.gaggle,
+                credit.workflow,
+                credit.kind === "stage" ? credit.stage : undefined,
+              ),
+            })}
+            key={`${credit.gaggle}:${credit.workflow}:${credit.kind}:${credit.stage}:${credit.identity ?? ""}`}
+          >
+            <span className="distribution-name">
+              <strong>{credit.stage}</strong>
+              <small>
+                {credit.kind} · {credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed runs
+              </small>
+            </span>
+            <strong>{formatRate(credit.failureShare)}</strong>
+            <strong>{credit.failureRuns}</strong>
+            <strong>{credit.escalationRuns}</strong>
+            <strong>{credit.retryWasteAttempts}</strong>
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function creditsInScope(scope: InsightScope, credits: NodeCredit[]): NodeCredit[] {
+  return credits.filter((credit) => {
+    if (scope.kind === "instance") return true;
+    if (credit.gaggle !== scope.gaggle) return false;
+    if (scope.kind === "gaggle") return true;
+    if (credit.workflow !== scope.workflow) return false;
+    return scope.kind !== "stage" || credit.stage === scope.stage;
+  });
 }
 
 function CurationHealth({

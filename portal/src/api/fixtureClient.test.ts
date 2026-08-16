@@ -79,6 +79,7 @@ function fixtures(): DaemonFixtures {
       },
     },
     telemetryStats: {
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],

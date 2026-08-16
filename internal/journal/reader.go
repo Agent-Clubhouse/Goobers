@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/readprobe"
 )
 
 // Reader is a read-only view over a run journal. `cat`/`jq`/`grep` remain the
@@ -89,6 +91,14 @@ func (r *Reader) State() (State, error) {
 // (Resume, the daemon's resume scan, `run abort`) must use this, not
 // State().Phase, which is only a checked hint.
 func (r *Reader) Phase() (RunPhase, error) {
+	if readprobe.Enabled() {
+		// Gated on the probe: this route reads the whole journal, so its cost is
+		// the file size, and a stat to learn that must not be charged to the
+		// production path. See readprobe.RunPhaseBytes (#2755).
+		if info, statErr := os.Stat(filepath.Join(r.dir, fileEvents)); statErr == nil {
+			readprobe.RecordRunPhaseBytes(int(info.Size()))
+		}
+	}
 	events, err := r.Events()
 	if err != nil {
 		return "", err
@@ -530,6 +540,10 @@ func readEventRecords(path string) ([]EventRecord, int, error) {
 		}
 		return nil, 0, fmt.Errorf("journal: read events log: %w", err)
 	}
+	return parseEventRecords(data)
+}
+
+func parseEventRecords(data []byte) ([]EventRecord, int, error) {
 	var complete, tail []byte
 	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
 		complete, tail = data[:nl+1], data[nl+1:]

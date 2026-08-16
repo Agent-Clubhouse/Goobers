@@ -7,10 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+type staticVersionRunner struct {
+	info versionInfo
+	err  error
+}
+
+func (r staticVersionRunner) Run(context.Context, string, []string, string, ...string) ([]byte, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return []byte(`{"version":"` + r.info.Version + `","commit":"` + r.info.Commit + `"}`), nil
+}
 
 type fakeProcess struct {
 	done chan error
@@ -51,6 +64,56 @@ type escalatorFunc func(context.Context, Request, string) error
 
 func (f escalatorFunc) Escalate(ctx context.Context, request Request, reason string) error {
 	return f(ctx, request, reason)
+}
+
+func TestEnsureCurrentBinaryRefreshesOlderVersion(t *testing.T) {
+	root := t.TempDir()
+	current := currentBinary(root, "linux")
+	installed := filepath.Join(root, "installed", "goobers")
+	writeTestExecutable(t, current, "old")
+	writeTestExecutable(t, installed, "new")
+	var stderr strings.Builder
+
+	err := ensureCurrentBinary(defaultSupervisorOptions(SupervisorOptions{
+		Root: root, GOOS: "linux", Stderr: &stderr,
+		runner:     staticVersionRunner{info: versionInfo{Version: "v1.2.3", Commit: "old"}},
+		executable: installed,
+		supervisor: versionInfo{Version: "v1.3.0", Commit: "new"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(current); err != nil || string(got) != "new" {
+		t.Fatalf("current binary = %q, %v; want installed binary", got, err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "refreshed supervised daemon from v1.2.3") {
+		t.Fatalf("stderr = %q, want refresh diagnosis", got)
+	}
+}
+
+func TestEnsureCurrentBinaryDoesNotReplaceNewerActiveVersion(t *testing.T) {
+	root := t.TempDir()
+	current := currentBinary(root, "linux")
+	installed := filepath.Join(root, "installed", "goobers")
+	writeTestExecutable(t, current, "new")
+	writeTestExecutable(t, installed, "old")
+	var stderr strings.Builder
+
+	err := ensureCurrentBinary(defaultSupervisorOptions(SupervisorOptions{
+		Root: root, GOOS: "linux", Stderr: &stderr,
+		runner:     staticVersionRunner{info: versionInfo{Version: "v1.3.0", Commit: "new"}},
+		executable: installed,
+		supervisor: versionInfo{Version: "v1.2.3", Commit: "old"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(current); err != nil || string(got) != "new" {
+		t.Fatalf("current binary = %q, %v; want newer active binary", got, err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "keeping existing binary") {
+		t.Fatalf("stderr = %q, want skew diagnosis", got)
+	}
 }
 
 func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
@@ -155,6 +218,8 @@ func startSupervisor(root string, launcher launcher, escalator escalator) (conte
 			Root: root, GOOS: "linux",
 			Launcher: launcher, Escalator: escalator, PollInterval: 5 * time.Millisecond,
 			DrainTimeout: 100 * time.Millisecond,
+			runner:       staticVersionRunner{info: versionInfo{Version: "v1", Commit: "old"}},
+			supervisor:   versionInfo{Version: "v1", Commit: "old"},
 		})
 	}()
 	return cancel, done

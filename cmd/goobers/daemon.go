@@ -178,11 +178,29 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// stage before the workflows are compiled, so the runner executes the
 	// gaggle's own suite in place of the stage's declared `make ci` default.
 	instance.ApplyGaggleCICommand(set)
-	// RRQ-1/#1101: fail closed at startup when a gaggle/stage requires a runner
-	// capability the runner (instance.yaml runner.capabilities) does not claim,
-	// rather than letting every schedule tick refuse the run at runtime.
+	// RRQ-1/#1101, revised for fleets (#2860): a gaggle/stage requiring a runner
+	// capability nothing claims is REPORTED at startup, not fatal.
+	//
+	// It used to return an error and kill the daemon. That was defensible when a
+	// runner was a single process whose capabilities could not change while it
+	// ran. It stopped being defensible once stages can be placed on OTHER
+	// workers: the daemon is then admitting on behalf of a fleet it cannot
+	// enumerate, and "no runner claims os=windows" may simply mean the Windows
+	// worker has not started yet. The sibling provider-capability check below
+	// says as much in its own comment — a missing runner capability CAN
+	// self-heal at runtime, which is exactly why it must not be terminal.
+	//
+	// Nothing is lost by downgrading it. localscheduler already enforces the
+	// same invariant per entry at dispatch (scheduler.go, ReasonMissingCapability):
+	// the run is refused, journalled as tick.skipped with the missing capability
+	// named, and marked Blocked in telemetry. That path is per-run, self-healing,
+	// and describes itself as the seam a multi-runner router grows from. The
+	// startup check was an eager, whole-instance, fatal copy of it.
+	//
+	// So: one unsatisfiable stage no longer takes the whole instance down, and
+	// every OTHER gaggle keeps running.
 	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
 	// capability its gaggle's connected provider does not declare — a
@@ -665,6 +683,7 @@ func buildSchedulerDefinitions(
 		// config did nothing at runtime; Scheduler.Signal fires every
 		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
+		var scheduleBackoffs []localscheduler.IdleBackoffConfig
 		var sigs []string
 		hasRepositoryWebhook := false
 		var pollPriority int32
@@ -676,6 +695,11 @@ func buildSchedulerDefinitions(
 					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
 				scheds = append(scheds, localscheduler.InLocation(schedule, loc))
+				backoff, err := localscheduler.ParseIdleBackoff(trigger.IdleBackoff)
+				if err != nil {
+					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+				}
+				scheduleBackoffs = append(scheduleBackoffs, backoff)
 			}
 			if trigger.Type == apiv1.TriggerSignal && trigger.Signal != "" {
 				sigs = append(sigs, trigger.Signal)
@@ -733,6 +757,7 @@ func buildSchedulerDefinitions(
 			Gaggle:            wf.Spec.Gaggle,
 			Readiness:         wf.Spec.Readiness,
 			Schedules:         scheds,
+			ScheduleBackoffs:  scheduleBackoffs,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
 			BacklogCounter:    backlogCounter,
@@ -866,7 +891,15 @@ func buildRuntimeRunner(
 		return finalizeTerminalRun(l, instanceLog, manager, runID)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	runnerCfg.NotifyTerminal = terminalNotifier
+	if terminalNotifier != nil {
+		circuitBreaker := runnerCfg.NotifyTerminal
+		runnerCfg.NotifyTerminal = func(runID string, phase journal.RunPhase, finalState string) error {
+			if circuitBreaker != nil {
+				_ = circuitBreaker(runID, phase, finalState)
+			}
+			return terminalNotifier(runID, phase, finalState)
+		}
+	}
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
@@ -1006,6 +1039,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
+		NoWork:         res.NoWork,
 		FailureStage:   res.FailureStage,
 		FailureCode:    res.FailureCode,
 		FailureMessage: res.FailureMessage,

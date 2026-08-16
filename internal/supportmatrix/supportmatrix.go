@@ -78,12 +78,24 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 	// and example workflow now pins 2.0, and 2.0 is a verified strict
 	// superset of 1.4. Deprecation takes effect with the first tagged
 	// release; the version stays loadable (with a DVL020 warning naming
-	// `goobers fix --to 2.0`) until at least one minor release later, per
-	// MinimumDeprecatedMinorReleases.
+	// `goobers fix --to 2.0`) until the support window closes.
+	//
+	// UNSUPPORTED AT v0.5.0, NOT v0.2.0. Two policy constants apply, and the
+	// stricter one governs: MinimumDeprecatedMinorReleases (1) is the minimum
+	// deprecation period, but MinimumSupportWindowMinorReleases (3) is how long
+	// a SUPERSEDED SUPPORTED version must stay loadable. 2.0 supersedes 1.4 in
+	// v0.2.0, so declaring 1.4 unsupported in that same release leaves a
+	// zero-release window and ValidateSupportPolicy rejects it:
+	//
+	//	DSL version "1.4" has unsupported release "v0.2.0" fewer than 3 minor
+	//	releases after DSL version "2.0" superseded it in "v0.2.0"
+	//
+	// This reddened main and every open PR the moment v0.2.0 resolved as the
+	// release baseline. v0.5.0 is the first release that satisfies the window.
 	CurrentDSLVersion: {
 		Level:            LevelDeprecated,
 		Replacement:      NextDSLVersion,
-		UnsupportedAfter: "v0.2.0",
+		UnsupportedAfter: "v0.5.0",
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 			{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
@@ -174,7 +186,7 @@ type Platform struct {
 // mirrors the `go` directive in go.mod (the language version the module targets);
 // TestMinGoVersionMatchesGoMod guards the two against drift so the declared
 // surface can never quietly diverge from what the module actually compiles with.
-const minGoVersion = "1.26.5"
+const minGoVersion = "1.26.6"
 
 // platforms is the declared OS/arch support matrix. Linux and macOS are release
 // gates (primary CI + the self-host runner + developer machines); Windows is

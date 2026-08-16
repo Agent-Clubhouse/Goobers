@@ -247,6 +247,12 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return adapterDiagnostics(out, transcript, stderr), fmt.Errorf("%w: decode result envelope: %w", ErrInvalidCompletion, err)
 	}
 	mergeAdapterMetrics(&result, out.Metrics)
+	// #2962: settle what actually went wrong before anything downstream acts
+	// on the model's own classification. A generic tool-permission refusal is
+	// a harness fault the operator can fix; organization content exclusion is
+	// a policy fact. Conflated, the former parked driving issues for humans
+	// that no human action could unstick.
+	reclassifyToolPermissionBlock(&result, out.Transcript, out.Stderr)
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
@@ -356,6 +362,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		ContextPaths:          contextPaths,
 		Timeout:               invocationTimeout(env, e.timeout),
 		MaxTranscriptBytes:    e.transcriptLimit,
+		HarnessVersion:        e.harnessVersion,
 	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced

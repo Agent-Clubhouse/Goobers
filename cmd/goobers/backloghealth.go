@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -165,24 +164,15 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 }
 
 func newBacklogHealthProvider(root string, repo providers.RepositoryRef) (backlogHealthProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"})), nil
-	default:
+	provider, err := newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
+	if err != nil {
+		return nil, err
+	}
+	healthProvider, ok := provider.(backlogHealthProvider)
+	if !ok {
 		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
 	}
+	return healthProvider, nil
 }
 
 func backlogHealthTransitions(

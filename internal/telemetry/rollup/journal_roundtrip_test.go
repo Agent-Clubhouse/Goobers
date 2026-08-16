@@ -3,12 +3,40 @@ package rollup
 import (
 	"context"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
+
+func TestJournalEventMirrorFieldSet(t *testing.T) {
+	intentionallyUnmirrored := []string{
+		"action", "branchName", "branchStatus", "complete", "completeness",
+		"decision", "gaggle", "instructionAddendum", "integrity",
+		"minimumIntegrity", "notificationReceipt", "notificationRequest",
+		"parallel", "rationale", "skipCount",
+	}
+	want := append(jsonFields(reflect.TypeOf(journalEvent{})), intentionallyUnmirrored...)
+	sort.Strings(want)
+	got := jsonFields(reflect.TypeOf(journal.Event{}))
+	if !slices.Equal(got, want) {
+		t.Errorf("journal.Event JSON fields = %v, want mirrored fields plus explicit omissions %v", got, want)
+	}
+}
+
+func jsonFields(typ reflect.Type) []string {
+	fields := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		fields = append(fields, strings.Split(typ.Field(i).Tag.Get("json"), ",")[0])
+	}
+	sort.Strings(fields)
+	return fields
+}
 
 // TestAggregateStatusLiteralsMatchRealConstants pins aggregates.go's
 // production-shaped status literals (runStatusCompleted/Failed,

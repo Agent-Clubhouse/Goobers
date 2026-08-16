@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	buildversion "github.com/goobers/goobers/internal/version"
@@ -169,6 +170,16 @@ func featureMatrixRows(features []workflow.Feature, onlyVersion string) ([]featu
 // 0 on success, 2 for a missing/unreadable root, and 1 for a config that fails
 // to load, mirroring `goobers validate`.
 func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, int) {
+	return instanceUsedFeaturesWithResolver(root, stderr, workflow.FeaturesForGoober)
+}
+
+type gooberFeatureResolver func(workflow.Definition, apiv1.GooberSpec) ([]workflow.Feature, error)
+
+func instanceUsedFeaturesWithResolver(
+	root string,
+	stderr io.Writer,
+	resolveGoober gooberFeatureResolver,
+) ([]workflow.Feature, int) {
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
@@ -202,13 +213,15 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 	}
 	for i := range set.Goobers {
 		g := &set.Goobers[i]
-		features, err := workflow.FeaturesForGoober(g.Spec)
-		if err != nil {
-			pf(stderr, "error: goober %q: %v\n", g.Name, err)
-			return nil, 1
-		}
-		for _, feature := range features {
-			addUsedFeature(used, feature)
+		for _, def := range featureDefinitionsForGoober(set.Workflows, g.Spec) {
+			features, err := resolveGoober(def, g.Spec)
+			if err != nil {
+				pf(stderr, "error: goober %q: %v\n", g.Name, err)
+				return nil, 1
+			}
+			for _, feature := range features {
+				addUsedFeature(used, feature)
+			}
 		}
 	}
 
@@ -218,6 +231,48 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, 0
+}
+
+func featureDefinitionsForGaggle(workflows []apiv1.Workflow, gaggle string) []workflow.Definition {
+	byVersion := map[string]workflow.Definition{}
+	for i := range workflows {
+		wf := &workflows[i]
+		if wf.Spec.Gaggle != gaggle {
+			continue
+		}
+		version := wf.DSLVersion
+		byVersion[version] = workflow.Definition{
+			Name: wf.Name, DSLVersion: version, Spec: wf.Spec,
+		}
+	}
+	if len(byVersion) == 0 {
+		return []workflow.Definition{{}}
+	}
+	versions := make([]string, 0, len(byVersion))
+	for version := range byVersion {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	definitions := make([]workflow.Definition, 0, len(versions))
+	for _, version := range versions {
+		definitions = append(definitions, byVersion[version])
+	}
+	return definitions
+}
+
+func featureDefinitionsForGoober(workflows []apiv1.Workflow, spec apiv1.GooberSpec) []workflow.Definition {
+	referenced := make(map[string]bool, len(spec.Workflows))
+	for _, name := range spec.Workflows {
+		referenced[name] = true
+	}
+	matching := make([]apiv1.Workflow, 0, len(spec.Workflows))
+	for i := range workflows {
+		wf := workflows[i]
+		if wf.Spec.Gaggle == spec.Gaggle && referenced[wf.Name] {
+			matching = append(matching, wf)
+		}
+	}
+	return featureDefinitionsForGaggle(matching, spec.Gaggle)
 }
 
 func addUsedFeature(used map[workflow.FeatureID]workflow.Feature, feature workflow.Feature) {

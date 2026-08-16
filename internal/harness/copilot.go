@@ -651,7 +651,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 	if mcpArg != "" {
-		argv = append(argv, "--additional-mcp-config", mcpArg)
+		argv = append(argv, "--additional-mcp-config", "@"+mcpArg)
 	}
 
 	env, err := c.credentialEnv(ctx, req)
@@ -707,6 +707,17 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		}
 		argv = wrapped
 		promptArg += shift
+	}
+
+	// #2962: record the CLI version and the effective tool/permission
+	// arguments before the session starts. When a run later reports a tool
+	// refusal, this is what distinguishes "the goober was never granted the
+	// tool" from "the CLI changed how it grants tools" — previously
+	// unanswerable after the fact, because the invocation was never kept.
+	// Only permission-relevant flags are recorded; the prompt and environment
+	// are deliberately excluded (they carry task content and credentials).
+	if err := writeCopilotInvocationDiagnostics(req, argv); err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
 	runner := c.runner()

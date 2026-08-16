@@ -50,6 +50,58 @@ validates every request; omitting `api.tls` is valid only because the daemon
 socket itself remains on loopback. Restrict the proxy route to trusted hosts
 and never let clients bypass the TLS edge.
 
+## HTTP Basic Auth at the edge is not a substitute for `api.auth.oidc`
+
+Some operators add an edge-proxy HTTP Basic Auth gate (an ingress
+`auth-basic` annotation, an nginx `auth_basic` block, and similar) in front
+of the single inbound door that serves the portal and `/api/*` together (see
+[the Kubernetes infrastructure shape](../design/k8s-infra-shape.md#5-networking)).
+This works mechanically, but it is worth being precise about *why*, because
+an earlier note (from the `spike/goobernetes` exploratory deployment) claimed
+Basic Auth "breaks" the portal because its own requests "never carry the
+credential." That claim does not hold up under reproduction and is corrected
+here.
+
+**Reproduced:** running the built `goobers dashboard` behind a minimal
+Go `httputil.ReverseProxy` that requires HTTP Basic Auth on every path shows
+that with no `Authorization` header, `/`, `/api/v1/health`, and the
+long-lived `/api/v1/events` stream all return `401` with a
+`WWW-Authenticate: Basic` challenge, uniformly. With the credential supplied,
+all three succeed — including the SSE stream, which keeps delivering journal
+events through the proxy for the life of the connection.
+
+**Why:** the portal's data client (`portal/src/api/httpClient.ts`) issues
+only relative, same-origin `fetch()` requests for both ordinary reads and
+the event stream — it does not use the native `EventSource` API (which
+cannot attach custom headers) and never sets an explicit `credentials`
+option. `fetch()`'s default credentials mode, `"same-origin"`, includes the
+browser's cached HTTP Basic Auth credential automatically once the browser
+has answered the native prompt for the page itself, independent of that
+default. That native prompt appears only for the top-level page load; a
+background `fetch()` that later receives a `401` does not raise another
+prompt, it simply resolves as a `401` to the app. Nothing in the request
+path strips the header either: neither Go's `httputil.ReverseProxy` (used by
+both `goobers dashboard`'s own daemon-attach proxy and this style of edge
+proxy) nor nginx's `auth_basic` module removes `Authorization` before
+forwarding upstream.
+
+**What can actually go wrong, and what Basic Auth does not give you:**
+
+- Protecting only part of the origin (for example an ingress rule that
+  applies `auth-basic` to `/` but not `/api/`, or that uses a different
+  realm per path) produces inconsistent `401`s, because the browser's
+  credential cache is scoped per origin+realm. Apply the gate to the whole
+  host, matching the single-inbound-door shape above, not to a subset of
+  paths.
+- Basic Auth at the edge is a network-level gate only. It does not give the
+  daemon any notion of *who* is calling — without `api.auth.oidc`
+  configured, the daemon still authorizes every request (`NullAuthenticator`
+  / tier-1 `AllowAll`). Use it, if at all, to keep unauthenticated traffic
+  off a URL that is otherwise reachable; use `api.auth.oidc` (this guide)
+  when the daemon itself needs per-user identity and role checks.
+- How the portal's UI reports a `401`/`403` it does receive (rather than
+  whether the credential reaches the daemon) is tracked separately.
+
 ## Register the OIDC applications
 
 Configure the identity provider with:
@@ -124,12 +176,20 @@ VITE_OIDC_REDIRECT_URI=https://goobers.example.com \
 npm --prefix portal run build
 ```
 
-The current `goobers dashboard` attach proxy cannot supply a bearer token to an
+The `goobers dashboard` attach proxy still cannot supply a bearer token to an
 authenticated running daemon, and the portal data client does not yet attach
 the token produced by the authentication seam. Do not treat these build
-variables as a working remote-portal access control. Keep the dashboard
-loopback-only and use a client that sends a bearer token in the
-`Authorization` header when accessing an OIDC-protected daemon.
+variables as a working access control for that attached-to-a-live-daemon
+case — it stays loopback-only; stop the daemon or query its API directly if
+you need authenticated access to it through the portal.
+
+The standalone dashboard (no live `goobers up` daemon reachable) is
+different: `goobers dashboard --listen <host:port>` accepts a non-loopback
+host once `api.auth.oidc` is configured, gated the same way `api.listen` is
+(SEC-043) — there is no insecure override, and the standalone handler
+validates the same bearer tokens the daemon API does. Loopback stays the
+default; `--listen` to a non-loopback host without `api.auth` configured is
+refused outright.
 
 ## Verify authentication and authorization
 

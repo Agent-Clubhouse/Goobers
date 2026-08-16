@@ -21,6 +21,10 @@ resources:
   - api-service.yaml
   - api-ingress-example.yaml
   - journal-pvc.yaml
+  # Drop this (and the worker's --blob-store flag, mount, and volume) if you
+  # run a single worker. It exists so a run's stages can be served by more
+  # than one.
+  - blobs-pvc.yaml
 
 # Image parameterization (§1: a registry the cluster can pull from). Containers
 # reference the bare name `goobers`; point this at your registry — no real

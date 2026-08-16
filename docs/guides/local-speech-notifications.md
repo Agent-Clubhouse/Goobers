@@ -65,4 +65,6 @@ recorded as failures.
 Each attempt appends `started` and `delivered` or `failed` receipts to
 `scheduler/speech-receipts.jsonl`. Receipts contain the notification ID,
 engine, timestamps, duration, status, and a bounded single-line error. They do
-not contain the spoken text.
+not contain the spoken text. The receipt log is capped at 1 MiB by default; the
+existing contents are discarded before the next receipt would exceed that
+limit.

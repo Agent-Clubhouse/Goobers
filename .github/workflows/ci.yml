@@ -12,10 +12,11 @@ name: CI
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
 #   shipped  shipped-workflow contract suite
 #
-# plus deadcode, and the dedicated conformance, windows-smoke, integration,
-# vulnerability-scan, sandbox, and linux-validation jobs. Coverage of the merge
-# tier is unchanged: the four groups are a disjoint, exhaustive partition of the
-# checks the monolith used to run serially (asserted by test/ci's group tests).
+# plus deadcode, and the dedicated deploy-reference, conformance, windows-smoke,
+# integration, vulnerability-scan, sandbox, and linux-validation jobs. Coverage
+# of the merge tier is unchanged: the four groups are a disjoint, exhaustive
+# partition of the checks the monolith used to run serially (asserted by
+# test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
 # full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
@@ -28,11 +29,10 @@ name: CI
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
 #
-# Pull requests and merge groups run that complete matrix. A push to main has
-# already passed the merge-group gate, so it runs only `checks` against the
-# exact landed SHA and `unit-macos`, which publishes the canonical main-branch
-# timing and coverage artifacts used for trend comparisons. Keeping this
-# post-merge lane small avoids paying for the full matrix twice.
+# Pull requests and merge groups run that complete matrix. A push to main also
+# validates the exact landed SHA with checks, lint, the Linux race shards, the
+# macOS behavioral suite, shipped-workflow contracts, and the Windows gate.
+# Failures on the landed tree are automatically escalated as critical issues.
 
 on:
   push:
@@ -137,6 +137,22 @@ jobs:
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
 
+  deploy-reference:
+    name: deploy reference manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Render and schema-check reference manifests
+        run: make deploy-validate
+
   # golangci-lint (staticcheck/govet/revive/...) per target GOOS, all on cheap
   # Linux runners. golangci-lint honours GOOS, so it sees each platform's
   # build-tagged sources (the darwin-only files internal/{sandbox,executor},
@@ -149,7 +165,6 @@ jobs:
   # branches).
   lint:
     name: lint (${{ matrix.goos }})
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -256,7 +271,6 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -395,7 +409,6 @@ jobs:
   # shipped-workflows step and the separate non-race shipped-workflows job.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -559,7 +572,6 @@ jobs:
   # accident — is tracked separately in #2791.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
-    if: ${{ github.event_name != 'push' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -618,6 +630,9 @@ jobs:
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
+      - name: Windows service transitions
+        run: go test ./internal/winsvc
+
       # Both packages run whole rather than by named test: each costs well
       # under a second on Windows, so a name allowlist here buys no runtime
       # and only creates a way for a new test to silently miss the platform.
@@ -653,6 +668,12 @@ jobs:
 
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+
+      # Named rather than the whole package: the Windows-only regression guard
+      # verifies that legacy migrations create an NTFS junction without
+      # requiring the symlink privilege (#2862).
+      - name: Windows instance runtime alias
+        run: go test ./internal/instance -run '^TestCreateLegacyRuntimeAliasCreatesJunction$'
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
@@ -702,8 +723,11 @@ jobs:
       # model and intake store handles used to leak: harmless on POSIX, but
       # on Windows the open handles keep the temp dir's *.db files locked and
       # the test's own cleanup then fails (#2031).
+      # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
+      # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
+      # Windows must use the CLI's embedded time/tzdata import (#2863).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
@@ -745,12 +769,13 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
+          DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
@@ -772,6 +797,7 @@ jobs:
             fi
           }
           check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
+          check "deploy reference manifests"          "$DEPLOY_REFERENCE_RESULT"
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
@@ -851,3 +877,64 @@ jobs:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
           if-no-files-found: warn
+
+  escalate-main-failure:
+    name: escalate failed main validation
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'push' &&
+        (
+          needs.checks.result == 'failure' ||
+          needs.lint.result == 'failure' ||
+          needs.unit.result == 'failure' ||
+          needs.unit-macos.result == 'failure' ||
+          needs.shipped.result == 'failure' ||
+          needs.windows-smoke.result == 'failure'
+        )
+      }}
+    needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update critical main failure
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = "CI: main branch validation failed";
+            const runURL = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Validation of the tree landed on \`${context.sha}\` failed.`,
+              "",
+              `Run: ${runURL}`,
+              "",
+              "This issue was filed automatically by the main-push CI escalation.",
+            ].join("\n");
+            const {data: issues} = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: "goobers:critical",
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find(
+              issue => !issue.pull_request && issue.title === title,
+            );
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["goobers:critical", "type:bug", "area:workflows"],
+            });

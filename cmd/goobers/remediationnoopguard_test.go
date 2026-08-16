@@ -143,7 +143,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	holder, err := lock.Acquire(filepath.Join(l.SchedulerDir(), claimLockFileName))
+	holder, err := lock.TryAcquire(filepath.Join(l.SchedulerDir(), claimLockFileName))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -791,6 +791,20 @@ export const goWireFixtures = {
         "costUSD": 1.5
       }
     ],
+    "creditAssignment": [
+      {
+        "gaggle": "core",
+        "workflow": "implementation",
+        "kind": "gate",
+        "stage": "review",
+        "identity": "sha256:reviewer",
+        "routedRuns": 4,
+        "failureRuns": 1,
+        "failureShare": 0.25,
+        "escalationRuns": 1,
+        "retryWasteAttempts": 2
+      }
+    ],
     "curation": {
       "everRecorded": false,
       "runs": 0,

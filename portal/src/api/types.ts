@@ -620,8 +620,22 @@ export interface TelemetryStatsResult {
   stages: TelemetryStageStats[];
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
+  creditAssignment: NodeCredit[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+}
+
+export interface NodeCredit {
+  gaggle: string;
+  workflow: string;
+  kind: "stage" | "gate";
+  stage: string;
+  identity?: string;
+  routedRuns: number;
+  failureRuns: number;
+  failureShare: number;
+  escalationRuns: number;
+  retryWasteAttempts: number;
 }
 
 export interface TelemetryCurationStats {

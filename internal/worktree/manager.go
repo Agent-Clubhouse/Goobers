@@ -55,11 +55,12 @@ type Manager struct {
 	// Windows. Defaults to os.Lstat.
 	lstat func(string) (os.FileInfo, error)
 
-	gaggle        string
-	usageObserver UsageObserver
-	diskUsage     func(string) (int64, error)
-	gitEnv        func(context.Context, string) ([]string, error)
-	remoteGitGate func(context.Context, string) error
+	gaggle         string
+	writerIdentity string
+	usageObserver  UsageObserver
+	diskUsage      func(string) (int64, error)
+	gitEnv         func(context.Context, string) ([]string, error)
+	remoteGitGate  func(context.Context, string) error
 
 	// partialClone provisions NEW mirrors as blobless partial clones and
 	// narrows their refresh refspec — see WithPartialClone. Never set for an
@@ -223,6 +224,13 @@ func WithPinnedProcessKiller(kill func(string) error) ManagerOption {
 		if kill != nil {
 			m.pinnedProcessKiller = kill
 		}
+	}
+}
+
+// WithWriterIdentity records a host-meaningful writer on each worktree marker.
+func WithWriterIdentity(identity string) ManagerOption {
+	return func(m *Manager) {
+		m.writerIdentity = identity
 	}
 }
 

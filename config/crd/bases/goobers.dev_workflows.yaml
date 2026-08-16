@@ -748,6 +748,21 @@ spec:
                         unavailable.
                       minLength: 1
                       type: string
+                    idleBackoff:
+                      description: |-
+                        IdleBackoff reduces no-work polling while preserving the configured
+                        schedule whenever work is available. Omitted uses the default policy.
+                      properties:
+                        ceiling:
+                          description: Ceiling defaults to fifteen minutes.
+                          type: string
+                        enabled:
+                          description: Enabled defaults to true.
+                          type: boolean
+                        floor:
+                          description: Floor defaults to one minute.
+                          type: string
+                      type: object
                     labelPredicate:
                       description: |-
                         LabelPredicate is a CEL expression over the item's label set. The only
@@ -802,6 +817,8 @@ spec:
                   x-kubernetes-validations:
                   - message: trustLabel is supported only for type=backlog-item
                     rule: '!has(self.trustLabel) || self.type == ''backlog-item'''
+                  - message: idleBackoff is supported only for type=schedule
+                    rule: '!has(self.idleBackoff) || self.type == ''schedule'''
                 minItems: 1
                 type: array
                 x-kubernetes-validations:

@@ -1,5 +1,6 @@
 import {
   DaemonApiError,
+  DaemonAuthError,
   DaemonClientError,
   DaemonUnavailableError,
   MalformedResponseError,
@@ -558,7 +559,18 @@ function diagnosticStatus(
   return abortKind ?? "error";
 }
 
-async function apiError(response: Response): Promise<DaemonApiError | MalformedResponseError> {
+async function apiError(
+  response: Response,
+): Promise<DaemonApiError | DaemonAuthError | MalformedResponseError> {
+  // A 401/403 is classified from the status alone, before the body is ever
+  // read. An intermediary in front of the daemon (a reverse proxy, an SSO
+  // gateway) can reject a request with an HTML login page or plain text
+  // instead of the daemon's JSON error envelope; that must still be
+  // reported as an auth failure rather than a malformed response or, once
+  // it unwinds through the caller, a misleading "daemon unavailable" (#2916).
+  if (response.status === 401 || response.status === 403) {
+    return new DaemonAuthError(response.status);
+  }
   let value: unknown;
   try {
     value = JSON.parse(await response.text());

@@ -51,6 +51,9 @@ var (
 	activeScanOpens    atomic.Uint64
 	instanceLogAppends atomic.Uint64
 	instanceLogBytes   atomic.Uint64
+	instanceTailReads  atomic.Uint64
+	instanceTailBytes  atomic.Uint64
+	runPhaseBytes      atomic.Uint64
 )
 
 // Snapshot is a point-in-time reading of the counters.
@@ -83,6 +86,18 @@ type Snapshot struct {
 	// must be the byte budget.
 	InstanceLogAppends uint64 `json:"instanceLogAppends"`
 	InstanceLogBytes   uint64 `json:"instanceLogBytesRead"`
+	// InstanceTailReads counts incremental instance-journal reads, and
+	// InstanceTailBytes the bytes read after the remembered cursor.
+	InstanceTailReads uint64 `json:"instanceTailReads"`
+	InstanceTailBytes uint64 `json:"instanceTailBytesRead"`
+	// RunPhaseBytes counts the journal bytes read to reconstruct run phases,
+	// by whichever route the caller took.
+	//
+	// It is the counter behind #2755: the daemon's boot reconciliation used to
+	// read every byte of every run journal ever written to find the handful
+	// still running, and "opened a journal" alone cannot tell that apart from
+	// reading its last kilobyte. Opens stay flat either way — only bytes move.
+	RunPhaseBytes uint64 `json:"runPhaseBytes"`
 }
 
 // Enable turns recording on and zeroes the counters, so a caller measuring a
@@ -103,6 +118,9 @@ func Reset() {
 	activeScanOpens.Store(0)
 	instanceLogAppends.Store(0)
 	instanceLogBytes.Store(0)
+	instanceTailReads.Store(0)
+	instanceTailBytes.Store(0)
+	runPhaseBytes.Store(0)
 }
 
 // Take returns the current counter values.
@@ -113,6 +131,9 @@ func Take() Snapshot {
 		ActiveScanOpens:    activeScanOpens.Load(),
 		InstanceLogAppends: instanceLogAppends.Load(),
 		InstanceLogBytes:   instanceLogBytes.Load(),
+		InstanceTailReads:  instanceTailReads.Load(),
+		InstanceTailBytes:  instanceTailBytes.Load(),
+		RunPhaseBytes:      runPhaseBytes.Load(),
 	}
 }
 
@@ -126,12 +147,27 @@ func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
 		InstanceLogAppends: s.InstanceLogAppends - earlier.InstanceLogAppends,
 		InstanceLogBytes:   s.InstanceLogBytes - earlier.InstanceLogBytes,
+		InstanceTailReads:  s.InstanceTailReads - earlier.InstanceTailReads,
+		InstanceTailBytes:  s.InstanceTailBytes - earlier.InstanceTailBytes,
+		RunPhaseBytes:      s.RunPhaseBytes - earlier.RunPhaseBytes,
 	}
 }
 
 // Zero reports whether every counter in the snapshot is zero — the shape most
 // §14 assertions take ("this bounded page did no journal work at all").
 func (s Snapshot) Zero() bool { return s == Snapshot{} }
+
+// Enabled reports whether recording is on. Instrumentation that costs more
+// than an atomic add — a stat, an allocation — must gate on this so the
+// production path keeps paying only the one relaxed load the package promises.
+func Enabled() bool { return enabled.Load() }
+
+// RecordRunPhaseBytes records journal bytes read to reconstruct a run's phase.
+func RecordRunPhaseBytes(bytesRead int) {
+	if bytesRead > 0 && enabled.Load() {
+		runPhaseBytes.Add(uint64(bytesRead))
+	}
+}
 
 // RecordJournalOpen records one run journal opened by a read path.
 func RecordJournalOpen() {
@@ -162,6 +198,16 @@ func RecordInstanceLogAppend(bytesRead int) {
 		instanceLogAppends.Add(1)
 		if bytesRead > 0 {
 			instanceLogBytes.Add(uint64(bytesRead))
+		}
+	}
+}
+
+// RecordInstanceTailRead records one incremental instance-journal read.
+func RecordInstanceTailRead(bytesRead int) {
+	if enabled.Load() {
+		instanceTailReads.Add(1)
+		if bytesRead > 0 {
+			instanceTailBytes.Add(uint64(bytesRead))
 		}
 	}
 }

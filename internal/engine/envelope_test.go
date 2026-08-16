@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -126,6 +127,9 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 
 	if captured.TaskID != in.RunID+":implement" {
 		t.Errorf("taskId = %q, want %q", captured.TaskID, in.RunID+":implement")
+	}
+	if captured.Goober != "coder" {
+		t.Errorf("goober = %q, want %q — a Temporal worker has only the envelope to route the agentic seam on (#2904)", captured.Goober, "coder")
 	}
 	if captured.Workspace == "" {
 		t.Fatal("envelope workspace is empty — the closed invocation schema requires it")
@@ -474,6 +478,9 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if want := []string{"agent:model"}; !reflect.DeepEqual(captured.Capabilities, want) {
 		t.Errorf("gate capabilities = %v, want %v (the reviewer goober's pinned grants)", captured.Capabilities, want)
 	}
+	if captured.Goober != "reviewer" {
+		t.Errorf("gate goober = %q, want %q (AgenticGate.Goober, #2904)", captured.Goober, "reviewer")
+	}
 	if captured.Goal != "gate: review" {
 		t.Errorf("gate goal = %q, want %q (local-runner naming)", captured.Goal, "gate: review")
 	}
@@ -661,12 +668,57 @@ func TestAutomatedGateGetsNoWorkspace(t *testing.T) {
 	if gateEnv.Workspace != "" {
 		t.Errorf("automated gate workspace = %q, want empty (#112: no worktree for pure checks)", gateEnv.Workspace)
 	}
+	if gateEnv.Goober != "" {
+		t.Errorf("automated gate goober = %q, want empty — automated gates run no agent", gateEnv.Goober)
+	}
 	if len(gateEnv.Capabilities) != 0 {
 		t.Errorf("automated gate capabilities = %v, want none", gateEnv.Capabilities)
 	}
 	provisioned := workspaces.provisioned()
 	if len(provisioned) != 1 || provisioned[0].Stage != "implement" {
 		t.Errorf("workspace requests = %+v, want only the task's", provisioned)
+	}
+}
+
+func TestAutomatedGateRejectsReservedSubjectOutputs(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a result",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "check",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "check",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort},
+		}},
+	}
+	called := false
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{
+		Det: &capturingDeterministic{result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Error:   &apiv1.ErrorInfo{Code: "actual", Message: "failed"},
+			Outputs: map[string]interface{}{gate.InputKeyStatus: "success"},
+		}},
+		Auto: automatedFunc(func(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+			called = true
+			return gate.OutcomePass, nil
+		}),
+		Workspaces: testWorkspaces(t),
+	})
+	env.ExecuteWorkflow(Run, runInput("reserved-output", spec))
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "reserved automated input keys: status") {
+		t.Fatalf("workflow error = %v, want reserved status output diagnostic", err)
+	}
+	if called {
+		t.Fatal("automated evaluator was called with a reserved subject output")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -940,6 +941,32 @@ func fixtureMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func TestRunnerAutomatedGateRejectsReservedSubjectOutputs(t *testing.T) {
+	const runID = "run-reserved-output"
+	auto := &envelopeCapturingAutomated{}
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":implement": {
+			status:    apiv1.ResultFailure,
+			errorInfo: &apiv1.ErrorInfo{Code: "actual", Message: "failed"},
+			outputs:   map[string]interface{}{gate.InputKeyStatus: "success"},
+		},
+	}, auto)
+
+	_, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reserved automated input keys: status") {
+		t.Fatalf("Start error = %v, want reserved status output diagnostic", err)
+	}
+	if auto.env.TaskID != "" {
+		t.Fatal("automated evaluator was called with a reserved subject output")
+	}
+}
+
 func escalationParkingMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
 	spec := apiv1.WorkflowSpec{
@@ -1211,6 +1238,9 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	if res.FinalState != "query-backlog" {
 		t.Fatalf("finalState = %q, want query-backlog (curate must never have become the final state)", res.FinalState)
 	}
+	if !res.NoWork {
+		t.Fatal("single-stage no-work run was not exposed to the scheduler")
+	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		t.Fatal(err)
@@ -1223,6 +1253,31 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
 			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
 		}
+	}
+}
+
+func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
+	const runID = "run-multi-stage-no-work"
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":query-backlog": {status: apiv1.ResultSuccess},
+		runID + ":curate":        {status: apiv1.ResultNoWork, summary: "nothing to curate"},
+	}, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: noWorkFixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if res.NoWork {
+		t.Fatal("productive multi-stage run was exposed to the scheduler as an idle poll")
 	}
 }
 
@@ -2924,6 +2979,43 @@ func TestParseBlockedBy(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("parseBlockedBy = %v, want %v", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// TestFilterSelfBlockers pins #2961: a driving item can never be its own
+// blocker, so a self-reference is dropped before it can be persisted as a
+// one-node self-edge that the cycle detector then parks as a circular
+// dependency. Normalization matches "#441" and "owner/repo#441" against item
+// 441, while a PR item is never self-blocked by the like-numbered issue.
+func TestFilterSelfBlockers(t *testing.T) {
+	cases := []struct {
+		name        string
+		blockers    []string
+		itemID      string
+		wantKept    []string
+		wantDropped []string
+	}{
+		{"self only", []string{"411"}, "411", nil, []string{"411"}},
+		{"self among real blockers", []string{"411", "512"}, "411", []string{"512"}, []string{"411"}},
+		{"no self reference", []string{"512", "513"}, "411", []string{"512", "513"}, nil},
+		{"hash prefixed blocker", []string{"#411"}, "411", nil, []string{"#411"}},
+		{"repository qualified blocker", []string{"acme/web#411"}, "411", nil, []string{"acme/web#411"}},
+		{"hash prefixed item", []string{"411"}, "#411", nil, []string{"411"}},
+		{"empty item id keeps everything", []string{"411"}, "", []string{"411"}, nil},
+		{"pr item not self blocked by like numbered issue", []string{"536"}, "pr/536", []string{"536"}, nil},
+		{"pr item self reference", []string{"pr/536"}, "pr/536", nil, []string{"pr/536"}},
+		{"no blockers", nil, "411", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kept, dropped := FilterSelfBlockers(tc.blockers, tc.itemID)
+			if !slices.Equal(kept, tc.wantKept) {
+				t.Errorf("kept = %v, want %v", kept, tc.wantKept)
+			}
+			if !slices.Equal(dropped, tc.wantDropped) {
+				t.Errorf("dropped = %v, want %v", dropped, tc.wantDropped)
 			}
 		})
 	}
@@ -4661,6 +4753,10 @@ func (c *blockingCommenter) UpdateWorkItem(ctx context.Context, _ providers.Upda
 	return providers.WorkItem{}, nil
 }
 
+func (*blockingCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
 type recordingCommenter struct {
 	requests  []providers.UpdateWorkItemRequest
 	persisted []providers.UpdateWorkItemRequest
@@ -4683,6 +4779,10 @@ func (c *recordingCommenter) UpdateWorkItem(_ context.Context, req providers.Upd
 		c.persisted = append(c.persisted, req)
 	}
 	return providers.WorkItem{}, c.err
+}
+
+func (c *recordingCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
 }
 
 type fixedOutcomeAutomated string

@@ -116,6 +116,21 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if snapshot.Release != "v0.1.0" || len(snapshot.Features) != len(workflow.AllFeatures()) {
 		t.Errorf("snapshot metadata = release %q, %d features", snapshot.Release, len(snapshot.Features))
 	}
+	snapshotIDs := featureIDs(snapshot.Features)
+	for _, id := range []workflow.FeatureID{
+		"workflow.spec.runControls",
+		"trigger.backlog-item.trustLabel",
+		"trigger.labelPredicate",
+		"trigger.fieldPredicate",
+		"task.minimumIntegrity",
+		"task.contextFrom",
+		"task.policyActions",
+		"task.inputs.fieldOrder",
+	} {
+		if !slices.Contains(snapshotIDs, id) {
+			t.Errorf("%s missing %q", featureSnapshotFile, id)
+		}
+	}
 	supportSnapshot, err := readSupportSnapshot(snapshotPaths[1])
 	if err != nil {
 		t.Fatal(err)

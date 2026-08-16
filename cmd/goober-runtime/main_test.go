@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/nexus-rpc/sdk-go/nexus"
@@ -19,6 +21,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gooberruntime"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -31,7 +34,10 @@ func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
 	t.Setenv("GOOBERS_WORKSPACE_ROOT", "/work")
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober --json")
 
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.temporalHostPort != "temporal:7233" {
 		t.Errorf("temporalHostPort = %q", cfg.temporalHostPort)
 	}
@@ -50,21 +56,88 @@ func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngineConfigSupportsTemporalCompatibilityAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want instance.EngineConfig
+	}{
+		{
+			name: "goobers aliases",
+			env: map[string]string{
+				"GOOBERS_TEMPORAL_ADDRESS":    "temporal:7233",
+				"GOOBERS_TEMPORAL_TASK_QUEUE": "runtime",
+			},
+			want: instance.EngineConfig{HostPort: "temporal:7233", Namespace: instance.DefaultTemporalNamespace, TaskQueue: "runtime"},
+		},
+		{
+			name: "temporal aliases",
+			env: map[string]string{
+				"TEMPORAL_ADDRESS":    "temporal:7233",
+				"TEMPORAL_NAMESPACE":  "production",
+				"TEMPORAL_TASK_QUEUE": "runtime",
+			},
+			want: instance.EngineConfig{HostPort: "temporal:7233", Namespace: "production", TaskQueue: "runtime"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			got, err := runtimeEngineConfig("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("runtimeEngineConfig = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigFromEnvUsesTaskQueueDefault(t *testing.T) {
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
 
-	cfg := configFromEnv()
-	if cfg.taskQueue != defaultTaskQueue {
-		t.Errorf("taskQueue = %q, want %q", cfg.taskQueue, defaultTaskQueue)
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.taskQueue != instance.DefaultEngineTaskQueue {
+		t.Errorf("taskQueue = %q, want %q", cfg.taskQueue, instance.DefaultEngineTaskQueue)
 	}
 	if cfg.temporalHostPort != "127.0.0.1:7233" {
 		t.Errorf("temporalHostPort = %q, want default hostport", cfg.temporalHostPort)
 	}
 }
 
+func TestConfigFromEnvLoadsInstanceEngine(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOOBERS_INSTANCE_ROOT", root)
+	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
+	if err := os.WriteFile(instance.NewLayout(root).ConfigFile(), []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: temporal:7233
+  namespace: goobers
+  taskQueue: runtime
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.temporalHostPort != "temporal:7233" || cfg.temporalNamespace != "goobers" || cfg.taskQueue != "runtime" {
+		t.Fatalf("engine config = %+v", cfg)
+	}
+}
+
 func TestRunRequiresHarnessCommand(t *testing.T) {
 	called := false
-	restore := replaceWorkerRunner(func(config, invoke.Goober) (runtimeWorker, error) {
+	restore := replaceWorkerRunner(func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error) {
 		called = true
 		return &fakeRuntimeWorker{}, nil
 	})
@@ -86,9 +159,11 @@ func TestRunStartsWorkerAndStopsOnContextCancellation(t *testing.T) {
 	fw := &fakeRuntimeWorker{onStart: cancel}
 	var gotConfig config
 	var gotGoober invoke.Goober
-	restore := replaceWorkerRunner(func(cfg config, goober invoke.Goober) (runtimeWorker, error) {
+	var gotScrubber journal.Scrubber
+	restore := replaceWorkerRunner(func(cfg config, goober invoke.Goober, scrubber journal.Scrubber) (runtimeWorker, error) {
 		gotConfig = cfg
 		gotGoober = goober
+		gotScrubber = scrubber
 		return fw, nil
 	})
 	defer restore()
@@ -101,6 +176,9 @@ func TestRunStartsWorkerAndStopsOnContextCancellation(t *testing.T) {
 	}
 	if _, ok := gotGoober.(*gooberruntime.Runtime); !ok {
 		t.Fatalf("goober = %T, want *gooberruntime.Runtime", gotGoober)
+	}
+	if gotScrubber == nil {
+		t.Fatal("worker runner did not receive the runtime scrubber")
 	}
 	if fw.starts != 1 {
 		t.Errorf("starts = %d, want 1", fw.starts)
@@ -117,7 +195,7 @@ func TestRunClosesWorkerWhenStartFails(t *testing.T) {
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
 	startErr := errors.New("worker unavailable")
 	fw := &fakeRuntimeWorker{startErr: startErr}
-	restore := replaceWorkerRunner(func(config, invoke.Goober) (runtimeWorker, error) {
+	restore := replaceWorkerRunner(func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error) {
 		return fw, nil
 	})
 	defer restore()
@@ -162,11 +240,14 @@ func TestGooberRuntimePreparerRegistersADOCredential(t *testing.T) {
 }
 
 func TestRegisterEngineWiresGooberActivities(t *testing.T) {
+	const secret = "registered-exact-secret"
 	fw := &fakeTemporalWorker{}
-	goober := fakeGoober{}
+	goober := resultGoober{summary: "result contains " + secret}
 	scheduleService := &fakeWorkflowService{}
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
 
-	registerEngine(fw, fakeTemporalClient{service: scheduleService}, goober)
+	registerEngine(fw, fakeTemporalClient{service: scheduleService}, goober, scrubber)
 
 	if len(fw.workflows) != 4 {
 		t.Fatalf("registered workflows = %d, want 4", len(fw.workflows))
@@ -184,9 +265,19 @@ func TestRegisterEngineWiresGooberActivities(t *testing.T) {
 	if activities.ScheduleService != scheduleService {
 		t.Fatal("registered engine activities did not receive the Temporal schedule service")
 	}
+	activities.Workspaces = runtimeTestWorkspaces{path: t.TempDir()}
+	result, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
+		RunID: "run-1", TaskID: "run-1:implement",
+	}, "")
+	if err != nil {
+		t.Fatalf("InvokeGoober: %v", err)
+	}
+	if strings.Contains(result.Summary, secret) || !strings.Contains(result.Summary, journal.Redacted) {
+		t.Fatalf("engine activity result was not exact-value scrubbed: %q", result.Summary)
+	}
 }
 
-func replaceWorkerRunner(fn func(config, invoke.Goober) (runtimeWorker, error)) func() {
+func replaceWorkerRunner(fn func(config, invoke.Goober, journal.Scrubber) (runtimeWorker, error)) func() {
 	prev := newWorkerRunner
 	newWorkerRunner = fn
 	return func() { newWorkerRunner = prev }
@@ -220,15 +311,32 @@ func (f *fakeRuntimeWorker) Close() {
 	f.closes++
 }
 
-type fakeGoober struct{}
-
-func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	return apiv1.ResultEnvelope{}, nil
+type resultGoober struct {
+	summary string
 }
 
-func (fakeGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (g resultGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: g.summary}, nil
+}
+
+func (resultGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	return apiv1.Verdict{}, nil
 }
+
+type runtimeTestWorkspaces struct {
+	path string
+}
+
+func (w runtimeTestWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
+	return runtimeTestWorkspace(w), nil
+}
+
+type runtimeTestWorkspace struct {
+	path string
+}
+
+func (w runtimeTestWorkspace) Path() string               { return w.path }
+func (runtimeTestWorkspace) Remove(context.Context) error { return nil }
 
 type fakeTemporalWorker struct {
 	workflows  []interface{}
