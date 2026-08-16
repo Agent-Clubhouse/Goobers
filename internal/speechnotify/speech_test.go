@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 type memoryRecorder struct {
@@ -318,6 +321,64 @@ func TestFileRecorderBoundsReceiptLog(t *testing.T) {
 	}
 	if got.NotificationID != receipt.NotificationID {
 		t.Fatalf("retained notification ID = %q, want %q", got.NotificationID, receipt.NotificationID)
+	}
+}
+
+func TestFileRecorderBoundsReceiptLogAcrossConcurrentRecorders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduler", ReceiptFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, receiptFileMaxSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := platformlock.TryAcquire(path + receiptLockSuffix)
+	if err != nil {
+		t.Fatalf("hold receipt lock: %v", err)
+	}
+
+	const recorderCount = 8
+	start := make(chan struct{})
+	results := make(chan error, recorderCount)
+	for i := range recorderCount {
+		recorder := NewFileRecorder(path)
+		go func() {
+			<-start
+			results <- recorder.Record(context.Background(), Receipt{
+				Version:        receiptVersion,
+				NotificationID: strings.Repeat("x", 4096) + fmt.Sprint(i),
+				Engine:         EngineSay,
+				Status:         StatusDelivered,
+			})
+		}()
+	}
+	close(start)
+	select {
+	case err := <-results:
+		t.Fatalf("Record completed without acquiring shared lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := held.Release(); err != nil {
+		t.Fatalf("release receipt lock: %v", err)
+	}
+	for range recorderCount {
+		if err := <-results; err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > receiptFileMaxSize {
+		t.Fatalf("receipt log size = %d, want at most %d", len(raw), receiptFileMaxSize)
+	}
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		var receipt Receipt
+		if err := json.Unmarshal([]byte(line), &receipt); err != nil {
+			t.Fatalf("decode receipt: %v", err)
+		}
 	}
 }
 
