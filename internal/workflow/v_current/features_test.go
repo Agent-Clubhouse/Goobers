@@ -166,6 +166,46 @@ func TestStandardFeaturesAreGA(t *testing.T) {
 	}
 }
 
+func TestFeaturesForWorkflowIncludesContractFields(t *testing.T) {
+	def := Definition{
+		DSLVersion: DSLVersion,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:      "test",
+			Triggers:    []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, TrustLabel: "approved", LabelPredicate: `"ready" in labels`, FieldPredicate: `fields["number"] > 0`}},
+			RunControls: &apiv1.RunControls{MaxRepasses: 2},
+			Start:       "query",
+			Tasks: []apiv1.Task{{
+				Name:             "query",
+				Type:             apiv1.TaskDeterministic,
+				Goal:             "query backlog",
+				Inputs:           map[string]string{"fieldOrder": "number:asc"},
+				MinimumIntegrity: apiv1.IntegrityMaintainer,
+				ContextFrom:      []string{"claim"},
+				PolicyActions:    []string{"claim-item"},
+			}},
+		},
+	}
+	features, err := FeaturesForWorkflow(def)
+	if err != nil {
+		t.Fatalf("FeaturesForWorkflow: %v", err)
+	}
+	got := featureIDs(features)
+	for _, id := range []FeatureID{
+		featureWorkflowRunControls,
+		featureTriggerBacklogItemTrustLabel,
+		featureTriggerLabelPredicate,
+		featureTriggerFieldPredicate,
+		featureTaskInputFieldOrder,
+		featureTaskMinimumIntegrity,
+		featureTaskContextFrom,
+		featureTaskPolicyActions,
+	} {
+		if !slices.Contains(got, id) {
+			t.Errorf("FeaturesForWorkflow omitted %q: %v", id, got)
+		}
+	}
+}
+
 func TestFeaturesAtDSLVersion(t *testing.T) {
 	features, err := FeaturesAtDSLVersion(AllFeatures(), DSLVersion)
 	if err != nil {
@@ -461,7 +501,13 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		DisplayName: "All features",
 		Triggers: []apiv1.Trigger{
 			{Type: apiv1.TriggerManual},
-			{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": "true"}},
+			{
+				Type:           apiv1.TriggerBacklogItem,
+				Selector:       map[string]string{"ready": "true"},
+				TrustLabel:     "approved",
+				LabelPredicate: `"ready" in labels`,
+				FieldPredicate: `fields["number"] > 0`,
+			},
 			{Type: apiv1.TriggerSchedule, Schedule: "@hourly"},
 			{Type: apiv1.TriggerSignal, Signal: "done"},
 			{Type: apiv1.TriggerWebhook, Events: []string{"issues"}},
@@ -473,12 +519,15 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			MaxChainDepth:     4,
 			MaxOpenPRs:        5,
 		},
-		Start: "agent-fail",
+		RunControls: &apiv1.RunControls{MaxRepasses: 2},
+		Start:       "agent-fail",
 		Tasks: []apiv1.Task{
 			{
 				Name: "agent-fail", Type: apiv1.TaskAgentic, Goal: "agent",
-				Goober: "coder", Inputs: map[string]string{"x": "y"},
-				Capabilities: []string{"repo:push"}, Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+				Goober: "coder", Inputs: map[string]string{"x": "y", "fieldOrder": "number:asc"},
+				Capabilities: []string{"repo:push"}, MinimumIntegrity: apiv1.IntegrityMaintainer,
+				ContextFrom: []string{"claim"}, PolicyActions: []string{"claim-item"},
+				Retry:          &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
 				TimeoutSeconds: 30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
 				OnTimeout: apiv1.TaskOnTimeoutFail, ExpectedOutputs: []string{"result"}, Next: "agent-salvage",
 			},
@@ -729,6 +778,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.displayName",
 		"workflow.spec.triggers",
 		"workflow.spec.readiness",
+		"workflow.spec.runControls",
 		"workflow.spec.readiness.maxConcurrentRuns",
 		"workflow.spec.readiness.maxRunsPerHour",
 		"workflow.spec.readiness.maxRunsPerDay",
@@ -758,6 +808,9 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.manual",
 		"trigger.backlog-item",
 		"trigger.backlog-item.selector",
+		"trigger.backlog-item.trustLabel",
+		"trigger.labelPredicate",
+		"trigger.fieldPredicate",
 		"trigger.schedule",
 		"trigger.signal",
 		"trigger.webhook",
@@ -767,8 +820,12 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.goal",
 		"task.goober",
 		"task.inputs",
+		"task.inputs.fieldOrder",
 		"task.inputsFrom",
 		"task.capabilities",
+		"task.minimumIntegrity",
+		"task.contextFrom",
+		"task.policyActions",
 		"task.retry",
 		"task.retry.maxAttempts",
 		"task.retry.backoff",
