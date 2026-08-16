@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/robfig/cron"
+	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
 // Schedule is a parsed cron/interval expression: Next reports the next fire
@@ -26,15 +26,16 @@ type Schedule interface {
 // misinterpreting a seconds column as something else.
 func ParseSchedule(expr string) (Schedule, error) {
 	expr = strings.TrimSpace(expr)
-	if fields := strings.Fields(expr); len(fields) == 6 {
+	// A TZ=/CRON_TZ= prefix pads the field count to 6 without being a seconds
+	// column; let scheduleexpr.ParseRuntime below reject it with its own
+	// per-expression-timezone diagnostic instead of this V0 seconds-column one.
+	hasTZPrefix := strings.HasPrefix(expr, "TZ=") || strings.HasPrefix(expr, "CRON_TZ=")
+	if fields := strings.Fields(expr); !hasTZPrefix && len(fields) == 6 {
 		return nil, fmt.Errorf("localscheduler: 6-field cron (with seconds) is not supported in V0 — %q; use standard 5-field cron, a descriptor, or \"@every <duration>\"", expr)
 	}
-	sched, err := cron.ParseStandard(expr)
+	sched, err := scheduleexpr.ParseRuntime(expr)
 	if err != nil {
 		return nil, fmt.Errorf("localscheduler: invalid schedule %q: %w", expr, err)
-	}
-	if sched.Next(time.Unix(0, 0)).IsZero() {
-		return nil, fmt.Errorf("localscheduler: invalid schedule %q: expression can never fire", expr)
 	}
 	return sched, nil
 }
