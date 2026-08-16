@@ -1,3 +1,21 @@
+export function findingsFromKnipReport(report) {
+  const findings = (report.files ?? []).map((file) => ({
+    type: "files",
+    file,
+    symbol: file,
+  }));
+
+  for (const issue of report.issues ?? []) {
+    for (const type of ["files", "exports", "nsExports"]) {
+      for (const finding of issue[type] ?? []) {
+        findings.push({ type, file: issue.file, symbol: finding.name });
+      }
+    }
+  }
+
+  return findings;
+}
+
 export function reviewFindings(findings, exemptions) {
   const keyOf = ({ type, file, symbol }) => `${type}:${file}:${symbol}`;
   const exemptionByKey = new Map();

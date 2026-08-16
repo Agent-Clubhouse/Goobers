@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { reviewFindings } from "./dead-code-ledger.mjs";
+import { findingsFromKnipReport, reviewFindings } from "./dead-code-ledger.mjs";
 
 const exemptions = [
   {
@@ -133,15 +133,7 @@ try {
   throw new Error(`could not parse Knip output: ${error.message}`);
 }
 
-const findings = [];
-for (const issue of report.issues ?? []) {
-  for (const type of ["files", "exports", "nsExports"]) {
-    for (const finding of issue[type] ?? []) {
-      findings.push({ type, file: issue.file, symbol: finding.name });
-    }
-  }
-}
-
+const findings = findingsFromKnipReport(report);
 const { unexpected, stale } = reviewFindings(findings, exemptions);
 const keyOf = ({ type, file, symbol }) => `${type}:${file}:${symbol}`;
 
