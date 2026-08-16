@@ -849,6 +849,8 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 		}
 		if repo.Token.Env != "" {
 			envByRef[ref] = repo.Token.Env
+		} else if repo.GitHubAppAuth() && repo.Auth.PrivateKey != nil && repo.Auth.PrivateKey.Env != "" {
+			envByRef[ref] = repo.Auth.PrivateKey.Env
 		}
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
 	}
@@ -860,6 +862,8 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 		}
 		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
 			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
+		} else if cfg.DaemonIdentity.GitHubApp() && cfg.DaemonIdentity.PrivateKey != nil && cfg.DaemonIdentity.PrivateKey.Env != "" {
+			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.PrivateKey.Env
 		}
 	}
 	for _, grant := range cfg.Credentials {
@@ -913,18 +917,23 @@ func staticallyRequiredWorkflowStates(graph workflow.Graph) map[string]bool {
 				}
 				edges := outgoing[node.ID]
 				if parallel[node.ID] {
-					allBranchesFinish := false
+					hasBranches := false
+					allBranchesFinish := true
 					for _, edge := range edges {
 						if edge.Branch == "" {
+							if edge.Terminal != "" || canFinish[edge.Target] {
+								canFinish[node.ID] = true
+								changed = true
+								break
+							}
 							continue
 						}
+						hasBranches = true
 						if !canFinish[edge.Target] {
 							allBranchesFinish = false
-							break
 						}
-						allBranchesFinish = true
 					}
-					if allBranchesFinish {
+					if !canFinish[node.ID] && hasBranches && allBranchesFinish {
 						canFinish[node.ID] = true
 						changed = true
 					}

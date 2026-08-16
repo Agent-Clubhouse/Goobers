@@ -368,6 +368,42 @@ func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *t
 	}
 }
 
+func TestScheduledWorkflowCredentialEnvironmentsUsesGitHubAppPrivateKeys(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       instance.GitHubAuthApp,
+				PrivateKey: &instance.TokenRef{Env: "REPO_APP_KEY"},
+			},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:       instance.GitHubAuthApp,
+			PrivateKey: &instance.TokenRef{Env: "DAEMON_APP_KEY"},
+		},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"github:issues:read": "REPO_APP_KEY",
+		"github:pr:write":    "DAEMON_APP_KEY",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
+	}
+}
+
 func TestStaticallyRequiredWorkflowStatesLeavesConditionalTaskLazy(t *testing.T) {
 	graph := workflow.Graph{
 		Start: "prepare",
@@ -394,6 +430,40 @@ func TestStaticallyRequiredWorkflowStatesLeavesConditionalTaskLazy(t *testing.T)
 	}
 	if required["conditional"] {
 		t.Error("conditional state is required; its credential would be materialized eagerly")
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesPostJoinTaskConditionalOnParallelFailure(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "checks", Kind: workflow.GraphNodeParallel},
+			{ID: "first"},
+			{ID: "second"},
+			{ID: "credentialed-join"},
+			{ID: "recover"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "checks"},
+			{Source: "checks", Target: "first", Branch: "first"},
+			{Source: "checks", Target: "second", Branch: "second"},
+			{Source: "checks", Target: "recover", Outcome: "branch-failed"},
+			{Source: "first", Target: "credentialed-join"},
+			{Source: "second", Target: "credentialed-join"},
+			{Source: "credentialed-join", Terminal: workflow.GraphTerminalComplete},
+			{Source: "recover", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	if required["credentialed-join"] {
+		t.Error("post-join task is required despite the parallel onFailure route")
+	}
+	for _, state := range []string{"prepare", "checks"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
 	}
 }
 
