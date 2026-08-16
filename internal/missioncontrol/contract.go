@@ -376,53 +376,91 @@ var idPattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,127}$`)
 
 // Validate checks semantic constraints that JSON Schema cannot express.
 func (artifact Artifact) Validate() error {
+	if err := validateArtifactMetadata(artifact); err != nil {
+		return err
+	}
+	evidenceIDs, err := validateEvidence(artifact.Evidence)
+	if err != nil {
+		return err
+	}
+	subsystemIDs, err := validateSubsystemDefinitions(artifact.Subsystems)
+	if err != nil {
+		return err
+	}
+	metricsByID, err := validateMetrics(artifact.Metrics, subsystemIDs, evidenceIDs, artifact.GeneratedAt)
+	if err != nil {
+		return err
+	}
+	if err := validateSubsystems(artifact.Subsystems, metricsByID); err != nil {
+		return err
+	}
+	return validateOverall(artifact.Overall, artifact.Subsystems)
+}
+
+func validateArtifactMetadata(artifact Artifact) error {
 	if artifact.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %q", SchemaVersion)
 	}
 	if artifact.GeneratedAt.IsZero() {
 		return errors.New("generatedAt is required")
 	}
-	evidenceIDs := make(map[string]struct{}, len(artifact.Evidence))
-	for i, evidence := range artifact.Evidence {
+	return nil
+}
+
+func validateEvidence(evidenceRefs []EvidenceRef) (map[string]struct{}, error) {
+	evidenceIDs := make(map[string]struct{}, len(evidenceRefs))
+	for i, evidence := range evidenceRefs {
 		if err := uniqueID("evidence", i, evidence.ID, evidenceIDs); err != nil {
-			return err
+			return nil, err
 		}
 		if evidence.URI == "" || evidence.Digest == "" {
-			return fmt.Errorf("evidence[%d]: uri and digest are required", i)
+			return nil, fmt.Errorf("evidence[%d]: uri and digest are required", i)
 		}
 	}
-	subsystemIDs := make(map[string]struct{}, len(artifact.Subsystems))
-	for i, subsystem := range artifact.Subsystems {
+	return evidenceIDs, nil
+}
+
+func validateSubsystemDefinitions(subsystems []SubsystemVerdict) (map[string]struct{}, error) {
+	subsystemIDs := make(map[string]struct{}, len(subsystems))
+	for i, subsystem := range subsystems {
 		if err := uniqueID("subsystems", i, subsystem.ID, subsystemIDs); err != nil {
-			return err
+			return nil, err
 		}
 		if subsystem.DisplayName == "" {
-			return fmt.Errorf("subsystems[%d]: displayName is required", i)
+			return nil, fmt.Errorf("subsystems[%d]: displayName is required", i)
 		}
 		if subsystem.Requirement != Required && subsystem.Requirement != Advisory {
-			return fmt.Errorf("subsystems[%d]: invalid requirement %q", i, subsystem.Requirement)
+			return nil, fmt.Errorf("subsystems[%d]: invalid requirement %q", i, subsystem.Requirement)
 		}
 	}
-	metricIDs := make(map[string]struct{}, len(artifact.Metrics))
-	metricsByID := make(map[string]MetricVerdict, len(artifact.Metrics))
-	for i, metric := range artifact.Metrics {
+	return subsystemIDs, nil
+}
+
+func validateMetrics(metrics []MetricVerdict, subsystemIDs, evidenceIDs map[string]struct{}, generatedAt time.Time) (map[string]MetricVerdict, error) {
+	metricIDs := make(map[string]struct{}, len(metrics))
+	metricsByID := make(map[string]MetricVerdict, len(metrics))
+	for i, metric := range metrics {
 		if err := uniqueID("metrics", i, metric.ID, metricIDs); err != nil {
-			return err
+			return nil, err
 		}
 		metricsByID[metric.ID] = metric
 		if _, ok := subsystemIDs[metric.SubsystemID]; !ok {
-			return fmt.Errorf("metrics[%d]: dangling subsystemId %q", i, metric.SubsystemID)
+			return nil, fmt.Errorf("metrics[%d]: dangling subsystemId %q", i, metric.SubsystemID)
 		}
 		if metric.EvidenceID != "" {
 			if _, ok := evidenceIDs[metric.EvidenceID]; !ok {
-				return fmt.Errorf("metrics[%d]: dangling evidenceId %q", i, metric.EvidenceID)
+				return nil, fmt.Errorf("metrics[%d]: dangling evidenceId %q", i, metric.EvidenceID)
 			}
 		}
-		if err := validateMetric(metric, artifact.GeneratedAt); err != nil {
-			return fmt.Errorf("metrics[%d]: %w", i, err)
+		if err := validateMetric(metric, generatedAt); err != nil {
+			return nil, fmt.Errorf("metrics[%d]: %w", i, err)
 		}
 	}
-	for i, subsystem := range artifact.Subsystems {
+	return metricsByID, nil
+}
+
+func validateSubsystems(subsystems []SubsystemVerdict, metricsByID map[string]MetricVerdict) error {
+	for i, subsystem := range subsystems {
 		if err := validateAggregation(subsystem.Verdict, subsystem.ReasonCode, subsystem.Policy); err != nil {
 			return fmt.Errorf("subsystems[%d]: %w", i, err)
 		}
@@ -440,30 +478,55 @@ func (artifact Artifact) Validate() error {
 			return fmt.Errorf("subsystems[%d]: aggregate is %q/%q, want %q/%q", i, subsystem.Verdict, subsystem.ReasonCode, verdict, reason)
 		}
 	}
-	subsystemsByID := make(map[string]SubsystemVerdict, len(artifact.Subsystems))
-	for _, subsystem := range artifact.Subsystems {
+	return nil
+}
+
+func validateOverall(overall OverallVerdict, subsystems []SubsystemVerdict) error {
+	subsystemsByID := make(map[string]SubsystemVerdict, len(subsystems))
+	for _, subsystem := range subsystems {
 		subsystemsByID[subsystem.ID] = subsystem
 	}
-	if err := validateAggregation(artifact.Overall.Verdict, artifact.Overall.ReasonCode, artifact.Overall.Policy); err != nil {
+	if err := validateAggregation(overall.Verdict, overall.ReasonCode, overall.Policy); err != nil {
 		return fmt.Errorf("overall: %w", err)
 	}
-	if err := validateMembers("", artifact.Overall.RequiredSubsystemIDs, artifact.Overall.AdvisorySubsystemIDs, subsystemsByID, func(subsystem SubsystemVerdict) (string, Requirement) {
+	if err := validateMembers("", overall.RequiredSubsystemIDs, overall.AdvisorySubsystemIDs, subsystemsByID, func(subsystem SubsystemVerdict) (string, Requirement) {
 		return "", subsystem.Requirement
 	}); err != nil {
 		return fmt.Errorf("overall: %w", err)
 	}
-	requiredVerdicts := make([]Verdict, 0, len(artifact.Overall.RequiredSubsystemIDs))
-	for _, id := range artifact.Overall.RequiredSubsystemIDs {
+	requiredVerdicts := make([]Verdict, 0, len(overall.RequiredSubsystemIDs))
+	for _, id := range overall.RequiredSubsystemIDs {
 		requiredVerdicts = append(requiredVerdicts, subsystemsByID[id].Verdict)
 	}
-	verdict, reason := aggregate(requiredVerdicts, artifact.Overall.Policy)
-	if artifact.Overall.Verdict != verdict || artifact.Overall.ReasonCode != reason {
-		return fmt.Errorf("overall: aggregate is %q/%q, want %q/%q", artifact.Overall.Verdict, artifact.Overall.ReasonCode, verdict, reason)
+	verdict, reason := aggregate(requiredVerdicts, overall.Policy)
+	if overall.Verdict != verdict || overall.ReasonCode != reason {
+		return fmt.Errorf("overall: aggregate is %q/%q, want %q/%q", overall.Verdict, overall.ReasonCode, verdict, reason)
 	}
 	return nil
 }
 
 func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
+	if err := validateMetricMetadata(metric); err != nil {
+		return err
+	}
+	freshness, err := validateMetricCriterion(metric)
+	if err != nil {
+		return err
+	}
+	if err := validateMetricValue(metric); err != nil {
+		return err
+	}
+	age, err := validateMetricTiming(metric, generatedAt)
+	if err != nil {
+		return err
+	}
+	if err := validateMetricStatus(metric); err != nil {
+		return err
+	}
+	return validateMetricObservation(metric, age, freshness)
+}
+
+func validateMetricMetadata(metric MetricVerdict) error {
 	if metric.DisplayName == "" || metric.SubsystemID == "" {
 		return errors.New("displayName and subsystemId are required")
 	}
@@ -476,16 +539,24 @@ func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
 	if metric.ObservationWindow.Start.IsZero() || !metric.ObservationWindow.End.After(metric.ObservationWindow.Start) {
 		return errors.New("observationWindow must have a non-zero start before end")
 	}
+	return nil
+}
+
+func validateMetricCriterion(metric MetricVerdict) (time.Duration, error) {
 	if !criterionFinite(metric.Criterion) {
-		return errors.New("criterion contains NaN or infinity")
+		return 0, errors.New("criterion contains NaN or infinity")
 	}
 	if !validCriterionShape(metric.Criterion) {
-		return errors.New("criterion has an invalid comparator or threshold shape")
+		return 0, errors.New("criterion has an invalid comparator or threshold shape")
 	}
 	freshness, err := time.ParseDuration(metric.RequiredFreshness)
 	if err != nil || freshness <= 0 {
-		return errors.New("requiredFreshness must be a positive duration")
+		return 0, errors.New("requiredFreshness must be a positive duration")
 	}
+	return freshness, nil
+}
+
+func validateMetricValue(metric MetricVerdict) error {
 	if metric.Value != nil {
 		if !finite(metric.Value.Number) {
 			return errors.New("value contains NaN or infinity")
@@ -500,31 +571,68 @@ func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
 			return errors.New("value unit is incompatible with criterion unit")
 		}
 	}
+	return nil
+}
+
+func validateMetricTiming(metric MetricVerdict, generatedAt time.Time) (time.Duration, error) {
 	var age time.Duration
+	var err error
 	if metric.Age != "" {
 		age, err = time.ParseDuration(metric.Age)
 		if err != nil || age < 0 {
-			return errors.New("age must be a non-negative duration")
+			return 0, errors.New("age must be a non-negative duration")
 		}
 		if metric.DataAsOf == nil || generatedAt.Sub(*metric.DataAsOf) != age {
-			return errors.New("age must equal generatedAt minus dataAsOf")
+			return 0, errors.New("age must equal generatedAt minus dataAsOf")
 		}
 	} else if metric.DataAsOf != nil {
-		return errors.New("dataAsOf requires calculated age")
+		return 0, errors.New("dataAsOf requires calculated age")
 	}
+	return age, nil
+}
+
+func validateMetricStatus(metric MetricVerdict) error {
 	if !validVerdict(metric.Verdict) {
 		return fmt.Errorf("invalid verdict %q", metric.Verdict)
 	}
 	if !validReasonCode(metric.ReasonCode) {
 		return fmt.Errorf("invalid reasonCode %q", metric.ReasonCode)
 	}
-	if metric.Verdict == VerdictGo && metric.ReasonCode != ReasonSatisfied ||
-		metric.Verdict == VerdictNoGo && metric.ReasonCode != ReasonThresholdViolated ||
-		metric.Verdict == VerdictUnknown && !slices.Contains([]ReasonCode{
-			ReasonMissing, ReasonStale, ReasonQueryError, ReasonSchemaError, ReasonUnitError, ReasonInsufficientEvidence,
-		}, metric.ReasonCode) {
+	if !validMetricReason(metric.Verdict, metric.ReasonCode) {
 		return fmt.Errorf("verdict %q is incompatible with reasonCode %q", metric.Verdict, metric.ReasonCode)
 	}
+	return nil
+}
+
+func validMetricReason(verdict Verdict, reason ReasonCode) bool {
+	switch verdict {
+	case VerdictGo:
+		return reason == ReasonSatisfied
+	case VerdictNoGo:
+		return reason == ReasonThresholdViolated
+	case VerdictUnknown:
+		return slices.Contains([]ReasonCode{
+			ReasonMissing, ReasonStale, ReasonQueryError, ReasonSchemaError, ReasonUnitError, ReasonInsufficientEvidence,
+		}, reason)
+	default:
+		return false
+	}
+}
+
+func validateMetricObservation(metric MetricVerdict, age, freshness time.Duration) error {
+	if err := validateConclusiveMetricObservation(metric, age, freshness); err != nil {
+		return err
+	}
+	if err := validateStaleMetricObservation(metric, age, freshness); err != nil {
+		return err
+	}
+	if err := validateMetricWithoutCanonicalValue(metric); err != nil {
+		return err
+	}
+	return validateMissingMetricObservation(metric)
+}
+
+func validateConclusiveMetricObservation(metric MetricVerdict, age, freshness time.Duration) error {
 	if metric.Verdict != VerdictUnknown && (metric.Value == nil || metric.EvidenceID == "" || metric.DataAsOf == nil || metric.Age == "") {
 		return errors.New("go and no-go require value, evidenceId, dataAsOf, and age")
 	}
@@ -537,14 +645,26 @@ func validateMetric(metric MetricVerdict, generatedAt time.Time) error {
 			return errors.New("go and no-go require fresh evidence")
 		}
 	}
+	return nil
+}
+
+func validateStaleMetricObservation(metric MetricVerdict, age, freshness time.Duration) error {
 	if metric.ReasonCode == ReasonStale {
 		if metric.Value == nil || metric.EvidenceID == "" || metric.DataAsOf == nil || metric.Age == "" || age <= freshness {
 			return errors.New("stale requires a value and evidence older than requiredFreshness")
 		}
 	}
+	return nil
+}
+
+func validateMetricWithoutCanonicalValue(metric MetricVerdict) error {
 	if slices.Contains([]ReasonCode{ReasonQueryError, ReasonSchemaError, ReasonUnitError}, metric.ReasonCode) && metric.Value != nil {
 		return fmt.Errorf("%s must not retain a canonical value", metric.ReasonCode)
 	}
+	return nil
+}
+
+func validateMissingMetricObservation(metric MetricVerdict) error {
 	if metric.ReasonCode == ReasonMissing && (metric.Value != nil || metric.DataAsOf != nil || metric.Age != "") {
 		return errors.New("missing must not contain an observation")
 	}
