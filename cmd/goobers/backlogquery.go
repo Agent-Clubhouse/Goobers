@@ -90,13 +90,6 @@ var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOpti
 	return localscheduler.OpenClaimLedger(path, opts...)
 }
 
-func backlogQueryToken(readOnly bool) (string, error) {
-	if readOnly {
-		return providerToken(capability.GitHubIssuesRead)
-	}
-	return providerToken(capability.GitHubIssuesWrite)
-}
-
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
