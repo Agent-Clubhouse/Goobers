@@ -82,9 +82,8 @@ spec:
             - name: GOOBERS_TEMPORAL_HOSTPORT
               value: temporal-frontend.goobers-temporal:7233
           volumeMounts:
-            # Journal & artifacts: same on-disk layout as tiers 1-2 (§4);
-            # single-writer is enforced by Temporal workflow identity, not
-            # file locks — this mount is a projection target.
+            # Lock-bearing instance root: same on-disk layout as tiers 1-2
+            # (§4), on the RWO block volume mounted by a single node.
             - name: journal
               mountPath: /var/lib/goobers
             # Worktrees are pod-private: their PID ownership records are not
