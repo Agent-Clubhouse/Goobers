@@ -973,6 +973,24 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeTogglesOverridesTestTimeout(t *testing.T) {
+	t.Parallel()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_TEST_TIMEOUT" {
+			return "60m"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(mergeGateChecks(), groupUnit), env)
+	if args := labelArgs(unit, "test"); !slices.Contains(args, "60m") || slices.Contains(args, "30m") {
+		t.Errorf("unit timeout was not overridden: %q", args)
+	}
+	shipped := applyRuntimeToggles(groupChecksOnly(mergeGateChecks(), groupShipped), env)
+	if args := labelArgs(shipped, "shipped-workflows"); !slices.Contains(args, "60m") || slices.Contains(args, "20m") {
+		t.Errorf("shipped timeout was not overridden: %q", args)
+	}
+}
+
 func TestApplyRuntimeTogglesCrossLintsViaSubprocessEnv(t *testing.T) {
 	t.Parallel()
 	all := mergeGateChecks()

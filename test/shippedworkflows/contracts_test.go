@@ -144,6 +144,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
 					}
 					assertStaticStageContracts(t, source, def)
+					assertWindowsDeterministicCompatibility(t, source, def)
 					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview))
 					if err != nil {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
@@ -197,6 +198,43 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func assertWindowsDeterministicCompatibility(t *testing.T, source string, def workflow.Definition) {
+	t.Helper()
+	for _, problem := range windowsDeterministicCompatibilityProblems(def) {
+		t.Errorf("%s: workflow %q %s", source, def.Name, problem)
+	}
+}
+
+func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil || task.Run.Script == "" {
+			continue
+		}
+		if !contains(task.RequiredCapabilities, "os=linux") {
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q uses a POSIX inline script without requiredCapabilities: [os=linux]",
+				task.Name,
+			))
+		}
+	}
+	return problems
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
 	}
 }
 
