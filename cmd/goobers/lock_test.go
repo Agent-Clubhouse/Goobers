@@ -93,6 +93,34 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 	}
 }
 
+func TestAcquireDaemonLockWritesBehavior(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	behavior := &daemonBehavior{
+		WatchConfig:           true,
+		Diagnostics:           true,
+		DrainTimeoutNanos:     int64(45 * time.Second),
+		SkipPreflight:         true,
+		DisableReadModelReads: true,
+	}
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, behavior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, identity, err := inspectDaemonLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity == nil || identity.Behavior == nil || *identity.Behavior != *behavior {
+		t.Fatalf("behavior = %+v, want %+v", identity, behavior)
+	}
+}
+
 func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 	root := t.TempDir()
 	lockPath := filepath.Join(root, "scheduler", "up.lock")

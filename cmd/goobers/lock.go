@@ -17,11 +17,20 @@ import (
 )
 
 type daemonIdentity struct {
-	PID                   int       `json:"pid"`
-	StartedAt             time.Time `json:"startedAt"`
-	InstanceRoot          string    `json:"instanceRoot"`
-	Version               string    `json:"version"`
-	LivenessTimeoutMillis int64     `json:"livenessTimeoutMillis,omitempty"`
+	PID                   int             `json:"pid"`
+	StartedAt             time.Time       `json:"startedAt"`
+	InstanceRoot          string          `json:"instanceRoot"`
+	Version               string          `json:"version"`
+	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
+	Behavior              *daemonBehavior `json:"behavior,omitempty"`
+}
+
+type daemonBehavior struct {
+	WatchConfig           bool  `json:"watchConfig"`
+	Diagnostics           bool  `json:"diagnostics"`
+	DrainTimeoutNanos     int64 `json:"drainTimeoutNanos"`
+	SkipPreflight         bool  `json:"skipPreflight"`
+	DisableReadModelReads bool  `json:"disableReadModelReads"`
 }
 
 type lockHolderKind string
@@ -32,13 +41,14 @@ const (
 )
 
 type instanceLockState struct {
-	PID                   int            `json:"pid,omitempty"`
-	StartedAt             *time.Time     `json:"startedAt,omitempty"`
-	InstanceRoot          string         `json:"instanceRoot,omitempty"`
-	Version               string         `json:"version,omitempty"`
-	LivenessTimeoutMillis int64          `json:"livenessTimeoutMillis,omitempty"`
-	HolderKind            lockHolderKind `json:"holderKind"`
-	HolderPID             int            `json:"holderPid"`
+	PID                   int             `json:"pid,omitempty"`
+	StartedAt             *time.Time      `json:"startedAt,omitempty"`
+	InstanceRoot          string          `json:"instanceRoot,omitempty"`
+	Version               string          `json:"version,omitempty"`
+	LivenessTimeoutMillis int64           `json:"livenessTimeoutMillis,omitempty"`
+	Behavior              *daemonBehavior `json:"behavior,omitempty"`
+	HolderKind            lockHolderKind  `json:"holderKind"`
+	HolderPID             int             `json:"holderPid"`
 }
 
 // acquireInstanceLock takes a non-blocking exclusive lock on lockPath so a
@@ -51,6 +61,14 @@ func acquireInstanceLock(lockPath string) (release func(), err error) {
 }
 
 func acquireDaemonLockWithTimeout(lockPath, instanceRoot string, livenessTimeout time.Duration) (release func(), err error) {
+	return acquireDaemonLock(lockPath, instanceRoot, livenessTimeout, nil)
+}
+
+func acquireDaemonLock(
+	lockPath, instanceRoot string,
+	livenessTimeout time.Duration,
+	behavior *daemonBehavior,
+) (release func(), err error) {
 	if livenessTimeout <= 0 {
 		return nil, fmt.Errorf("daemon liveness timeout must be positive")
 	}
@@ -64,6 +82,7 @@ func acquireDaemonLockWithTimeout(lockPath, instanceRoot string, livenessTimeout
 		InstanceRoot:          absoluteRoot,
 		Version:               version.Get().String(),
 		LivenessTimeoutMillis: livenessTimeout.Milliseconds(),
+		Behavior:              behavior,
 	}
 	return acquireInstanceLockWithIdentity(lockPath, &identity)
 }
@@ -116,6 +135,7 @@ func newInstanceLockState(identity *daemonIdentity, holderKind lockHolderKind, h
 		state.InstanceRoot = identity.InstanceRoot
 		state.Version = identity.Version
 		state.LivenessTimeoutMillis = identity.LivenessTimeoutMillis
+		state.Behavior = identity.Behavior
 	}
 	return state
 }
@@ -210,6 +230,7 @@ func (s instanceLockState) daemonIdentity() (*daemonIdentity, error) {
 		InstanceRoot:          s.InstanceRoot,
 		Version:               s.Version,
 		LivenessTimeoutMillis: s.LivenessTimeoutMillis,
+		Behavior:              s.Behavior,
 	}, nil
 }
 
