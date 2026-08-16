@@ -19,12 +19,12 @@ func TestInstanceLogTailReadsOnlyNewBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	tail, err := OpenInstanceLogTail(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tail.Close()
+	defer func() { _ = tail.Close() }()
 	path, err := InstanceEventsPath(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestInstanceLogTailFollowsCompactionWithoutLossOrDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	if err := log.Append(Event{Type: EventTickSkipped, Reason: "drop"}); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestInstanceLogTailFollowsCompactionWithoutLossOrDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tail.Close()
+	defer func() { _ = tail.Close() }()
 
 	now = now.Add(time.Hour)
 	if err := log.Append(Event{Type: EventRunStarted, RunID: "before-rotation"}); err != nil {

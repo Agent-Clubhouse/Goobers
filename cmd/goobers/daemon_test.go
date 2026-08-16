@@ -590,7 +590,7 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	for range 200 {
 		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Reason: strings.Repeat("history", 20)}); err != nil {
 			t.Fatal(err)
