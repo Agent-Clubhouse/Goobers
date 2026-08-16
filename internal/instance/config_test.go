@@ -1159,6 +1159,61 @@ telemetry:
 	}
 }
 
+func TestLoadConfigEngineEnvironmentOverridesFile(t *testing.T) {
+	t.Setenv(TemporalHostPortEnv, "temporal.internal:7233")
+	t.Setenv(TemporalNamespaceEnv, "production")
+	t.Setenv(TaskQueueEnv, "production-engine")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  namespace: development
+  taskQueue: development-engine
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := EngineConfig{HostPort: "temporal.internal:7233", Namespace: "production", TaskQueue: "production-engine"}
+	if got := cfg.EffectiveEngineConfig(); got != want {
+		t.Fatalf("EffectiveEngineConfig = %+v, want %+v", got, want)
+	}
+}
+
+func TestResolveEngineConfig(t *testing.T) {
+	t.Run("defaults without enabling projection", func(t *testing.T) {
+		resolved, configured, err := (&Config{}).ResolveEngineConfig(func(string) (string, bool) { return "", false })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if configured {
+			t.Fatal("unconfigured engine unexpectedly enabled")
+		}
+		if resolved != (EngineConfig{HostPort: DefaultTemporalHostPort, Namespace: DefaultTemporalNamespace, TaskQueue: DefaultEngineTaskQueue}) {
+			t.Fatalf("resolved engine = %+v", resolved)
+		}
+	})
+
+	t.Run("invalid YAML is actionable", func(t *testing.T) {
+		cfg := Config{Engine: &EngineConfig{HostPort: "missing-port"}}
+		_, _, err := cfg.ResolveEngineConfig(func(string) (string, bool) { return "", false })
+		if err == nil || !strings.Contains(err.Error(), `engine: hostPort "missing-port" must be in host:port form`) {
+			t.Fatalf("ResolveEngineConfig error = %v", err)
+		}
+	})
+
+	t.Run("empty environment override fails closed", func(t *testing.T) {
+		_, _, err := (&Config{}).ResolveEngineConfig(func(key string) (string, bool) {
+			return "", key == TemporalNamespaceEnv
+		})
+		if err == nil || !strings.Contains(err.Error(), TemporalNamespaceEnv+" must not be empty") {
+			t.Fatalf("ResolveEngineConfig error = %v", err)
+		}
+	})
+}
+
 func TestLoadConfigOTLPRejectsInlineHeaderSecret(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

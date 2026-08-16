@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/bootstrap"
@@ -19,16 +17,12 @@ var (
 	dialEngineProjection     = bootstrap.DialTemporal
 )
 
-func startEngineProjection(ctx context.Context, l instance.Layout, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client) (func(), error) {
-	hostPort := strings.TrimSpace(os.Getenv("GOOBERS_TEMPORAL_HOSTPORT"))
-	if hostPort == "" {
+func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client) (func(), error) {
+	if cfg.Engine == nil {
 		return func() {}, nil
 	}
-	namespace := strings.TrimSpace(os.Getenv("GOOBERS_TEMPORAL_NAMESPACE"))
-	if namespace == "" {
-		namespace = "default"
-	}
-	c, err := dialEngineProjection(hostPort, namespace)
+	engineConfig := cfg.EffectiveEngineConfig()
+	c, err := dialEngineProjection(engineConfig.HostPort, engineConfig.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +34,7 @@ func startEngineProjection(ctx context.Context, l instance.Layout, set *instance
 	if watermarks != nil {
 		observe = watermarks.Observed
 	}
-	reconciler, err := engine.NewCompletedRunReconciler(c, namespace, runsDirs, observe)
+	reconciler, err := engine.NewCompletedRunReconciler(c, engineConfig.Namespace, runsDirs, observe)
 	if err != nil {
 		c.Close()
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gooberruntime"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -32,7 +34,10 @@ func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
 	t.Setenv("GOOBERS_WORKSPACE_ROOT", "/work")
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober --json")
 
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.temporalHostPort != "temporal:7233" {
 		t.Errorf("temporalHostPort = %q", cfg.temporalHostPort)
 	}
@@ -54,12 +59,39 @@ func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
 func TestConfigFromEnvUsesTaskQueueDefault(t *testing.T) {
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
 
-	cfg := configFromEnv()
-	if cfg.taskQueue != defaultTaskQueue {
-		t.Errorf("taskQueue = %q, want %q", cfg.taskQueue, defaultTaskQueue)
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.taskQueue != instance.DefaultEngineTaskQueue {
+		t.Errorf("taskQueue = %q, want %q", cfg.taskQueue, instance.DefaultEngineTaskQueue)
 	}
 	if cfg.temporalHostPort != "127.0.0.1:7233" {
 		t.Errorf("temporalHostPort = %q, want default hostport", cfg.temporalHostPort)
+	}
+}
+
+func TestConfigFromEnvLoadsInstanceEngine(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOOBERS_INSTANCE_ROOT", root)
+	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
+	if err := os.WriteFile(instance.NewLayout(root).ConfigFile(), []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: temporal:7233
+  namespace: goobers
+  taskQueue: runtime
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.temporalHostPort != "temporal:7233" || cfg.temporalNamespace != "goobers" || cfg.taskQueue != "runtime" {
+		t.Fatalf("engine config = %+v", cfg)
 	}
 }
 
