@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2935,6 +2936,7 @@ func TestParseBlockedBy(t *testing.T) {
 		{"plain csv", map[string]interface{}{OutputBlockedBy: "441,442"}, []string{"441", "442"}},
 		{"hashes and spaces", map[string]interface{}{OutputBlockedBy: " #441 , #442 ; 443"}, []string{"441", "442", "443"}},
 		{"dedup preserves order", map[string]interface{}{OutputBlockedBy: "442,441,442"}, []string{"442", "441"}},
+		{"canonical numbers deduplicate", map[string]interface{}{OutputBlockedBy: "0441,441"}, []string{"441"}},
 		{"json number", map[string]interface{}{OutputBlockedBy: float64(441)}, []string{"441"}},
 		{"non-numeric tokens dropped", map[string]interface{}{OutputBlockedBy: "441, the dashboard epic, GH-442"}, []string{"441"}},
 		{"garbage only", map[string]interface{}{OutputBlockedBy: "soon(tm)"}, nil},
@@ -2953,6 +2955,62 @@ func TestParseBlockedBy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunnerRejectsSelfReferentialBlocker(t *testing.T) {
+	machine := fixtureMachine(t)
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		"run-self-blocked:implement": {
+			status:  apiv1.ResultBlocked,
+			summary: "waiting for dependencies",
+			outputs: map[string]interface{}{OutputBlockedBy: "#0510, 441"},
+		},
+	}, gate.NewAutomatedEvaluator())
+	var got BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-self-blocked",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:    &apiv1.BacklogItem{ID: "510", Provider: apiv1.ProviderGitHub},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if !slices.Equal(got.Blockers, []string{"441"}) {
+		t.Fatalf("handler blockers = %v, want [441]", got.Blockers)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-self-blocked"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != journal.EventError || event.Error == nil || event.Error.Code != "self_referential_blocker_rejected" {
+			continue
+		}
+		if event.Stage != "implement" ||
+			event.Runner["runId"] != "run-self-blocked" ||
+			event.Runner["stage"] != "implement" ||
+			event.Runner["itemId"] != "510" {
+			t.Fatalf("diagnostic = %+v, want run, stage, and item attribution", event)
+		}
+		return
+	}
+	t.Fatal("self-referential blocker rejection was not journaled")
 }
 
 // TestRunnerMaxStepsExceededFailsRunClosed proves a runaway machine's

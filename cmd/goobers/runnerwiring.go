@@ -1127,12 +1127,14 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 		// escalationCommenter before the work-item call.
 		repoRef = backlogRepoRefForGaggle(l, repoRef)
 		for _, itemID := range itemIDs {
+			itemOutcome, _ := o.WithoutSelfBlockers(itemID)
+			blockers := itemOutcome.Blockers
 			// #2028: a named blocker is a self-healing dependency park
 			// (blocked-on-sibling), not a human decision; only an
 			// unattributed block stays needs-human. A detected cycle
 			// overrides this below with its own needs-human cycleReq.
 			label := providers.LabelNeedsHuman
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				label = blockedOnSiblingLabel
 			}
 			req := providers.UpdateWorkItemRequest{
@@ -1141,14 +1143,14 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 				AddLabels:    []string{label},
 				RemoveLabels: []string{providers.LabelReady, providers.LabelClaimed},
 			}
-			if len(o.Blockers) > 0 {
+			if len(blockers) > 0 {
 				var cycle blockedCycleResult
 				if err := updateBlockedRecords(l, func(recs map[string]blockedRecord) bool {
 					recordKey := blockedRecordKey(repoRef, itemID)
 					recs[recordKey] = blockedRecord{
 						Repository: repoRef,
 						ItemID:     itemID,
-						Blockers:   o.Blockers,
+						Blockers:   blockers,
 						RunID:      o.RunID,
 						Stage:      o.Stage,
 						Reason:     o.Reason,

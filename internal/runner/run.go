@@ -155,6 +155,34 @@ type BlockedOutcome struct {
 	Blockers []string
 }
 
+// WithoutSelfBlockers removes blockers that identify any of the driving items.
+// Item IDs are compared as canonical provider numbers so claim keys such as
+// "pr/42" and model output such as "#042" cannot create a self-edge.
+func (o BlockedOutcome) WithoutSelfBlockers(itemIDs ...string) (BlockedOutcome, []string) {
+	self := make(map[string]string, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if canonicalID, ok := canonicalBlockedItemID(itemID); ok {
+			self[canonicalID] = itemID
+		}
+	}
+	var blockers []string
+	var rejected []string
+	rejectedSeen := make(map[string]bool, len(itemIDs))
+	for _, blocker := range o.Blockers {
+		canonicalID, ok := canonicalBlockedItemID(blocker)
+		if itemID, selfReference := self[canonicalID]; ok && selfReference {
+			if !rejectedSeen[canonicalID] {
+				rejected = append(rejected, itemID)
+				rejectedSeen[canonicalID] = true
+			}
+			continue
+		}
+		blockers = append(blockers, blocker)
+	}
+	o.Blockers = blockers
+	return o, rejected
+}
+
 // BlockedHandler is Config.Blocked's shape. Implementations are instance-level
 // (composition-root) policy: record the block for selection to skip (#552),
 // and park the driving issue. Must tolerate an empty ItemID.
@@ -1981,10 +2009,24 @@ func parseBlockedBy(outputs map[string]interface{}) []string {
 		if !allDigits {
 			continue
 		}
+		n, err := strconv.ParseUint(tok, 10, 64)
+		if err != nil {
+			continue
+		}
+		tok = strconv.FormatUint(n, 10)
 		seen[tok] = true
 		out = append(out, tok)
 	}
 	return out
+}
+
+func canonicalBlockedItemID(itemID string) (string, bool) {
+	itemID = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(itemID), "#"), "pr/")
+	n, err := strconv.ParseUint(itemID, 10, 64)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatUint(n, 10), true
 }
 
 // OutputBlockedBy is the documented ResultEnvelope output key a blocked stage
@@ -2132,6 +2174,29 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		}
 		if item != nil {
 			o.ItemID = item.ID
+		}
+		itemIDs, resolveErr := r.terminalGateItemIDs(runID, item)
+		if resolveErr == nil {
+			var rejected []string
+			o, rejected = o.WithoutSelfBlockers(itemIDs...)
+			for _, itemID := range rejected {
+				if aerr := jr.Append(journal.Event{
+					Type:  journal.EventError,
+					Stage: t.Name,
+					Error: &journal.ErrorDetail{
+						Code:    "self_referential_blocker_rejected",
+						Message: "rejected driving item as its own blocker",
+					},
+					Runner: map[string]any{
+						"runId":  runID,
+						"stage":  t.Name,
+						"itemId": itemID,
+					},
+				}); aerr != nil {
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal self-referential blocker for %q: %w", t.Name, aerr))
+					return "", res, false, err
+				}
+			}
 		}
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name,

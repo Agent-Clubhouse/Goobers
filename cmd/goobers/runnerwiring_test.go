@@ -3485,6 +3485,41 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	}
 }
 
+func TestBuildBlockedHandlerRejectsSelfReferentialBlocker(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-self", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "pr/510",
+		Reason: "blocked on itself", Blockers: []string{"510"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("provider calls = %+v, want one unattributed-block parking update", fake.calls)
+	}
+	if got := fake.calls[0]; !slices.Equal(got.AddLabels, []string{providers.LabelNeedsHuman}) || got.Comment != "" {
+		t.Fatalf("parking request = %+v, want needs-human with no cycle comment", got)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked records = %+v, want no persisted self-edge", recs)
+	}
+}
+
 // TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty proves a run
 // started without StartInput.Item (scheduled/fan-out implementation runs
 // claim their item mid-run) still notifies the right issue: the handler
