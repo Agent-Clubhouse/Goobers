@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 )
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
+const shardWeightsPath = ".github/unit-shard-weights.json"
 
 type toolSpec struct {
 	name     string
@@ -53,6 +56,19 @@ type shardSpec struct {
 }
 
 func (s shardSpec) enabled() bool { return s.total > 0 }
+
+type shardWeights struct {
+	SchemaVersion  int                `json:"schemaVersion"`
+	DefaultSeconds float64            `json:"defaultSeconds"`
+	Packages       map[string]float64 `json:"packages"`
+}
+
+func (w shardWeights) packageSeconds(pkg string) float64 {
+	if seconds, ok := w.Packages[pkg]; ok {
+		return seconds
+	}
+	return w.DefaultSeconds
+}
 
 type diagnosticCollector struct {
 	mu      sync.Mutex
@@ -204,20 +220,60 @@ func parseShard(raw string) (shardSpec, error) {
 	return shardSpec{index: index, total: total}, nil
 }
 
-// selectShard partitions pkgs deterministically (sorted, then round-robin by
-// index) into `spec.total` disjoint groups and returns group `spec.index`.
-// Round-robin (rather than contiguous blocks) balances the slow integration
-// packages across shards instead of piling them into one.
-func selectShard(pkgs []string, spec shardSpec) []string {
-	sorted := append([]string(nil), pkgs...)
-	sort.Strings(sorted)
-	var selected []string
-	for position, pkg := range sorted {
-		if position%spec.total == spec.index-1 {
-			selected = append(selected, pkg)
+// selectShard uses longest-processing-time-first assignment so measured slow
+// packages are distributed before smaller packages fill the remaining gaps.
+func selectShard(pkgs []string, spec shardSpec, weights shardWeights) []string {
+	ordered := append([]string(nil), pkgs...)
+	sort.Slice(ordered, func(i, j int) bool {
+		left := weights.packageSeconds(ordered[i])
+		right := weights.packageSeconds(ordered[j])
+		if left == right {
+			return ordered[i] < ordered[j]
+		}
+		return left > right
+	})
+
+	shards := make([][]string, spec.total)
+	totals := make([]float64, spec.total)
+	for _, pkg := range ordered {
+		target := 0
+		for index := 1; index < spec.total; index++ {
+			if totals[index] < totals[target] {
+				target = index
+			}
+		}
+		shards[target] = append(shards[target], pkg)
+		totals[target] += weights.packageSeconds(pkg)
+	}
+	return shards[spec.index-1]
+}
+
+func loadShardWeights(root string) (shardWeights, error) {
+	path := filepath.Join(root, shardWeightsPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return shardWeights{}, fmt.Errorf("read shard weights %s: %w", path, err)
+	}
+	var weights shardWeights
+	if err := json.Unmarshal(data, &weights); err != nil {
+		return shardWeights{}, fmt.Errorf("parse shard weights %s: %w", path, err)
+	}
+	if weights.SchemaVersion != 1 {
+		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d", path, weights.SchemaVersion)
+	}
+	if !validShardWeight(weights.DefaultSeconds) {
+		return shardWeights{}, fmt.Errorf("shard weights %s: defaultSeconds must be finite and positive", path)
+	}
+	for pkg, seconds := range weights.Packages {
+		if strings.TrimSpace(pkg) == "" || !validShardWeight(seconds) {
+			return shardWeights{}, fmt.Errorf("shard weights %s: package %q must have a finite positive duration", path, pkg)
 		}
 	}
-	return selected
+	return weights, nil
+}
+
+func validShardWeight(seconds float64) bool {
+	return seconds > 0 && !math.IsInf(seconds, 0) && !math.IsNaN(seconds)
 }
 
 // shardTestArgs replaces the `./...` package spec in testArgs with the subset
@@ -233,7 +289,11 @@ func shardTestArgs(goCommand, root string, testArgs []string, spec shardSpec) ([
 	if len(packages) == 0 {
 		return nil, 0, errors.New("go list ./... returned no packages to shard")
 	}
-	selected := selectShard(packages, spec)
+	weights, err := loadShardWeights(root)
+	if err != nil {
+		return nil, 0, err
+	}
+	selected := selectShard(packages, spec, weights)
 	if len(selected) == 0 {
 		return nil, 0, fmt.Errorf("shard %d/%d selected no packages from %d", spec.index, spec.total, len(packages))
 	}
