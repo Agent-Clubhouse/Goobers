@@ -83,6 +83,7 @@ func TestUpPreflightRejectsElectLanderDefectBeforeSchedulerState(t *testing.T) {
 }
 
 func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "up-preflight-fixture-token")
 	root := initDeterministicDemo(t)
 	installInvalidElectLanderWorkflow(t, root)
 	ctx, cancel := context.WithCancel(context.Background())

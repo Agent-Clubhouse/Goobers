@@ -1,6 +1,6 @@
 # Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing
 
-**Status:** Design-only (issue #659, P13 of `docs/design/cross-platform-support.md` §3).
+**Status:** draft — design-only (issue #659, P13 of `docs/design/cross-platform-support.md` §3).
 **Approved for this design-doc scope only — no scheduler, provisioning, or Temporal
 wiring is authorized by this document.** Implementation stays gated on a demonstrated
 customer shape (§6 defines the trigger).

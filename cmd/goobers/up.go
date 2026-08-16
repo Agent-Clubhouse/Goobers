@@ -223,7 +223,14 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"forces every list request onto the journal-derived paths for this run,\n" +
 	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
 	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n"
+	"serving wrong or incomplete results.\n\n" +
+	"These five behavior controls are intentionally flag-only: --watch-config\n" +
+	"selects a process-local development watcher, --diagnostics is temporary\n" +
+	"debug capture, --drain-timeout applies only after this process receives a\n" +
+	"shutdown signal, --skip-preflight is an unsafe startup escape hatch, and\n" +
+	"--disable-read-model-reads is an emergency rollback. Keeping them out of\n" +
+	"instance.yaml prevents temporary operational overrides from becoming\n" +
+	"durable policy. `goobers status --daemon` reports their effective values.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -321,7 +328,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, &daemonBehavior{
+		WatchConfig:           *watchConfig,
+		Diagnostics:           *diagnostics,
+		DrainTimeoutNanos:     int64(*drainTimeout),
+		SkipPreflight:         *skipPreflight,
+		DisableReadModelReads: *disableReadModelReads,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -359,7 +372,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -1044,13 +1057,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
-		lastSeq := uint64(0)
-		if events, err := journal.ReadInstanceLog(l.SchedulerDir()); err == nil && len(events) > 0 {
-			lastSeq = events[len(events)-1].Seq
-		}
+		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -1331,11 +1341,13 @@ func emitHeartbeats(
 	stdout io.Writer,
 	schedulerDir string,
 	workflowCount int,
-	lastSeq uint64,
+	tail *journal.InstanceLogTail,
+	err error,
 	interval time.Duration,
 	done chan<- struct{},
 ) {
 	defer close(done)
+	defer func() { _ = tail.Close() }()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -1344,15 +1356,25 @@ func emitHeartbeats(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			events, err := journal.ReadInstanceLog(schedulerDir)
+			if tail == nil {
+				tail, err = journal.OpenInstanceLogTail(schedulerDir)
+			}
+			if err == nil {
+				var events []journal.Event
+				events, err = tail.Events()
+				if err == nil {
+					activity, _ := summarizeHeartbeat(events, 0)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					continue
+				}
+				_ = tail.Close()
+				tail = nil
+			}
 			if err != nil {
 				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
 				continue
 			}
-			activity, nextSeq := summarizeHeartbeat(events, lastSeq)
-			lastSeq = nextSeq
-			pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-				now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
 		}
 	}
 }

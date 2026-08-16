@@ -23,9 +23,9 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("engine-start", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the workflow")
-	hostPort := fs.String("temporal-hostport", workerEnvOr("GOOBERS_TEMPORAL_HOSTPORT", "127.0.0.1:7233"), "Temporal frontend host:port")
-	namespace := fs.String("temporal-namespace", workerEnvOr("GOOBERS_TEMPORAL_NAMESPACE", "default"), "Temporal namespace")
-	taskQueue := fs.String("task-queue", workerEnvOr("GOOBERS_TASK_QUEUE", "goobers-engine"), "task queue to dispatch onto")
+	hostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port")
+	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
+	taskQueue := fs.String("task-queue", "", "task queue to dispatch onto")
 	dedupe := fs.String("dedupe-key", "", "dedupe key used to derive the run id")
 	fs.Usage = helpUsage(stderr, "engine-start")
 	if err := fs.Parse(args); err != nil {
@@ -42,9 +42,20 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if _, err := instance.LoadConfig(l.ConfigFile()); err != nil {
+	cfg, err := instance.LoadConfig(l.ConfigFile())
+	if err != nil {
 		pf(stderr, "error: load instance config: %v\n", err)
 		return 2
+	}
+	engineConfig := cfg.EffectiveEngineConfig()
+	if *hostPort == "" {
+		*hostPort = engineConfig.HostPort
+	}
+	if *namespace == "" {
+		*namespace = engineConfig.Namespace
+	}
+	if *taskQueue == "" {
+		*taskQueue = engineConfig.TaskQueue
 	}
 	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {

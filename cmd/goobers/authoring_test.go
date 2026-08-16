@@ -83,7 +83,7 @@ func TestSchemaAndExplainIntrospectInstanceConfig(t *testing.T) {
 	if document.Kind != "instance" || document.Schema.Title != "Instance" {
 		t.Fatalf("schema instance emitted kind=%q title=%q", document.Kind, document.Schema.Title)
 	}
-	for _, section := range []string{"repos", "credentials", "telemetry", "runConditions", "runner"} {
+	for _, section := range []string{"repos", "credentials", "telemetry", "engine", "runConditions", "runner"} {
 		if _, ok := document.Schema.Properties[section]; !ok {
 			t.Errorf("instance schema does not publish %q", section)
 		}

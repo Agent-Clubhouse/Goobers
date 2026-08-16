@@ -429,6 +429,9 @@ func TestRepositoryStressWiring(t *testing.T) {
 	)
 	assertFileContains(t, filepath.Join(root, "test", "stress", "packages.txt"),
 		"./internal/localscheduler",
+		"./cmd/goobers",
+		"./internal/harness",
+		"./internal/httpapi",
 	)
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "stress.yml"),
 		"schedule:",

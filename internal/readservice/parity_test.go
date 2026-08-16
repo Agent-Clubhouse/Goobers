@@ -10,14 +10,11 @@ import (
 
 // UX parity for the filter space (#1920, #1782).
 //
-// §5.7's closed set is a promise about COST, not about which questions the
-// portal may ask. The Runs page constructs
+// §5.7's closed set is a promise about COST. The Runs page constructs
 // `gaggle x workflow x stage x outcome x population x since x until x phase`
 // from URL parameters, and Insight drill-through builds combinations
-// programmatically from a finite metric catalog. So a combination outside the
-// set must still be ANSWERED — by the journal path, slowly — because "if the
-// enumeration misses a combination drill-through can produce, that is a
-// regression against behavior that works today".
+// programmatically from a finite metric catalog. Combinations outside the set
+// must be refused rather than answered by an unbounded journal scan.
 //
 // These tests pin the two ways that promise can break.
 
@@ -52,21 +49,17 @@ func portalFilterSpace() []RunListOptions {
 	return out
 }
 
-// TestEligibilityAgreesWithTheStoreAboutEveryRequest pins that the two places
+// TestReadModelAdmissionAgreesWithTheStoreAboutEveryRequest pins that the two places
 // which derive filter dimensions from a request cannot disagree.
 //
-// `readModelEligible` calls readModelDims to decide whether to dispatch to the
-// read model; the store then calls ListOptions.Dims to decide whether to answer.
-// They are separate functions over the same request, and if they ever disagree
-// in the direction "eligible says yes, store says no", the store's typed
-// refusal escapes to the HTTP caller — a user gets
-// `unsupported_filter_combination` on a URL that worked before, with no
-// fallback, because the service already committed to the read-model path.
+// The service calls readModelDims before dispatch; the store then calls
+// ListOptions.Dims before querying. They are separate functions over the same
+// request and must produce the same admission decision.
 //
 // A drift of one line in either function produces that. This is the test that
 // catches it, and it enumerates rather than samples because the failure is one
 // combination out of 256.
-func TestEligibilityAgreesWithTheStoreAboutEveryRequest(t *testing.T) {
+func TestReadModelAdmissionAgreesWithTheStoreAboutEveryRequest(t *testing.T) {
 	for _, options := range portalFilterSpace() {
 		serviceDims := readModelDims(options)
 		_, serviceErr := readmodel.Require(serviceDims)
@@ -82,51 +75,38 @@ func TestEligibilityAgreesWithTheStoreAboutEveryRequest(t *testing.T) {
 			Until:      options.Until,
 			Limit:      50,
 			Stage:      options.Stage,
+			Outcome:    readmodel.Outcome(options.Outcome),
 			Population: readmodel.Population(options.StagePopulation),
 		}
 		_, storeErr := readmodel.Require(request.Dims())
 
-		eligible := serviceErr == nil
-		servable := storeErr == nil
-		if eligible && !servable {
-			t.Errorf("service judged {%s} eligible but the store refuses {%s}; "+
-				"the refusal would escape to the caller instead of falling back",
+		if (serviceErr == nil) != (storeErr == nil) {
+			t.Errorf("service admission for {%s} disagrees with store admission for {%s}",
 				readmodel.Key(serviceDims), readmodel.Key(request.Dims()))
 		}
 	}
 }
 
-// TestEveryPortalCombinationIsEitherServedOrFallsBack pins the parity promise
-// itself: no combination the portal can construct is left with no path.
+// TestEveryPortalCombinationIsServedOrRefused pins the closed-set promise.
 //
-// It checks the DECISION rather than executing a query, because the property is
-// about routing. A combination is fine if the read model serves it, and fine if
-// the read model refuses it — as long as refusal means "take the other path",
-// which is what readModelEligible returning false does.
-//
-// What would fail here is a combination that is neither in the closed set nor
-// reachable by the journal path, which is how a filter silently becomes
-// unanswerable.
-func TestEveryPortalCombinationIsEitherServedOrFallsBack(t *testing.T) {
-	var served, fallback int
+// It checks the decision rather than executing a query: each combination is
+// either admitted to the bounded read-model path or receives a typed refusal.
+func TestEveryPortalCombinationIsServedOrRefused(t *testing.T) {
+	var served, refused int
 	for _, options := range portalFilterSpace() {
 		if _, err := readmodel.Require(readModelDims(options)); err == nil {
 			served++
 			continue
 		}
-		// Refused by the closed set. The service must then choose a journal-
-		// derived path rather than surface the refusal — which it does, because
-		// readModelEligible is consulted before dispatch and its false answer
-		// falls through to listRunsIndexed / listRunsScanning.
-		fallback++
+		refused++
 	}
-	if served+fallback != 256 {
-		t.Fatalf("enumerated %d combinations, want 256", served+fallback)
+	if served+refused != 256 {
+		t.Fatalf("enumerated %d combinations, want 256", served+refused)
 	}
 	if served == 0 {
 		t.Error("no combination is served from the read model; the cutover is inert")
 	}
-	t.Logf("portal filter space: %d served from the read model, %d fall back", served, fallback)
+	t.Logf("portal filter space: %d served from the read model, %d refused", served, refused)
 }
 
 // TestPopulationWithoutTelemetryIsRefusedBeforeDispatch pins the ordering that
@@ -138,9 +118,9 @@ func TestEveryPortalCombinationIsEitherServedOrFallsBack(t *testing.T) {
 // a real one.
 //
 // It does not, because listRunsUnannotated refuses a telemetry-backed population
-// filter when Telemetry is nil BEFORE it consults readModelEligible. This test
-// pins that the guard exists and is reached, so the zeroed flags stay
-// unreachable rather than becoming a silent empty result.
+// filter when Telemetry is nil before dispatch. This test pins that the guard
+// exists, so the zeroed flags stay unreachable rather than becoming a silent
+// empty result.
 func TestPopulationWithoutTelemetryIsRefusedBeforeDispatch(t *testing.T) {
 	for _, population := range []StagePopulation{
 		StagePopulationTokenMeasured,

@@ -19,7 +19,7 @@ import (
 func TestApplyRoundTripsThroughLiveDaemonSweep(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestApplyRoundTripsThroughLiveDaemonSweep(t *testing.T) {
 func TestApplyReportsRejectedConfig(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestApplyReportsRejectedConfig(t *testing.T) {
 func TestApplyReportsOperationalError(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestApplyReportsOperationalError(t *testing.T) {
 func TestApplyReportsAlreadyCurrent(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
-	release, err := acquireDaemonLockWithTimeout(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

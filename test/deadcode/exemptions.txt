@@ -13,7 +13,24 @@ github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-con
 github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
 github.com/goobers/goobers/internal/missioncontrol.compare # Mission-control criterion evaluator reachable through retained contract entry points (#1449).
 github.com/goobers/goobers/internal/missioncontrol.Artifact.Validate # Versioned mission-control artifact validator retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateArtifactMetadata # Mission-control artifact metadata validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateEvidence # Mission-control evidence validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateSubsystemDefinitions # Mission-control subsystem-definition validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetrics # Mission-control metrics-section validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateSubsystems # Mission-control subsystem-section validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateOverall # Mission-control overall-section validator reachable through the retained artifact validator (#3038).
 github.com/goobers/goobers/internal/missioncontrol.validateMetric # Mission-control metric validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricMetadata # Mission-control metric metadata validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricCriterion # Mission-control metric criterion validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricValue # Mission-control metric value validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricTiming # Mission-control metric timing validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricStatus # Mission-control metric status validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validMetricReason # Mission-control metric verdict-reason guard reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricObservation # Mission-control metric observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateConclusiveMetricObservation # Mission-control conclusive-observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateStaleMetricObservation # Mission-control stale-observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricWithoutCanonicalValue # Mission-control canonical-value validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMissingMetricObservation # Mission-control missing-observation validator reachable through the retained artifact validator (#3038).
 github.com/goobers/goobers/internal/missioncontrol.validateAggregation # Mission-control aggregate validator reachable through the retained artifact validator (#1449).
 github.com/goobers/goobers/internal/missioncontrol.validateMembers # Mission-control membership validator reachable through the retained artifact validator (#1449).
 github.com/goobers/goobers/internal/missioncontrol.uniqueID # Mission-control identifier validator reachable through the retained artifact validator (#1449).
@@ -256,9 +273,3 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
-
-
-# constructed by `goobers worker --blob-store`, which lands with the worker
-# runtime-seams slice; MaterializeContext already consumes the Store interface.
-# These exemptions become stale the moment that slice merges, and test/deadcode
-# rejects stale entries — so removing them is part of that change, by design.

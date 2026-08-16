@@ -3485,6 +3485,160 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	}
 }
 
+// TestBuildBlockedHandlerDropsSelfReferentialBlocker covers #2961: an agent
+// naming the issue it is working on in outputs.blockedBy must not create a
+// one-node self-edge in blocked.json. The cycle detector would (correctly, for
+// persisted graph data) report that self-edge as a circular dependency and
+// park the issue needs-human with a cycle comment for a dependency that does
+// not exist. Filtered to nothing, the block is unattributed — needs-human
+// parking with no record and no cycle comment.
+func TestBuildBlockedHandlerDropsSelfReferentialBlocker(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-self", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "411",
+		Reason:   "content-exclusion-policy",
+		Blockers: []string{"411"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1 (park only, no cycle escalation): %+v", len(fake.calls), fake.calls)
+	}
+	got := fake.calls[0]
+	if got.ID != "411" {
+		t.Fatalf("request ID = %q, want 411", got.ID)
+	}
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s] — a self-reference is not a sibling dependency", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	if got.Comment != "" {
+		t.Fatalf("comment = %q, want empty — no cycle exists to explain", got.Comment)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked.json = %+v, want empty — a self-edge must never be persisted", recs)
+	}
+}
+
+// TestBuildBlockedHandlerKeepsRealBlockersAlongsideSelfReference proves the
+// #2961 filter is surgical: a result naming both itself and a genuine blocker
+// still records the genuine dependency and parks blocked-on-sibling.
+func TestBuildBlockedHandlerKeepsRealBlockersAlongsideSelfReference(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-mixed", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "411",
+		Reason:   "waiting on the schema change",
+		Blockers: []string{"411", "512"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1: %+v", len(fake.calls), fake.calls)
+	}
+	if got := fake.calls[0]; len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel {
+		t.Fatalf("AddLabels = %v, want [%s] — a real blocker survives the filter", got.AddLabels, blockedOnSiblingLabel)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	rec, ok := recs[blockedRecordKey(repo, "411")]
+	if !ok {
+		t.Fatalf("blocked.json = %+v, want a record for 411", recs)
+	}
+	if !slices.Equal(rec.Blockers, []string{"512"}) {
+		t.Fatalf("recorded blockers = %v, want [512] — the self-reference is dropped, the real blocker kept", rec.Blockers)
+	}
+}
+
+// TestBuildBlockedHandlerDropsSelfReferenceForClaimLedgerItems proves the
+// #2961 guard is applied per resolved item, not only when the run carried its
+// driving item: a fan-out run that claims its item mid-run resolves the id in
+// the handler, which is exactly where a self-reference would otherwise slip
+// past the runner-side filter.
+func TestBuildBlockedHandlerDropsSelfReferenceForClaimLedgerItems(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("349", "run-fanout-self", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err = h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-fanout-self", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", Reason: "blocked", Blockers: []string{"349"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1 (park only): %+v", len(fake.calls), fake.calls)
+	}
+	if got := fake.calls[0]; len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked.json = %+v, want empty — no self-edge from a ledger-resolved item", recs)
+	}
+}
+
 // TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty proves a run
 // started without StartInput.Item (scheduled/fan-out implementation runs
 // claim their item mid-run) still notifies the right issue: the handler
@@ -3633,6 +3787,61 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
+func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *instance.Config
+		published string
+		runID     string
+		want      string
+	}{
+		{
+			name:  "default local daemon",
+			cfg:   &instance.Config{},
+			runID: "run-1",
+			want:  "http://127.0.0.1:8080/#/run/run-1",
+		},
+		{
+			name: "TLS daemon and escaped run ID",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "ops.example:8443",
+				TLS:    &instance.APITLSConfig{},
+			}},
+			runID: "run/1",
+			want:  "https://ops.example:8443/#/run/run%2F1",
+		},
+		{
+			name: "published ephemeral port",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "127.0.0.1:0",
+			}},
+			published: "127.0.0.1:43210",
+			runID:     "run-2",
+			want:      "http://127.0.0.1:43210/#/run/run-2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			l := instance.NewLayout(t.TempDir())
+			if test.published != "" {
+				if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName), []byte(test.published+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := failureRunURL(l, test.cfg, test.runID)
+			if err != nil {
+				t.Fatalf("failureRunURL() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("failureRunURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 // TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
 // posts a streak comment with count=1 but does NOT apply needs-human. The
 // circuit breaker only fires at failureStreakThreshold (3).
@@ -3690,6 +3899,9 @@ func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	}
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "[`run-timeout`](http://127.0.0.1:8080/#/run/run-timeout)") {
+		t.Fatalf("comment = %q, want a durable portal run-details link", got.Comment)
 	}
 	if !strings.Contains(got.Comment, `data-count="1"`) {
 		t.Fatalf("comment = %q, want data-count=1 on first failure", got.Comment)
@@ -3830,6 +4042,92 @@ func TestBuildFailedHandlerNoClaimIsANoop(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
+	}
+}
+
+// TestTerminalCircuitBreakerTripsOnEscalated proves that repeated PhaseEscalated
+// terminals trigger the circuit breaker (needs-human + remove ready).
+func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("4", "run-esc", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	if h == nil {
+		t.Fatal("expected non-nil terminal notifier")
+	}
+
+	for i := 0; i < failureStreakThreshold; i++ {
+		if err := h("run-esc", journal.PhaseEscalated, "open-pr-gate"); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+
+	var labelCall *providers.UpdateWorkItemRequest
+	for i := range fake.calls {
+		if len(fake.calls[i].AddLabels) > 0 {
+			labelCall = &fake.calls[i]
+			break
+		}
+	}
+	if labelCall == nil {
+		t.Fatal("circuit breaker did not fire after threshold escalated terminals")
+	}
+	if !slices.Contains(labelCall.AddLabels, providers.LabelNeedsHuman) {
+		t.Fatalf("AddLabels = %v, want %s", labelCall.AddLabels, providers.LabelNeedsHuman)
+	}
+	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
+		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+// TestTerminalCircuitBreakerSkipsCompleted proves completed terminals do not
+// increment the failure streak.
+func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("5", "run-ok", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+
+	for i := 0; i < failureStreakThreshold+1; i++ {
+		_ = h("run-ok", journal.PhaseCompleted, "done")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Fatalf("completed terminals should not produce any provider calls, got %d", len(fake.calls))
 	}
 }
 

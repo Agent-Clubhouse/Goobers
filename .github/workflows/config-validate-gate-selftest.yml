@@ -7,12 +7,11 @@ name: Config Validate Gate Self-Test
 # (test/fixtures/validate-gate/{valid,invalid}).
 #
 # This builds goobers from source rather than invoking
-# .github/actions/validate directly: that action installs a pinned *tagged
-# release* archive, and no Goobers release has been cut yet (see
-# docs/guides/config-pr-validation-gate.md). Once a release exists, this
-# workflow's build step can be swapped for `uses: ./.github/actions/validate`
-# pinned to it — the validate/annotation logic under test is identical either
-# way, since the action's second step runs this exact command.
+# .github/actions/validate directly. External config repos use that action with
+# a pinned tagged release (v0.1.0 was first); this self-test exercises the
+# current source tree. The validate/annotation logic under test is identical,
+# since the action's second step runs this exact command. See
+# docs/guides/config-pr-validation-gate.md.
 
 on:
   push:

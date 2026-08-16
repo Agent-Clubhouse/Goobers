@@ -267,7 +267,7 @@ function RunDetailWorkspace({
       <header className="run-heading">
         <div className="run-heading-main">
           <div className="run-title-line">
-            <StatusBadge status={run.phase} />
+            <StatusBadge stale={run.stale} status={run.phase} />
             <span className="mono run-id">{run.id}</span>
           </div>
           <h1>Run {run.id}</h1>
@@ -326,6 +326,15 @@ function RunDetailWorkspace({
           </div>
         </dl>
       </header>
+
+      {run.stale && (
+        <div className="run-stale-state run-stale-run" role="status">
+          <span>
+            <strong>Stale / unmonitored</strong>
+            <small>No recent run activity is available and the daemon heartbeat is stale.</small>
+          </span>
+        </div>
+      )}
 
       {run.escalation && (
         <EscalationPanel

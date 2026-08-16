@@ -14,6 +14,7 @@ func TestRecordersAreNoOpsWhenDisabled(t *testing.T) {
 	RecordActiveScanDir()
 	RecordActiveScanOpen()
 	RecordInstanceLogAppend(100)
+	RecordInstanceTailRead(100)
 
 	if got := Take(); got != (Snapshot{}) {
 		t.Fatalf("Take() = %+v, want all-zero while disabled", got)
@@ -39,6 +40,7 @@ func TestEnableResetsAndStartsRecording(t *testing.T) {
 	RecordActiveScanOpen()
 	RecordInstanceLogAppend(64)
 	RecordInstanceLogAppend(36)
+	RecordInstanceTailRead(25)
 
 	want := Snapshot{
 		JournalOpens:       2,
@@ -46,6 +48,8 @@ func TestEnableResetsAndStartsRecording(t *testing.T) {
 		ActiveScanOpens:    1,
 		InstanceLogAppends: 2,
 		InstanceLogBytes:   100,
+		InstanceTailReads:  1,
+		InstanceTailBytes:  25,
 	}
 	if got := Take(); got != want {
 		t.Fatalf("Take() = %+v, want %+v", got, want)

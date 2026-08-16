@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -78,12 +79,14 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runMergeQueuePollADO(root, repo, stdout, stderr)
 	}
-	token, err := providerToken(capability.GitHubPRMerge)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRMerge),
+		withStageProviderMutations("pr"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -319,7 +322,14 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	labelProvider := newGitHubProvider(labelToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	labelProvider, err := newProviderForStage(providerStageRoot(""), repo, false,
+		withStageProviderToken(labelToken),
+		withStageProviderMutations("pr"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if _, err := labelProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: pullNumber, AddLabels: []string{needsRemediationLabel}, Comment: comment,
 	}); err != nil {
@@ -417,15 +427,15 @@ func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// mergeQueuePollBackoff returns base<<attempt capped at max — this
-// package's own copy of internal/executor/cipoll.go's unexported backoff,
-// for the same capped-exponential poll cadence.
+// mergeQueuePollBackoff returns a jittered duration between half and all of
+// base<<attempt, with the exponential ceiling capped at max.
 func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
-	d := base << attempt
-	if d <= 0 || d > max {
-		return max
+	ceiling := base << attempt
+	if ceiling <= 0 || ceiling > max {
+		ceiling = max
 	}
-	return d
+	floor := ceiling / 2
+	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
 // runMergeQueuePollADO is merge-queue-poll's Azure DevOps land oracle
@@ -467,7 +477,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	adoProvider, err := newADOProviderForStage(root, repo)
+	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

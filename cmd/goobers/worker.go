@@ -39,13 +39,12 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             content-addressed artifact store; required\n" +
 	"                             for a run whose stages are served by more\n" +
 	"                             than one worker (default $GOOBERS_BLOB_STORE)\n" +
-	"  --task-queue <queue>       task queue to serve; repeatable for multiple\n" +
-	"                             queues (default $GOOBERS_TASK_QUEUE, else\n" +
-	"                             \"goobers-engine\")\n" +
-	"  --temporal-hostport <h:p>  Temporal frontend (default\n" +
-	"                             $GOOBERS_TEMPORAL_HOSTPORT, else 127.0.0.1:7233)\n" +
-	"  --temporal-namespace <ns>  Temporal namespace (default\n" +
-	"                             $GOOBERS_TEMPORAL_NAMESPACE, else \"default\")\n" +
+	"  --task-queue <queue>       task queue to serve; repeatable (default\n" +
+	"                             engine.taskQueue, with env override)\n" +
+	"  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,\n" +
+	"                             with env override)\n" +
+	"  --temporal-namespace <ns>  Temporal namespace (default engine.namespace,\n" +
+	"                             with env override)\n" +
 	"  --drain-timeout <dur>      graceful-drain bound after a shutdown signal\n" +
 	"                             (default 30s)\n" +
 	"  --work-root <dir>          root for stage workspaces (default: a\n" +
@@ -78,8 +77,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var queues repeatableFlag
 	fs.Var(&queues, "task-queue", "task queue to serve (repeatable)")
-	hostPort := fs.String("temporal-hostport", workerEnvOr("GOOBERS_TEMPORAL_HOSTPORT", "127.0.0.1:7233"), "Temporal frontend host:port")
-	namespace := fs.String("temporal-namespace", workerEnvOr("GOOBERS_TEMPORAL_NAMESPACE", "default"), "Temporal namespace")
+	hostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port")
+	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	drain := fs.Duration("drain-timeout", workerhost.DefaultDrainTimeout, "graceful-drain bound after a shutdown signal")
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
@@ -92,8 +91,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
+	engineConfig, err := resolveEngineConfig(*instanceRoot)
+	if err != nil {
+		pf(stderr, "error: load engine config: %v\n", err)
+		return 2
+	}
+	if *hostPort == "" {
+		*hostPort = engineConfig.HostPort
+	}
+	if *namespace == "" {
+		*namespace = engineConfig.Namespace
+	}
 	if len(queues) == 0 {
-		queues = repeatableFlag{workerEnvOr("GOOBERS_TASK_QUEUE", bootstrap.DefaultTaskQueue)}
+		queues = repeatableFlag{engineConfig.TaskQueue}
 	}
 
 	root := *workRoot

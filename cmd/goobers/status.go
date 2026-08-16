@@ -478,7 +478,7 @@ const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
-	"With --daemon, report daemon health instead.\n" +
+	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
@@ -494,7 +494,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	gaggleFilter := fs.String("gaggle", "", "filter by gaggle name")
-	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
+	limit := fs.Int("limit", 50, "maximum number of runs to show (default: 50; 0 for all)")
 	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
 	// line — all daemon/process runtime state, not part of `runs list`'s
 	// plain, scriptable run table.
@@ -511,6 +511,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	limitSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "limit" {
+			limitSet = true
+		}
+	})
 	if *limit < 0 {
 		pf(stderr, "error: --limit must be non-negative\n")
 		return 2
@@ -523,7 +529,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || *limit != 0 || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -715,7 +721,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		fleetSummary = &summary
 	}
-	runs = selectStatusRuns(allRuns, options)
+	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		if supportsWatch {
@@ -747,10 +753,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	pf(stdout, "%s", statusText)
 	renderStatus(stdout, runs, now)
+	renderOlderRunsHint(stdout, olderRuns)
 	return 0
 }
 
-func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
+func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, int) {
 	filtered := make([]runSummary, 0, len(runs))
 	for _, run := range runs {
 		if options.workflow != "" && run.Workflow != options.workflow {
@@ -773,9 +780,9 @@ func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
 		return filtered[i].StartedAt.After(filtered[j].StartedAt)
 	})
 	if options.limit > 0 && len(filtered) > options.limit {
-		filtered = filtered[:options.limit]
+		return filtered[:options.limit], len(filtered) - options.limit
 	}
-	return filtered
+	return filtered, 0
 }
 
 func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
@@ -789,6 +796,12 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n",
 			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339),
 			formatLastActivity(now, r.LastActivityAt))
+	}
+}
+
+func renderOlderRunsHint(stdout io.Writer, olderRuns int) {
+	if olderRuns > 0 {
+		pf(stdout, "%d older runs; use --limit 0 for all\n", olderRuns)
 	}
 }
 
@@ -832,7 +845,9 @@ func watchStatus(
 		if err != nil {
 			return err
 		}
-		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current), now)
+		runs, olderRuns := selectStatusRuns(allRuns, options)
+		renderStatusWatchFrame(stdout, statusText, runs, changedStatusRuns(previous, current), now)
+		renderOlderRunsHint(stdout, olderRuns)
 		previous = current
 
 		select {
@@ -932,11 +947,13 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			pf(stdout, "daemon unhealthy: pid %d, uptime %s, version %s, last tick %s ago (threshold %s), live runs %d\n",
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
+			reportDaemonBehavior(stdout, identity.Behavior)
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
+		reportDaemonBehavior(stdout, identity.Behavior)
 		return 0
 	}
 	if identity != nil {
@@ -944,8 +961,28 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, identity.StartedAt.Format(time.RFC3339), identity.Version, liveRuns)
 		return 1
 	}
+
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
+	if behavior == nil {
+		pln(stdout, "daemon behavior: unavailable (daemon predates behavior reporting)")
+		return
+	}
+	drainTimeout := "unbounded"
+	if behavior.DrainTimeoutNanos > 0 {
+		drainTimeout = time.Duration(behavior.DrainTimeoutNanos).String()
+	}
+	pf(stdout,
+		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t\n",
+		behavior.WatchConfig,
+		behavior.Diagnostics,
+		drainTimeout,
+		behavior.SkipPreflight,
+		behavior.DisableReadModelReads,
+	)
 }
 
 func daemonLivenessLabel(liveness daemonstate.Liveness) string {

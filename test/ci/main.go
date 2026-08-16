@@ -297,6 +297,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
+		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 	}
 
@@ -418,6 +419,13 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			label:        "portal-test",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "test"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-deadcode",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "deadcode"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

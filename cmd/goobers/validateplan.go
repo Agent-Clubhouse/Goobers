@@ -7,9 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
-	"github.com/goobers/goobers/providers"
 )
 
 const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
@@ -68,36 +66,9 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var issueProvider providers.BacklogProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
-			return 1
-		}
-		issueProvider = adoProvider
-	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token)
-		if gerr != nil {
-			pf(stderr, "error: %v\n", gerr)
-			return 1
-		}
-		issueProvider = giteaProvider
-	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		issueProvider = newCachedGitHubProvider(root, token)
-	default:
-		pf(stderr, "error: validate-plan does not support repository provider %q\n", repo.Provider)
+	issueProvider, err := newProviderForStage(root, repo, false, withStageProviderCache())
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 

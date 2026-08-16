@@ -104,7 +104,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
 	}
 }
 
-func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
+func TestTaskExecutor_CIPollUsesDeclaredPollIntervalAsJitterCeiling(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &fakePoller{results: []providers.CheckState{
 		providers.CheckStatePending,
@@ -137,8 +137,8 @@ func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if slept != 7*time.Second {
-		t.Fatalf("poll sleep = %s, want declared 7s cadence", slept)
+	if slept < 3500*time.Millisecond || slept > 7*time.Second {
+		t.Fatalf("poll sleep = %s, want jittered range [3.5s, 7s]", slept)
 	}
 }
 

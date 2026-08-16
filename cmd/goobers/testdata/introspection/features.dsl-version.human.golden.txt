@@ -62,27 +62,34 @@ stage.run.workspace.scratch                        1.4          ga              
 stage.shell                                        1.4          ga               deprecated       dev
 task.agentic                                       1.4          ga               deprecated       dev
 task.capabilities                                  1.4          ga               deprecated       dev
+task.contextFrom                                   1.4          ga               deprecated       dev
 task.continueOnError                               1.4          ga               deprecated       dev
 task.deterministic                                 1.4          ga               deprecated       dev
 task.expectedOutputs                               1.4          ga               deprecated       dev
 task.goal                                          1.4          ga               deprecated       dev
 task.goober                                        1.4          ga               deprecated       dev
 task.inputs                                        1.4          ga               deprecated       dev
+task.inputs.fieldOrder                             1.4          ga               deprecated       dev
 task.inputsFrom                                    1.4          ga               deprecated       dev
 task.limits                                        1.4          ga               deprecated       dev
 task.limits.maxCostUSD                             1.4          ga               deprecated       dev
 task.limits.maxDurationSeconds                     1.4          ga               deprecated       dev
 task.limits.maxTokens                              1.4          ga               deprecated       dev
+task.minimumIntegrity                              1.4          ga               deprecated       dev
 task.name                                          1.4          ga               deprecated       dev
 task.next                                          1.4          ga               deprecated       dev
 task.onTimeout.fail                                1.4          ga               deprecated       dev
 task.onTimeout.salvage                             1.4          ga               deprecated       dev
+task.policyActions                                 1.4          ga               deprecated       dev
 task.retry                                         1.4          ga               deprecated       dev
 task.retry.backoff                                 1.4          ga               deprecated       dev
 task.retry.maxAttempts                             1.4          ga               deprecated       dev
 task.timeoutSeconds                                1.4          ga               deprecated       dev
 trigger.backlog-item                               1.4          ga               deprecated       dev
 trigger.backlog-item.selector                      1.4          ga               deprecated       dev
+trigger.backlog-item.trustLabel                    1.4          ga               deprecated       dev
+trigger.fieldPredicate                             1.4          ga               deprecated       dev
+trigger.labelPredicate                             1.4          ga               deprecated       dev
 trigger.manual                                     1.4          ga               deprecated       dev
 trigger.schedule                                   1.4          ga               deprecated       dev
 trigger.signal                                     1.4          ga               deprecated       dev
@@ -96,6 +103,7 @@ workflow.spec.readiness.maxConcurrentRuns          1.4          ga              
 workflow.spec.readiness.maxOpenPRs                 1.4          ga               deprecated       dev
 workflow.spec.readiness.maxRunsPerDay              1.4          ga               deprecated       dev
 workflow.spec.readiness.maxRunsPerHour             1.4          ga               deprecated       dev
+workflow.spec.runControls                          1.4          ga               deprecated       dev
 workflow.spec.start                                1.4          ga               deprecated       dev
 workflow.spec.tasks                                1.4          ga               deprecated       dev
 workflow.spec.triggers                             1.4          ga               deprecated       dev
@@ -103,4 +111,4 @@ workflow.terminal.abort                            1.4          ga              
 workflow.terminal.complete                         1.4          ga               deprecated       dev
 workflow.terminal.escalate                         1.4          ga               deprecated       dev
 
-103 feature/version row(s)
+111 feature/version row(s)

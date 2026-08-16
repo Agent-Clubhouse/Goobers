@@ -14,7 +14,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 | Path | Contents | Shape doc |
 |---|---|---|
-| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, journal storage | §2, §3, §4, §5 |
+| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage | §2, §3, §4, §5 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy | §2, §4, §5 |
@@ -60,18 +60,22 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
   you deploy — regenerate from `api/v1alpha1` (`make manifests`) rather than trusting a
   stale checkout; the committed `config/crd/bases` are not CI-gated.
-- **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) and the
-  daemon API's in-cluster listener (#652) are stubbed with CHANGE-ME comments until those
-  land — per #663 the manifests express the target shape now.
+- **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) are stubbed
+  with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
+  disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
+  current lock-owning daemon would also contend with the worker for the RWO instance
+  volume. Per #663 the manifests express the target shape now.
 
 ## Validation
 
-No cluster is required — `make deploy-validate` runs the kustomize builds, or by hand:
+No cluster is required. The merge gate runs `make deploy-validate`, which renders all
+three kustomizations and passes them through strict kubeconform schema validation.
+The Go test suite also checks every Deployment's container arguments against the
+registered CLI flags and requires execution-critical worker flags such as `--instance`.
+Run the same render and schema gate locally with:
 
 ```sh
-kubectl kustomize deploy/reference/goobers-system
-kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a
-kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b
+make deploy-validate
 
 # Temporal values render (pinned chart version — see temporal/values.yaml header):
 helm repo add temporal https://go.temporal.io/helm-charts
@@ -126,17 +130,19 @@ fails to unpack a Linux image and the client falls back to an anonymous token
 request. Ignore the 401 and look for `io.containerd.snapshotter.v1.windows` in the
 message.
 
-### Storage: `doctor --k8s` blessing an RWX class is not a blessing for the journal
+### Storage: keep the instance root on RWO and artifacts on RWX
 
-The preflight infers RWX capability from the provisioner. On Azure Files, EFS,
-Filestore, CephFS and NFS, POSIX `flock` does not exclude across clients and
-SQLite WAL is documented-unsafe — and the instance root carries both file locks
-and SQLite databases (#2854). Put the **journal** on a ReadWriteOnce block volume.
+`goobers doctor --k8s` warns when it finds an RWX-capable class because
+provisioner-name inference cannot prove cross-client coordination safety. On
+Azure Files, EFS, Filestore, CephFS and NFS, POSIX `flock` does not exclude
+across clients and SQLite WAL is documented-unsafe — and the instance root
+carries both file locks and SQLite databases (#2854). Put the **instance root
+and journal** on a ReadWriteOnce block volume mounted by a single node.
 
-The **artifact store** is the opposite case and safe on exactly those classes,
-because a content-addressed store never locks: a digest is written once,
-published by rename, and two writers racing on one digest are writing identical
-bytes.
+The **artifact store** is the opposite case: put it on a ReadWriteMany volume.
+It is safe on exactly those network storage classes because a content-addressed
+store never locks: a digest is written once, published by rename, and two
+writers racing on one digest are writing identical bytes.
 
 ### Secrets
 

@@ -910,7 +910,7 @@ summary:focus-visible {
 }
 
 .attention-row {
-  align-items: center;
+  align-items: start;
   background: var(--danger-soft);
   border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
   border-radius: 11px;
@@ -1259,6 +1259,10 @@ summary:focus-visible {
 
 .status-running {
   color: var(--active);
+}
+
+.status-stale {
+  color: var(--warning-ink);
 }
 
 .status-completed {
@@ -3499,13 +3503,21 @@ a.telemetry-error-row:hover {
   justify-content: space-between;
 }
 
-.run-stale-state-error > span {
+.run-stale-state-error > span,
+.run-stale-run > span {
   display: grid;
   gap: 2px;
 }
 
-.run-stale-state-error small {
+.run-stale-state-error small,
+.run-stale-run small {
   color: var(--muted-strong);
+}
+
+.run-stale-run {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .run-id {

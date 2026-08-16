@@ -837,26 +837,27 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
-		Provider:   ProviderADO,
-		ID:         strconv.Itoa(item.ID),
-		ExternalID: strconv.Itoa(item.Rev),
-		Revision:   strconv.Itoa(item.Rev),
-		Type:       stringField(item.Fields, "System.WorkItemType"),
-		Title:      stringField(item.Fields, "System.Title"),
-		Body:       stringField(item.Fields, "System.Description"),
-		Labels:     labels,
-		State:      state,
-		Status:     statusFromLabels(labels, string(status)),
-		Assignee:   stringField(item.Fields, "System.AssignedTo"),
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        item.URL,
-		CreatedAt:  timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:  updated,
-		Fields:     adoWorkItemFields(item),
-		Raw:        item,
-		Integrity:  apiintegrity.Unapproved,
+		Provider:       ProviderADO,
+		ID:             strconv.Itoa(item.ID),
+		ExternalID:     strconv.Itoa(item.Rev),
+		Revision:       strconv.Itoa(item.Rev),
+		Type:           stringField(item.Fields, "System.WorkItemType"),
+		Title:          stringField(item.Fields, "System.Title"),
+		Body:           stringField(item.Fields, "System.Description"),
+		Labels:         labels,
+		State:          state,
+		Status:         statusFromLabels(labels, string(status)),
+		Assignee:       stringField(item.Fields, "System.AssignedTo"),
+		Links:          links,
+		Parent:         parent,
+		Hierarchy:      hierarchy,
+		URL:            item.URL,
+		CreatedAt:      timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:      updated,
+		Fields:         adoWorkItemFields(item),
+		BlockedByCount: adoBlockedByCount(item.Relations),
+		Raw:            item,
+		Integrity:      apiintegrity.Unapproved,
 	}
 }
 
@@ -930,6 +931,16 @@ func adoHierarchy(relations []adoRelation) (*WorkItemRef, []Link, map[string]int
 		}
 	}
 	return parent, links, hierarchy
+}
+
+func adoBlockedByCount(relations []adoRelation) int {
+	count := 0
+	for _, relation := range relations {
+		if relation.Rel == "System.LinkTypes.Dependency-Reverse" {
+			count++
+		}
+	}
+	return count
 }
 
 func lastPathSegment(value string) string {

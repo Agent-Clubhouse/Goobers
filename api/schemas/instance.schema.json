@@ -46,6 +46,10 @@
       "description": "This runner's static claims and execution defaults: the toolchains it advertises, the extra ambient environment variables stages may see, and the baseline stage deadline.",
       "$ref": "#/$defs/runner"
     },
+    "engine": {
+      "description": "Tier-3 Temporal engine connection shared by the runtime, scheduler, workers, dispatchers, and daemon projection loop. GOOBERS_TEMPORAL_HOSTPORT, GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE override these values at process startup.",
+      "$ref": "#/$defs/engine"
+    },
     "runConditions": {
       "description": "Instance-wide ceilings on top of each workflow's own readiness block. They only ever narrow what a workflow already permits.",
       "$ref": "#/$defs/runConditions"
@@ -466,6 +470,32 @@
             "items": { "type": "string", "minLength": 1 }
           },
           "propertyNames": { "$ref": "#/$defs/harnessName" }
+        }
+      }
+    },
+    "engine": {
+      "description": "Temporal frontend and routing configuration. Omitted fields use the documented local defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostPort": {
+          "type": "string",
+          "minLength": 3,
+          "pattern": "^\\S+:\\S+$",
+          "description": "Temporal frontend in host:port form. GOOBERS_TEMPORAL_HOSTPORT overrides this value.",
+          "examples": ["temporal.example.com:7233"]
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "Temporal namespace. Defaults to `default`; GOOBERS_TEMPORAL_NAMESPACE overrides this value."
+        },
+        "taskQueue": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "Task queue used for engine workflows and activities. Defaults to `goobers-engine`; GOOBERS_TASK_QUEUE overrides this value."
         }
       }
     },

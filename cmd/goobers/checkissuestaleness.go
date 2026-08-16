@@ -68,40 +68,31 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// DevOps the pinned work item lives in the backlog project — a different
 	// project from the routed code repo the PR/branch landed in — so its
 	// GetWorkItem read must target the backlog project (backlogRepoRefForStage).
-	var prProvider, issuesProvider providers.Provider
 	issuesRepo := repo
-	switch repo.Provider {
-	case providers.ProviderADO:
-		// The ADO provider resolves its own org-scoped auth from instance
-		// config; never resolve a github:* capability token on this branch. One
-		// provider serves both the PR poll (routed code repo) and the work-item
-		// read (backlog project) — it is organization-scoped, only the project
-		// tier differs.
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
-			return 1
-		}
-		prProvider = adoProvider
-		issuesProvider = adoProvider
+	prProvider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider := prProvider
+	if repo.Provider == providers.ProviderADO {
 		issuesRepo = backlogRepoRefForStage(root, repo)
-	default:
+	} else {
 		// The PR poll and the originating-issue read authenticate with distinct
 		// capabilities (github:pr:write vs github:issues:write), the same split
 		// gather-issue-context uses, so issue resolution never fails on a
 		// PR-scoped credential and vice versa.
-		prToken, terr := providerToken(capability.GitHubPRWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
+		issuesProvider, err = newProviderForStage(root, repo, false,
+			withStageProviderCapability(capability.GitHubIssuesWrite),
+			withStageProviderCache(),
+		)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		issuesToken, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		prProvider = newCachedGitHubProvider(root, prToken)
-		issuesProvider = newCachedGitHubProvider(root, issuesToken)
 	}
 
 	ctx, cancel := providerCommandContext()

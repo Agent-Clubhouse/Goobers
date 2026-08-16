@@ -369,6 +369,7 @@ const (
 	featureWorkflowDisplayName            FeatureID = "workflow.spec.displayName"
 	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
+	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
 	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
 	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
 	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
@@ -407,6 +408,9 @@ const (
 	featureTriggerManual                  FeatureID = "trigger.manual"
 	featureTriggerBacklogItem             FeatureID = "trigger.backlog-item"
 	featureTriggerBacklogItemSelector     FeatureID = "trigger.backlog-item.selector"
+	featureTriggerBacklogItemTrustLabel   FeatureID = "trigger.backlog-item.trustLabel"
+	featureTriggerLabelPredicate          FeatureID = "trigger.labelPredicate"
+	featureTriggerFieldPredicate          FeatureID = "trigger.fieldPredicate"
 	featureTriggerSchedule                FeatureID = "trigger.schedule"
 	featureTriggerSignal                  FeatureID = "trigger.signal"
 	featureTriggerWebhook                 FeatureID = "trigger.webhook"
@@ -416,9 +420,13 @@ const (
 	featureTaskGoal                       FeatureID = "task.goal"
 	featureTaskGoober                     FeatureID = "task.goober"
 	featureTaskInputs                     FeatureID = "task.inputs"
+	featureTaskInputFieldOrder            FeatureID = "task.inputs.fieldOrder"
 	featureTaskInputsFrom                 FeatureID = "task.inputsFrom"
 	featureTaskInputsFromQualified        FeatureID = "task.inputsFrom.stageQualified"
 	featureTaskCapabilities               FeatureID = "task.capabilities"
+	featureTaskMinimumIntegrity           FeatureID = "task.minimumIntegrity"
+	featureTaskContextFrom                FeatureID = "task.contextFrom"
+	featureTaskPolicyActions              FeatureID = "task.policyActions"
 	featureTaskRetry                      FeatureID = "task.retry"
 	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
 	featureTaskRetryBackoff               FeatureID = "task.retry.backoff"
@@ -503,6 +511,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowDisplayName,
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
+		featureWorkflowRunControls,
 		featureWorkflowMaxConcurrentRuns,
 		featureWorkflowMaxRunsPerHour,
 		featureWorkflowMaxRunsPerDay,
@@ -541,6 +550,9 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTriggerManual,
 		featureTriggerBacklogItem,
 		featureTriggerBacklogItemSelector,
+		featureTriggerBacklogItemTrustLabel,
+		featureTriggerLabelPredicate,
+		featureTriggerFieldPredicate,
 		featureTriggerSchedule,
 		featureTriggerSignal,
 		featureTriggerWebhook,
@@ -550,9 +562,13 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskGoal,
 		featureTaskGoober,
 		featureTaskInputs,
+		featureTaskInputFieldOrder,
 		featureTaskInputsFrom,
 		featureTaskInputsFromQualified,
 		featureTaskCapabilities,
+		featureTaskMinimumIntegrity,
+		featureTaskContextFrom,
+		featureTaskPolicyActions,
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
 		featureTaskRetryBackoff,
@@ -727,6 +743,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	if def.Spec.Readiness.MaxOpenPRs != 0 {
 		used.add(featureWorkflowMaxOpenPRs)
 	}
+	if def.Spec.RunControls != nil {
+		used.add(featureWorkflowRunControls)
+	}
 	for _, trigger := range def.Spec.Triggers {
 		addTriggerFeatures(used, trigger)
 	}
@@ -831,6 +850,15 @@ func FeaturesForGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 }
 
 func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {
+	if trigger.TrustLabel != "" {
+		used.add(featureTriggerBacklogItemTrustLabel)
+	}
+	if trigger.LabelPredicate != "" {
+		used.add(featureTriggerLabelPredicate)
+	}
+	if trigger.FieldPredicate != "" {
+		used.add(featureTriggerFieldPredicate)
+	}
 	switch trigger.Type {
 	case apiv1.TriggerManual:
 		used.add(featureTriggerManual)
@@ -868,6 +896,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.Inputs != nil {
 		used.add(featureTaskInputs)
 	}
+	if _, ok := task.Inputs["fieldOrder"]; ok {
+		used.add(featureTaskInputFieldOrder)
+	}
 	if task.Inputs["resultFile"] != "" {
 		used.add(featureStageResultFile)
 	}
@@ -876,6 +907,15 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	}
 	if task.Capabilities != nil {
 		used.add(featureTaskCapabilities)
+	}
+	if task.MinimumIntegrity != "" {
+		used.add(featureTaskMinimumIntegrity)
+	}
+	if task.ContextFrom != nil {
+		used.add(featureTaskContextFrom)
+	}
+	if task.PolicyActions != nil {
+		used.add(featureTaskPolicyActions)
 	}
 	addRetryFeatures(used, task.Retry, retryFeatureIDs{
 		policy:      featureTaskRetry,

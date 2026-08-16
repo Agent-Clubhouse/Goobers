@@ -169,8 +169,10 @@ func (f *fakeStore) Tombstoned(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeStore) ProjectedRunIDsBefore(
+func (f *fakeStore) ProjectedRunIDsAfter(
 	context.Context,
+	time.Time,
+	string,
 	time.Time,
 	int,
 ) ([]readmodel.RunRow, error) {
@@ -226,6 +228,37 @@ func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
 	if got := store.commitOrder(); len(got) != 2 ||
 		got[0] != "run-a" || got[1] != "sweep-cursor" {
 		t.Errorf("commit order = %v, want [run-a sweep-cursor]", got)
+	}
+}
+
+func TestAcceptedCommitFinishesBeforeCancellationReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	projector := New(newFakeStore(), newFakeIntake(), Options{})
+	stop := projector.Start(context.Background())
+	defer stop()
+
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	committed := make(chan error, 1)
+	go func() {
+		committed <- projector.commit(ctx, commitRequest{write: func(context.Context, Store) error {
+			close(accepted)
+			<-release
+			return nil
+		}})
+	}()
+
+	<-accepted
+	cancel()
+	select {
+	case err := <-committed:
+		t.Fatalf("accepted commit returned before its write finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-committed; err != nil {
+		t.Fatalf("accepted commit: %v", err)
 	}
 }
 
