@@ -544,6 +544,19 @@ func TestCompileRejectsBadSchedule(t *testing.T) {
 	}
 }
 
+func TestCompileValidatesScheduleIdleBackoff(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{
+		Type:        apiv1.TriggerSchedule,
+		Schedule:    "* * * * *",
+		IdleBackoff: &apiv1.IdleBackoff{Floor: "10m", Ceiling: "2m"},
+	}}
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "ceiling 2m0s must not be below floor 10m0s") {
+		t.Fatalf("expected invalid idle-backoff bounds, got %v", err)
+	}
+}
+
 func TestCompileRejectsScheduleThatNeverFires(t *testing.T) {
 	spec := linearSpec()
 	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "0 0 30 2 *"}}
