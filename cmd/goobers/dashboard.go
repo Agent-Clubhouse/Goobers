@@ -273,7 +273,7 @@ func parseDashboardListen(value string) (string, dashboardPort, error) {
 	return host, dashboardPort{number: number}, nil
 }
 
-// validateDashboardListenHost fails closed exactly the way validateAPIConfig
+// validateDashboardListenHost fails closed exactly the way instance config validation
 // gates the daemon API (#640, SEC-043): a loopback host keeps the tier-1
 // local-trust default, and a non-loopback host is refused unless the
 // instance has an authenticator configured (api.auth.oidc) — there is
@@ -299,7 +299,7 @@ func validateDashboardListenHost(host string, config *instance.Config) error {
 
 // dashboardHostIsLoopback reports whether host (a bare host, no port) is a
 // loopback address or "localhost", reusing instance.IsLoopbackListenAddress
-// (the same check validateAPIConfig runs) by pairing host with a throwaway
+// (the same check instance config validation runs) by pairing host with a throwaway
 // port purely to satisfy its host:port signature.
 func dashboardHostIsLoopback(host string) bool {
 	return instance.IsLoopbackListenAddress(net.JoinHostPort(host, "0"))
