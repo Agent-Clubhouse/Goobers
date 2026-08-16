@@ -709,8 +709,8 @@ jobs:
       # on Windows the open handles keep the temp dir's *.db files locked and
       # the test's own cleanup then fails (#2031).
       # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
-      # on Windows, where no OS timezone database exists, guarding the CLI's
-      # embedded time/tzdata import (#2863).
+      # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
+      # Windows must use the CLI's embedded time/tzdata import (#2863).
       - name: Windows CLI runtime
         run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone'
 
