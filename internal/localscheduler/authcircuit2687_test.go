@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -60,39 +61,46 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 }
 
 func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {
-	starter := &fakeStarter{result: StartResult{
-		Phase:          journal.PhaseFailed,
-		FailureStage:   "query-backlog",
-		FailureCode:    providers.ErrorCodeAuthFailed,
-		FailureMessage: "permission denied",
-	}}
-	sched, _ := newTestScheduler(t, []WorkflowEntry{{
-		Workflow:  "implementation",
-		Gaggle:    "goobers-site",
-		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
-		Starter:   starter,
-	}})
+	for _, failureCode := range []string{
+		providers.ErrorCodeAuthFailed,
+		telemetry.ErrCodeCredentialUnavailable,
+	} {
+		t.Run(failureCode, func(t *testing.T) {
+			starter := &fakeStarter{result: StartResult{
+				Phase:          journal.PhaseFailed,
+				FailureStage:   "query-backlog",
+				FailureCode:    failureCode,
+				FailureMessage: "permission denied",
+			}}
+			sched, _ := newTestScheduler(t, []WorkflowEntry{{
+				Workflow:  "implementation",
+				Gaggle:    "goobers-site",
+				Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+				Starter:   starter,
+			}})
 
-	if _, err := sched.Trigger(context.Background(), "implementation", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	identity := WorkflowIdentity{Gaggle: "goobers-site", Workflow: "implementation"}
-	waitForCount(t, func() int {
-		if sched.authCircuitOpen(identity) {
-			return 1
-		}
-		return 0
-	}, 1)
+			if _, err := sched.Trigger(context.Background(), "implementation", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			identity := WorkflowIdentity{Gaggle: "goobers-site", Workflow: "implementation"}
+			waitForCount(t, func() int {
+				if sched.authCircuitOpen(identity) {
+					return 1
+				}
+				return 0
+			}, 1)
 
-	_, err := sched.Trigger(context.Background(), "implementation", time.Now())
-	var rejected *TriggerRejectedError
-	if !errors.As(err, &rejected) {
-		t.Fatalf("second trigger error = %v, want TriggerRejectedError", err)
-	}
-	if !strings.HasPrefix(rejected.Reason, ReasonProviderAuth) {
-		t.Fatalf("second trigger reason = %q, want %q prefix", rejected.Reason, ReasonProviderAuth)
-	}
-	if got := starter.count(); got != 1 {
-		t.Fatalf("run starts after permanent auth failure = %d, want 1", got)
+			_, err := sched.Trigger(context.Background(), "implementation", time.Now())
+			var rejected *TriggerRejectedError
+			if !errors.As(err, &rejected) {
+				t.Fatalf("second trigger error = %v, want TriggerRejectedError", err)
+			}
+			if !strings.HasPrefix(rejected.Reason, ReasonProviderAuth) {
+				t.Fatalf("second trigger reason = %q, want %q prefix", rejected.Reason, ReasonProviderAuth)
+			}
+			if got := starter.count(); got != 1 {
+				t.Fatalf("run starts after permanent auth failure = %d, want 1", got)
+			}
+		})
 	}
 }

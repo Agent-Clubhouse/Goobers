@@ -717,6 +717,11 @@ func buildSchedulerDefinitions(
 				}
 			}
 		}
+		if len(scheds) > 0 {
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg.Credentials); err != nil {
+				return nil, err
+			}
+		}
 		pollFallbackCause := ""
 		if hasRepositoryWebhook && len(scheds) > 0 {
 			switch {
@@ -799,6 +804,69 @@ func buildSchedulerDefinitions(
 		Worktrees:         firstWorktrees,
 		WorktreesByGaggle: wtManagers,
 	}, nil
+}
+
+func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, grants []instance.CredentialGrant) error {
+	envByCapability := make(map[string]string, len(grants))
+	for _, grant := range grants {
+		if grant.Capability != "" && grant.Token.Env != "" {
+			envByCapability[grant.Capability] = grant.Token.Env
+		}
+	}
+	required := staticallyRequiredWorkflowStates(machine.Graph())
+	for _, task := range machine.Def.Spec.Tasks {
+		if !required[task.Name] {
+			continue
+		}
+		for _, capability := range task.Capabilities {
+			env, credentialed := envByCapability[capability]
+			if !credentialed {
+				continue
+			}
+			value, set := os.LookupEnv(env)
+			switch {
+			case !set:
+				return fmt.Errorf("workflow %q cannot be scheduled: credential capability %q requires environment variable %q, which is not set", machine.Def.Name, capability, env)
+			case strings.TrimSpace(value) == "":
+				return fmt.Errorf("workflow %q cannot be scheduled: credential capability %q requires environment variable %q, which is empty", machine.Def.Name, capability, env)
+			}
+		}
+	}
+	return nil
+}
+
+func staticallyRequiredWorkflowStates(graph workflow.Graph) map[string]bool {
+	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
+	}
+	required := make(map[string]bool, len(graph.Nodes))
+	for _, candidate := range graph.Nodes {
+		if candidate.ID == graph.Start {
+			required[candidate.ID] = true
+			continue
+		}
+		visited := make(map[string]bool, len(graph.Nodes))
+		pending := []string{graph.Start}
+		canFinishWithoutCandidate := false
+		for len(pending) > 0 && !canFinishWithoutCandidate {
+			state := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if state == candidate.ID || visited[state] {
+				continue
+			}
+			visited[state] = true
+			for _, edge := range outgoing[state] {
+				if edge.Terminal != "" {
+					canFinishWithoutCandidate = true
+					break
+				}
+				pending = append(pending, edge.Target)
+			}
+		}
+		required[candidate.ID] = !canFinishWithoutCandidate
+	}
+	return required
 }
 
 func buildRetainedLegacyRunner(

@@ -138,6 +138,99 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
+func TestBuildSchedulerSetupRejectsMissingCredentialForScheduledTerminalTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_TERMINAL_TOKEN"
+	previous, wasSet := os.LookupEnv(tokenEnv)
+	if err := os.Unsetenv(tokenEnv); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(tokenEnv, previous)
+		} else {
+			_ = os.Unsetenv(tokenEnv)
+		}
+	})
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML,
+		"  start: local-ci\n  tasks:\n    - name: local-ci",
+		"  start: prepare\n  tasks:\n    - name: prepare\n      type: deterministic\n      goal: prepare without credentials\n      run:\n        command: [\"true\"]\n      next: local-ci\n    - name: local-ci\n      capabilities: [\"repo:push\"]",
+		1,
+	)
+	if workflowYAML == deterministicWorkflowYAML {
+		t.Fatal("deterministic workflow fixture did not contain expected terminal task")
+	}
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing scheduled credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want capability and missing environment variable", err)
+	}
+
+	entries, readErr := os.ReadDir(instance.NewLayout(root).ForGaggle("example").RunsDir())
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scheduled runs started with missing credential: %v", entries)
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesConditionalTaskLazy(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "decision"},
+			{ID: "conditional"},
+			{ID: "finish"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "decision"},
+			{Source: "decision", Target: "conditional"},
+			{Source: "decision", Target: "finish"},
+			{Source: "conditional", Target: "finish"},
+			{Source: "finish", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	for _, state := range []string{"prepare", "decision", "finish"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
+	}
+	if required["conditional"] {
+		t.Error("conditional state is required; its credential would be materialized eagerly")
+	}
+}
+
 // TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled is #2036's
 // decoupling fix: read.db answers the portal's run listing, a feature
 // independent of telemetry, so telemetry.enabled: false must not silently
