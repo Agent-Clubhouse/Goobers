@@ -664,6 +664,9 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
+	if err := preflightCredentials(credResolver); err != nil {
+		return nil, err
+	}
 
 	gagglesByName := make(map[string]apiv1.Gaggle, len(set.Gaggles))
 	for i := range set.Gaggles {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -110,6 +111,12 @@ func TestMain(m *testing.M) {
 	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
+	// Same rationale as the harness preflight above: these tests scaffold
+	// instances whose repo/credential token refs name env vars no test process
+	// exports, so the real startup check (#2954) would fail closed before any
+	// daemon test could run. The real logic is covered directly by
+	// credentialpreflight_test.go and internal/credentials.
+	preflightCredentials = func(credentials.Resolver) error { return nil }
 
 	baseAPIListenAddress := apiListenAddress
 	apiListenAddress = func(c *instance.Config) string {
