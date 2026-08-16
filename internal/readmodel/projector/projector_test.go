@@ -169,8 +169,10 @@ func (f *fakeStore) Tombstoned(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeStore) ProjectedRunIDsBefore(
+func (f *fakeStore) ProjectedRunIDsAfter(
 	context.Context,
+	time.Time,
+	string,
 	time.Time,
 	int,
 ) ([]readmodel.RunRow, error) {
