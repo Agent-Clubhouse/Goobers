@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
-	"github.com/pmezard/go-difflib/difflib"
 )
 
 type guidedInitCallbackWriter struct {
