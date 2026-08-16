@@ -241,6 +241,22 @@ func (c *Config) validateRepos(stores map[string]bool) error {
 	return nil
 }
 
+func (c *Config) validateGitHubCLIIdentityRefs() error {
+	if c.SelfIdentity == "" {
+		return nil
+	}
+	for i, repo := range c.Repos {
+		if repo.Provider != "github" || repo.Token.GitHubCLI == nil {
+			continue
+		}
+		if !strings.EqualFold(repo.Token.GitHubCLI.User, c.SelfIdentity) {
+			return fmt.Errorf("repos[%d] (%s/%s): token.githubCLI.user %q does not match selfIdentity %q",
+				i, repo.Owner, repo.Name, repo.Token.GitHubCLI.User, c.SelfIdentity)
+		}
+	}
+	return nil
+}
+
 func (r RepoRef) validate(i int, stores map[string]bool, envPassthrough []string) error {
 	return validateInOrder(
 		func() error { return r.validateIdentity(i) },
@@ -316,7 +332,7 @@ func (c *RepoWorkspaceConfig) validate(i int, r RepoRef) error {
 
 func (r RepoRef) validateToken(i int, stores map[string]bool) error {
 	if r.Token.sourceCount() > 1 {
-		return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
+		return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store, or githubCLI — "+
 			"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 	}
 	return validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores)
@@ -349,7 +365,7 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 			return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
 		}
 		if !r.Token.Configured() {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
+			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store, or githubCLI — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 		}
 		return nil

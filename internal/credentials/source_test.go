@@ -232,9 +232,11 @@ func TestResolverWithSourcesFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResolverWithSources: %v", err)
 	}
+
 	if _, err := r.Resolve(context.Background(), "minty"); err == nil {
 		t.Fatal("Resolve: want mint error surfaced, got nil")
 	}
+
 	if _, err := r.Resolve(context.Background(), "empty"); !errors.Is(err, ErrTokenRefEmpty) {
 		t.Fatalf("Resolve empty mint = %v, want ErrTokenRefEmpty", err)
 	}
@@ -260,5 +262,67 @@ func TestNewResolverWithSourcesRejectsMalformedSources(t *testing.T) {
 				t.Fatal("NewResolverWithSources: want error, got nil")
 			}
 		})
+	}
+}
+
+func TestResolverResolvesGitHubCLIOnceAndVerifiesIdentity(t *testing.T) {
+	var calls int
+	oldCommand := githubCLICommand
+	oldIdentity := githubCLIIdentity
+	t.Cleanup(func() {
+		githubCLICommand = oldCommand
+		githubCLIIdentity = oldIdentity
+	})
+	githubCLICommand = func(_ context.Context, hostname, user string) (string, error) {
+		calls++
+		if hostname != "github.com" || user != "alice" {
+			t.Fatalf("gh selection = %s/%s, want github.com/alice", hostname, user)
+		}
+		return "secret-token", nil
+	}
+	githubCLIIdentity = func(_ context.Context, hostname, token string) (string, error) {
+		if hostname != "github.com" || token != "secret-token" {
+			t.Fatalf("identity verification = %s/%s, want github.com/secret-token", hostname, token)
+		}
+		return "alice", nil
+	}
+
+	r, err := NewResolver([]TokenRef{{Name: "gh", GitHubCLI: &GitHubCLIRef{Hostname: "GitHub.com", User: "alice"}}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	for range 2 {
+		if got, err := r.Resolve(context.Background(), "gh"); err != nil || got != "secret-token" {
+			t.Fatalf("Resolve = %q, %v; want secret-token", got, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("gh selection calls = %d, want 1", calls)
+	}
+}
+
+func TestResolverRejectsGitHubCLIIdentityMismatchWithoutLeakingToken(t *testing.T) {
+	oldCommand := githubCLICommand
+	oldIdentity := githubCLIIdentity
+	t.Cleanup(func() {
+		githubCLICommand = oldCommand
+		githubCLIIdentity = oldIdentity
+	})
+	githubCLICommand = func(context.Context, string, string) (string, error) {
+		return "never-log-this-token", nil
+	}
+	githubCLIIdentity = func(context.Context, string, string) (string, error) {
+		return "bob", nil
+	}
+
+	_, err := NewResolver([]TokenRef{{Name: "gh", GitHubCLI: &GitHubCLIRef{Hostname: "github.com", User: "alice"}}})
+	if err == nil {
+		t.Fatal("NewResolver: want identity mismatch error, got nil")
+	}
+	if strings.Contains(err.Error(), "never-log-this-token") {
+		t.Fatalf("error leaked token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "expected") || !strings.Contains(err.Error(), "alice") || !strings.Contains(err.Error(), "bob") {
+		t.Fatalf("error = %v, want expected and actual logins", err)
 	}
 }
