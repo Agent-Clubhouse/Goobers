@@ -635,6 +635,30 @@ func TestWorkflowSchemaAcceptsPollingPriority(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchemaAcceptsScheduleIdleBackoff(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "adaptive-poll"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "schedule", "schedule": "* * * * *",
+				"idleBackoff": {"enabled": true, "floor": "1m", "ceiling": "15m"}}],
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Poll for work.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
+		t.Fatalf("schedule idle backoff failed schema validation: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesBacklogTrustLabel(t *testing.T) {
 	v := newV(t)
 	workflow := `{

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/scheduleexpr"
@@ -276,6 +277,9 @@ func triggerFieldProblems(def Definition) []string {
 		if tr.Type != apiv1.TriggerBacklogItem && tr.TrustLabel != "" {
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=%s does not support trustLabel", i, tr.Type))
 		}
+		if tr.Type != apiv1.TriggerSchedule && tr.IdleBackoff != nil {
+			problems = append(problems, fmt.Sprintf("trigger[%d] type=%s does not support idleBackoff", i, tr.Type))
+		}
 		switch tr.Type {
 		case apiv1.TriggerManual:
 			manualIndex = i
@@ -337,8 +341,41 @@ func scheduleProblems(def Definition) []string {
 		if err := validateSchedule(tr.Schedule); err != nil {
 			problems = append(problems, fmt.Sprintf("trigger[%d] invalid schedule %q: %v", i, tr.Schedule, err))
 		}
+		problems = append(problems, idleBackoffProblems(i, tr.IdleBackoff)...)
 	}
 	return problems
+}
+
+func idleBackoffProblems(index int, backoff *apiv1.IdleBackoff) []string {
+	if backoff == nil {
+		return nil
+	}
+	floor, err := parsePositiveDuration(backoff.Floor, time.Minute)
+	if err != nil {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff floor: %v", index, err)}
+	}
+	ceiling, err := parsePositiveDuration(backoff.Ceiling, 15*time.Minute)
+	if err != nil {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff ceiling: %v", index, err)}
+	}
+	if ceiling < floor {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff ceiling %s must not be below floor %s", index, ceiling, floor)}
+	}
+	return nil
+}
+
+func parsePositiveDuration(value string, defaultValue time.Duration) (time.Duration, error) {
+	if value == "" {
+		return defaultValue, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a valid duration", value)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%q must be positive", value)
+	}
+	return duration, nil
 }
 
 // validateSchedule validates cron/interval expressions accepted by workflow

@@ -87,6 +87,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Trigger.LabelPredicate": {"trigger.labelPredicate"},
 		"Trigger.FieldPredicate": {"trigger.fieldPredicate"},
 		"Trigger.Schedule":       {"trigger.schedule"},
+		"Trigger.IdleBackoff":    {"trigger.schedule"},
 		"Trigger.Signal":         {"trigger.signal"},
 		"Trigger.Events":         {"trigger.webhook"},
 

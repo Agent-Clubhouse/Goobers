@@ -39,7 +39,10 @@ type WorkflowEntry struct {
 	Gaggle          string
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
-	Signals         []string
+	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
+	// adaptive idle policy.
+	ScheduleBackoffs []IdleBackoffConfig
+	Signals          []string
 	// PollFallbackCause, when non-empty, explains why a scheduled fire is the
 	// fallback for an event-capable workflow.
 	PollFallbackCause string
@@ -103,6 +106,51 @@ const minPoll = time.Second
 // API-rate-limit and log-noise cost of polling every ready backlog item's
 // count that often.
 const backlogPollInterval = 30 * time.Second
+
+const (
+	defaultIdleBackoffFloor   = time.Minute
+	defaultIdleBackoffCeiling = 15 * time.Minute
+)
+
+// IdleBackoffConfig is the runtime form of a schedule trigger's idle policy.
+type IdleBackoffConfig struct {
+	Enabled bool
+	Floor   time.Duration
+	Ceiling time.Duration
+}
+
+// ParseIdleBackoff applies schedule-trigger defaults and validates duration
+// ordering for runtime wiring.
+func ParseIdleBackoff(backoff *apiv1.IdleBackoff) (IdleBackoffConfig, error) {
+	config := IdleBackoffConfig{
+		Enabled: true,
+		Floor:   defaultIdleBackoffFloor,
+		Ceiling: defaultIdleBackoffCeiling,
+	}
+	if backoff == nil {
+		return config, nil
+	}
+	if backoff.Enabled != nil {
+		config.Enabled = *backoff.Enabled
+	}
+	var err error
+	if backoff.Floor != "" {
+		config.Floor, err = time.ParseDuration(backoff.Floor)
+		if err != nil || config.Floor <= 0 {
+			return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff floor %q must be a positive duration", backoff.Floor)
+		}
+	}
+	if backoff.Ceiling != "" {
+		config.Ceiling, err = time.ParseDuration(backoff.Ceiling)
+		if err != nil || config.Ceiling <= 0 {
+			return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff ceiling %q must be a positive duration", backoff.Ceiling)
+		}
+	}
+	if config.Ceiling < config.Floor {
+		return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff ceiling %s must not be below floor %s", config.Ceiling, config.Floor)
+	}
+	return config, nil
+}
 
 // demandPollTimeout bounds provider-backed demand checks while Tick holds
 // tickMu so signals and configuration reloads cannot stall indefinitely.
@@ -168,6 +216,7 @@ type Scheduler struct {
 	// the worst case is one extra poll right after a restart, not a
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
+	idleBackoffs     map[WorkflowIdentity][]idleBackoffState
 	// pendingScheduleDemand retains demand that a due scheduled poll found but
 	// concurrency limits could not admit yet. A durable outstanding marker lets
 	// Reconcile repoll current demand without replaying fully consumed firings or
@@ -302,6 +351,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		reconciledRuns:        make(map[string]WorkflowIdentity),
 		admittedRuns:          make(map[string]runAdmission),
 		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
+		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
 		quotaResumePacing:     make(map[apiv1.Provider]bool),
@@ -317,6 +367,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		s.workflows[identity] = e
 		ts := TriggerState{Workflow: e.Workflow, Schedules: e.Schedules, LastEval: s.now()}
 		s.triggers[identity] = ts
+		s.idleBackoffs[identity] = make([]idleBackoffState, len(e.Schedules))
 	}
 	return s
 }
@@ -674,6 +725,7 @@ type tickCandidate struct {
 	poolSkips          int
 	dispatchedThisTick bool
 	stopped            bool
+	scheduleIndexes    []int
 }
 
 func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
@@ -774,6 +826,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			// and both dispatch the same due firing.
 			s.mu.Lock()
 			ts := s.triggers[identity]
+			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
 			res := Tick(ts, now)
 			var persistErr error
 			if res.LastEval != ts.LastEval {
@@ -793,7 +846,16 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			}
 			if res.Fire {
 				candidate.schedule = res
-				if entry.ScheduleDemandCounter == nil {
+				candidate.scheduleIndexes = dueIndexes
+				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
+					s.journalEvent(journal.Event{
+						Type:     journal.EventTickSkipped,
+						Workflow: entry.Workflow,
+						Gaggle:   entry.Gaggle,
+						Reason:   reason,
+					})
+					candidate.scheduleIndexes = nil
+				} else if entry.ScheduleDemandCounter == nil {
 					candidate.scheduleRemaining = 1
 					candidate.scheduleDemand = false
 				} else {
@@ -866,7 +928,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 						fire += "; " + fireReason(tick, kind)
 					}
 				}
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire)
+				var scheduleIndexes []int
+				if kind == journal.TriggerSchedule {
+					scheduleIndexes = candidate.scheduleIndexes
+				}
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -937,6 +1003,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
 	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
 
@@ -958,6 +1025,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		if checked, ok := s.backlogLastCheck[identity]; ok {
 			backlogLastCheck[identity] = checked
 		}
+		idleBackoffs[identity] = make([]idleBackoffState, len(entry.Schedules))
 		if pending, ok := s.pendingScheduleDemand[identity]; ok {
 			pendingScheduleDemand[identity] = pending
 		}
@@ -996,6 +1064,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.idleBackoffs = idleBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.authCircuits = make(map[WorkflowIdentity]struct{})
@@ -1031,6 +1100,142 @@ type scheduledDemand struct {
 	schedule  TickResult
 	remaining int
 	repoll    bool
+}
+
+type idleBackoffState struct {
+	consecutive int
+	interval    time.Duration
+	nextPoll    time.Time
+	generation  uint64
+}
+
+type idleBackoffToken struct {
+	index      int
+	generation uint64
+}
+
+func dueScheduleIndexes(schedules []Schedule, lastEval, now time.Time) []int {
+	var due []int
+	for index, schedule := range schedules {
+		next := schedule.Next(lastEval)
+		if !next.IsZero() && !next.After(now) {
+			due = append(due, index)
+		}
+	}
+	return due
+}
+
+func scheduleBackoffConfig(entry WorkflowEntry, index int) IdleBackoffConfig {
+	config := IdleBackoffConfig{
+		Enabled: true,
+		Floor:   defaultIdleBackoffFloor,
+		Ceiling: defaultIdleBackoffCeiling,
+	}
+	if index >= len(entry.ScheduleBackoffs) {
+		return config
+	}
+	config = entry.ScheduleBackoffs[index]
+	if config.Floor <= 0 {
+		config.Floor = defaultIdleBackoffFloor
+	}
+	if config.Ceiling <= 0 {
+		config.Ceiling = defaultIdleBackoffCeiling
+	}
+	return config
+}
+
+func (s *Scheduler) scheduleBackedOff(identity WorkflowIdentity, entry WorkflowEntry, indexes []int, now time.Time) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	var next time.Time
+	consecutive := 0
+	for _, index := range indexes {
+		config := scheduleBackoffConfig(entry, index)
+		if !config.Enabled || index >= len(states) || !states[index].nextPoll.After(now) {
+			return false, ""
+		}
+		if next.IsZero() || states[index].nextPoll.Before(next) {
+			next = states[index].nextPoll
+		}
+		if states[index].consecutive > consecutive {
+			consecutive = states[index].consecutive
+		}
+	}
+	if next.IsZero() {
+		return false, ""
+	}
+	return true, fmt.Sprintf("idle backoff: next poll at %s after %d consecutive no-work run(s)", next.UTC().Format(time.RFC3339), consecutive)
+}
+
+func (s *Scheduler) beginScheduledPoll(identity WorkflowIdentity, indexes []int) []idleBackoffToken {
+	if len(indexes) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	tokens := make([]idleBackoffToken, 0, len(indexes))
+	for _, index := range indexes {
+		if index >= len(states) {
+			continue
+		}
+		states[index].generation++
+		tokens = append(tokens, idleBackoffToken{index: index, generation: states[index].generation})
+	}
+	s.idleBackoffs[identity] = states
+	return tokens
+}
+
+func (s *Scheduler) recordScheduledPollResult(identity WorkflowIdentity, entry WorkflowEntry, tokens []idleBackoffToken, noWork bool, completedAt time.Time) {
+	if len(tokens) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	for _, token := range tokens {
+		if token.index >= len(states) || states[token.index].generation != token.generation {
+			continue
+		}
+		config := scheduleBackoffConfig(entry, token.index)
+		if !config.Enabled || !noWork {
+			states[token.index].consecutive = 0
+			states[token.index].interval = 0
+			states[token.index].nextPoll = time.Time{}
+			continue
+		}
+		states[token.index].consecutive++
+		if states[token.index].interval < config.Floor {
+			states[token.index].interval = config.Floor
+		} else if states[token.index].interval >= config.Ceiling/2 {
+			states[token.index].interval = config.Ceiling
+		} else {
+			states[token.index].interval *= 2
+		}
+		if states[token.index].interval > config.Ceiling {
+			states[token.index].interval = config.Ceiling
+		}
+		states[token.index].nextPoll = completedAt.Add(states[token.index].interval)
+	}
+	s.idleBackoffs[identity] = states
+}
+
+func (s *Scheduler) resetIdleBackoff(identity WorkflowIdentity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	for index := range states {
+		states[index].generation++
+		states[index].consecutive = 0
+		states[index].interval = 0
+		states[index].nextPoll = time.Time{}
+	}
+	s.idleBackoffs[identity] = states
 }
 
 func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCandidate, now time.Time) {
@@ -1459,7 +1664,10 @@ func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, no
 	if reason == "" {
 		reason = fireReason(tick, trigger.Kind)
 	}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason)
+	if trigger.Kind == journal.TriggerSignal {
+		s.resetIdleBackoff(entryIdentity(entry))
+	}
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil)
 	if !admitted {
 		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
@@ -1566,6 +1774,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 	byGaggle := make(map[string][]WorkflowEntry)
 	gaggleNames := make([]string, 0)
 	for _, entry := range subscribed {
+		s.resetIdleBackoff(entryIdentity(entry))
 		if _, ok := byGaggle[entry.Gaggle]; !ok {
 			gaggleNames = append(gaggleNames, entry.Gaggle)
 		}
@@ -1583,7 +1792,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 				next[gaggle]++
 				attempted = true
 				runID, admitted, reason := s.dispatch(ctx, entry, now,
-					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire)
+					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil)
 				if admitted {
 					runIDs = append(runIDs, runID)
 					break
@@ -1611,7 +1820,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string) (runID string, admitted bool, skipReason string) {
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int) (runID string, admitted bool, skipReason string) {
 	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
@@ -1716,6 +1925,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	s.mu.Unlock()
 	s.admissionMu.Unlock()
 	s.dispatches.Add(1)
+	backoffTokens := s.beginScheduledPoll(identity, scheduleIndexes)
 	go func() {
 		defer s.dispatches.Done()
 		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
@@ -1726,6 +1936,9 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Trigger: trigger,
 			RepoRef: entry.RepoRef,
 		})
+		if startErr == nil {
+			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())
+		}
 		if startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed {
 			s.openAuthCircuit(identity)
 		}
