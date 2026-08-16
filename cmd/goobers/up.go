@@ -1044,9 +1044,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
+		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -1327,11 +1328,12 @@ func emitHeartbeats(
 	stdout io.Writer,
 	schedulerDir string,
 	workflowCount int,
+	tail *journal.InstanceLogTail,
+	err error,
 	interval time.Duration,
 	done chan<- struct{},
 ) {
 	defer close(done)
-	tail, err := journal.OpenInstanceLogTail(schedulerDir)
 	defer func() { _ = tail.Close() }()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

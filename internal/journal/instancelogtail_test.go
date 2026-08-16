@@ -47,7 +47,7 @@ func TestInstanceLogTailReadsOnlyNewBytes(t *testing.T) {
 	if len(events) != 1 || events[0].RunID != "new" {
 		t.Fatalf("events = %#v, want only new run", events)
 	}
-	if work.InstanceTailReads != 1 || work.InstanceTailBytes >= uint64(info.Size()/10) {
+	if work.InstanceTailReads != 1 || work.InstanceTailBytes == 0 || work.InstanceTailBytes > 1024 {
 		t.Fatalf("tail work = %+v for %d-byte history", work, info.Size())
 	}
 }
