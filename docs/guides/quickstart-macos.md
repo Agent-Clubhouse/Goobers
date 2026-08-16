@@ -51,7 +51,7 @@ download its archive and `SHA256SUMS`. This example selects the archive for the
 current Mac:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v0.1.0
 case "$(uname -m)" in
   arm64) ARCH=arm64 ;;
   x86_64) ARCH=amd64 ;;
