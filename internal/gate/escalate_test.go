@@ -166,7 +166,7 @@ func TestCountFailureStreakZeroWhenNoMarker(t *testing.T) {
 func TestCountFailureStreakReadsExistingMarker(t *testing.T) {
 	poster := &fakeCommenter{
 		comments: []providers.Comment{
-			{ID: "99", Body: failureStreakBody(5, "implement", "run-abc")},
+			{ID: "99", Body: failureStreakBody(5, "implement", "run-abc", "http://127.0.0.1:8080/#/run/run-abc")},
 		},
 	}
 	count, id, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
@@ -183,7 +183,7 @@ func TestCountFailureStreakReadsExistingMarker(t *testing.T) {
 
 func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 	poster := &fakeCommenter{}
-	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1"); err != nil {
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1", "http://127.0.0.1:8080/#/run/run-1"); err != nil {
 		t.Fatal(err)
 	}
 	if poster.calls != 1 {
@@ -192,15 +192,18 @@ func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 	if !strings.Contains(poster.comments[0].Body, failureStreakMarker) {
 		t.Fatal("posted comment missing streak marker")
 	}
+	if !strings.Contains(poster.comments[0].Body, "[`run-1`](http://127.0.0.1:8080/#/run/run-1)") {
+		t.Fatalf("posted comment missing run-details link: %s", poster.comments[0].Body)
+	}
 }
 
 func TestUpsertFailureCommentEditsExisting(t *testing.T) {
 	poster := &fakeCommenter{
 		comments: []providers.Comment{
-			{ID: "42", Body: failureStreakBody(1, "implement", "run-old")},
+			{ID: "42", Body: failureStreakBody(1, "implement", "run-old", "http://127.0.0.1:8080/#/run/run-old")},
 		},
 	}
-	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 2, "implement", "run-new"); err != nil {
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 2, "implement", "run-new", "http://127.0.0.1:8080/#/run/run-new"); err != nil {
 		t.Fatal(err)
 	}
 	if poster.calls != 0 {
@@ -208,5 +211,8 @@ func TestUpsertFailureCommentEditsExisting(t *testing.T) {
 	}
 	if !strings.Contains(poster.comments[0].Body, `data-count="2"`) {
 		t.Fatalf("edited comment has wrong count: %s", poster.comments[0].Body)
+	}
+	if !strings.Contains(poster.comments[0].Body, "[`run-new`](http://127.0.0.1:8080/#/run/run-new)") {
+		t.Fatalf("edited comment has stale run-details link: %s", poster.comments[0].Body)
 	}
 }

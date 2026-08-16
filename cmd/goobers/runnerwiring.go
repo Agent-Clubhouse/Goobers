@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1239,7 +1240,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 			}
 			count := prevCount + 1
 
-			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID); err != nil {
+			if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, o.Stage, o.RunID, failureRunURL(cfg, o.RunID)); err != nil {
 				errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
 			}
 
@@ -1259,6 +1260,14 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 }
 
 const failureStreakThreshold = 3
+
+func failureRunURL(cfg *instance.Config, runID string) string {
+	scheme := "http"
+	if cfg.API.TLS != nil {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s/#/run/%s", scheme, cfg.APIListenAddress(), url.PathEscape(runID))
+}
 
 // buildRateLimitedHandler wires runner.Config.RateLimited (#712): records the
 // exhausted provider quota into the shared ProviderQuotaState the same
