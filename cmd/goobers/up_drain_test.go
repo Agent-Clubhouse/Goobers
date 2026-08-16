@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,32 @@ func TestDrainDaemonRunsReportsProgressUntilCleanCompletion(t *testing.T) {
 		!strings.Contains(output, "still draining") ||
 		!strings.Contains(output, "send SIGINT/SIGTERM again") {
 		t.Fatalf("drain output = %q", output)
+	}
+}
+
+func TestDrainDaemonRunsWaitsForSchedulerBeforeRunGroup(t *testing.T) {
+	registry := newDaemonRunnerRegistry()
+	var runs sync.WaitGroup
+	dispatchAdded := make(chan struct{})
+	waitScheduler := func() {
+		runs.Add(1)
+		close(dispatchAdded)
+	}
+
+	result := make(chan daemonDrainResult, 1)
+	go func() {
+		result <- drainDaemonRuns(&runs, waitScheduler, registry, 0, nil, io.Discard)
+	}()
+
+	<-dispatchAdded
+	select {
+	case <-result:
+		t.Fatal("drain returned before scheduler-dispatched run completed")
+	default:
+	}
+	runs.Done()
+	if got := <-result; got.forced {
+		t.Fatal("clean drain reported forced")
 	}
 }
 

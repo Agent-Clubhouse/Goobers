@@ -1188,8 +1188,8 @@ func drainDaemonRuns(
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
-		wg.Wait()
 		waitScheduler()
+		wg.Wait()
 		close(done)
 	}()
 
