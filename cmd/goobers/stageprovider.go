@@ -1,0 +1,120 @@
+package main
+
+import (
+	"fmt"
+
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/providers"
+)
+
+type stageProviderConfig struct {
+	root         string
+	repo         providers.RepositoryRef
+	readOnly     bool
+	capability   capability.Capability
+	token        string
+	cached       bool
+	mutationKind string
+	openPR       bool
+}
+
+type stageProviderOption func(*stageProviderConfig)
+
+func withStageProviderCapability(cap capability.Capability) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.capability = cap
+	}
+}
+
+func withStageProviderToken(token string) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.token = token
+	}
+}
+
+func withStageProviderCache() stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.cached = true
+	}
+}
+
+func withStageProviderMutations(kind string) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.mutationKind = kind
+	}
+}
+
+func withStageProviderOpenPR() stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.openPR = true
+	}
+}
+
+type stageProviderFactory func(stageProviderConfig) (providers.Provider, error)
+
+var stageProviderFactories = map[providers.ProviderKind]stageProviderFactory{
+	providers.ProviderGitHub: newGitHubProviderForStage,
+	providers.ProviderADO:    newRegisteredADOProviderForStage,
+	providers.ProviderGitea:  newRegisteredGiteaProviderForStage,
+}
+
+func newProviderForStage(root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (providers.Provider, error) {
+	cfg := stageProviderConfig{
+		root:       root,
+		repo:       repo,
+		readOnly:   readOnly,
+		capability: capability.GitHubIssuesWrite,
+	}
+	if readOnly {
+		cfg.capability = capability.GitHubIssuesRead
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	factory, ok := stageProviderFactories[repo.Provider]
+	if !ok {
+		return nil, fmt.Errorf("repository provider %q is not registered for stages", repo.Provider)
+	}
+	return factory(cfg)
+}
+
+func stageProviderToken(cfg stageProviderConfig) (string, error) {
+	if cfg.token != "" {
+		return cfg.token, nil
+	}
+	return providerToken(cfg.capability)
+}
+
+func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	token, err := stageProviderToken(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var opts []func(*providers.GitHubProvider)
+	if !cfg.readOnly && cfg.mutationKind != "" {
+		opts = append(opts, providers.WithMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
+	}
+	if cfg.cached {
+		return newCachedGitHubProvider(cfg.root, token, opts...), nil
+	}
+	return newGitHubProvider(token, opts...), nil
+}
+
+func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	if cfg.openPR {
+		return newADOProviderForOpenPR(cfg.root, cfg.repo)
+	}
+	return newADOProviderForStage(cfg.root, cfg.repo)
+}
+
+func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	token, err := stageProviderToken(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var opts []func(*providers.GiteaProvider)
+	if !cfg.readOnly && cfg.mutationKind != "" {
+		opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
+	}
+	return newGiteaProviderForStage(cfg.root, cfg.repo, token, opts...)
+}

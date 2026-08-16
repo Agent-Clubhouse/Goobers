@@ -262,50 +262,22 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	// the concrete provider and stay gated on ghIssueProvider being non-nil — for
 	// ADO they are simply skipped, exactly like a GitHub stage that never opted
 	// into github:pr:write.
-	// Explicit per-kind dispatch (github | ado | gitea | default-error). The
-	// former `if ADO {...} else {...}` GitHub-default silently routed a
-	// gitea-provider repo to api.github.com; each backend is now named so a
-	// gitea backlog is served by the gitea provider, not GitHub by omission.
-	switch env.repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForStage(env.root, env.repo)
-		if err != nil {
-			pf(env.stderr, "error: %v\n", err)
-			return 1
-		}
-		env.issueProvider = adoProvider
-	case providers.ProviderGitea:
-		token, err := backlogQueryToken(readOnly)
-		if err != nil {
-			pf(env.stderr, "error: %v\n", err)
-			return 1
-		}
-		var opts []func(*providers.GiteaProvider)
-		if !readOnly {
-			opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-		giteaProvider, err := newGiteaProviderForStage(env.root, env.repo, token, opts...)
-		if err != nil {
-			pf(env.stderr, "error: %v\n", err)
-			return 1
-		}
-		env.issueProvider = giteaProvider
-	case providers.ProviderGitHub:
-		token, err := backlogQueryToken(readOnly)
-		if err != nil {
-			pf(env.stderr, "error: %v\n", err)
-			return 1
-		}
-		if readOnly {
-			env.ghIssueProvider = newGitHubProvider(token)
-		} else {
-			env.ghIssueProvider = newCachedGitHubProvider(env.root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-		env.issueProvider = env.ghIssueProvider
-	default:
+	opts := []stageProviderOption{withStageProviderMutations("issue")}
+	if !readOnly {
+		opts = append(opts, withStageProviderCache())
+	}
+	provider, err := newProviderForStage(env.root, env.repo, readOnly, opts...)
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return 1
+	}
+	issueProvider, ok := provider.(backlogIssueProvider)
+	if !ok {
 		pf(env.stderr, "error: backlog-query does not support repository provider %q\n", env.repo.Provider)
 		return 1
 	}
+	env.issueProvider = issueProvider
+	env.ghIssueProvider, _ = provider.(*providers.GitHubProvider)
 	return 0
 }
 
@@ -1990,31 +1962,12 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if rerr != nil {
 			return rerr
 		}
-		var issueProvider backlogIssueProvider
-		switch repo.Provider {
-		case providers.ProviderADO:
-			adoProvider, aerr := newADOProviderForStage(root, repo)
-			if aerr != nil {
-				return aerr
-			}
-			issueProvider = adoProvider
-		case providers.ProviderGitea:
-			token, terr := providerToken(capability.GitHubIssuesWrite)
-			if terr != nil {
-				return terr
-			}
-			giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-			if gerr != nil {
-				return gerr
-			}
-			issueProvider = giteaProvider
-		case providers.ProviderGitHub:
-			token, terr := providerToken(capability.GitHubIssuesWrite)
-			if terr != nil {
-				return terr
-			}
-			issueProvider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		default:
+		stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+		if err != nil {
+			return err
+		}
+		issueProvider, ok := stageProvider.(backlogIssueProvider)
+		if !ok {
 			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
 		}
 		// Work-item claim markers live in the backlog project on ADO, not the
