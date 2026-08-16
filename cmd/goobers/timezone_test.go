@@ -41,6 +41,11 @@ spec:
 // part that was missing entirely before this fix (InLocation had zero
 // production callers).
 func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
+	// Windows otherwise falls back to setup-go's GOROOT zoneinfo archive,
+	// masking removal of the CLI's embedded time/tzdata import.
+	t.Setenv("GOROOT", t.TempDir())
+	t.Setenv("ZONEINFO", filepath.Join(t.TempDir(), "missing-zoneinfo"))
+
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
