@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ghcp-echo-${{ inputs.pr || github.ref || github.run_id }}

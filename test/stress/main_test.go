@@ -492,8 +492,9 @@ func TestGHCPEchoWorkflowTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	var workflow struct {
-		On   map[string]yaml.Node `yaml:"on"`
-		Jobs map[string]yaml.Node `yaml:"jobs"`
+		On          map[string]yaml.Node `yaml:"on"`
+		Permissions map[string]string    `yaml:"permissions"`
+		Jobs        map[string]yaml.Node `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
@@ -522,6 +523,9 @@ func TestGHCPEchoWorkflowTriggers(t *testing.T) {
 	pr, ok := config.Inputs["pr"]
 	if !ok || !pr.Required || pr.Type != "string" {
 		t.Fatalf("workflow_dispatch PR input = %+v, present = %v; want required string input", pr, ok)
+	}
+	if workflow.Permissions["pull-requests"] != "read" {
+		t.Fatal("GHCP Echo workflow must grant pull-request read access")
 	}
 
 	jobNode, ok := workflow.Jobs["ghcp-echo"]
