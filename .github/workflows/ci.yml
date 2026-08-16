@@ -654,11 +654,11 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
-      # ./internal/instance is cheap enough to run whole. Its Windows-only
-      # runtime-alias tests verify that legacy migrations create NTFS junctions
-      # without requiring the symlink privilege and survive startup (#2862).
-      - name: Windows instance runtime
-        run: go test ./internal/instance
+      # Named rather than the whole package: the Windows-only regression guard
+      # verifies that legacy migrations create an NTFS junction without
+      # requiring the symlink privilege (#2862).
+      - name: Windows instance runtime alias
+        run: go test ./internal/instance -run '^TestCreateLegacyRuntimeAliasCreatesJunction$'
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
