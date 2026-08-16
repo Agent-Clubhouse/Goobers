@@ -3,13 +3,21 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -102,5 +110,112 @@ func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {
 				t.Fatalf("run starts after permanent auth failure = %d, want 1", got)
 			}
 		})
+	}
+}
+
+type runnerCredentialStarter struct {
+	r       *runner.Runner
+	machine *workflow.Machine
+}
+
+func (s runnerCredentialStarter) Start(ctx context.Context, req StartRequest) (StartResult, error) {
+	result, err := s.r.Start(ctx, runner.StartInput{
+		RunID:   req.RunID,
+		Machine: s.machine,
+		Gaggle:  req.Gaggle,
+		Trigger: req.Trigger,
+		RepoRef: req.RepoRef,
+	})
+	return StartResult{
+		Phase:          result.Phase,
+		FinalState:     result.FinalState,
+		FailureStage:   result.FailureStage,
+		FailureCode:    result.FailureCode,
+		FailureMessage: result.FailureMessage,
+	}, err
+}
+
+func TestCredentialMaterializationFailureOpensRunCircuit(t *testing.T) {
+	const (
+		capability = "github:issues:write"
+		envVar     = "GOOBERS_TEST_CONDITIONAL_CREDENTIAL_UNSET"
+	)
+	t.Setenv(envVar, "")
+	if err := os.Unsetenv(envVar); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "issues", Env: envVar}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	worktrees, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRunner, err := runner.New(runner.Config{
+		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
+			injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+				Capability: capability,
+				Ref:        "issues",
+			}}, reg)
+			if err != nil {
+				return nil, err
+			}
+			return executor.NewShellExecutor(injector, rec)
+		},
+		Worktrees:  worktrees,
+		RunsDir:    filepath.Join(root, "runs"),
+		ScratchDir: filepath.Join(root, "scratch"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name:    "conditional-credential",
+		Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers-site",
+			Start:  "terminal",
+			Tasks: []apiv1.Task{{
+				Name:         "terminal",
+				Type:         apiv1.TaskDeterministic,
+				Capabilities: []string{capability},
+				Run: &apiv1.DeterministicRun{
+					Command:   []string{"true"},
+					Workspace: apiv1.WorkspaceScratch,
+				},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identity := WorkflowIdentity{Gaggle: "goobers-site", Workflow: "conditional-credential"}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Starter:  runnerCredentialStarter{r: localRunner, machine: machine},
+	}})
+	if _, err := sched.Trigger(context.Background(), identity.Workflow, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, func() int {
+		if sched.authCircuitOpen(identity) {
+			return 1
+		}
+		return 0
+	}, 1)
+
+	_, err = sched.Trigger(context.Background(), identity.Workflow, time.Now())
+	var rejected *TriggerRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("second trigger error = %v, want TriggerRejectedError", err)
+	}
+	if !strings.HasPrefix(rejected.Reason, ReasonProviderAuth) {
+		t.Fatalf("second trigger reason = %q, want %q prefix", rejected.Reason, ReasonProviderAuth)
 	}
 }
