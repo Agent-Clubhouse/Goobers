@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -71,17 +72,28 @@ type CIChecksArtifact struct {
 // Annotations — keeps one unambiguous field.
 type CICheck struct {
 	providers.CheckDetail
-	Annotations []providers.CheckAnnotation `json:"annotations,omitempty"`
+	Annotations      []providers.CheckAnnotation `json:"annotations,omitempty"`
+	HostReproduction CIHostReproduction          `json:"hostReproduction"`
+}
+
+// CIHostReproduction tells a repass whether the current runner can reproduce a
+// platform-specific check locally.
+type CIHostReproduction struct {
+	Status        string `json:"status"`
+	HostPlatform  string `json:"hostPlatform"`
+	CheckPlatform string `json:"checkPlatform,omitempty"`
+	Diagnostic    string `json:"diagnostic"`
 }
 
 // CIChecksArtifactMetadata records every lossy bound applied while curating a
 // ci-checks.json artifact.
 type CIChecksArtifactMetadata struct {
-	Truncated          bool `json:"truncated"`
-	SummariesTruncated int  `json:"summariesTruncated,omitempty"`
-	SummariesDropped   int  `json:"summariesDropped,omitempty"`
-	AnnotationsDropped int  `json:"annotationsDropped,omitempty"`
-	ChecksDropped      int  `json:"checksDropped,omitempty"`
+	Truncated                   bool `json:"truncated"`
+	SummariesTruncated          int  `json:"summariesTruncated,omitempty"`
+	SummariesDropped            int  `json:"summariesDropped,omitempty"`
+	AnnotationMessagesTruncated int  `json:"annotationMessagesTruncated,omitempty"`
+	AnnotationsDropped          int  `json:"annotationsDropped,omitempty"`
+	ChecksDropped               int  `json:"checksDropped,omitempty"`
 }
 
 // CIStatusTimeout is the OutputCIStatus value CIPollExecutor sets when it
@@ -448,11 +460,12 @@ func (e *CIPollExecutor) failingCheckAnnotations(ctx context.Context, cfg CIPoll
 
 // boundCheckAnnotations caps how much of one check's annotation set reaches the
 // artifact, so a matrix job emitting hundreds cannot crowd out sibling checks.
-func boundCheckAnnotations(annotations []providers.CheckAnnotation) []providers.CheckAnnotation {
+func boundCheckAnnotations(annotations []providers.CheckAnnotation) ([]providers.CheckAnnotation, int, int) {
 	if len(annotations) == 0 {
-		return nil
+		return nil, 0, 0
 	}
 	bounded := make([]providers.CheckAnnotation, 0, min(len(annotations), maxCICheckAnnotations))
+	messagesTruncated := 0
 	for _, annotation := range annotations {
 		if len(bounded) == maxCICheckAnnotations {
 			break
@@ -463,10 +476,56 @@ func boundCheckAnnotations(annotations []providers.CheckAnnotation) []providers.
 		annotation.Message = strings.ToValidUTF8(annotation.Message, "�")
 		if truncated, did := truncateUTF8Bytes(annotation.Message, maxCIAnnotationMessageBytes); did {
 			annotation.Message = truncated
+			messagesTruncated++
 		}
 		bounded = append(bounded, annotation)
 	}
-	return bounded
+	return bounded, len(annotations) - len(bounded), messagesTruncated
+}
+
+func classifyHostReproduction(checkName, hostPlatform string) CIHostReproduction {
+	checkPlatform := checkPlatformFromName(checkName)
+	reproduction := CIHostReproduction{
+		Status:       "unknown",
+		HostPlatform: hostPlatform,
+		Diagnostic:   fmt.Sprintf("host reproducibility unknown from check name; current host is %s", hostPlatform),
+	}
+	if checkPlatform == "" {
+		return reproduction
+	}
+	reproduction.CheckPlatform = checkPlatform
+	if checkPlatform == hostPlatform {
+		reproduction.Status = "reproducible"
+		reproduction.Diagnostic = fmt.Sprintf("check targets %s and is reproducible on the current host", checkPlatform)
+		return reproduction
+	}
+	reproduction.Status = "not-reproducible"
+	reproduction.Diagnostic = fmt.Sprintf("check targets %s and cannot be reproduced on the current %s host", checkPlatform, hostPlatform)
+	return reproduction
+}
+
+func checkPlatformFromName(name string) string {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	platforms := make(map[string]struct{}, 1)
+	for _, word := range words {
+		switch word {
+		case "linux", "ubuntu":
+			platforms["linux"] = struct{}{}
+		case "darwin", "macos":
+			platforms["darwin"] = struct{}{}
+		case "windows", "win32":
+			platforms["windows"] = struct{}{}
+		}
+	}
+	if len(platforms) != 1 {
+		return ""
+	}
+	for platform := range platforms {
+		return platform
+	}
+	return ""
 }
 
 func failingCheckNames(checks []providers.CheckDetail) []string {
@@ -526,8 +585,14 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			check.Summary = bounded
 			artifact.Metadata.SummariesTruncated++
 		}
-		entry := CICheck{CheckDetail: check}
-		entry.Annotations = boundCheckAnnotations(annotations[check.Name])
+		entry := CICheck{
+			CheckDetail:      check,
+			HostReproduction: classifyHostReproduction(check.Name, runtime.GOOS),
+		}
+		var annotationsDropped, messagesTruncated int
+		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(annotations[check.Name])
+		artifact.Metadata.AnnotationsDropped += annotationsDropped
+		artifact.Metadata.AnnotationMessagesTruncated += messagesTruncated
 		artifact.Checks = append(artifact.Checks, entry)
 	}
 	for _, check := range checks {
@@ -541,7 +606,10 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 		}
 	}
 	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)
-	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 || artifact.Metadata.SummariesTruncated > 0
+	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 ||
+		artifact.Metadata.SummariesTruncated > 0 ||
+		artifact.Metadata.AnnotationMessagesTruncated > 0 ||
+		artifact.Metadata.AnnotationsDropped > 0
 
 	data, err := json.Marshal(artifact)
 	if err != nil {
