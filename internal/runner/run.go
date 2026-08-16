@@ -671,16 +671,16 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 			}
 		}
 
-		seed := walkSeed{}
+		ws := newWalkState(jr, in, registrar, in.Machine.Def.Spec.Start)
 		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
 			if err := r.recordRunBranch(jr, in); err != nil {
 				span.Fail(err)
 				return Result{}, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
 			}
-			seed.branchRecorded = true
+			ws.branchRecorded = true
 		}
 
-		result, err = r.walk(ctx, jr, in, in.Machine.Def.Spec.Start, nil, nil, nil, nil, registrar, seed)
+		result, err = r.walk(ctx, ws)
 		if err != nil {
 			span.Fail(err)
 			return result, err
@@ -835,30 +835,44 @@ type baseSyncConflictArtifact struct {
 	ConflictingFiles []string `json:"conflictingFiles"`
 }
 
-// walkSeed carries the walk-local state a resumed run must NOT start empty —
-// Start's fresh walk always begins with the zero value. pointers is the
-// upstream ContextPointers every already-finished stage produced (#107);
-// lastStage/lastResult is the subject a resumed gate evaluates against
-// (#108) — both reconstructed from the journal by Resume (see
-// lastFinishedSubject, reconstructPointers in resume.go), since walk's own
-// in-memory accumulation of them is exactly what a crash wipes.
-// workspaceBranch is the same for the run-scoped branch rebinding below
-// (lastWorkspaceBranch in resume.go). branchRecorded preserves lazy run-branch
-// provenance across a resume without duplicating ref.touched.
-type walkSeed struct {
+// walkState owns the execution frame carried between workflow steps. Resume
+// reconstructs the same frame from the journal that Start initializes empty.
+type walkState struct {
+	jr  *journal.Run
+	in  StartInput
+	reg SecretRegistrar
+
+	state      string
+	resume     *resumeContext
+	rerun      *rerunContext
+	steps      int
+	stepBudget atomic.Int64
+
 	pointers   []apiv1.ContextPointer
 	lastStage  string
 	lastResult apiv1.ResultEnvelope
 	// stageOutputs is every completed stage's journaled Outputs, so a
 	// stage-qualified inputsFrom reference can reach past the immediately
 	// preceding stage (#562).
-	stageOutputs         stageOutputs
+	completed            stageOutputs
 	parallel             *parallelExec
 	parallelRootPointers []apiv1.ContextPointer
 	fanIn                *parallelExec
 	workspaceBranch      string
 	branchRecorded       bool
 	humanDecision        *HumanGateDecision
+	gateAttempts         map[string]int
+	gateDiffDigests      map[string]string
+}
+
+func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
+	return &walkState{
+		jr:        jr,
+		in:        in,
+		reg:       reg,
+		state:     state,
+		completed: stageOutputs{},
+	}
 }
 
 // WorkspaceBranchOutput is the well-known stage output that REBINDS the branch
@@ -884,7 +898,7 @@ type walkSeed struct {
 //
 // The rebinding is sticky for the remainder of the run and survives a crash:
 // stage outputs are journaled on stage.finished, so Resume recovers the most
-// recent binding (lastWorkspaceBranch) into walkSeed rather than silently
+// recent binding (lastWorkspaceBranch) into walkState rather than silently
 // reverting a resumed run to the default branch mid-chain.
 //
 // A rebound branch must already exist (worktree.CreateOptions.RequireExistingBranch
@@ -984,47 +998,35 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // gate.evaluated journaling) is entirely owned by the gate.Evaluator
 // constructed once here — it MUST NOT be shared across runs (its repass
 // counters are run-scoped state), so a fresh one is built per walk. Start
-// always begins at the machine's declared start state with resume=nil,
-// gateAttempts=nil, gateDiffDigests=nil, and a zero-value seed; Resume
-// (resume.go) begins at the journal's checkpointed state, optionally with a
+// always begins with an empty walkState at the machine's declared start state;
+// Resume (resume.go) reconstructs that state from the journal, optionally with a
 // resumeContext for an interrupted task attempt, gateAttempts seeded from
 // each gate's last gate.started/gate.evaluated event so a resumed run's repass
 // budget continues rather than resetting (#89/#263), gateDiffDigests likewise
 // seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
-// too (#316), and seed reconstructed from the journal (#107/#108). reg is the
-// run's SecretRegistrar (see Start), threaded to every executor constructed
-// here.
-func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, startState string, resume *resumeContext, rerun *rerunContext, gateAttempts map[string]int, gateDiffDigests map[string]string, reg SecretRegistrar, seed walkSeed) (Result, error) {
-	ex := newExecutors(r.cfg, jr, reg)
+// too (#316), and context reconstructed from the journal (#107/#108).
+func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
+	jr, in := ws.jr, ws.in
+	ex := newExecutors(r.cfg, jr, ws.reg)
 	gateEval := &gate.Evaluator{
 		Automated:      r.cfg.Automated,
 		Journal:        jr,
 		MaxRepasses:    int(in.RunControls.MaxRepasses),
-		Attempts:       gateAttempts,
-		LastDiffDigest: gateDiffDigests,
+		Attempts:       ws.gateAttempts,
+		LastDiffDigest: ws.gateDiffDigests,
 	}
-
-	state := startState
-	pointers := append([]apiv1.ContextPointer(nil), seed.pointers...)
-	lastStage := seed.lastStage
-	lastResult := seed.lastResult
-	completed := seed.stageOutputs
-	if completed == nil {
-		completed = stageOutputs{}
-	}
-	// The branch every stage's worktree is provisioned against, rebindable
-	// mid-run by a stage output (#392, WorkspaceBranchOutput). Empty means
-	// "the run's own branch", resolved per stage in createStageWorkspace.
-	workspaceBranch := seed.workspaceBranch
-	branchRecorded := seed.branchRecorded
-	humanDecision := seed.humanDecision
-	// Live parallel state. nil whenever the run is single-cursor, which is
-	// every run that never forks — so the sequential path is untouched.
-	par := seed.parallel
-	fanIn := seed.fanIn
-	parallelRootPointers := append([]apiv1.ContextPointer(nil), seed.parallelRootPointers...)
-	steps := 0
-	var stepBudget atomic.Int64
+	startState := ws.state
+	state := ws.state
+	resume, rerun := ws.resume, ws.rerun
+	pointers := append([]apiv1.ContextPointer(nil), ws.pointers...)
+	lastStage, lastResult := ws.lastStage, ws.lastResult
+	completed := ws.completed
+	workspaceBranch, branchRecorded := ws.workspaceBranch, ws.branchRecorded
+	humanDecision := ws.humanDecision
+	par, fanIn := ws.parallel, ws.fanIn
+	parallelRootPointers := append([]apiv1.ContextPointer(nil), ws.parallelRootPointers...)
+	steps := ws.steps
+	stepBudget := &ws.stepBudget
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, in.RunID, jr, in.RepoRef, p.Name, steps, fmt.Errorf("runner: %w", err))
@@ -1040,7 +1042,7 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 		}
 		outcome, err := r.runConcurrentParallel(
 			ctx, jr, in, p, existing, pointers, lastStage, lastResult,
-			completed, workspaceBranch, reg, &stepBudget,
+			completed, workspaceBranch, ws.reg, stepBudget,
 		)
 		steps = int(stepBudget.Load())
 		if err != nil {
@@ -1065,10 +1067,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			fanIn = nil
 		}
 		if terminal := outcome.terminalTask; terminal != nil {
-			next, res, advance, transitionErr := r.taskOutcome(
-				ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item,
-				terminal.task, terminal.result, steps,
-			)
+			ws.steps = steps
+			next, res, advance, transitionErr := r.taskOutcome(ctx, ws, taskTransition{terminal.task, terminal.result})
 			if transitionErr != nil || !advance {
 				return res, true, transitionErr
 			}
@@ -1076,10 +1076,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 			return Result{}, false, nil
 		}
 		if terminal := outcome.terminalGate; terminal != nil {
-			next, res, advance, transitionErr := r.gateTransition(
-				ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item,
-				terminal.result, terminal.lastStage, terminal.lastResult, steps,
-			)
+			ws.steps, ws.lastStage, ws.lastResult = steps, terminal.lastStage, terminal.lastResult
+			next, res, advance, transitionErr := r.gateTransition(ctx, ws, terminal.result)
 			if transitionErr != nil || !advance {
 				return res, true, transitionErr
 			}
@@ -1417,7 +1415,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 				}
 			}
 
-			next, res, advance, oerr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, in.Item, t, result, steps)
+			ws.steps = steps
+			next, res, advance, oerr := r.taskOutcome(ctx, ws, taskTransition{t, result})
 			if res.Phase == "" {
 				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, in.RunID, jr, t.Name, steps); stalled {
 					return stalledResult, stalledErr
@@ -1553,7 +1552,8 @@ func (r *Runner) walk(ctx context.Context, jr *journal.Run, in StartInput, start
 					fanIn = nil
 				}
 			}
-			next, res, advance, oerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, in.Item, gr, lastStage, lastResult, steps)
+			ws.steps, ws.lastStage, ws.lastResult = steps, lastStage, lastResult
+			next, res, advance, oerr := r.gateTransition(ctx, ws, gr)
 			if oerr != nil {
 				return res, oerr
 			}
@@ -1642,7 +1642,10 @@ func (r *Runner) closeParallelForLoudExit(jr *journal.Run, par *parallelExec, ta
 	})
 }
 
-func (r *Runner) gateTransition(ctx context.Context, jr *journal.Run, runID string, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, lastStage string, lastResult apiv1.ResultEnvelope, steps int) (string, Result, bool, error) {
+func (r *Runner) gateTransition(ctx context.Context, ws *walkState, gr gate.Result) (string, Result, bool, error) {
+	jr, in := ws.jr, ws.in
+	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
+	lastStage, lastResult, steps := ws.lastStage, ws.lastResult, ws.steps
 	if reason, ok := terminalGateNotificationReason(gr); ok {
 		notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, runID, repoRef, item, gr, reason)
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, gr.Gate, steps); stalled {
@@ -2107,7 +2110,15 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 // right after runTask returned. ctx/repoRef/item feed only the blocked arm's
 // instance-level handler (Config.Blocked); the transition decision itself
 // stays pure.
-func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run, machine *workflow.Machine, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, t apiv1.Task, result apiv1.ResultEnvelope, steps int) (next string, res Result, advance bool, err error) {
+type taskTransition struct {
+	task   apiv1.Task
+	result apiv1.ResultEnvelope
+}
+
+func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition taskTransition) (next string, res Result, advance bool, err error) {
+	jr, in := ws.jr, ws.in
+	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
+	t, result, steps := transition.task, transition.result, ws.steps
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
 		return "", stalledResult, false, stalledErr
 	}
