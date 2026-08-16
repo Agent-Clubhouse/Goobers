@@ -830,7 +830,7 @@ func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	if result.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated", result.Phase)
 	}
-	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
+	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 0 {
 		t.Fatalf("BlockedOutcome = %+v", blocked)
 	}
 
@@ -842,12 +842,26 @@ func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read journal: %v", err)
 	}
+	foundSelfRejection := false
 	for _, event := range events {
 		if (event.Type == journal.EventParallelFinished || event.Type == journal.EventRunFinished ||
-			(event.Type == journal.EventError && event.Error != nil && event.Error.Code == "blocked_by_agent")) &&
+			(event.Type == journal.EventError && event.Error != nil &&
+				(event.Error.Code == "blocked_by_agent" || event.Error.Code == "self_referential_blocker_rejected"))) &&
 			event.Branch != 0 {
 			t.Errorf("%s has branch %d, want root attribution", event.Type, event.Branch)
 		}
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "self_referential_blocker_rejected" {
+			foundSelfRejection = true
+			if event.Stage != "lens-a" ||
+				event.Runner["runId"] != runID ||
+				event.Runner["stage"] != "lens-a" ||
+				event.Runner["itemId"] != "42" {
+				t.Errorf("self-reference diagnostic = %+v, want run, stage, and item attribution", event)
+			}
+		}
+	}
+	if !foundSelfRejection {
+		t.Fatal("self-referential blocker rejection was not journaled")
 	}
 }
 

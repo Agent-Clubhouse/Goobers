@@ -3520,6 +3520,61 @@ func TestBuildBlockedHandlerRejectsSelfReferentialBlocker(t *testing.T) {
 	}
 }
 
+func TestBuildBlockedHandlerFiltersSelfReferencePerClaimedItem(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	for _, itemID := range []string{"57", "58"} {
+		if ok, _, err := ledger.Claim(itemID, "run-multi", "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("seed claim %s: ok=%v err=%v", itemID, ok, err)
+		}
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	err = h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-multi", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", Reason: "blocked by #58", Blockers: []string{"58"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("blocked records = %+v, want only item 57", recs)
+	}
+	rec, ok := recs[blockedRecordKey(providers.RepositoryRef{
+		Provider: providers.ProviderGitHub, Owner: "acme", Name: "web",
+	}, "57")]
+	if !ok || !slices.Equal(rec.Blockers, []string{"58"}) {
+		t.Fatalf("item 57 blocked record = %+v, want blocker 58", rec)
+	}
+	for _, call := range fake.calls {
+		if call.ID == "58" && slices.Contains(call.AddLabels, blockedOnSiblingLabel) {
+			t.Fatalf("item 58 parking request = %+v, self-reference must be unattributed", call)
+		}
+		if call.Comment != "" {
+			t.Fatalf("parking request = %+v, want no cycle escalation", call)
+		}
+	}
+}
+
 // TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty proves a run
 // started without StartInput.Item (scheduled/fan-out implementation runs
 // claim their item mid-run) still notifies the right issue: the handler

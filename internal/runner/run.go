@@ -2177,24 +2177,28 @@ func (r *Runner) taskOutcome(ctx context.Context, runID string, jr *journal.Run,
 		}
 		itemIDs, resolveErr := r.terminalGateItemIDs(runID, item)
 		if resolveErr == nil {
-			var rejected []string
-			o, rejected = o.WithoutSelfBlockers(itemIDs...)
-			for _, itemID := range rejected {
-				if aerr := jr.Append(journal.Event{
-					Type:  journal.EventError,
-					Stage: t.Name,
-					Error: &journal.ErrorDetail{
-						Code:    "self_referential_blocker_rejected",
-						Message: "rejected driving item as its own blocker",
-					},
-					Runner: map[string]any{
-						"runId":  runID,
-						"stage":  t.Name,
-						"itemId": itemID,
-					},
-				}); aerr != nil {
-					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal self-referential blocker for %q: %w", t.Name, aerr))
-					return "", res, false, err
+			for _, itemID := range itemIDs {
+				itemOutcome, rejected := o.WithoutSelfBlockers(itemID)
+				if len(itemIDs) == 1 {
+					o = itemOutcome
+				}
+				for _, rejectedID := range rejected {
+					if aerr := jr.Append(journal.Event{
+						Type:  journal.EventError,
+						Stage: t.Name,
+						Error: &journal.ErrorDetail{
+							Code:    "self_referential_blocker_rejected",
+							Message: "rejected driving item as its own blocker",
+						},
+						Runner: map[string]any{
+							"runId":  runID,
+							"stage":  t.Name,
+							"itemId": rejectedID,
+						},
+					}); aerr != nil {
+						res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal self-referential blocker for %q: %w", t.Name, aerr))
+						return "", res, false, err
+					}
 				}
 			}
 		}

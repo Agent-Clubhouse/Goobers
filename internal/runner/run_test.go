@@ -3013,6 +3013,56 @@ func TestRunnerRejectsSelfReferentialBlocker(t *testing.T) {
 	t.Fatal("self-referential blocker rejection was not journaled")
 }
 
+func TestRunnerPreservesCrossItemBlockerForMultiClaimRun(t *testing.T) {
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		"run-multi-self-blocked:implement": {
+			status:  apiv1.ResultBlocked,
+			outputs: map[string]interface{}{OutputBlockedBy: "58"},
+		},
+	}, gate.NewAutomatedEvaluator())
+	r.cfg.ClaimedItems = func(string) ([]string, error) { return []string{"57", "58"}, nil }
+	var got BlockedOutcome
+	r.cfg.Blocked = func(_ context.Context, o BlockedOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-multi-self-blocked",
+		Machine: fixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if !slices.Equal(got.Blockers, []string{"58"}) {
+		t.Fatalf("handler blockers = %v, want [58] retained for claimed item 57", got.Blockers)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-multi-self-blocked"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var rejectedItems []any
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "self_referential_blocker_rejected" {
+			rejectedItems = append(rejectedItems, event.Runner["itemId"])
+		}
+	}
+	if !slices.Equal(rejectedItems, []any{"58"}) {
+		t.Fatalf("rejection diagnostics = %v, want [58]", rejectedItems)
+	}
+}
+
 // TestRunnerMaxStepsExceededFailsRunClosed proves a runaway machine's
 // max-steps abort journals PhaseFailed instead of leaving the run stuck at
 // phase=running forever — the daemon auto-resumes every PhaseRunning run on
