@@ -2311,7 +2311,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
 		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
-		res.NoWork = true
+		res.NoWork = steps == 1
 		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the

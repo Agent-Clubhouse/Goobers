@@ -786,9 +786,6 @@ func TestRunnerRetriesTransientWorktreeProvisioningAsInfrastructure(t *testing.T
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
-	if !res.NoWork {
-		t.Fatal("no-work outcome was not exposed to the scheduler")
-	}
 	if executor.calls != 1 {
 		t.Fatalf("executor called %d times, want 1 (the worktree failure never reached the executor)", executor.calls)
 	}
@@ -1241,6 +1238,9 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 	if res.FinalState != "query-backlog" {
 		t.Fatalf("finalState = %q, want query-backlog (curate must never have become the final state)", res.FinalState)
 	}
+	if !res.NoWork {
+		t.Fatal("single-stage no-work run was not exposed to the scheduler")
+	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		t.Fatal(err)
@@ -1253,6 +1253,31 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
 			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
 		}
+	}
+}
+
+func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
+	const runID = "run-multi-stage-no-work"
+	r, _ := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":query-backlog": {status: apiv1.ResultSuccess},
+		runID + ":curate":        {status: apiv1.ResultNoWork, summary: "nothing to curate"},
+	}, nil)
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: noWorkFixtureMachine(t),
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	if res.NoWork {
+		t.Fatal("productive multi-stage run was exposed to the scheduler as an idle poll")
 	}
 }
 
