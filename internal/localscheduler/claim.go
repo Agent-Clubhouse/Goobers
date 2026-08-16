@@ -60,13 +60,15 @@ func (e ClaimEntry) expired(now time.Time) bool { return !e.ExpiresAt.After(now)
 // visibility once a local claim succeeds — the ledger never depends on the
 // provider layer, and the marker is never the source of truth (§7, SCH-Q5).
 //
-// Durable active ownership and per-run claim history live in one JSON file
-// under the instance root, rewritten atomically (journal.WriteFileAtomic) on
-// every mutation. Keeping both in the same commit lets intervention recovery
-// prove the complete prior ownership set even when observability journaling
-// fails. It is designed for one embedded scheduler per instance (SCH-040: no
-// separate scheduler service), so an in-process mutex is the correct atomicity
-// primitive — not cross-process file locking.
+// Durable active ownership and recent per-run claim history live in one JSON
+// file under the instance root, rewritten atomically (journal.WriteFileAtomic)
+// on every mutation. Keeping both in the same commit lets intervention recovery
+// prove the prior ownership set even when observability journaling fails.
+// History for runs without active entries expires after claimHistoryTTL so the
+// hot claim path never rewrites an unbounded ledger. It is designed for one
+// embedded scheduler per instance (SCH-040: no separate scheduler service), so
+// an in-process mutex is the correct atomicity primitive — not cross-process
+// file locking.
 type ClaimLedger struct {
 	mu      sync.Mutex
 	path    string
@@ -76,7 +78,10 @@ type ClaimLedger struct {
 	log     *journal.InstanceLog // optional; nil-safe
 }
 
-const claimLedgerSchema = "goobers.dev/scheduler/claims/v1"
+const (
+	claimLedgerSchema = "goobers.dev/scheduler/claims/v1"
+	claimHistoryTTL   = 30 * 24 * time.Hour
+)
 
 type claimLedgerState struct {
 	Schema  string                           `json:"schema"`
@@ -149,6 +154,7 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		}
 		l.entries[storageKey] = entry
 	}
+	l.history = l.retainedHistory(l.now())
 	return l, nil
 }
 
@@ -703,8 +709,9 @@ func (l *ClaimLedger) ForRunAll(runID string) []ClaimEntry {
 
 // persist rewrites the ledger file atomically. Caller holds l.mu.
 func (l *ClaimLedger) persist() error {
+	history := l.retainedHistory(l.now())
 	data, err := json.MarshalIndent(claimLedgerState{
-		Schema: claimLedgerSchema, Entries: l.entries, History: l.history,
+		Schema: claimLedgerSchema, Entries: l.entries, History: history,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("localscheduler: marshal claim ledger: %w", err)
@@ -712,10 +719,11 @@ func (l *ClaimLedger) persist() error {
 	if err := journal.WriteFileAtomic(l.path, data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist claim ledger: %w", err)
 	}
+	l.history = history
 	return nil
 }
 
-// HistoryForRun returns every claim ever durably assigned to runID.
+// HistoryForRun returns every retained claim durably assigned to runID.
 func (l *ClaimLedger) HistoryForRun(runID string) []ClaimEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -734,6 +742,32 @@ func (l *ClaimLedger) HistoryForRun(runID string) []ClaimEntry {
 		return entries[i].ExternalID < entries[j].ExternalID
 	})
 	return entries
+}
+
+func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]ClaimEntry {
+	activeRuns := make(map[string]struct{}, len(l.entries))
+	for _, entry := range l.entries {
+		activeRuns[entry.RunID] = struct{}{}
+	}
+
+	cutoff := now.Add(-claimHistoryTTL)
+	retained := make(map[string]map[string]ClaimEntry, len(l.history))
+	for runID, history := range l.history {
+		_, active := activeRuns[runID]
+		if !active {
+			var newest time.Time
+			for _, entry := range history {
+				if entry.ExpiresAt.After(newest) {
+					newest = entry.ExpiresAt
+				}
+			}
+			if !newest.After(cutoff) {
+				continue
+			}
+		}
+		retained[runID] = history
+	}
+	return retained
 }
 
 func (l *ClaimLedger) recordHistory(storageKey string, entry ClaimEntry) {
