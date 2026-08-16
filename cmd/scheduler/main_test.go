@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -108,7 +110,10 @@ func TestSuperviseTriggerStopsWhenCancelledDuringBackoff(t *testing.T) {
 
 func TestConfigFromEnvDefaults(t *testing.T) {
 	t.Setenv("GOOBERS_CONFIG_DIR", "")
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.pollInterval != 30*time.Second {
 		t.Errorf("pollInterval default = %v", cfg.pollInterval)
 	}
@@ -117,6 +122,29 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.taskQueue == "" {
 		t.Error("taskQueue should default to the engine queue")
+	}
+}
+
+func TestConfigFromEnvLoadsInstanceEngine(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOOBERS_INSTANCE_ROOT", root)
+	if err := os.WriteFile(instance.NewLayout(root).ConfigFile(), []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: temporal:7233
+  namespace: goobers
+  taskQueue: scheduler
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.temporalHostPort != "temporal:7233" || cfg.temporalNamespace != "goobers" || cfg.taskQueue != "scheduler" {
+		t.Fatalf("engine config = %+v", cfg)
 	}
 }
 
