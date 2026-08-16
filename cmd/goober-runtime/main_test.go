@@ -56,6 +56,46 @@ func TestConfigFromEnvDefaultsAndAliases(t *testing.T) {
 	}
 }
 
+func TestRuntimeEngineConfigSupportsTemporalCompatibilityAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want instance.EngineConfig
+	}{
+		{
+			name: "goobers aliases",
+			env: map[string]string{
+				"GOOBERS_TEMPORAL_ADDRESS":    "temporal:7233",
+				"GOOBERS_TEMPORAL_TASK_QUEUE": "runtime",
+			},
+			want: instance.EngineConfig{HostPort: "temporal:7233", Namespace: instance.DefaultTemporalNamespace, TaskQueue: "runtime"},
+		},
+		{
+			name: "temporal aliases",
+			env: map[string]string{
+				"TEMPORAL_ADDRESS":    "temporal:7233",
+				"TEMPORAL_NAMESPACE":  "production",
+				"TEMPORAL_TASK_QUEUE": "runtime",
+			},
+			want: instance.EngineConfig{HostPort: "temporal:7233", Namespace: "production", TaskQueue: "runtime"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			got, err := runtimeEngineConfig("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("runtimeEngineConfig = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigFromEnvUsesTaskQueueDefault(t *testing.T) {
 	t.Setenv("GOOBERS_COPILOT_HARNESS_COMMAND", "copilot-goober")
 

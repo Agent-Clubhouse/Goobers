@@ -18,7 +18,7 @@ var (
 )
 
 func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client) (func(), error) {
-	if cfg.Engine == nil {
+	if !cfg.EngineProjectionEnabled() {
 		return func() {}, nil
 	}
 	engineConfig := cfg.EffectiveEngineConfig()

@@ -35,8 +35,13 @@ const (
 	DefaultTemporalNamespace         = "default"
 	DefaultEngineTaskQueue           = "goobers-engine"
 	TemporalHostPortEnv              = "GOOBERS_TEMPORAL_HOSTPORT"
+	TemporalAddressEnv               = "GOOBERS_TEMPORAL_ADDRESS"
+	TemporalAddressLegacyEnv         = "TEMPORAL_ADDRESS"
 	TemporalNamespaceEnv             = "GOOBERS_TEMPORAL_NAMESPACE"
+	TemporalNamespaceLegacyEnv       = "TEMPORAL_NAMESPACE"
 	TaskQueueEnv                     = "GOOBERS_TASK_QUEUE"
+	TemporalTaskQueueEnv             = "GOOBERS_TEMPORAL_TASK_QUEUE"
+	TemporalTaskQueueLegacyEnv       = "TEMPORAL_TASK_QUEUE"
 	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
 	DefaultWorkflowSourceRef         = "main"
@@ -82,7 +87,9 @@ type Config struct {
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
-	Engine *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
+	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
+	engineResolutionApplied bool
+	engineProjectionEnabled bool
 	// ExternalTelemetry declares named, read-only operational telemetry
 	// connectors. Workflows select only a connector name and generic query
 	// inputs; provider fields remain confined to each connector's config.
@@ -1227,13 +1234,22 @@ func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPC
 // ResolveEngineConfig applies process environment overrides to instance.yaml
 // and validates the resulting Temporal connection configuration.
 func (c *Config) ResolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, bool, error) {
+	resolved, env, err := c.resolveEngineConfig(lookupEnv)
+	return resolved, c.Engine != nil || env.anyOverride, err
+}
+
+type engineEnvResolution struct {
+	anyOverride  bool
+	hostOverride bool
+}
+
+func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, engineEnvResolution, error) {
 	resolved := EngineConfig{
 		HostPort:  DefaultTemporalHostPort,
 		Namespace: DefaultTemporalNamespace,
 		TaskQueue: DefaultEngineTaskQueue,
 	}
-	configured := c.Engine != nil
-	if configured {
+	if c.Engine != nil {
 		if c.Engine.HostPort != "" {
 			resolved.HostPort = c.Engine.HostPort
 		}
@@ -1244,24 +1260,39 @@ func (c *Config) ResolveEngineConfig(lookupEnv func(string) (string, bool)) (Eng
 			resolved.TaskQueue = c.Engine.TaskQueue
 		}
 	}
-	for env, target := range map[string]*string{
-		TemporalHostPortEnv:  &resolved.HostPort,
-		TemporalNamespaceEnv: &resolved.Namespace,
-		TaskQueueEnv:         &resolved.TaskQueue,
-	} {
-		if value, ok := lookupEnv(env); ok {
-			value = strings.TrimSpace(value)
-			if value == "" {
-				return EngineConfig{}, false, fmt.Errorf("%s must not be empty when set", env)
+	var envResolution engineEnvResolution
+	overrides := []struct {
+		keys   []string
+		target *string
+		host   bool
+	}{
+		{[]string{TemporalHostPortEnv, TemporalAddressEnv, TemporalAddressLegacyEnv}, &resolved.HostPort, true},
+		{[]string{TemporalNamespaceEnv, TemporalNamespaceLegacyEnv}, &resolved.Namespace, false},
+		{[]string{TaskQueueEnv, TemporalTaskQueueEnv, TemporalTaskQueueLegacyEnv}, &resolved.TaskQueue, false},
+	}
+	for _, override := range overrides {
+		for i, env := range override.keys {
+			if value, ok := lookupEnv(env); ok {
+				value = strings.TrimSpace(value)
+				if value == "" {
+					// Compatibility aliases historically used os.Getenv and
+					// treated an empty value as unset.
+					if i > 0 {
+						continue
+					}
+					return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("%s must not be empty when set", env)
+				}
+				*override.target = value
+				envResolution.anyOverride = true
+				envResolution.hostOverride = envResolution.hostOverride || override.host
+				break
 			}
-			*target = value
-			configured = true
 		}
 	}
 	if err := resolved.Validate(); err != nil {
-		return EngineConfig{}, false, fmt.Errorf("engine: %w", err)
+		return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("engine: %w", err)
 	}
-	return resolved, configured, nil
+	return resolved, envResolution, nil
 }
 
 // EffectiveEngineConfig returns the resolved engine configuration stored by
@@ -1275,6 +1306,15 @@ func (c *Config) EffectiveEngineConfig() EngineConfig {
 		Namespace: DefaultTemporalNamespace,
 		TaskQueue: DefaultEngineTaskQueue,
 	}
+}
+
+// EngineProjectionEnabled reports whether instance YAML or a host/address
+// environment override configured a Temporal connection for the daemon.
+func (c *Config) EngineProjectionEnabled() bool {
+	if c.engineResolutionApplied {
+		return c.engineProjectionEnabled
+	}
+	return c.Engine != nil
 }
 
 // Validate checks the Temporal frontend and task queue fields.
@@ -1425,13 +1465,16 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Telemetry.OTLP != nil || resolvedOTLP.Enabled() {
 		cfg.Telemetry.OTLP = &resolvedOTLP
 	}
-	resolvedEngine, engineConfigured, err := cfg.ResolveEngineConfig(os.LookupEnv)
+	yamlEngineConfigured := cfg.Engine != nil
+	resolvedEngine, engineEnv, err := cfg.resolveEngineConfig(os.LookupEnv)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if engineConfigured {
+	if yamlEngineConfigured || engineEnv.anyOverride {
 		cfg.Engine = &resolvedEngine
 	}
+	cfg.engineResolutionApplied = true
+	cfg.engineProjectionEnabled = yamlEngineConfigured || engineEnv.hostOverride
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
