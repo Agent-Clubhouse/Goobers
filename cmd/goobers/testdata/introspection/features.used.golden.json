@@ -161,6 +161,12 @@
       "used": true
     },
     {
+      "name": "task.policyActions",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
       "name": "trigger.schedule",
       "stability": "ga",
       "sinceVersion": "dev",

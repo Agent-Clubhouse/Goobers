@@ -25,6 +25,7 @@ task.inputs                                2.0          ga               support
 task.name                                  2.0          ga               supported        dev
 task.next                                  2.0          ga               supported        dev
 task.onTimeout.fail                        2.0          ga               supported        dev
+task.policyActions                         2.0          ga               supported        dev
 trigger.schedule                           2.0          ga               supported        dev
 workflow.spec.displayName                  2.0          ga               supported        dev
 workflow.spec.gaggle                       2.0          ga               supported        dev
@@ -36,4 +37,4 @@ workflow.spec.tasks                        2.0          ga               support
 workflow.spec.triggers                     2.0          ga               supported        dev
 workflow.terminal.complete                 2.0          ga               supported        dev
 
-36 feature/version row(s)
+37 feature/version row(s)
