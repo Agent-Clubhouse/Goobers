@@ -54,9 +54,9 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := time.Now().UTC()
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
-		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
+		t.Fatalf("acquireDaemonLock: %v", err)
 	}
 	defer release()
 
@@ -128,9 +128,9 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
-		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
+		t.Fatalf("acquireDaemonLock: %v", err)
 	}
 	defer release()
 
@@ -159,7 +159,7 @@ func TestInspectDaemonLivenessUsesPinnedTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	timeout := 5 * time.Minute
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, timeout)
+	release, err := acquireDaemonLock(lockPath, root, timeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
