@@ -1542,41 +1542,43 @@ func bindingsAtScope(
 		}
 	}
 
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if node == nil || node.Pos() >= target.Pos() {
-			return false
-		}
-		block := enclosingBlock(node, parents)
-		if block == nil || !callScopes[block] || node.End() >= target.Pos() {
-			return true
-		}
-		switch value := node.(type) {
-		case *ast.AssignStmt:
-			for i, left := range value.Lhs {
-				name := expressionName(left)
-				if name == "" || name == "_" {
-					continue
-				}
-				if i < len(value.Rhs) {
-					bindings[name] = value.Rhs[i]
-				} else {
-					delete(bindings, name)
-				}
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if node == nil || node.Pos() >= target.Pos() {
+				return false
 			}
-			return false
-		case *ast.ValueSpec:
-			for i, name := range value.Names {
-				if i < len(value.Values) {
-					bindings[name.Name] = value.Values[i]
-				} else {
-					delete(bindings, name.Name)
-				}
+			block := enclosingBlock(node, parents)
+			if block == nil || !callScopes[block] || node.End() >= target.Pos() {
+				return true
 			}
-			return false
-		default:
-			return true
-		}
-	})
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for i, left := range value.Lhs {
+					name := expressionName(left)
+					if name == "" || name == "_" {
+						continue
+					}
+					if i < len(value.Rhs) {
+						bindings[name] = value.Rhs[i]
+					} else {
+						delete(bindings, name)
+					}
+				}
+				return false
+			case *ast.ValueSpec:
+				for i, name := range value.Names {
+					if i < len(value.Values) {
+						bindings[name.Name] = value.Values[i]
+					} else {
+						delete(bindings, name.Name)
+					}
+				}
+				return false
+			default:
+				return true
+			}
+		})
+	}
 	return bindings
 }
 
