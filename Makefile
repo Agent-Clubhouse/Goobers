@@ -47,10 +47,12 @@ BENCH_WORKCOPY_ARGS ?= -preset medium
 CONTROLLER_GEN_VERSION ?= v0.16.5
 SETUP_ENVTEST_VERSION  ?= release-0.19
 GOVULNCHECK_VERSION    ?= v1.6.0
+KUBECONFORM_VERSION    ?= v0.7.0
 ENVTEST_K8S_VERSION    ?= 1.31.0
 CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+KUBECONFORM    := $(GO) run github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
 
 ## help: Show this help.
 .PHONY: help
@@ -206,16 +208,17 @@ image:
 		--build-arg DATE=$(DATE) \
 		-t $(IMAGE) .
 
-## deploy-validate: Build the k8s reference manifests (deploy/reference) with kubectl kustomize.
-# Optional local validation for the #663 reference tree; requires kubectl.
-# Schema validation (kubeconform) + helm-template rendering are follow-ups for
-# the Validation & CI milestone.
+## deploy-validate: Render and schema-check the CI-gated k8s reference manifests.
+# Requires kubectl; kubeconform is pinned and run through the Go toolchain.
 .PHONY: deploy-validate
 deploy-validate:
 	kubectl kustomize deploy/reference/goobers-system >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
-	@echo "deploy/reference kustomize builds OK"
+	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
+	@echo "deploy/reference kustomize builds and schemas OK"
 
 ## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs
