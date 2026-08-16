@@ -214,14 +214,32 @@ func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string
 		if task.Type != apiv1.TaskDeterministic || task.Run == nil || task.Run.Script == "" {
 			continue
 		}
-		if !contains(task.RequiredCapabilities, "os=linux") {
+		if isPOSIXOnlyScript(task.Run.Script) && !hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
 			problems = append(problems, fmt.Sprintf(
-				"deterministic task %q uses a POSIX inline script without requiredCapabilities: [os=linux]",
+				"deterministic task %q uses a POSIX inline script without an incompatible os capability",
 				task.Name,
 			))
 		}
 	}
 	return problems
+}
+
+var posixOnlyScriptSyntax = regexp.MustCompile(
+	`(?m)(?:^|\n)[ \t]*(?:#![^\n]*\bsh\b|set[ \t]+-[a-zA-Z]*[eu][a-zA-Z]*\b|case\b|esac\b|printf\b|export\b|trap\b|test\b)|\$\{[a-zA-Z_][a-zA-Z0-9_]*[^}]*\}|\$\(`,
+)
+
+func isPOSIXOnlyScript(script string) bool {
+	return posixOnlyScriptSyntax.MatchString(script)
+}
+
+func hasWindowsIncompatibleOSCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		goos, ok := strings.CutPrefix(capability, "os=")
+		if ok && goos != "" && goos != "windows" {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *testing.T) {
@@ -235,6 +253,34 @@ func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *te
 	problems := windowsDeterministicCompatibilityProblems(def)
 	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
 		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsWindowsInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "windows-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "@echo off\r\necho done"},
+			RequiredCapabilities: []string{"os=windows"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want Windows-native script accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOS(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "darwin-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+			RequiredCapabilities: []string{"os=darwin"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
 	}
 }
 
