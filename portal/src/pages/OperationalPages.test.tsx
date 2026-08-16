@@ -10,6 +10,7 @@ import {
   largeJournalFixtures,
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
+import styles from "../styles.css?inline";
 
 const storedValues = new Map<string, string>();
 const originalLocalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
@@ -133,6 +134,10 @@ describe("operational overview", () => {
     expect(within(recent).queryByText("Failed")).not.toBeInTheDocument();
     expect(within(counts).getAllByText("2", { selector: "dd" })).toHaveLength(2);
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
+  });
+
+  it("top-aligns attention row controls", () => {
+    expect(styles).toMatch(/\.attention-row\s*\{[^}]*align-items:\s*start;/s);
   });
 
   it("pivots an attention row's workflow into a pre-scoped Insight view without triggering the run link (#2529)", async () => {
