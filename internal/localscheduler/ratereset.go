@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // rateResetFileName is the marker, written into an instance's scheduler/
@@ -28,7 +30,7 @@ func WriteRateReset(schedulerDir string, at time.Time) error {
 		return fmt.Errorf("localscheduler: rate-reset dir: %w", err)
 	}
 	path := filepath.Join(schedulerDir, rateResetFileName)
-	if err := os.WriteFile(path, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+	if err := journal.WriteFileAtomic(path, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
 		return fmt.Errorf("localscheduler: write rate-reset marker: %w", err)
 	}
 	return nil
