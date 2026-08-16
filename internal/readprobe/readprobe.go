@@ -51,6 +51,8 @@ var (
 	activeScanOpens    atomic.Uint64
 	instanceLogAppends atomic.Uint64
 	instanceLogBytes   atomic.Uint64
+	instanceTailReads  atomic.Uint64
+	instanceTailBytes  atomic.Uint64
 	runPhaseBytes      atomic.Uint64
 )
 
@@ -84,6 +86,10 @@ type Snapshot struct {
 	// must be the byte budget.
 	InstanceLogAppends uint64 `json:"instanceLogAppends"`
 	InstanceLogBytes   uint64 `json:"instanceLogBytesRead"`
+	// InstanceTailReads counts incremental instance-journal reads, and
+	// InstanceTailBytes the bytes read after the remembered cursor.
+	InstanceTailReads uint64 `json:"instanceTailReads"`
+	InstanceTailBytes uint64 `json:"instanceTailBytesRead"`
 	// RunPhaseBytes counts the journal bytes read to reconstruct run phases,
 	// by whichever route the caller took.
 	//
@@ -112,6 +118,8 @@ func Reset() {
 	activeScanOpens.Store(0)
 	instanceLogAppends.Store(0)
 	instanceLogBytes.Store(0)
+	instanceTailReads.Store(0)
+	instanceTailBytes.Store(0)
 	runPhaseBytes.Store(0)
 }
 
@@ -123,6 +131,8 @@ func Take() Snapshot {
 		ActiveScanOpens:    activeScanOpens.Load(),
 		InstanceLogAppends: instanceLogAppends.Load(),
 		InstanceLogBytes:   instanceLogBytes.Load(),
+		InstanceTailReads:  instanceTailReads.Load(),
+		InstanceTailBytes:  instanceTailBytes.Load(),
 		RunPhaseBytes:      runPhaseBytes.Load(),
 	}
 }
@@ -137,6 +147,8 @@ func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
 		InstanceLogAppends: s.InstanceLogAppends - earlier.InstanceLogAppends,
 		InstanceLogBytes:   s.InstanceLogBytes - earlier.InstanceLogBytes,
+		InstanceTailReads:  s.InstanceTailReads - earlier.InstanceTailReads,
+		InstanceTailBytes:  s.InstanceTailBytes - earlier.InstanceTailBytes,
 		RunPhaseBytes:      s.RunPhaseBytes - earlier.RunPhaseBytes,
 	}
 }
@@ -186,6 +198,16 @@ func RecordInstanceLogAppend(bytesRead int) {
 		instanceLogAppends.Add(1)
 		if bytesRead > 0 {
 			instanceLogBytes.Add(uint64(bytesRead))
+		}
+	}
+}
+
+// RecordInstanceTailRead records one incremental instance-journal read.
+func RecordInstanceTailRead(bytesRead int) {
+	if enabled.Load() {
+		instanceTailReads.Add(1)
+		if bytesRead > 0 {
+			instanceTailBytes.Add(uint64(bytesRead))
 		}
 	}
 }

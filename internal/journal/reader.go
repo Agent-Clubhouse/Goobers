@@ -454,6 +454,10 @@ func readEventRecords(path string) ([]EventRecord, int, error) {
 		}
 		return nil, 0, fmt.Errorf("journal: read events log: %w", err)
 	}
+	return parseEventRecords(data)
+}
+
+func parseEventRecords(data []byte) ([]EventRecord, int, error) {
 	var complete, tail []byte
 	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
 		complete, tail = data[:nl+1], data[nl+1:]

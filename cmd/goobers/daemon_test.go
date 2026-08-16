@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/testgit"
@@ -580,6 +581,51 @@ func TestSummarizeHeartbeatCountsOnlyNewSchedulerActivity(t *testing.T) {
 	}
 	if lastSeq != 7 {
 		t.Fatalf("last seq = %d, want 7", lastSeq)
+	}
+}
+
+func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	for range 200 {
+		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Reason: strings.Repeat("history", 20)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail, err := journal.OpenInstanceLogTail(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "new"}); err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout := newDaemonOutput()
+	done := make(chan struct{})
+	go emitHeartbeats(ctx, stdout, dir, 1, tail, nil, 100*time.Millisecond, done)
+
+	select {
+	case <-stdout.heartbeat:
+		cancel()
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("heartbeat was not emitted")
+	}
+	<-done
+
+	work := readprobe.Take()
+	if work.InstanceTailReads != 1 || work.InstanceTailBytes == 0 || work.InstanceTailBytes > 1024 {
+		t.Fatalf("heartbeat work = %+v, want one read of at most 1024 bytes", work)
+	}
+	if output := stdout.String(); !strings.Contains(output, "1 trigger(s) fired") {
+		t.Fatalf("heartbeat output = %q, want startup activity", output)
 	}
 }
 
