@@ -3,12 +3,33 @@ package localscheduler
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+type idleCostStarter struct {
+	mu            sync.Mutex
+	branchCreates int
+	branchDeletes int
+}
+
+func (s *idleCostStarter) Start(context.Context, StartRequest) (StartResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.branchCreates++
+	s.branchDeletes++
+	return StartResult{Phase: journal.PhaseCompleted, NoWork: true}, nil
+}
+
+func (s *idleCostStarter) branchOperations() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.branchCreates, s.branchDeletes
+}
 
 func TestIdleBackoffSuppressesConsecutiveNoWorkPolls(t *testing.T) {
 	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
@@ -49,6 +70,60 @@ func TestIdleBackoffSuppressesConsecutiveNoWorkPolls(t *testing.T) {
 		}
 	}
 	t.Fatal("idle backoff suppression was not journaled")
+}
+
+func TestIdleBackoffMateriallyReducesIdleRunAndBranchTelemetry(t *testing.T) {
+	const ticks = 60
+	runScenario := func(t *testing.T, enabled bool) (int, int, int) {
+		t.Helper()
+		base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+		now := base
+		starter := &idleCostStarter{}
+		scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
+			Workflow:  "poll",
+			Readiness: apiv1.ReadinessConditions{MaxRunsPerHour: ticks},
+			Schedules: []Schedule{fakeSchedule{d: time.Minute}},
+			ScheduleBackoffs: []IdleBackoffConfig{{
+				Enabled: enabled,
+				Floor:   time.Minute,
+				Ceiling: 8 * time.Minute,
+			}},
+			Starter: starter,
+		}}, WithClock(func() time.Time { return now }, time.After))
+
+		for minute := 1; minute <= ticks; minute++ {
+			now = base.Add(time.Duration(minute) * time.Minute)
+			scheduler.Tick(context.Background(), now)
+			scheduler.Wait()
+		}
+
+		events, err := journal.ReadInstanceLog(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		noWorkRuns := 0
+		for _, event := range events {
+			if event.Type == journal.EventRunStarted {
+				noWorkRuns++
+			}
+		}
+		creates, deletes := starter.branchOperations()
+		return noWorkRuns, creates, deletes
+	}
+
+	withoutBackoffRuns, withoutBackoffCreates, withoutBackoffDeletes := runScenario(t, false)
+	withBackoffRuns, withBackoffCreates, withBackoffDeletes := runScenario(t, true)
+	if withoutBackoffRuns != ticks || withoutBackoffCreates != ticks || withoutBackoffDeletes != ticks {
+		t.Fatalf("fixed-cadence telemetry = runs:%d creates:%d deletes:%d, want %d each",
+			withoutBackoffRuns, withoutBackoffCreates, withoutBackoffDeletes, ticks)
+	}
+	if withBackoffRuns*2 >= withoutBackoffRuns ||
+		withBackoffCreates*2 >= withoutBackoffCreates ||
+		withBackoffDeletes*2 >= withoutBackoffDeletes {
+		t.Fatalf("backoff did not cut idle costs by more than half: enabled runs:%d creates:%d deletes:%d; disabled runs:%d creates:%d deletes:%d",
+			withBackoffRuns, withBackoffCreates, withBackoffDeletes,
+			withoutBackoffRuns, withoutBackoffCreates, withoutBackoffDeletes)
+	}
 }
 
 func TestIdleBackoffDoesNotDelaySustainedWork(t *testing.T) {
