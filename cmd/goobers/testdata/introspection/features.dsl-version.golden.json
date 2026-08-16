@@ -320,6 +320,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.contextFrom",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.continueOnError",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -350,6 +355,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.inputs.fieldOrder",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.inputsFrom",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -375,6 +385,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.minimumIntegrity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.name",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -391,6 +406,11 @@
     },
     {
       "name": "task.onTimeout.salvage",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.policyActions",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -421,6 +441,21 @@
     },
     {
       "name": "trigger.backlog-item.selector",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.backlog-item.trustLabel",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.fieldPredicate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.labelPredicate",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -486,6 +521,11 @@
     },
     {
       "name": "workflow.spec.readiness.maxRunsPerHour",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.runControls",
       "stability": "ga",
       "sinceVersion": "dev"
     },
