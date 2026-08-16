@@ -66,11 +66,10 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 // TestBlessedTierGapsAreTracked fails CI with an actionable message.
 // Remove an entry only once its provider's declaration and behavior have
 // actually caught up (CONF-3/#2076 removed the landing-group entries once
-// it implemented them and flipped ADO's declaration; the #2059 fix removes
-// the backlog.blockers entry once the fail-open stub is gone).
+// it implemented them and flipped ADO's declaration).
 var knownGaps = map[ProviderKind]map[Capability]string{
 	ProviderADO: {
-		CapBacklogBlockers: "#2059",
+		CapBacklogBlockers: "#3030",
 		CapPRQueryAssignee: "#2178", // ADO has no PR-assignee concept; reviewers are the closest analog.
 	},
 }

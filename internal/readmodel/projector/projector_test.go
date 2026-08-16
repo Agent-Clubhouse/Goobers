@@ -231,6 +231,37 @@ func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
 	}
 }
 
+func TestAcceptedCommitFinishesBeforeCancellationReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	projector := New(newFakeStore(), newFakeIntake(), Options{})
+	stop := projector.Start(context.Background())
+	defer stop()
+
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	committed := make(chan error, 1)
+	go func() {
+		committed <- projector.commit(ctx, commitRequest{write: func(context.Context, Store) error {
+			close(accepted)
+			<-release
+			return nil
+		}})
+	}()
+
+	<-accepted
+	cancel()
+	select {
+	case err := <-committed:
+		t.Fatalf("accepted commit returned before its write finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-committed; err != nil {
+		t.Fatalf("accepted commit: %v", err)
+	}
+}
+
 // TestCommitsAreSerializedUnderConcurrentPreparation is #1923's third acceptance
 // criterion: "no client can be stranded past a lower uncommitted seq — asserted
 // under concurrent preparation."

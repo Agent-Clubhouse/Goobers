@@ -61,8 +61,8 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	// a journal lock. It is what makes the read model COMPLETE rather than
 	// merely current: the projector applies what writers reported, and repair
 	// finds what nobody did, in both directions.
-	// Projection retention (#1932). Unbounded by default, so this returns
-	// immediately and costs nothing on an instance that has not opted in.
+	// Projection retention (#1932). Projection aging is unbounded by default,
+	// while the same loop still enforces the independent change-feed row bound.
 	//
 	// Read from config as a DAY COUNT, and RetentionDays is what turns 0 /
 	// negative / unset into unbounded rather than into a zero-day window that

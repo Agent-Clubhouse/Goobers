@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -70,6 +72,58 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 	}
 	if fake.blockerCalls != 0 {
 		t.Errorf("provider's HasOpenWorkItemBlocker was called %d time(s), want 0 — Dispatcher must refuse before dispatch", fake.blockerCalls)
+	}
+}
+
+func TestFilterDeclaredDependencyEligibilityExcludesADOItemWithPredecessor(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		writeADOJSON(t, w, map[string]interface{}{
+			"id": 42,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Blocked work",
+				"System.State":        "Active",
+			},
+			"relations": []map[string]interface{}{
+				{
+					"rel": "System.LinkTypes.Dependency-Reverse",
+					"url": "https://dev.azure.com/org/project/_apis/wit/workItems/41",
+					"attributes": map[string]interface{}{
+						"name": "Predecessor",
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
+		writeADOJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "Active", "category": "InProgress"},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
+	item, err := provider.GetWorkItem(context.Background(), repo, "42")
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.BlockedByCount != 1 {
+		t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
+	}
+
+	filtered, warnings := filterDeclaredDependencyEligibility(
+		context.Background(), provider, repo, []providers.WorkItem{item},
+	)
+	if len(filtered) != 0 {
+		t.Fatalf("filtered = %+v, want blocked ADO item excluded", filtered)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], string(providers.CapBacklogBlockers)) {
+		t.Fatalf("warnings = %+v, want one backlog.blockers warning", warnings)
 	}
 }
 
