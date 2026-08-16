@@ -372,6 +372,8 @@ export interface RunSummary {
   finishedAt?: string;
   durationMillis: number;
   lastActivityAt: string;
+  /** Running run whose activity and daemon heartbeat both exceed runner.livenessTimeout. */
+  stale: boolean;
   lastSeq: number;
   repassCount: number;
   retryCount: number;
