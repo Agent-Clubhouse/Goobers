@@ -46,9 +46,6 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	if s.sources.ReadModel == nil {
 		return RunList{}, ErrReadModelUnavailable
 	}
-	if options.Trigger != "" {
-		return RunList{}, &readmodel.UnsupportedCombinationError{Dims: readModelDims(options)}
-	}
 	if _, err := readmodel.Require(readModelDims(options)); err != nil {
 		return RunList{}, err
 	}

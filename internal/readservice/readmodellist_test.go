@@ -53,6 +53,9 @@ func TestReadModelRefusesUnsupportedFilterWithoutJournalFallback(t *testing.T) {
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("trigger-filtered list error = %v, want closed-set refusal", err)
 	}
+	if len(unsupported.Neighbours) == 0 {
+		t.Fatal("trigger-filtered refusal does not name a supported neighbour")
+	}
 }
 
 // TestReadModelPathHidesNoWorkByDefault is #2188's regression test for the
