@@ -184,6 +184,60 @@ func TestSignalResetsIdleBackoffImmediately(t *testing.T) {
 	}
 }
 
+func TestIdleBackoffDoesNotSuppressOrMutateBacklogTrigger(t *testing.T) {
+	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	now := base
+	counter := &fakeBacklogCounter{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted, NoWork: true}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "mixed",
+		Schedules:      []Schedule{fakeSchedule{d: time.Minute}},
+		BacklogCounter: counter,
+		ScheduleBackoffs: []IdleBackoffConfig{{
+			Enabled: true,
+			Floor:   time.Minute,
+			Ceiling: 4 * time.Minute,
+		}},
+		Starter: starter,
+	}}, WithClock(func() time.Time { return now }, time.After))
+
+	for _, minute := range []int{1, 2} {
+		now = base.Add(time.Duration(minute) * time.Minute)
+		scheduler.Tick(context.Background(), now)
+		scheduler.Wait()
+	}
+	counter.mu.Lock()
+	counter.count = 1
+	counter.mu.Unlock()
+	now = base.Add(3 * time.Minute)
+	scheduler.Tick(context.Background(), now)
+	scheduler.Wait()
+
+	counter.mu.Lock()
+	counter.count = 0
+	counter.mu.Unlock()
+	now = base.Add(4 * time.Minute)
+	scheduler.Tick(context.Background(), now)
+	scheduler.Wait()
+
+	starter.mu.Lock()
+	defer starter.mu.Unlock()
+	if len(starter.starts) != 4 {
+		t.Fatalf("starts = %d, want two initial schedule runs, one backlog run during backoff, and the next due schedule run", len(starter.starts))
+	}
+	want := []journal.TriggerKind{
+		journal.TriggerSchedule,
+		journal.TriggerSchedule,
+		journal.TriggerItem,
+		journal.TriggerSchedule,
+	}
+	for index, request := range starter.starts {
+		if request.Trigger.Kind != want[index] {
+			t.Fatalf("start %d trigger = %q, want %q", index, request.Trigger.Kind, want[index])
+		}
+	}
+}
+
 func TestIdleBackoffCanBeDisabled(t *testing.T) {
 	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	now := base

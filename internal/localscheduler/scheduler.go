@@ -854,10 +854,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 						Gaggle:   entry.Gaggle,
 						Reason:   reason,
 					})
-					allCandidates = append(allCandidates, candidate)
-					continue
-				}
-				if entry.ScheduleDemandCounter == nil {
+					candidate.scheduleIndexes = nil
+				} else if entry.ScheduleDemandCounter == nil {
 					candidate.scheduleRemaining = 1
 					candidate.scheduleDemand = false
 				} else {
@@ -930,7 +928,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 						fire += "; " + fireReason(tick, kind)
 					}
 				}
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, candidate.scheduleIndexes)
+				var scheduleIndexes []int
+				if kind == journal.TriggerSchedule {
+					scheduleIndexes = candidate.scheduleIndexes
+				}
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
