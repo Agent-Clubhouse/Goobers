@@ -180,11 +180,21 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		return err
 	}
 	// Reserve half the batch for reverse progress; unused capacity immediately
-	// returns to the forward walk.
-	reverseLimit := max(1, s.options.BatchSize/2)
-	reverseExamined, err := s.sweepReverse(ctx, &cursor, reverseLimit)
-	if err != nil {
-		return err
+	// returns to the forward walk. A one-entry batch alternates directions
+	// because it cannot make progress in both within one Step.
+	reverseLimit := s.options.BatchSize / 2
+	if s.options.BatchSize == 1 && !cursor.ForwardNext {
+		reverseLimit = 1
+	}
+	reverseExamined := 0
+	if reverseLimit > 0 {
+		reverseExamined, err = s.sweepReverse(ctx, &cursor, reverseLimit)
+		if err != nil {
+			return err
+		}
+	}
+	if s.options.BatchSize == 1 {
+		cursor.ForwardNext = !cursor.ForwardNext
 	}
 	forwardLimit := s.options.BatchSize - reverseExamined
 

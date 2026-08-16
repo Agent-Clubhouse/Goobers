@@ -430,6 +430,58 @@ func TestReverseSweepSharesBudgetAndResumesAfterLastProbe(t *testing.T) {
 	}
 }
 
+func TestOneEntryBatchMakesProgressInBothDirectionsAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	startedAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runID := fmt.Sprintf("%032x", 1)
+	if err := os.Mkdir(filepath.Join(root, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: runID, Gaggle: "alpha", Workflow: "wf",
+		Phase: journal.PhaseRunning, StartedAt: startedAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	options := Options{
+		RunsDirs:  []string{root},
+		BatchSize: 1,
+		Now:       func() time.Time { return startedAt.Add(time.Hour) },
+	}
+	reverse := New(store, store, nil, options)
+	if err := reverse.Step(ctx); err != nil {
+		t.Fatalf("reverse step: %v", err)
+	}
+	cursor, err := store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.ReverseAfterRunID != runID {
+		t.Fatalf("reverse cursor = %q, want %q", cursor.ReverseAfterRunID, runID)
+	}
+	if !cursor.ForwardNext {
+		t.Fatal("one-entry scheduler did not persist the forward turn")
+	}
+
+	forward := New(store, store, nil, options)
+	if err := forward.Step(ctx); err != nil {
+		t.Fatalf("forward step after restart: %v", err)
+	}
+	cursor, err = store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.EntriesThisCycle != 1 {
+		t.Fatalf("forward entries after two one-entry steps = %d, want 1", cursor.EntriesThisCycle)
+	}
+	if cursor.ForwardNext {
+		t.Fatal("one-entry scheduler did not persist the next reverse turn")
+	}
+}
+
 // TestSweepCursorResumesAcrossRestart pins that the position is durable.
 //
 // A fixed budget only produces a complete cycle if the walk resumes. A cursor

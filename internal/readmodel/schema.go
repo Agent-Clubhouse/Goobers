@@ -557,4 +557,9 @@ ALTER TABLE sweep_cursor ADD COLUMN reverse_after_run_id TEXT NOT NULL DEFAULT '
 ALTER TABLE sweep_cursor ADD COLUMN reverse_cycle_before TEXT;
 CREATE INDEX IF NOT EXISTS idx_run_oldest ON run(started_at ASC, run_id ASC);
 `,
+
+	// v11: durable direction alternation for a one-entry repair batch.
+	`
+ALTER TABLE sweep_cursor ADD COLUMN forward_next INTEGER NOT NULL DEFAULT 0;
+`,
 }

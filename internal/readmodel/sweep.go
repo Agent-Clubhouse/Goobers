@@ -26,6 +26,7 @@ type SweepCursor struct {
 	ReverseAfterStartedAt time.Time
 	ReverseAfterRunID     string
 	ReverseCycleBefore    time.Time
+	ForwardNext           bool
 }
 
 // SweepCursor reads the repair walk's position.
@@ -44,7 +45,8 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	defer release()
 	err = db.QueryRowContext(ctx, `
 		SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle,
-		       reverse_after_started_at, reverse_after_run_id, reverse_cycle_before
+		       reverse_after_started_at, reverse_after_run_id, reverse_cycle_before,
+		       forward_next
 		FROM sweep_cursor WHERE id = 1`).
 		Scan(
 			&cursor.Root,
@@ -55,6 +57,7 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 			&reverseAfter,
 			&cursor.ReverseAfterRunID,
 			&reverseBefore,
+			&cursor.ForwardNext,
 		)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SweepCursor{}, nil
@@ -90,13 +93,13 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 			cycle_started_at = ?, last_cycle_completed_at = ?,
 			entries_this_cycle = ?,
 			reverse_after_started_at = ?, reverse_after_run_id = ?,
-			reverse_cycle_before = ?
+			reverse_cycle_before = ?, forward_next = ?
 		WHERE id = 1`,
 		cursor.Root, cursor.AfterName,
 		nullTimeValue(cursor.CycleStartedAt), nullTimeValue(cursor.LastCycleCompletedAt),
 		cursor.EntriesThisCycle,
 		nullTimeValue(cursor.ReverseAfterStartedAt), cursor.ReverseAfterRunID,
-		nullTimeValue(cursor.ReverseCycleBefore))
+		nullTimeValue(cursor.ReverseCycleBefore), cursor.ForwardNext)
 	if err != nil {
 		return fmt.Errorf("readmodel: save sweep cursor: %w", err)
 	}
