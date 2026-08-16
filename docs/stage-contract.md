@@ -733,7 +733,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > blocker instead parks `goobers:blocked-on-sibling` (#2028: a self-healing
 > dependency wait, not a decision), and `blockedBy` additionally prevents
 > premature re-selection if the item is re-promoted while a named dependency
-> remains open. See `docs/design/needs-human-taxonomy.md` for the full model,
+> remains open. **Never name the driving issue itself (#2961)** — an issue
+> cannot be its own dependency. A self-reference is normalized away before the
+> block is recorded (`#441`, `owner/repo#441` and `441` all match item 441), a
+> `runner.annotation` of kind `blocked_by.self_reference_dropped` records the
+> run, stage and item, and if it was the only entry the block is treated as
+> unattributed and parks `goobers:needs-human`. Persisted-graph self-loop
+> handling is unchanged, so legacy or corrupt records still surface as cycles.
+> See `docs/design/needs-human-taxonomy.md` for the full model,
 > including the circular-dependency exception (still `goobers:needs-human` —
 > it can't self-heal).
 
