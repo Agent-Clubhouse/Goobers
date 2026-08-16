@@ -252,12 +252,10 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 		return ctx.Err()
 	case p.commits <- request:
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-request.result:
-		return err
-	}
+	// Once accepted, the write closure may refer to caller-owned result state.
+	// Wait for it to finish even if the context is canceled so the caller cannot
+	// observe that state while the commit loop is still updating it.
+	return <-request.result
 }
 
 // UpsertRun commits a prepared projection through the sole-writer loop.
