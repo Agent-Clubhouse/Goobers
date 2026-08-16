@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,41 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
+
+func TestStatusPullRequestLabelCountsDispatchToGitea(t *testing.T) {
+	const token = "status-gitea-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/gerty/goobers-hew/pulls" {
+			t.Fatalf("path = %q, want Gitea pulls endpoint", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "token "+token {
+			t.Fatalf("Authorization = %q, want Gitea token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+  {"number":1,"state":"open","labels":[{"name":"goobers:blocked-on-sibling"}],"head":{"ref":"goobers/one","sha":"head-1"},"base":{"ref":"main","sha":"base"}},
+  {"number":2,"state":"open","labels":[{"name":"goobers:merge-escalated"}],"head":{"ref":"goobers/two","sha":"head-2"},"base":{"ref":"main","sha":"base"}}
+]`))
+	}))
+	defer server.Close()
+	t.Setenv("GOOBERS_STATUS_GITEA_TOKEN", token)
+
+	counts, err := queryStatusPRLabelCounts(context.Background(), &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "gitea",
+			BaseURL:  server.URL,
+			Owner:    "gerty",
+			Name:     "goobers-hew",
+			Token:    instance.TokenRef{Env: "GOOBERS_STATUS_GITEA_TOKEN"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("queryStatusPRLabelCounts: %v", err)
+	}
+	if counts.blockedOnSibling != 1 || counts.mergeEscalated != 1 {
+		t.Fatalf("counts = %+v, want one blocked and one escalated Gitea PR", counts)
+	}
+}
 
 func TestStatusReportsDistinctPullRequestLabelCounts(t *testing.T) {
 	root := initDemo(t)
