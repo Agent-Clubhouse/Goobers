@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 // Supported speech engines and bounded configuration defaults.
@@ -29,10 +31,12 @@ const (
 	MaxTextBytes   = 4096
 	DefaultTimeout = 15 * time.Second
 	// ReceiptFileName is the instance scheduler-side speech receipt log.
-	ReceiptFileName = "speech-receipts.jsonl"
-	maximumTimeout  = 2 * time.Minute
-	queueCapacity   = 32
-	receiptVersion  = "v1"
+	ReceiptFileName    = "speech-receipts.jsonl"
+	maximumTimeout     = 2 * time.Minute
+	queueCapacity      = 32
+	receiptVersion     = "v1"
+	receiptFileMaxSize = 1 << 20
+	receiptLockSuffix  = ".lock"
 )
 
 var languagePattern = regexp.MustCompile(`^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$`)
@@ -178,11 +182,11 @@ type nopRecorder struct{}
 
 func (nopRecorder) Record(context.Context, Receipt) error { return nil }
 
-// FileRecorder appends receipts as one JSON object per line. A single recorder
-// serializes and syncs writes before reporting success.
+// FileRecorder appends receipts as one JSON object per line. Recorders targeting
+// the same file serialize and sync writes before reporting success. The log is
+// truncated before an append that would grow it beyond the fixed retention bound.
 type FileRecorder struct {
 	path string
-	mu   sync.Mutex
 }
 
 // NewFileRecorder creates a lazy JSONL recorder at path.
@@ -201,14 +205,33 @@ func (r *FileRecorder) Record(ctx context.Context, receipt Receipt) error {
 	}
 	line = append(line, '\n')
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return fmt.Errorf("create speech receipt directory: %w", err)
 	}
+	held, err := acquireReceiptLock(ctx, r.path+receiptLockSuffix)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = held.Release() }()
+
 	file, err := os.OpenFile(r.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open speech receipt log: %w", err)
+	}
+	if len(line) > receiptFileMaxSize {
+		_ = file.Close()
+		return fmt.Errorf("speech receipt exceeds %d-byte log limit", receiptFileMaxSize)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("stat speech receipt log: %w", err)
+	}
+	if info.Size() > int64(receiptFileMaxSize-len(line)) {
+		if err := file.Truncate(0); err != nil {
+			_ = file.Close()
+			return fmt.Errorf("truncate speech receipt log: %w", err)
+		}
 	}
 	if _, err := file.Write(line); err != nil {
 		_ = file.Close()
@@ -222,6 +245,25 @@ func (r *FileRecorder) Record(ctx context.Context, receipt Receipt) error {
 		return fmt.Errorf("close speech receipt log: %w", err)
 	}
 	return nil
+}
+
+func acquireReceiptLock(ctx context.Context, path string) (*platformlock.Handle, error) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		held, err := platformlock.TryAcquire(path)
+		if err == nil {
+			return held, nil
+		}
+		if !errors.Is(err, platformlock.ErrHeld) {
+			return nil, fmt.Errorf("acquire speech receipt log lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // Synthesizer is the bounded adapter contract implemented by native engines
