@@ -436,17 +436,17 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			options.Cursor != "" {
 			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
 		}
-		var (
-			result RunList
-			err    error
-		)
 		// The read-model aggregate answers the whole page — outcomes AND activity
 		// — in one indexed query with zero journal opens (#1891). It replaces the
 		// window function, the backwards terminal walk, and the separate activity
 		// call below, so it returns directly rather than falling through to them.
-		if s.readModelAggregateEligible() {
+		if s.readModelReads {
 			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
 		}
+		var (
+			result RunList
+			err    error
+		)
 		if s.sources.Telemetry != nil {
 			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
 		} else {
@@ -502,12 +502,10 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 		cursor = &decoded
 	}
 
-	// The read-model path answers with ZERO journal opens (§6.6 step 3). It is
-	// tried first when eligible; anything it cannot serve — an unsupported filter
-	// combination, LatestPerWorkflow, or a store that is not attached — falls to
-	// the existing paths rather than being refused, because the cutover must not
-	// remove an answer the portal can get today.
-	if s.readModelEligible(options) {
+	// An enabled read model owns every daemon list request. Unsupported filter
+	// combinations are refused by its closed set rather than falling through to
+	// a journal scan.
+	if s.readModelReads {
 		return s.listRunsFromReadModel(ctx, options, cursor, limit)
 	}
 	// The activity axis is read-model only, and unserved is a REFUSAL rather

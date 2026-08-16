@@ -46,6 +46,12 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	if s.sources.ReadModel == nil {
 		return RunList{}, ErrReadModelUnavailable
 	}
+	if options.Trigger != "" {
+		return RunList{}, &readmodel.UnsupportedCombinationError{Dims: readModelDims(options)}
+	}
+	if _, err := readmodel.Require(readModelDims(options)); err != nil {
+		return RunList{}, err
+	}
 
 	request := readmodel.ListOptions{
 		Gaggle:   options.Gaggle,
@@ -125,30 +131,6 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		NoWork:           row.Disposition == readmodel.DispositionNoWork,
 		Stages:           row.Stages,
 	}
-}
-
-// readModelEligible reports whether this request can be served from read.db.
-//
-// Two conditions, and both are about honesty rather than capability.
-//
-// The store must be attached and the flag on. And the request must not use
-// LatestPerWorkflow, which is a different query shape with its own aggregate
-// (#1891) — serving it from the read model's plain list would silently return
-// the wrong thing rather than refuse.
-func (s *Local) readModelEligible(options RunListOptions) bool {
-	if !s.readModelReads || s.sources.ReadModel == nil {
-		return false
-	}
-	if options.LatestPerWorkflow {
-		return false
-	}
-	// Filters outside the closed set are refused by the read model itself, but
-	// checking here keeps the refusal a property of the request rather than a
-	// surprise from a lower layer — and lets the caller decide.
-	if _, err := readmodel.Require(readModelDims(options)); err != nil {
-		return false
-	}
-	return true
 }
 
 // readModelDims maps a list request to the filter dimensions the closed set is
