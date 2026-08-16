@@ -80,6 +80,15 @@ repos:
     token:
       env: GOOBERS_GITHUB_TOKEN
 `},
+		{"temporal engine", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: temporal.internal:7233
+  namespace: production
+  taskQueue: goobers-engine
+`},
 		{"ado three part identity", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
@@ -204,6 +213,13 @@ func TestInstanceSchemaRefusesStructurallyImpossibleInstances(t *testing.T) {
 		document string
 		want     string
 	}{
+		{"engine hostPort without port", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: temporal.internal
+`, "hostPort"},
 		{"ado repo without project", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
