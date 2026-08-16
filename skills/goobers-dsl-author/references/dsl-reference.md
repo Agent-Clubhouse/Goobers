@@ -143,7 +143,7 @@ Trigger-specific fields:
 | Type | Fields |
 |---|---|
 | `manual` | No schedule, signal, or selector; it must be the only trigger. |
-| `schedule` | `schedule`, quoted as a cron expression or supported descriptor; optional `idleBackoff` (`enabled`, `floor`, `ceiling`). |
+| `schedule` | `schedule`, quoted as a cron expression or supported descriptor. |
 | `backlog-item` | `selector`, with string values. `goobers up` treats selector keys as required backlog labels and dispatches eligible runs subject to readiness limits; selector values are not used for GitHub label matching. |
 | `signal` | `signal`, naming the external signal. |
 
@@ -154,8 +154,6 @@ claim one eligible item:
 triggers:
   - type: schedule
     schedule: "0 * * * *"
-    idleBackoff:
-      ceiling: 15m
 start: query-backlog
 tasks:
   - name: query-backlog
@@ -172,11 +170,6 @@ tasks:
     expectedOutputs:
       - claimed-item
 ```
-
-Schedule triggers default to adaptive idle backoff with a `1m` floor and `15m`
-ceiling. Consecutive `no-work` runs double the polling interval up to the
-ceiling; productive runs and signals reset it immediately. Set
-`idleBackoff.enabled: false` to retain a fixed cadence.
 
 When another state processes the claimed item, add `next` naming that reachable
 task or gate. On public repos, `trustLabel` must name a maintainer-applied trust
