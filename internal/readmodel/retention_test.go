@@ -209,6 +209,9 @@ func TestPruneChangeFeedBoundsGrowth(t *testing.T) {
 	if len(after) >= len(before) {
 		t.Errorf("feed did not shrink: %d -> %d", len(before), len(after))
 	}
+	if len(after) != 10 {
+		t.Errorf("feed retained %d rows, want exact 10-row bound", len(after))
+	}
 }
 
 // TestPruneChangeFeedKeepsAShortFeedIntact pins that pruning a feed smaller than
