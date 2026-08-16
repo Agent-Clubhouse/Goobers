@@ -6,24 +6,41 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/app"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
 )
 
 type deploymentCommandContract struct {
-	binary        string
-	command       string
-	requiredFlags []string
+	binary       string
+	command      string
+	validateArgs func([]string) error
 }
 
 func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 	contracts := map[string]deploymentCommandContract{
-		"goobers-api":      {binary: "goobers", command: "up"},
-		"goobers-operator": {binary: "goobers-operator"},
-		"goobers-worker":   {binary: "goobers", command: "worker", requiredFlags: []string{"instance"}},
+		"goobers-api": {
+			binary:  "goobers",
+			command: "up",
+			validateArgs: func(args []string) error {
+				return validateManifestArgs(args, registeredCommandFlagSet(t, "up"), nil, 1)
+			},
+		},
+		"goobers-operator": {
+			binary: "goobers-operator",
+			validateArgs: func(args []string) error {
+				return app.ValidateArgs("operator", args, io.Discard)
+			},
+		},
+		"goobers-worker": {
+			binary:  "goobers",
+			command: "worker",
+			validateArgs: func(args []string) error {
+				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"), []string{"instance"}, 0)
+			},
+		},
 	}
 
 	paths, err := filepath.Glob("../../deploy/reference/goobers-system/*-deployment.yaml")
@@ -65,29 +82,33 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 			t.Errorf("%s: binary = %q, want %q", path, binary, contract.binary)
 			continue
 		}
-		if contract.command == "" {
-			if len(container.Args) != 0 {
-				t.Errorf("%s: standalone binary %q has unexpected args %v", path, binary, container.Args)
+		args := container.Args
+		if contract.command != "" {
+			if len(args) == 0 || args[0] != contract.command {
+				t.Errorf("%s: args = %v, want command %q", path, args, contract.command)
+				continue
 			}
-			continue
+			args = args[1:]
 		}
-		if len(container.Args) == 0 || container.Args[0] != contract.command {
-			t.Errorf("%s: args = %v, want command %q", path, container.Args, contract.command)
-			continue
-		}
-
-		fs := registeredCommandFlagSet(t, contract.command)
-		if err := validateManifestArgs(container.Args[1:], fs, contract.requiredFlags); err != nil {
+		if err := contract.validateArgs(args); err != nil {
 			t.Errorf("%s: %v", path, err)
 		}
 	}
 
 	workerFlags := registeredCommandFlagSet(t, "worker")
-	if err := validateManifestArgs([]string{"--task-queue", "default"}, workerFlags, []string{"instance"}); err == nil {
+	if err := validateManifestArgs([]string{"--task-queue", "default"}, workerFlags, []string{"instance"}, 0); err == nil {
 		t.Error("worker args without --instance were accepted")
 	}
-	if err := validateManifestArgs([]string{"--instance", "/instance", "--not-a-worker-flag"}, workerFlags, []string{"instance"}); err == nil {
+	workerFlags = registeredCommandFlagSet(t, "worker")
+	if err := validateManifestArgs([]string{"--instance", "/instance", "--not-a-worker-flag"}, workerFlags, []string{"instance"}, 0); err == nil {
 		t.Error("unknown worker flag was accepted")
+	}
+	workerFlags = registeredCommandFlagSet(t, "worker")
+	if err := validateManifestArgs([]string{"--instance", "/instance", "--drain-timeout", "eventually"}, workerFlags, []string{"instance"}, 0); err == nil {
+		t.Error("invalid worker flag value was accepted")
+	}
+	if err := app.ValidateArgs("operator", []string{"--version=eventually"}, io.Discard); err == nil {
+		t.Error("invalid operator flag value was accepted")
 	}
 }
 
@@ -120,41 +141,26 @@ func registeredCommandFlagSet(t *testing.T, command string) *flag.FlagSet {
 	return observed
 }
 
-func validateManifestArgs(args []string, fs *flag.FlagSet, required []string) error {
-	seen := make(map[string]bool)
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			break
-		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			continue
-		}
-		nameValue := strings.TrimLeft(arg, "-")
-		name, value, hasValue := strings.Cut(nameValue, "=")
-		registered := fs.Lookup(name)
-		if registered == nil {
-			return fmt.Errorf("unknown flag %q for %s", arg, fs.Name())
-		}
-		seen[name] = true
-		if hasValue {
-			if value == "" {
-				return fmt.Errorf("flag %q has an empty value", arg)
-			}
-			continue
-		}
-		boolFlag, isBool := registered.Value.(interface{ IsBoolFlag() bool })
-		if isBool && boolFlag.IsBoolFlag() {
-			continue
-		}
-		i++
-		if i == len(args) || strings.HasPrefix(args[i], "-") {
-			return fmt.Errorf("flag %q is missing its value", arg)
-		}
+func validateManifestArgs(args []string, fs *flag.FlagSet, required []string, maxPositionals int) error {
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse %s args: %w", fs.Name(), err)
 	}
+	if fs.NArg() > maxPositionals {
+		return fmt.Errorf("%s has unexpected positional args %v", fs.Name(), fs.Args()[maxPositionals:])
+	}
+
+	seen := make(map[string]*flag.Flag)
+	fs.Visit(func(f *flag.Flag) {
+		seen[f.Name] = f
+	})
 	for _, name := range required {
-		if !seen[name] {
+		f, ok := seen[name]
+		if !ok {
 			return fmt.Errorf("required flag --%s is missing", name)
+		}
+		if f.Value.String() == "" {
+			return fmt.Errorf("required flag --%s is empty", name)
 		}
 	}
 	return nil
