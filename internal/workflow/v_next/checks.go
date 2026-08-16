@@ -6,11 +6,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/robfig/cron"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
 // These exported checks let the config validator (api/validate) reuse the
@@ -365,59 +363,12 @@ func scheduleProblems(def Definition) []string {
 	return problems
 }
 
-// descriptors are the named cron shorthands the scheduler accepts.
-var descriptors = map[string]bool{
-	"@yearly": true, "@annually": true, "@monthly": true, "@weekly": true,
-	"@daily": true, "@midnight": true, "@hourly": true,
-}
-
 // validateSchedule validates cron/interval expressions accepted by workflow
 // definitions, including 6-field cron expressions that the V0 scheduler rejects
 // later with its version-specific diagnostic.
 func validateSchedule(expr string) error {
-	expr = strings.TrimSpace(expr)
-	if strings.HasPrefix(expr, "@every ") {
-		dur := strings.TrimSpace(strings.TrimPrefix(expr, "@every "))
-		if _, err := time.ParseDuration(dur); err != nil {
-			return fmt.Errorf("bad @every duration: %w", err)
-		}
-		return nil
-	}
-	if strings.HasPrefix(expr, "@") {
-		if descriptors[expr] {
-			return nil
-		}
-		return fmt.Errorf("unknown descriptor (want one of @yearly @monthly @weekly @daily @hourly or @every <dur>)")
-	}
-	fields := strings.Fields(expr)
-	if len(fields) != 5 && len(fields) != 6 {
-		return fmt.Errorf("expected 5 or 6 space-separated fields, got %d", len(fields))
-	}
-	const allowed = "0123456789*/,-?LW#"
-	for i, f := range fields {
-		if f == "" {
-			return fmt.Errorf("field %d is empty", i)
-		}
-		for _, r := range f {
-			if !strings.ContainsRune(allowed, r) {
-				return fmt.Errorf("field %d %q has illegal character %q", i, f, r)
-			}
-		}
-	}
-	var schedule cron.Schedule
-	var err error
-	if len(fields) == 5 {
-		schedule, err = cron.ParseStandard(expr)
-	} else {
-		schedule, err = cron.Parse(expr)
-	}
-	if err != nil {
-		return err
-	}
-	if schedule.Next(time.Unix(0, 0)).IsZero() {
-		return fmt.Errorf("expression can never fire")
-	}
-	return nil
+	_, err := scheduleexpr.ParseDefinition(expr)
+	return err
 }
 
 // stateNames returns every defined state name in definition order (tasks then
