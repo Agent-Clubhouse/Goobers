@@ -66,10 +66,6 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 	return counts, runs, nil
 }
 
-func visitActiveRuns(runsDir string, visit func(journal.RunIdentity)) error {
-	return visitActiveRunsContext(context.Background(), runsDir, visit)
-}
-
 func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity)) error {
 	if err := ctx.Err(); err != nil {
 		return err
