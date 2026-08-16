@@ -15,6 +15,16 @@ import (
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
+	readmeSourceReleaseInstall = "## Install\n\n" +
+		"Install the current `v0.1.0` release on Linux or macOS:\n\n" +
+		"```sh\n" +
+		"/bin/sh -c \"$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)\" \\\n" +
+		"  -- v0.1.0\n" +
+		"```\n\n" +
+		"The installer verifies the downloaded archive against the release checksum and\n" +
+		"places `goobers` in `$HOME/.local/bin`. See\n" +
+		"[Release installation and verification](docs/guides/releases.md) for\n" +
+		"prerequisites, install-directory overrides, and the Windows path.\n\n"
 	readmeSourceInstall = "Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered\n" +
 		"first-run path: a credential-free local demo, a disposable GitHub-backed run,\n" +
 		"and then a regular instance using the\n" +
@@ -304,6 +314,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		{
 			path: "README.md",
 			sections: []onboardingSectionRewrite{
+				{
+					source:    readmeSourceReleaseInstall,
+					installed: "",
+				},
 				{
 					source: readmeSourceInstall,
 					installed: fmt.Sprintf(

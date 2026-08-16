@@ -1,6 +1,6 @@
 # Design: V0.6 ladder remediation — executor convergence + lifecycle unblock
 
-> Status: **Executed — historical record** (2026-07-23) · Area: `RUN` / `PRL` ·
+> Status: **historical — executed remediation record** (2026-07-23) · Area: `RUN` / `PRL` ·
 > Milestone: **V0.7 — ladder frontload** + **V0.8 (fast-follow)**. All frontload
 > items landed: L1 merge-review threading, L2 rich PR bodies (`openprbody.go`),
 > L3 repass verdict context (#412), L6 non-retryable escalate (#415), L7 open-PR

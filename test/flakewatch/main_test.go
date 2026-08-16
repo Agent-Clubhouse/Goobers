@@ -73,7 +73,10 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	}}))
 	mux.HandleFunc("/repos/acme/app/check-runs/103/annotations", jsonHandler([]annotation{
 		{Path: "internal/queue/queue_test.go", Title: "TestQueue", Message: "deadline exceeded waiting for worker"},
-		{Path: "internal/queue/queue_test.go", Title: "TestCompile", Message: "unexpected compile output"},
+		{
+			Path: "cmd/goobers/worktreelifecycle_test.go", Title: "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees",
+			Message: `worktreelifecycle_test.go:105: state = "active", want "finalized"`,
+		},
 	}))
 	mux.HandleFunc("/repos/acme/app/check-runs/104/annotations", jsonHandler([]annotation{{
 		Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE",
@@ -114,8 +117,19 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	if result.KnownDispatched != 1 {
 		t.Fatalf("known dispatched = %d, want 1", result.KnownDispatched)
 	}
-	if len(result.Novel) != 1 || result.Novel[0].Test != "TestQueue" {
-		t.Fatalf("novel = %+v, want only default-branch TestQueue", result.Novel)
+	if len(result.Novel) != 2 ||
+		result.Novel[0].Test != "TestQueue" ||
+		result.Novel[1].Test != "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees" {
+		t.Fatalf("novel = %+v, want timeout and deterministic-assert failures from default branch", result.Novel)
+	}
+	assertionText := `worktreelifecycle_test.go:105: state = "active", want "finalized"`
+	assertionFingerprint := flake.Fingerprint(
+		"./cmd/goobers",
+		"TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees",
+		flake.NormalizeSignature(assertionText),
+	)
+	if result.Novel[1].Fingerprint != assertionFingerprint {
+		t.Fatalf("deterministic-assert fingerprint = %q, want %q", result.Novel[1].Fingerprint, assertionFingerprint)
 	}
 	mu.Lock()
 	defer mu.Unlock()

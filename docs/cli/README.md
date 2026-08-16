@@ -2518,7 +2518,7 @@ on-main builds the configured branch. Config is never changed.
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v1.2.3
+$ goobers self-update --policy manual --target v0.1.0
 ~~~
 
 ## `goobers service`
@@ -2804,7 +2804,7 @@ Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--work
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
-With --daemon, report daemon health instead.
+With --daemon, report daemon health, identity, and effective behavior settings instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -3068,6 +3068,14 @@ forces every list request onto the journal-derived paths for this run,
 leaving read.db itself untouched. A flag flip and a restart, not a
 deploy — use it if the read-model list path is ever suspected of
 serving wrong or incomplete results.
+
+These five behavior controls are intentionally flag-only: --watch-config
+selects a process-local development watcher, --diagnostics is temporary
+debug capture, --drain-timeout applies only after this process receives a
+shutdown signal, --skip-preflight is an unsafe startup escape hatch, and
+--disable-read-model-reads is an emergency rollback. Keeping them out of
+instance.yaml prevents temporary operational overrides from becoming
+durable policy. `goobers status --daemon` reports their effective values.
 ~~~
 
 **Examples**

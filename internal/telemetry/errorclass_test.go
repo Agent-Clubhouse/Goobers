@@ -19,6 +19,7 @@ func TestClassifyErrorNamesEveryProducedCode(t *testing.T) {
 		{code: ErrCodeInfraNet, want: ErrorClassInfraNet},
 		{code: ErrCodeInfraWorkspace, want: ErrorClassInfra},
 		{code: ErrCodeClaimsLock, want: ErrorClassInfraLock},
+		{code: ErrCodeCredentialUnavailable, want: ErrorClassInfra},
 		{code: ErrCodeGitHubAuth, want: ErrorClassProvider},
 		{code: ErrCodeProviderFailed, want: ErrorClassProvider},
 		{code: ErrCodePollProvider, want: ErrorClassProvider},

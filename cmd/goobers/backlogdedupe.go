@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -199,24 +197,7 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 }
 
 func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token)
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token), nil
-	default:
-		return nil, fmt.Errorf("backlog-dedupe does not support repository provider %q", repo.Provider)
-	}
+	return newProviderForStage(root, repo, false, withStageProviderCache())
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

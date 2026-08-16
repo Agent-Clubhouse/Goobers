@@ -1,6 +1,6 @@
 # ADR 0002: Name capabilities for the operation surface
 
-- Status: Accepted
+- Status: approved
 - Date: 2026-07-28
 - Decision owner: issue #1810
 

@@ -286,13 +286,15 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// sibling's blocker set. Set the provider up and list PRs up front so one
 	// list feeds both, and so apply-verdict (which re-derives the same election)
 	// resolves an identical demoted set from the same source.
-	token, err := providerToken(capability.GitHubPRWrite)
+	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
-	repo, err := providerRepo(root)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

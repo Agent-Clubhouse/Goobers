@@ -271,7 +271,7 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v1.2.3"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",

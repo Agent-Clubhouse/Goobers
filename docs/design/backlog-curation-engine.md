@@ -1,6 +1,6 @@
 # Design: Backlog curation engine — continuous, reliable, agile-inspired
 
-> Status: **Approved for staged implementation** (2026-07-22)
+> Status: **approved — for staged implementation** (2026-07-22)
 > Area prefix: `CURE`
 > Milestone: **Backlog curation engine — continuous, reliable, agile-inspired**
 > Related workflow: `backlog-curation` · Related goober: `curator` (the backlog's scrum master)

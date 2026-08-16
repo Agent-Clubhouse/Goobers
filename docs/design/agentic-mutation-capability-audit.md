@@ -1,6 +1,6 @@
 # Agentic mutation-capability audit
 
-> Status: **Completed survey** (2026-07-29)
+> Status: **historical — completed survey** (2026-07-29)
 >
 > Scope: shipped workflow definitions under `config-examples/` and `reference-workflows/`
 > at commit `45b935a89`.

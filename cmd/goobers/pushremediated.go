@@ -224,11 +224,11 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 //     wrong-object hazard, §0.5). Clearing the label is the re-entry trigger that
 //     lets merge-review re-select the reworked PR.
 //
-// The provider is built from config-sourced ADO auth via newADOProviderForStage
+// The provider is built from config-sourced ADO auth via the shared stage factory
 // (no github:* token is resolved); only the provider-neutral repo:push credential
 // feeds the force-push.
 func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newADOProviderForStage(root, repo)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

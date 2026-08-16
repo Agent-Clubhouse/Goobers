@@ -1,6 +1,6 @@
 # Decision: `quality-sprint` owns scheduled repository quality review
 
-> **Status:** Implemented by #1568 (2026-07-30).
+> **Status:** implemented — by #1568 (2026-07-30).
 >
 > **Canonical workflow:** [`quality-sprint`](../../reference-workflows/gaggles/goobers/workflows/quality-sprint.yaml)
 >

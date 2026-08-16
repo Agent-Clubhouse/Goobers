@@ -1,6 +1,6 @@
 # Design: Multiple Goober instances coordinating on the same repo
 
-> Status: **Draft for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **V1 — multi-gaggle,
+> Status: **draft — for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **V1 — multi-gaggle,
 > teams, and repos you own**, forward-looking to **V2 — cloud scale & large teams**
 > References: #1657 (the docs/design question this resolves); COORD design
 > (`docs/design/v1/backlog-assignment-coordination.md`, #1818); per-gaggle

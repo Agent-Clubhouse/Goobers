@@ -1,6 +1,6 @@
 # Large-repo execution model (#2063)
 
-Status: draft for review, rev 2. Filed from the state-of-repo review 2026-07-30 + PO input
+Status: draft — for review, rev 2. Filed from the state-of-repo review 2026-07-30 + PO input
 2026-07-31, hero scenario #3. Rev 2 incorporates a second round of PO rulings (2026-07-31,
 recorded in §11): the headline recommendation is now **large-repo mode** — a pinned
 persistent workspace with fully-serial execution — with the clone-strategy tiers retained

@@ -1,6 +1,6 @@
 # Design: an e2e soak harness for load-dependent failures
 
-Status: proposed design decision. Filed against #815; splits into #1479 (driver),
+Status: draft — proposed design decision. Filed against #815; splits into #1479 (driver),
 #1480 (isolated environment), #1481 (scheduled workflow). No implementation lands
 until this document does.
 

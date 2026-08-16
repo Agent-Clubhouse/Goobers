@@ -54,6 +54,7 @@ func (s gooberDigestStarter) Start(ctx context.Context, req StartRequest) (Start
 type StartResult struct {
 	Phase      journal.RunPhase
 	FinalState string
+	NoWork     bool
 	// FailureStage/FailureCode/FailureMessage mirror runner.Result's same-named
 	// fields (issue #710) — populated only for Phase == PhaseFailed, empty
 	// otherwise. The scheduler's dispatch echo (scheduler.go) threads these

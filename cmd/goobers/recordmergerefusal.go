@@ -96,12 +96,14 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderMutations("pr"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 

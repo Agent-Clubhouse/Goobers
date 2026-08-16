@@ -1261,6 +1261,10 @@ summary:focus-visible {
   color: var(--active);
 }
 
+.status-stale {
+  color: var(--warning-ink);
+}
+
 .status-completed {
   color: var(--success);
 }
@@ -3499,13 +3503,21 @@ a.telemetry-error-row:hover {
   justify-content: space-between;
 }
 
-.run-stale-state-error > span {
+.run-stale-state-error > span,
+.run-stale-run > span {
   display: grid;
   gap: 2px;
 }
 
-.run-stale-state-error small {
+.run-stale-state-error small,
+.run-stale-run small {
   color: var(--muted-strong);
+}
+
+.run-stale-run {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .run-id {

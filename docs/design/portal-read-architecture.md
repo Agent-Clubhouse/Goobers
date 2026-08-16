@@ -1,6 +1,6 @@
 # Portal read architecture — a rethink
 
-> **Status:** Accepted design, sixth pass — implementation in progress under
+> **Status:** approved — accepted design, sixth pass; implementation in progress under
 > epic #1912. Responds to
 > `Goobers-Reviews/2026-07-29_portal-architecture-findings.md` (the diagnosis) and
 > supersedes [`unified-index-backed-run-reads.md`](unified-index-backed-run-reads.md)
