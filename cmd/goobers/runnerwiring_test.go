@@ -3787,6 +3787,61 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
+func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *instance.Config
+		published string
+		runID     string
+		want      string
+	}{
+		{
+			name:  "default local daemon",
+			cfg:   &instance.Config{},
+			runID: "run-1",
+			want:  "http://127.0.0.1:8080/#/run/run-1",
+		},
+		{
+			name: "TLS daemon and escaped run ID",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "ops.example:8443",
+				TLS:    &instance.APITLSConfig{},
+			}},
+			runID: "run/1",
+			want:  "https://ops.example:8443/#/run/run%2F1",
+		},
+		{
+			name: "published ephemeral port",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "127.0.0.1:0",
+			}},
+			published: "127.0.0.1:43210",
+			runID:     "run-2",
+			want:      "http://127.0.0.1:43210/#/run/run-2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			l := instance.NewLayout(t.TempDir())
+			if test.published != "" {
+				if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName), []byte(test.published+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := failureRunURL(l, test.cfg, test.runID)
+			if err != nil {
+				t.Fatalf("failureRunURL() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("failureRunURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 // TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
 // posts a streak comment with count=1 but does NOT apply needs-human. The
 // circuit breaker only fires at failureStreakThreshold (3).
@@ -3844,6 +3899,9 @@ func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	}
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "[`run-timeout`](http://127.0.0.1:8080/#/run/run-timeout)") {
+		t.Fatalf("comment = %q, want a durable portal run-details link", got.Comment)
 	}
 	if !strings.Contains(got.Comment, `data-count="1"`) {
 		t.Fatalf("comment = %q, want data-count=1 on first failure", got.Comment)

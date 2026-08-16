@@ -143,16 +143,16 @@ func parseStreakCount(body string) int {
 	return n
 }
 
-func failureStreakBody(count int, stage, latestRunID string) string {
+func failureStreakBody(count int, stage, latestRunID, latestRunURL string) string {
 	stageInfo := ""
 	if stage != "" {
 		stageInfo = fmt.Sprintf(" at stage `%s`", stage)
 	}
 	return fmt.Sprintf(
-		"Goobers: **%d consecutive terminal failure(s)**%s. Latest run: %s. "+
+		"Goobers: **%d consecutive terminal failure(s)**%s. Latest run: [`%s`](%s). "+
 			"Remove `%s` and re-approve to retry.\n\n"+
 			"<!-- goobers:failure-streak data-count=\"%d\" -->",
-		count, stageInfo, latestRunID, providers.LabelNeedsHuman, count,
+		count, stageInfo, latestRunID, latestRunURL, providers.LabelNeedsHuman, count,
 	)
 }
 
@@ -160,8 +160,8 @@ func failureStreakBody(count int, stage, latestRunID string) string {
 // comment on an item. Instead of posting one comment per failed run (which
 // buries the issue thread), it maintains one rolling comment with the current
 // count.
-func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID string) error {
-	body := failureStreakBody(count, stage, runID)
+func UpsertFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string, count int, stage, runID, runURL string) error {
+	body := failureStreakBody(count, stage, runID, runURL)
 	comments, err := poster.ListComments(ctx, repository, itemID)
 	if err != nil {
 		return fmt.Errorf("list comments for failure upsert: %w", err)
