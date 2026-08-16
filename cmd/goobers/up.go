@@ -430,7 +430,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The daemon is the only construction that is long-lived enough for a
 	// background sample to be warm, so it is the only one that starts it.
 	stopActiveSampler := reads.StartActiveRunSampler(0)
-	defer stopActiveSampler()
+	defer func() {
+		if err := stopActiveSampler(); err != nil {
+			pf(stderr, "error: stop active-run sampler: %v\n", err)
+		}
+	}()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth

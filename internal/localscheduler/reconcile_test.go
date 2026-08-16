@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,6 +60,35 @@ func TestActiveRunCountsMissingDir(t *testing.T) {
 	}
 	if len(counts) != 0 {
 		t.Errorf("expected empty counts, got %v", counts)
+	}
+}
+
+func TestVisitActiveRunsChecksCancellationBetweenJournals(t *testing.T) {
+	runsDir := t.TempDir()
+	for _, runID := range []string{"active-a", "active-b"} {
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "implement", WorkflowVersion: 1, Gaggle: "g",
+			Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	visited := 0
+	err := visitActiveRunsContext(ctx, runsDir, func(journal.RunIdentity) {
+		visited++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("visitActiveRunsContext error = %v, want context.Canceled", err)
+	}
+	if visited != 1 {
+		t.Fatalf("visited %d journals after cancellation, want 1", visited)
 	}
 }
 

@@ -178,9 +178,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 //
 // interval <= 0 uses the default. Repeated calls reuse the sampler already
 // owned by the service. The returned stop function is idempotent and must be
-// called on shutdown; it waits for an in-flight walk, which at 1x is several
-// seconds.
-func (s *Local) StartActiveRunSampler(interval time.Duration) func() {
+// called on shutdown. It cancels an in-flight walk and returns an error if a
+// lower-level filesystem operation does not return within five seconds.
+func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
 	if !s.activeSampler.CompareAndSwap(nil, sampler) {
 		sampler = s.activeSampler.Load()
