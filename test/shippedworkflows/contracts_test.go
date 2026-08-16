@@ -211,12 +211,21 @@ func assertWindowsDeterministicCompatibility(t *testing.T, source string, def wo
 func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
-		if task.Type != apiv1.TaskDeterministic || task.Run == nil || task.Run.Script == "" {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
 			continue
 		}
-		if isPOSIXOnlyScript(task.Run.Script) && !hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
+		if hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
+			continue
+		}
+		switch {
+		case isPOSIXOnlyScript(task.Run.Script):
 			problems = append(problems, fmt.Sprintf(
 				"deterministic task %q uses a POSIX inline script without an incompatible os capability",
+				task.Name,
+			))
+		case isPOSIXOnlyCommand(task.Run.Command):
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q invokes a POSIX shell without an incompatible os capability",
 				task.Name,
 			))
 		}
@@ -230,6 +239,18 @@ var posixOnlyScriptSyntax = regexp.MustCompile(
 
 func isPOSIXOnlyScript(script string) bool {
 	return posixOnlyScriptSyntax.MatchString(script)
+}
+
+func isPOSIXOnlyCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	switch strings.ToLower(filepath.Base(command[0])) {
+	case "sh", "bash", "dash", "zsh":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasWindowsIncompatibleOSCapability(capabilities []string) bool {
@@ -248,6 +269,20 @@ func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *te
 		Tasks: []apiv1.Task{{
 			Name: "run", Type: apiv1.TaskDeterministic,
 			Run: &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPOSIXCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
 		}},
 	}}
 	problems := windowsDeterministicCompatibilityProblems(def)
@@ -277,6 +312,20 @@ func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOS(t *testi
 			Name: "run", Type: apiv1.TaskDeterministic,
 			Run:                  &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
 			RequiredCapabilities: []string{"os=darwin"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOSCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "linux-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+			RequiredCapabilities: []string{"os=linux"},
 		}},
 	}}
 	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
