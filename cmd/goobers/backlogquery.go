@@ -1683,7 +1683,7 @@ func runReadOnlyBacklogQuery(
 // *providers.GitHubProvider and are skipped for ADO.
 //
 // It embeds the full providers.Provider (not just BacklogProvider) so
-// filterDeclaredDependencyEligibility can wrap it in a providers.Dispatcher
+// filterDeclaredDependencyEligibilityDebug can wrap it in a providers.Dispatcher
 // (CONF-5, #2078): the native-dependency check goes through
 // backlog.blockers instead of calling HasOpenWorkItemBlocker directly, so a
 // provider that doesn't declare the capability fails closed with
@@ -1692,10 +1692,6 @@ type backlogIssueProvider interface {
 	providers.Provider
 	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
-}
-
-func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIssueProvider, repo providers.RepositoryRef, eligible []providers.WorkItem) ([]providers.WorkItem, []string) {
-	return filterDeclaredDependencyEligibilityDebug(ctx, provider, repo, eligible, nil)
 }
 
 func filterDeclaredDependencyEligibilityDebug(
