@@ -75,6 +75,16 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	if p.Provider == nil || p.Leaser == nil || p.Repo.Name == "" || p.RunID == "" {
 		return PublishedBatch{}, fmt.Errorf("publisher provider, leaser, repository, and run id are required")
 	}
+	repository := p.Repo.Owner + "/" + p.Repo.Name
+	if p.Repo.Project != "" {
+		repository = p.Repo.Owner + "/" + p.Repo.Project + "/" + p.Repo.Name
+	}
+	if plan.Parent.Provider != string(p.Repo.Provider) || plan.Parent.Repository != repository {
+		return PublishedBatch{}, fmt.Errorf(
+			"plan parent repository %q/%q does not match publisher repository %q/%q",
+			plan.Parent.Provider, plan.Parent.Repository, p.Repo.Provider, repository,
+		)
+	}
 	digest, err := PlanDigest(plan)
 	if err != nil {
 		return PublishedBatch{}, err

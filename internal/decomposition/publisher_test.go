@@ -371,6 +371,42 @@ func TestConcurrentPublishersSerializeBeforeProviderAccess(t *testing.T) {
 	}
 }
 
+func TestPublisherRejectsMismatchedPlanRepositoryBeforeLeaseOrProviderAccess(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	for _, mutate := range []func(*Plan){
+		func(plan *Plan) { plan.Parent.Provider = "gitea" },
+		func(plan *Plan) { plan.Parent.Repository = "other/app" },
+	} {
+		fake := newPublisherFake()
+		providerCalled := make(chan struct{}, 1)
+		fake.called = providerCalled
+		leaseStarted := make(chan struct{}, 1)
+		plan := testPublisherPlan()
+		mutate(&plan)
+
+		_, err := (Publisher{
+			Provider: fake,
+			Leaser: gatedTargetLeaser{
+				delegate: FileTargetLeaser{Directory: t.TempDir()},
+				gate:     make(chan struct{}),
+				started:  leaseStarted,
+			},
+			Repo:  repo,
+			RunID: "run-1",
+		}).Publish(context.Background(), plan)
+		if err == nil || !strings.Contains(err.Error(), "does not match publisher repository") {
+			t.Fatalf("Publish error = %v, want repository mismatch", err)
+		}
+		select {
+		case <-leaseStarted:
+			t.Fatal("publisher acquired a lease for a mismatched plan repository")
+		case <-providerCalled:
+			t.Fatal("publisher accessed the provider for a mismatched plan repository")
+		default:
+		}
+	}
+}
+
 func TestPublisherRetryPreservesHumanContextAroundTrackingSection(t *testing.T) {
 	fake := newPublisherFake()
 	fake.failMutation = 11
@@ -512,6 +548,7 @@ func TestPublisherSkipsNativeHierarchyWhenUnsupported(t *testing.T) {
 		RunID:    "run-1",
 	}
 	plan := testPublisherPlan()
+	plan.Parent.Provider = "ado"
 	plan.Children[1].DependsOn = nil
 	batch, err := publisher.Publish(context.Background(), plan)
 	if err != nil {
@@ -535,7 +572,9 @@ func TestPublisherStillRequiresDeclaredDependencySupportWithoutHierarchy(t *test
 		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "acme", Name: "app"},
 		RunID:    "run-1",
 	}
-	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil ||
+	plan := testPublisherPlan()
+	plan.Parent.Provider = "gitea"
+	if _, err := publisher.Publish(context.Background(), plan); err == nil ||
 		!strings.Contains(err.Error(), "does not support declared work item dependencies") {
 		t.Fatalf("Publish error = %v, want unsupported declared dependencies", err)
 	}
