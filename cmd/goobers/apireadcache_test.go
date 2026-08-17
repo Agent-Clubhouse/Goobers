@@ -104,6 +104,56 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	}
 }
 
+func TestAcquireAPIReadCacheLockTimesOutDuringFileOpen(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	acquire := func(string) (*lock.Handle, error) {
+		close(started)
+		<-blocked
+		return nil, os.ErrClosed
+	}
+
+	begin := time.Now()
+	handle, err := acquireAPIReadCacheLock("blocked.lock", 20*time.Millisecond, acquire)
+	if handle != nil || err == nil {
+		t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
+	}
+	if elapsed := time.Since(begin); elapsed > time.Second {
+		t.Fatalf("blocked file open returned after %s, want bounded fallback", elapsed)
+	}
+	<-started
+	close(blocked)
+}
+
+func TestAPIReadCacheLockDeadlineFallsBackToLiveRequest(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"number":420}`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	held, err := lock.TryAcquire(filepath.Join(dir, apiReadCacheLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+
+	cache := newAPIReadCache(dir, "", &http.Client{})
+	begin := time.Now()
+	body := apiReadBody(t, apiReadGet(t, cache, srv.URL+"/repos/acme/widgets/issues/420", ""))
+	if body != `{"number":420}` {
+		t.Fatalf("body = %q, want live provider response", body)
+	}
+	if elapsed := time.Since(begin); elapsed > 3*apiReadCacheLockAcquireTimeout {
+		t.Fatalf("cache contention delayed live request for %s", elapsed)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider requests = %d, want 1 live fallback", got)
+	}
+}
+
 // TestAPIReadCacheReducesQuotaGETs quantifies the #1053 win for a strong ETag:
 // over N identical ticks against an unchanged resource, exactly ONE response is
 // a quota-costing 200 and the other N-1 are 304s (which do not count against

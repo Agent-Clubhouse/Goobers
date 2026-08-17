@@ -848,8 +848,10 @@ jobs:
       # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
       # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
       # Windows must use the CLI's embedded time/tzdata import (#2863).
+      # TestValidatePlanDetectsLiveParentConflict guards the API read cache's
+      # bounded CreateFile fallback, which is only observable on Windows.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
