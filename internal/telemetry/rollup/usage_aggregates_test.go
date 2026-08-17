@@ -448,8 +448,12 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		byStage[stat.Stage] = stat
 	}
 	usageByStage := make(map[string]UsageStats)
+	var gaggleUsage UsageStats
 	var workflowUsage UsageStats
 	for _, usage := range stats.Usage {
+		if usage.Scope == "gaggle" && usage.Gaggle == "web" {
+			gaggleUsage = usage
+		}
 		if usage.Scope == "workflow" && usage.Workflow == "implement" {
 			workflowUsage = usage
 		}
@@ -463,8 +467,12 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		!workflowUsage.HasPremiumRequests || workflowUsage.PremiumRequestSamples != 7 ||
 		workflowUsage.P50CopilotPremiumRequests != 1 || workflowUsage.P95CopilotPremiumRequests != 4 ||
 		!workflowUsage.HasCost || workflowUsage.CostSamples != 6 ||
+		workflowUsage.CostUSD != 7.5 ||
 		workflowUsage.P50CostUSD != 0.75 || workflowUsage.P95CostUSD != 3 {
 		t.Fatalf("workflow usage rollup = %#v", workflowUsage)
+	}
+	if !gaggleUsage.HasCost || gaggleUsage.CostSamples != 6 || gaggleUsage.CostUSD != 7.5 {
+		t.Fatalf("gaggle cost rollup = %#v", gaggleUsage)
 	}
 	if workflowUsage.RetryWasteAttempts != 3 ||
 		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
@@ -530,7 +538,8 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if zeroUsage := usageByStage["zero-metered"]; !zeroUsage.HasPremiumRequests ||
 		zeroUsage.PremiumRequestSamples != 1 ||
 		zeroUsage.P50CopilotPremiumRequests != 0 ||
-		zeroUsage.P95CopilotPremiumRequests != 0 {
+		zeroUsage.P95CopilotPremiumRequests != 0 ||
+		!zeroUsage.HasCost || zeroUsage.CostSamples != 1 || zeroUsage.CostUSD != 0 {
 		t.Fatalf("reported zero premium requests became missing: %#v", zeroUsage)
 	}
 

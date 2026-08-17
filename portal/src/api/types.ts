@@ -748,6 +748,7 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costUSD?: number;
   p50CostUSD?: number;
   p95CostUSD?: number;
   retryWasteAttempts: number;

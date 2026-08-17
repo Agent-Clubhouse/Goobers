@@ -208,6 +208,7 @@ type TelemetryUsageStats struct {
 	P50CopilotPremiumRequests *float64 `json:"p50CopilotPremiumRequests,omitempty"`
 	P95CopilotPremiumRequests *float64 `json:"p95CopilotPremiumRequests,omitempty"`
 	CostSamples               int      `json:"costSamples"`
+	CostUSD                   *float64 `json:"costUSD,omitempty"`
 	P50CostUSD                *float64 `json:"p50CostUSD,omitempty"`
 	P95CostUSD                *float64 `json:"p95CostUSD,omitempty"`
 	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
@@ -492,6 +493,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
 		}
 		if stat.HasCost {
+			item.CostUSD = float64Pointer(stat.CostUSD)
 			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
 			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
 		}
