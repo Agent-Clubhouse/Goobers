@@ -26,6 +26,10 @@ type publisherFake struct {
 
 var _ WorkItemDependencyProvider = (*providers.GitHubProvider)(nil)
 
+type publisherWithoutHierarchy struct {
+	PublisherProvider
+}
+
 func newPublisherFake() *publisherFake {
 	return &publisherFake{
 		parentID: "7",
@@ -384,33 +388,55 @@ func TestPublisherParksStaleParent(t *testing.T) {
 	assertParentParked(t, fake)
 }
 
-func TestPublisherQuarantinesParentBeforeOtherProviderMutations(t *testing.T) {
+func TestPublisherPersistsBatchIdentityBeforeQuarantine(t *testing.T) {
 	plan := testPublisherPlan()
 	digest, err := PlanDigest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for failAt := 1; failAt <= 3; failAt++ {
-		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
-			fake := newPublisherFake()
-			fake.failMutation = failAt
-			publisher := Publisher{
-				Provider: fake,
-				Leaser:   FileTargetLeaser{Directory: t.TempDir()},
-				Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-				RunID:    "run-1",
-			}
-			if _, err := publisher.Publish(context.Background(), plan); err == nil {
-				t.Fatal("Publish succeeded, want injected failure")
-			}
-			parent := fake.items[fake.parentID]
-			if !parentQuarantined(parent) {
-				t.Fatalf("parent labels after mutation %d = %v, want durable quarantine", failAt, parent.Labels)
-			}
-			if resumed, conflict := parentResumeState(parent.Body, parent.ID, digest); resumed || conflict {
-				t.Fatalf("parent resume marker after label mutation %d = %v, %v; marker must follow quarantine", failAt, resumed, conflict)
-			}
-		})
+	fake := newPublisherFake()
+	fake.failMutation = 1
+	publisher := Publisher{
+		Provider: fake,
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	if _, err := publisher.Publish(context.Background(), plan); err == nil {
+		t.Fatal("Publish succeeded, want injected failure")
+	}
+	parent := fake.items[fake.parentID]
+	if resumed, conflict := parentResumeState(parent.Body, parent.ID, digest); !resumed || conflict {
+		t.Fatalf("parent resume marker after first mutation = %v, %v; want durable batch identity", resumed, conflict)
+	}
+	if parentQuarantined(parent) {
+		t.Fatalf("parent labels after first mutation = %v, quarantine must follow batch identity", parent.Labels)
+	}
+
+	otherPlan := plan
+	otherPlan.Summary = "A different decomposition plan."
+	fake.failMutation = 0
+	_, err = publisher.Publish(context.Background(), otherPlan)
+	var conflict *MarkerConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Publish different plan after retry boundary error = %v, want MarkerConflictError", err)
+	}
+}
+
+func TestPublisherRejectsProviderWithoutNativeHierarchyBeforeMutation(t *testing.T) {
+	fake := newPublisherFake()
+	publisher := Publisher{
+		Provider: publisherWithoutHierarchy{PublisherProvider: fake},
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil ||
+		!strings.Contains(err.Error(), "does not support native work item hierarchy") {
+		t.Fatalf("Publish error = %v, want unsupported native hierarchy", err)
+	}
+	if fake.mutations != 0 {
+		t.Fatalf("provider mutations = %d, want none", fake.mutations)
 	}
 }
 
