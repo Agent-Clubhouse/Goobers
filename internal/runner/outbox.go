@@ -84,7 +84,8 @@ func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 			return fmt.Errorf("create mirror temporary file: %w", err)
 		}
 		tmpName := tmp.Name()
-		if err := tmp.Chmod(0o644); err == nil {
+		err = tmp.Chmod(0o644)
+		if err == nil {
 			_, err = tmp.Write(data)
 		}
 		if closeErr := tmp.Close(); err == nil {
