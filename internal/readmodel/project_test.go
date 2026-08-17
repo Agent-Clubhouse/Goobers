@@ -463,6 +463,45 @@ func TestCountByPhaseIsAnIndexedAggregate(t *testing.T) {
 	}
 }
 
+func TestActiveRunCountsGroupsProjectedRunningRunsByWorkflow(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for i, events := range [][]journal.Event{
+		completedRunEvents()[:3],
+		completedRunEvents()[:3],
+		completedRunEvents(),
+	} {
+		identity := testIdentity()
+		identity.RunID = fmt.Sprintf("run-%d", i)
+		if i == 1 {
+			identity.Workflow = "other-workflow"
+		}
+		if err := store.UpsertRun(ctx, ProjectRun(identity, Projection{}, events)); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	counts, err := store.ActiveRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("active run counts: %v", err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("counts = %#v, want two active workflows", counts)
+	}
+	got := map[string]int{}
+	for _, count := range counts {
+		got[count.Gaggle+"/"+count.Workflow] = count.Count
+	}
+	if got["alpha/implementation"] != 1 || got["alpha/other-workflow"] != 1 {
+		t.Errorf("counts = %#v, want one active run for each workflow", got)
+	}
+}
+
 // TestBuildFromJournalsProjectsEveryPublishedRun pins §6.6 step 2 — the build
 // path — and the two properties that make it safe to run on a real instance.
 func TestBuildFromJournalsProjectsEveryPublishedRun(t *testing.T) {

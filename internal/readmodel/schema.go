@@ -562,4 +562,10 @@ CREATE INDEX IF NOT EXISTS idx_run_oldest ON run(started_at ASC, run_id ASC);
 	`
 ALTER TABLE sweep_cursor ADD COLUMN forward_next INTEGER NOT NULL DEFAULT 0;
 `,
+
+	// v12: covering active-run counts by workflow.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_phase_workflow
+	ON run(phase, gaggle, workflow);
+`,
 }

@@ -83,11 +83,21 @@ type Reader interface {
 	// CountByPhase is the Overview's histogram, as one aggregate.
 	CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error)
 
+	// ActiveRunCounts returns the number of running runs for each workflow.
+	ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error)
+
 	// Changes returns committed transitions after a position, in commit order.
 	Changes(ctx context.Context, afterSeq uint64, limit int) ([]Change, error)
 
 	// LatestChangeSeq is the newest committed position.
 	LatestChangeSeq(ctx context.Context) (uint64, error)
+}
+
+// WorkflowCount is an active-run count keyed by workflow identity.
+type WorkflowCount struct {
+	Gaggle   string
+	Workflow string
+	Count    int
 }
 
 // Writer is the projection surface.

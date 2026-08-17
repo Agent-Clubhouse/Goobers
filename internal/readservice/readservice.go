@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -103,11 +104,9 @@ type Local struct {
 	now         func() time.Time
 	definitions atomic.Pointer[definitionSnapshot]
 
-	// activeSampler, when non-nil, serves the active-run counts from a background
-	// sample instead of walking every run directory per request (#1741). It is
-	// opt-in via StartActiveRunSampler so that a one-shot CLI construction does
-	// not spawn a goroutine, and so the walk stays available to callers that have
-	// no daemon to have warmed it — see activeRunCountsWithAge.
+	// activeSampler, when non-nil, serves active-run counts from a background
+	// sample. Projected services sample read.db; services without a projection
+	// retain the historical journal walk.
 	activeSampler atomic.Pointer[activeRunSampler]
 
 	// readModelReads gates the read-model list path (§6.6 step 3).
@@ -144,6 +143,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	if ready == nil {
 		return nil, fmt.Errorf("read service: readiness function is required")
 	}
+	if store, ok := sources.ReadModel.(*readmodel.Store); ok && store == nil {
+		sources.ReadModel = nil
+	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())
 	if err != nil {
@@ -171,10 +173,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 
 // StartActiveRunSampler moves the active-run count off the request path.
 //
-// The daemon calls this; one-shot CLI constructions do not, and keep the
-// synchronous walk (which is correct for them: there is no long-lived process to
-// have taken a sample, and a single `goobers status` invocation legitimately pays
-// for the answer it asked for).
+// The daemon calls this; one-shot CLI constructions do not. A projected one-shot
+// reader queries read.db directly, while one without a projection pays for the
+// authoritative walk once.
 //
 // interval <= 0 uses the default. Repeated calls reuse the sampler already
 // owned by the service. The returned stop function is idempotent and must be
@@ -182,11 +183,29 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 // lower-level filesystem operation does not return within five seconds.
 func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
+	if s.readModelReads && s.sources.ReadModel != nil {
+		sampler.walk = s.projectedActiveRunCounts
+	}
 	if !s.activeSampler.CompareAndSwap(nil, sampler) {
 		sampler = s.activeSampler.Load()
 	}
 	sampler.Start()
 	return sampler.Stop
+}
+
+func (s *Local) projectedActiveRunCounts(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+	rows, err := s.sources.ReadModel.ActiveRunCounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read active run projection: %w", err)
+	}
+	counts := make(map[localscheduler.WorkflowIdentity]int, len(rows))
+	for _, row := range rows {
+		counts[localscheduler.WorkflowIdentity{
+			Gaggle:   row.Gaggle,
+			Workflow: row.Workflow,
+		}] = row.Count
+	}
+	return counts, nil
 }
 
 // ReloadDefinitions atomically replaces the definitions exposed by the local

@@ -175,11 +175,14 @@ func TestOrderingIndexesServeTheListShapes(t *testing.T) {
 		{"gaggle scoped", "WHERE gaggle = 'gaggle-000'", "idx_run_gaggle_recency"},
 		{"gaggle and workflow", "WHERE gaggle = 'gaggle-000' AND workflow = 'wf-0'", "idx_run_gaggle_workflow_recency"},
 		{"phase aggregate", "WHERE phase = 'running'", "idx_run_phase_recency"},
+		{"active counts by workflow", "WHERE phase = 'running' GROUP BY gaggle, workflow", "idx_run_phase_workflow"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			query := "SELECT run_id, started_at FROM run " + tc.where +
-				" ORDER BY started_at DESC, run_id ASC LIMIT 51"
+			query := "SELECT run_id, started_at FROM run " + tc.where
+			if !strings.Contains(tc.where, "GROUP BY") {
+				query += " ORDER BY started_at DESC, run_id ASC LIMIT 51"
+			}
 			plan := explain(t, store, query)
 			t.Logf("plan: %s", plan)
 			if !strings.Contains(plan, tc.want) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 )
 
 // TestActiveSamplerNeverWalksOnTheReadPath is the property #1741 exists for, and
@@ -49,6 +50,83 @@ func TestActiveSamplerServesFromMemoryWithAge(t *testing.T) {
 	if age != 45*time.Second {
 		t.Fatalf("sample age = %s, want 45s", age)
 	}
+}
+
+func TestProjectedActiveSamplerDoesNotWalkRetainedRunHistory(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	projected := &activeCountReader{called: make(chan struct{}, 1)}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		ReadModel:   projected,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	stop := service.StartActiveRunSampler(time.Hour)
+	defer func() { _ = stop() }()
+	select {
+	case <-projected.called:
+	case <-time.After(time.Second):
+		t.Fatal("projected sampler did not query the read model")
+	}
+}
+
+func TestDisabledProjectionRetainsHistoricalSampling(t *testing.T) {
+	projected := &activeCountReader{called: make(chan struct{}, 1)}
+	service, err := NewLocal(LocalSources{
+		Layout:      instance.NewLayout(t.TempDir()),
+		Definitions: testDefinitions(),
+		ReadModel:   projected,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	service.DisableReadModelReads()
+
+	stop := service.StartActiveRunSampler(time.Hour)
+	defer func() { _ = stop() }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, _, err := service.activeSampler.Load().Counts(); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("historical sampler did not publish a sample")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-projected.called:
+		t.Fatal("disabled projection was queried instead of historical run state")
+	default:
+	}
+}
+
+func TestTypedNilReadModelUsesHistoricalSampling(t *testing.T) {
+	var store *readmodel.Store
+	service, err := NewLocal(LocalSources{
+		Layout:      instance.NewLayout(t.TempDir()),
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	if service.sources.ReadModel != nil || service.readModelReads {
+		t.Fatal("typed-nil read model selected projected sampling")
+	}
+}
+
+type activeCountReader struct {
+	readmodel.Reader
+	called chan struct{}
+}
+
+func (r *activeCountReader) ActiveRunCounts(context.Context) ([]readmodel.WorkflowCount, error) {
+	r.called <- struct{}{}
+	return nil, nil
 }
 
 // TestActiveSamplerDoesNotOverlapWalks pins that a slow walk is skipped rather
