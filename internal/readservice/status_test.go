@@ -64,6 +64,11 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "local-ci", Verdict: "pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: "provider.rate_limit", Message: "quota exhausted"},
 	}); err != nil {
@@ -140,6 +145,17 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	if got := runs[0].Operator.Claim.ProviderMarker; got != "drift" {
 		t.Fatalf("provider marker after label removal = %q, want drift", got)
 	}
+
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{}, errors.New("provider unavailable")
+	}
+	runs, err = service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runs[0].Operator.Claim.ProviderMarker; got != "unavailable" {
+		t.Fatalf("provider marker after lookup failure = %q, want unavailable", got)
+	}
 }
 
 func TestOperatorTrajectory(t *testing.T) {
@@ -158,6 +174,58 @@ func TestOperatorTrajectory(t *testing.T) {
 	}
 	if got := operatorTrajectory("implementation", journal.PhaseCompleted); got != "parked" {
 		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
+
+func TestDecorateOperatorClaimsLooksUpOnlyRunningActiveClaims(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "1"},
+		"active", "implementation", time.Hour,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	lookups := 0
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(context.Context, string, string) (providers.WorkItem, error) {
+			lookups++
+			return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+		},
+	}}
+	runs := []RunSummary{
+		{
+			ID: "active", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "1"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseCompleted,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "2"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 1 {
+		t.Fatalf("provider lookups = %d, want only the running active claim", lookups)
 	}
 }
 

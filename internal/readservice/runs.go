@@ -1627,6 +1627,9 @@ func summarizeRunForStage(
 			if currentStage == event.Gate {
 				currentStage = ""
 			}
+			if event.Gate != "review" {
+				continue
+			}
 			review := &OperatorReview{Verdict: event.Verdict}
 			if event.Ref != nil {
 				data, err := run.reader.ArtifactBytes(*event.Ref)

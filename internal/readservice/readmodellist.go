@@ -3,7 +3,6 @@ package readservice
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -81,22 +80,7 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	observedAt := s.now()
 	out := RunList{Runs: make([]RunSummary, 0, len(page.Runs))}
 	for _, row := range page.Runs {
-		summary := summaryFromReadModel(row, observedAt)
-		if row.RunID == "" {
-			out.Runs = append(out.Runs, summary)
-			continue
-		}
-		run, err := s.openRun(row.RunID)
-		if err == nil {
-			journalSummary, summarizeErr := summarizeRun(run, observedAt)
-			if summarizeErr != nil {
-				return RunList{}, fmt.Errorf("summarize operator status for run %q: %w", row.RunID, summarizeErr)
-			}
-			summary.Operator = journalSummary.Operator
-		} else if !errors.Is(err, ErrNotFound) {
-			return RunList{}, fmt.Errorf("read operator status for run %q: %w", row.RunID, err)
-		}
-		out.Runs = append(out.Runs, summary)
+		out.Runs = append(out.Runs, summaryFromReadModel(row, observedAt))
 	}
 	if err := s.decorateOperatorClaims(ctx, out.Runs, observedAt); err != nil {
 		return RunList{}, err
@@ -145,8 +129,61 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
 		NoWork:           row.Disposition == readmodel.DispositionNoWork,
+		Operator:         operatorFromReadModel(row, observedAt),
 		Stages:           row.Stages,
 	}
+}
+
+func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorRunSummary {
+	facts := row.Operator
+	operator := OperatorRunSummary{
+		CurrentStage:      row.CurrentStage,
+		Trajectory:        operatorTrajectory(row.CurrentStage, row.Phase),
+		Liveness:          "no-heartbeat",
+		PullRequest:       facts.PullRequest,
+		PROpenerStage:     facts.PROpenerStage,
+		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+		LatestError:       facts.LatestError,
+		PotentialBlockers: []string{},
+	}
+	if facts.IssueNumber != "" || facts.IssueTitle != "" {
+		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle}
+	}
+	if facts.LastHeartbeatAt != nil {
+		heartbeat := *facts.LastHeartbeatAt
+		operator.LastHeartbeatAt = &heartbeat
+		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+		operator.HeartbeatAgeMillis = &age
+	}
+	if row.Phase != journal.PhaseRunning {
+		operator.Liveness = "terminal"
+	} else if row.CurrentStage == "" {
+		operator.NextTransition = "start the next workflow stage"
+	} else {
+		operator.NextTransition = "finish " + row.CurrentStage
+	}
+	if facts.ProviderClaimRecorded {
+		operator.Claim.ProviderMarker = "recorded"
+	}
+	if facts.ReviewVerdict != "" {
+		operator.Review = &OperatorReview{
+			Verdict:   facts.ReviewVerdict,
+			Rationale: facts.ReviewRationale,
+		}
+	}
+	if facts.ReviewProblem != "" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers, facts.ReviewProblem)
+	}
+	if operator.LatestError != nil {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			operator.LatestError.Code+": "+operator.LatestError.Message)
+	}
+	if operator.Review != nil && operator.Review.Verdict != "" &&
+		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
+	}
+	return operator
 }
 
 // readModelDims maps a list request to the filter dimensions the closed set is

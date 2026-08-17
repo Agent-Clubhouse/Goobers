@@ -130,7 +130,10 @@ func (s *Store) projectRunDir(ctx context.Context, dir string) (bool, error) {
 		return false, fmt.Errorf("readmodel: read events for %s: %w", identity.RunID, err)
 	}
 
-	projection := ProjectRun(identity, Projection{}, events)
+	projection, err := ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return false, err
+	}
 	if err := s.UpsertRun(ctx, projection); err != nil {
 		return false, err
 	}

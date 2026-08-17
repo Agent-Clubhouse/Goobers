@@ -74,11 +74,19 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			runs[i].Operator.Claim.LeaseStatus = "released"
 		}
 		markerPresent := runs[i].Operator.Claim.ProviderMarker == "recorded"
-		if s.sources.WorkItemLookup != nil && runs[i].Operator.Issue != nil &&
+		if s.sources.WorkItemLookup != nil &&
+			runs[i].Phase == journal.PhaseRunning &&
+			runs[i].Operator.Claim.LeaseStatus == "active" &&
+			runs[i].Operator.Issue != nil &&
 			runs[i].Operator.Issue.Number != "" {
 			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
 			if err != nil {
-				return fmt.Errorf("verify provider claim marker for run %q: %w", runs[i].ID, err)
+				runs[i].Operator.Claim.ProviderMarker = "unavailable"
+				runs[i].Operator.PotentialBlockers = append(
+					runs[i].Operator.PotentialBlockers,
+					"provider claim marker verification unavailable: "+err.Error(),
+				)
+				continue
 			}
 			markerPresent = item.HasLabel(providers.LabelClaimed)
 			if runs[i].Operator.Issue.Title == "" {

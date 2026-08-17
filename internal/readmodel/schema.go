@@ -568,4 +568,13 @@ ALTER TABLE sweep_cursor ADD COLUMN forward_next INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_run_phase_workflow
 	ON run(phase, gaggle, workflow);
 `,
+
+	// v13: operator-facing facts complete the zero-journal-open run list row.
+	`
+ALTER TABLE run ADD COLUMN operator_json TEXT NOT NULL DEFAULT '{}';
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_node WHERE TRUE;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
 }
