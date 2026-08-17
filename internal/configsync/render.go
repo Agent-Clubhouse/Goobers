@@ -130,7 +130,7 @@ func (rs *RenderSet) writeManifests(outDir string, hooks publicationHooks) ([]st
 	if err := syncAuthoritativeSwitch(parent); err != nil {
 		rollbackErr := rollback()
 		if rollbackErr != nil {
-			return nil, fmt.Errorf("sync authoritative manifest switch: %w (rollback failed: %v)", err, rollbackErr)
+			return nil, fmt.Errorf("sync authoritative manifest switch: %w (rollback failed: %w)", err, rollbackErr)
 		}
 		return nil, fmt.Errorf("sync authoritative manifest switch: %w", err)
 	}
