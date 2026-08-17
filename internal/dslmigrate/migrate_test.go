@@ -118,9 +118,50 @@ func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
+	if !result.Changed {
+		t.Fatal("Changed = false, want true for the dslVersion pin")
+	}
 	after := decodeWorkflow(t, result.After)
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
+	}
+}
+
+func TestMigratePinOnlyPreservesOriginalBytes(t *testing.T) {
+	source := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4" # keep this comment
+
+metadata:
+  name: wrapped
+spec:
+  gaggle: golden
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+`
+	want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+
+	result, err := Migrate([]byte(source), "2.0")
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.Before != source {
+		t.Fatalf("Before changed original bytes:\n%s", result.Before)
+	}
+	if result.After != want {
+		t.Fatalf("pin-only migration changed bytes beyond dslVersion\nwant:\n%s\ngot:\n%s", want, result.After)
+	}
+	if !result.Changed {
+		t.Fatal("Changed = false, want true")
+	}
+	if len(result.Notes) != 0 {
+		t.Fatalf("Notes = %v, want none", result.Notes)
 	}
 }
 
@@ -155,6 +196,10 @@ func TestMigrateDefaultsMissingDSLVersionToCurrent(t *testing.T) {
 	after := decodeWorkflow(t, result.After)
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
+	}
+	want := strings.Replace(source, "kind: Workflow\n", "kind: Workflow\ndslVersion: \"2.0\"\n", 1)
+	if result.After != want {
+		t.Fatalf("migration without a version pin changed unrelated bytes\nwant:\n%s\ngot:\n%s", want, result.After)
 	}
 }
 
