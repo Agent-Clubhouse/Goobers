@@ -451,7 +451,7 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			result RunList
 			err    error
 		)
-		if s.sources.Telemetry != nil {
+		if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
 			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
 		} else {
 			result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
@@ -529,7 +529,7 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			"%w: ordering by last activity requires the read model (mode %s)",
 			ErrBoundedReadUnavailable, s.ReadMode())
 	}
-	if s.sources.Telemetry != nil {
+	if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
 	// The journal-scanning path is now REACHED DELIBERATELY, not fallen into
