@@ -360,30 +360,48 @@ describe("runs history pagination under live events", () => {
   // fix above would trade one bug for another — showing rows that do not match
   // the selected filter.
   it("still resets pagination when the filter changes", async () => {
-    const client = new PushableClient(
-      largeJournalFixtures({ completed: 68, running: 0, failed: 0, escalated: 0, aborted: 0 }),
-    );
+    const fixtures = largeJournalFixtures({
+      completed: 68,
+      running: 51,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const completedRun = fixtures.runs.runs.filter((run) => run.phase === "completed").at(-1);
+    const pagedInActiveRun = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!completedRun || !pagedInActiveRun) {
+      throw new Error("Expected completed and active pagination fixtures.");
+    }
+    const client = new PushableClient(fixtures);
+    const listRuns = vi.spyOn(client, "listRuns");
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await screen.findByRole("region", { name: "Run history" });
+    const history = await screen.findByRole("region", { name: "Run history" });
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(100));
     expect(
-      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-    ).toHaveLength(68);
+      screen.getByRole("link", { name: `Open run ${completedRun.id}` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: `Open run ${pagedInActiveRun.id}` }),
+    ).toBeInTheDocument();
 
-    const failing = screen.queryByRole("button", { name: /Needs attention|Failed/ });
-    if (!failing) {
-      // The fixture has only completed runs, so the filter chip set may not
-      // include a failing filter. Skipping silently would make this test
-      // vacuous, so say so.
-      expect(screen.getByRole("region", { name: "Run history" })).toBeTruthy();
-      return;
-    }
-    await user.click(failing);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const after = within(screen.getByRole("region", { name: "Run history" })).queryAllByRole("link");
-    expect(after.length).toBeLessThan(68);
+    const callsBeforeFilterChange = listRuns.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "active" }));
+
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(50));
+    expect(
+      screen.queryByRole("link", { name: `Open run ${completedRun.id}` }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: `Open run ${pagedInActiveRun.id}` }),
+    ).not.toBeInTheDocument();
+    expect(listRuns.mock.calls.slice(callsBeforeFilterChange)).toEqual([
+      [
+        { phase: "running", cursor: undefined, limit: 50, showNoWork: false },
+        { signal: expect.any(AbortSignal) },
+      ],
+    ]);
   });
 });
