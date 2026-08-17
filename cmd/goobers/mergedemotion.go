@@ -33,7 +33,7 @@ import (
 // about unblocking its siblings, not abandoning it.
 const mergeDemotedLabel = "goobers:merge-demoted"
 
-const needsHumanLabel = "goobers:needs-human"
+const needsHumanLabel = providers.LabelNeedsHuman
 
 // mergeDemotionState is the durable per-PR record the record-merge-refusal
 // stage posts and the election read-sites consult — the merge-side analog of
