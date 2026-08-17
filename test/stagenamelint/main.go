@@ -57,7 +57,7 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/applyverdict.go", Line: 64, Value: "goobers:merge-ready", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/applyverdict.go", Line: 66, Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/applyverdict.go", Line: 71, Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/mergedemotion.go", Line: 32, Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
+	{Path: "cmd/goobers/mergedemotion.go", Line: 33, Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/postmerge.go", Line: 69, Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/prselect.go", Line: 33, Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Line: 34, Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
