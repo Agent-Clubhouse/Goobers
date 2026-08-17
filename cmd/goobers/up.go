@@ -220,10 +220,11 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
 	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
 	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
-	"forces every list request onto the journal-derived paths for this run,\n" +
-	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
-	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n\n" +
+	"forces every list request to scan the authoritative journals for this\n" +
+	"run, bypassing both read.db and telemetry.db as run-candidate indexes.\n" +
+	"This can be slow on a large history. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of serving\n" +
+	"wrong or incomplete results.\n\n" +
 	"These five behavior controls are intentionally flag-only: --watch-config\n" +
 	"selects a process-local development watcher, --diagnostics is temporary\n" +
 	"debug capture, --drain-timeout applies only after this process receives a\n" +
@@ -276,7 +277,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
-	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
