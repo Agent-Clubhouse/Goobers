@@ -85,8 +85,8 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
         kubernetes.io/os: linux
   ```
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
-  you deploy — regenerate from `api/v1alpha1` (`make manifests`) rather than trusting a
-  stale checkout; the committed `config/crd/bases` are not CI-gated.
+  you deploy. The committed `config/crd/bases` are generated from `api/v1alpha1`; update
+  them with `make manifests`. The merge gate regenerates the CRDs and rejects any diff.
 - **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) are stubbed
   with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
   disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
