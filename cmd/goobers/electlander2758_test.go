@@ -81,3 +81,47 @@ func TestElectionCrownsLowestCurrentlyEligiblePR(t *testing.T) {
 		t.Fatalf("predecessorBlockers = %v, want none after #238 becomes ineligible", got)
 	}
 }
+
+func TestNoLanderEscalationPreservesHumanOrderingAcrossCycles(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	server.addIssue(10, "human-controlled winner")
+	server.addIssue(11, "eligible sibling")
+
+	status := renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Rationale: noLanderEscalationPrefix + ` under policy "fifo": human intervention is required to choose a different landing order.`,
+	})
+	server.addComment(10, status)
+	prs := []providers.PullRequestSummary{
+		{Number: 10, HeadSHA: "head-10", Labels: []string{remediationEscalatedLabel}},
+		{Number: 11, HeadSHA: "head-11"},
+	}
+	findings := []apiv1.Finding{{
+		Class:       apiv1.FindingCrossPRBlocked,
+		BlockingPRs: []int{10},
+	}}
+	provider := server.newGitHubProvider("token")
+
+	for cycle := 1; cycle <= 2; cycle++ {
+		ineligible, err := electionIneligibleSet(context.Background(), provider, repo, prs)
+		if err != nil {
+			t.Fatalf("cycle %d electionIneligibleSet: %v", cycle, err)
+		}
+		if ineligible[10] {
+			t.Fatalf("cycle %d ineligible = %v, no-lander winner must remain an ordering blocker", cycle, ineligible)
+		}
+		if electionDecision(findings, 11, electedLander, ineligible) {
+			t.Fatalf("cycle %d crowned sibling #11 while no-lander ordering remains human-controlled", cycle)
+		}
+	}
+
+	prs[0].Labels = []string{needsHumanLabel}
+	ineligible, err := electionIneligibleSet(context.Background(), provider, repo, prs)
+	if err != nil {
+		t.Fatalf("electionIneligibleSet after human ordering change: %v", err)
+	}
+	if !electionDecision(findings, 11, electedLander, ineligible) {
+		t.Fatal("sibling #11 was not crowned after the winner's ordering state changed")
+	}
+}

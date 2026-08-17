@@ -14,6 +14,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+const noLanderEscalationPrefix = "Cluster has no lander"
+
 // electedLander reports whether thisPR is the deterministically-elected lander
 // of the mutually-sibling-blocked cluster it forms with the PRs it is blocked
 // on. The V0.5 policy (#833) is lowest-PR-number: thisPR is the lander iff its
@@ -144,7 +146,8 @@ func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.F
 		siblings = append(siblings, fmt.Sprintf("#%d", blocker))
 	}
 	return fmt.Sprintf(
-		"Cluster has no lander under policy %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
+		"%s under policy %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
+		noLanderEscalationPrefix,
 		policyName, selectedNumber, strings.Join(siblings, ", "))
 }
 

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -155,20 +157,50 @@ func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo pr
 // human-cleared.
 func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
+	var authenticatedAuthor string
 	for _, pr := range prs {
 		if hasAnyLabel(pr.Labels, []string{needsHumanLabel}) {
 			out[pr.Number] = true
 			continue
 		}
-		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+			continue
+		}
+		comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+		if err != nil {
+			return nil, err
+		}
+		blocked, err := escalationStillBlocksWithComments(ctx, provider, repo, pr, comments)
 		if err != nil {
 			return nil, err
 		}
 		if blocked {
+			if authenticatedAuthor == "" {
+				authenticatedAuthor, err = provider.AuthenticatedLogin(ctx)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if activeNoLanderEscalation(comments, authenticatedAuthor) {
+				continue
+			}
 			out[pr.Number] = true
 		}
 	}
 	return out, nil
+}
+
+func activeNoLanderEscalation(comments []providers.Comment, authenticatedAuthor string) bool {
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, authenticatedAuthor) {
+			continue
+		}
+		verdict, ok := parseVerdictComment(comment.Body)
+		return ok &&
+			verdict.Decision == apiv1.VerdictFail &&
+			strings.HasPrefix(verdict.Rationale, noLanderEscalationPrefix)
+	}
+	return false
 }
 
 func unionPRSets(sets ...map[int]bool) map[int]bool {

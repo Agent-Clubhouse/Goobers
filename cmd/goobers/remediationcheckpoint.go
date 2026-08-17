@@ -582,6 +582,13 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 	if err != nil {
 		return false, err
 	}
+	return escalationStillBlocksWithComments(ctx, provider, repo, pr, rawComments)
+}
+
+func escalationStillBlocksWithComments(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, rawComments []providers.Comment) (bool, error) {
+	if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+		return false, nil
+	}
 	state, _, found := latestRemediationState(rawComments)
 	head, base := state.EscalatedHeadSHA, state.EscalatedBaseSHA
 	if found && (!state.Escalated || head == "") {
