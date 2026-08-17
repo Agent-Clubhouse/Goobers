@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,134 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "operator-run", "implementation", "goobers",
+		startedAt, journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"}, true,
+	)
+	clock.now = startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"title": "Operator status cannot answer run progress"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "3088"},
+		Runner:      map[string]any{"operation": "claim"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(3 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(4 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	verdictData, err := json.Marshal(map[string]any{
+		"decision":  "needs-changes",
+		"rationale": "Add operator-facing claim drift.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdictRef, err := run.RecordArtifact("review-verdict.json", verdictData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(5 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &verdictRef,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "provider.rate_limit", Message: "quota exhausted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return startedAt.Add(5 * time.Minute) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "3088"},
+		"operator-run", "implementation", time.Hour,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	service.now = func() time.Time { return startedAt.Add(6 * time.Minute) }
+
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	got := runs[0].Operator
+	if got.Issue == nil || got.Issue.Number != "3088" ||
+		got.Issue.Title != "Operator status cannot answer run progress" {
+		t.Fatalf("issue = %+v", got.Issue)
+	}
+	if got.CurrentStage != "implementation" || got.Trajectory != "implementing" ||
+		got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(startedAt.Add(4*time.Minute)) ||
+		got.HeartbeatAgeMillis == nil || *got.HeartbeatAgeMillis != (2*time.Minute).Milliseconds() {
+		t.Fatalf("liveness = %+v", got)
+	}
+	if got.Claim.LeaseStatus != "active" || got.Claim.ProviderMarker != "verified" {
+		t.Fatalf("claim = %+v", got.Claim)
+	}
+	if got.LatestError == nil || got.LatestError.Code != "provider.rate_limit" ||
+		got.Review == nil || got.Review.Verdict != "needs-changes" ||
+		got.Review.Rationale != "Add operator-facing claim drift." {
+		t.Fatalf("error/review = %+v", got)
+	}
+	if got.NextTransition != "finish implementation" || len(got.PotentialBlockers) != 2 {
+		t.Fatalf("next/blockers = %+v", got)
+	}
+}
+
+func TestOperatorTrajectory(t *testing.T) {
+	for stage, want := range map[string]string{
+		"implementation":  "implementing",
+		"reviewer":        "review",
+		"local-ci":        "local CI",
+		"push-branch":     "push",
+		"open-pr":         "open PR",
+		"ci-poll":         "CI poll",
+		"issue-close-out": "close-out",
+	} {
+		if got := operatorTrajectory(stage, journal.PhaseRunning); got != want {
+			t.Errorf("operatorTrajectory(%q) = %q, want %q", stage, got, want)
+		}
+	}
+	if got := operatorTrajectory("implementation", journal.PhaseCompleted); got != "parked" {
+		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
 
 func TestParseProviderQuotaResumeTime(t *testing.T) {
 	resetAt := time.Date(2026, 7, 17, 4, 0, 0, 0, time.UTC)

@@ -457,8 +457,9 @@ function RunSection({
               <span className="row-primary">
                 <span className="row-title">{runLabel(run)}</span>
                 <span className="row-subtitle">
-                  {run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}
-                  {run.id}
+                  {active && run.operator
+                    ? operatorSubtitle(run)
+                    : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
                 </span>
               </span>
               {active ? (
@@ -472,7 +473,7 @@ function RunSection({
                   </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
-                    {run.currentStage ?? "Awaiting stage"}
+                    {operatorProgress(run)}
                   </span>
                 </>
               ) : (
@@ -497,7 +498,35 @@ function RunSection({
 }
 
 function runLabel(run: RunSummary): string {
+  if (run.operator?.issue) {
+    return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
+  }
   return `${run.workflow} · ${run.id}`;
+}
+
+function operatorSubtitle(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.id;
+  }
+  const heartbeat =
+    operator.heartbeatAgeMillis === undefined
+      ? "no heartbeat"
+      : `${operator.liveness} heartbeat ${formatDuration(operator.heartbeatAgeMillis)} ago`;
+  return `${operator.trajectory} · ${heartbeat} · claim ${operator.claim.leaseStatus}/${operator.claim.providerMarker}`;
+}
+
+function operatorProgress(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.currentStage ?? "Awaiting stage";
+  }
+  const pr = operator.pullRequest
+    ? `PR #${operator.pullRequest.id}`
+    : operator.prOpenerStage
+      ? `PR via ${operator.prOpenerStage}`
+      : "no PR stage";
+  return `${operator.currentStage ?? "Awaiting stage"} · ${pr} · ${operator.nextTransition ?? "no next transition"}`;
 }
 
 function attentionHeading(count: number): string {

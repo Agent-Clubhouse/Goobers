@@ -350,6 +350,9 @@ func TestStatusJSON(t *testing.T) {
 		if run.LastActivityAt.IsZero() {
 			t.Fatalf("run %q has no last activity timestamp", run.RunID)
 		}
+		if run.Operator.Trajectory == "" || run.Operator.Claim.LeaseStatus == "" {
+			t.Fatalf("run %q has no operator summary: %+v", run.RunID, run.Operator)
+		}
 	}
 }
 
@@ -749,6 +752,7 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
+
 	for _, want := range []string{
 		"LAST ACTIVITY",
 		"fixture-run",
@@ -758,6 +762,44 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
+		}
+	}
+}
+
+func TestRenderStatusAnswersLivenessAndPRTrajectory(t *testing.T) {
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	heartbeat := now.Add(-30 * time.Second)
+	age := int64(30_000)
+	runs := []runSummary{{
+		RunID: "run-operator", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Hour), LastActivityAt: heartbeat,
+		Operator: readservice.OperatorRunSummary{
+			Issue:              &readservice.OperatorIssue{Number: "3088", Title: "Operator status"},
+			CurrentStage:       "local-ci",
+			LastHeartbeatAt:    &heartbeat,
+			HeartbeatAgeMillis: &age,
+			Liveness:           "recent",
+			Trajectory:         "local CI",
+			PROpenerStage:      "open-pr",
+			Claim:              readservice.OperatorClaim{LeaseStatus: "active", ProviderMarker: "verified"},
+			Review:             &readservice.OperatorReview{Verdict: "needs-changes", Rationale: "Add drift visibility."},
+			NextTransition:     "finish local-ci",
+			PotentialBlockers:  []string{"review needs-changes: Add drift visibility."},
+		},
+	}}
+	var stdout strings.Builder
+	renderStatus(&stdout, runs, now)
+	for _, want := range []string{
+		"#3088 Operator status",
+		"local-ci / local CI",
+		"recent 30s ago",
+		"via open-pr",
+		"active / verified",
+		"review needs-changes: Add drift visibility.",
+		"blockers: review needs-changes: Add drift visibility.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status = %q, want %q", stdout.String(), want)
 		}
 	}
 }

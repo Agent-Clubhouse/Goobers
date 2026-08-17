@@ -421,7 +421,21 @@ export const goWireFixtures = {
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1,
-        "noWork": false
+        "noWork": false,
+        "operator": {
+          "issue": {
+            "number": "673",
+            "title": "Improve operator status"
+          },
+          "currentStage": "review",
+          "liveness": "terminal",
+          "trajectory": "parked",
+          "claim": {
+            "leaseStatus": "released",
+            "providerMarker": "recorded"
+          },
+          "potentialBlockers": []
+        }
       }
     ],
     "workflowActivity": [
@@ -457,6 +471,20 @@ export const goWireFixtures = {
     "policyRetryCount": 1,
     "infraRetryCount": 1,
     "noWork": false,
+    "operator": {
+      "issue": {
+        "number": "673",
+        "title": "Improve operator status"
+      },
+      "currentStage": "review",
+      "liveness": "terminal",
+      "trajectory": "parked",
+      "claim": {
+        "leaseStatus": "released",
+        "providerMarker": "recorded"
+      },
+      "potentialBlockers": []
+    },
     "graph": {
       "name": "implementation",
       "version": 7,

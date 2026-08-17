@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,6 +31,64 @@ type SchedulerStatus struct {
 // malformed historical journals are omitted so status remains best-effort.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
+}
+
+func (s *Local) decorateOperatorClaims(runs []RunSummary, now time.Time) error {
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
+	if err != nil {
+		return fmt.Errorf("read claim leases for status: %w", err)
+	}
+	for i := range runs {
+		if runs[i].Phase == journal.PhaseRunning &&
+			runs[i].Operator.HeartbeatAgeMillis != nil {
+			runs[i].Operator.Liveness = "recent"
+			if s.sources.LivenessTimeout > 0 &&
+				*runs[i].Operator.HeartbeatAgeMillis > s.sources.LivenessTimeout.Milliseconds() {
+				runs[i].Operator.Liveness = "stale"
+				runs[i].Operator.PotentialBlockers = append(
+					runs[i].Operator.PotentialBlockers,
+					"stage heartbeat is stale",
+				)
+			}
+		}
+		active := ledger.ForRunAll(runs[i].ID)
+		history := ledger.HistoryForRun(runs[i].ID)
+		switch {
+		case len(active) > 0:
+			entry := active[0]
+			expires := entry.ExpiresAt
+			runs[i].Operator.Claim.ExpiresAt = &expires
+			if entry.ExpiresAt.After(now) {
+				runs[i].Operator.Claim.LeaseStatus = "active"
+			} else {
+				runs[i].Operator.Claim.LeaseStatus = "expired"
+			}
+			if runs[i].Operator.Issue == nil {
+				runs[i].Operator.Issue = &OperatorIssue{Number: entry.ItemID}
+			}
+		case len(history) > 0:
+			runs[i].Operator.Claim.LeaseStatus = "released"
+		}
+		if runs[i].Phase == journal.PhaseRunning &&
+			runs[i].Operator.Claim.LeaseStatus != "active" &&
+			runs[i].Operator.Claim.ProviderMarker == "recorded" {
+			runs[i].Operator.Claim.ProviderMarker = "drift"
+			runs[i].Operator.PotentialBlockers = append(
+				runs[i].Operator.PotentialBlockers,
+				"provider claim marker exists without an active lease",
+			)
+		} else if runs[i].Operator.Claim.LeaseStatus == "active" &&
+			runs[i].Operator.Claim.ProviderMarker != "recorded" {
+			runs[i].Operator.Claim.ProviderMarker = "drift"
+			runs[i].Operator.PotentialBlockers = append(
+				runs[i].Operator.PotentialBlockers,
+				"active claim lease has no recorded provider marker",
+			)
+		} else if runs[i].Operator.Claim.LeaseStatus == "active" {
+			runs[i].Operator.Claim.ProviderMarker = "verified"
+		}
+	}
+	return nil
 }
 
 // TimeToFirstPR merges the retained lifetime milestone with the successful-init

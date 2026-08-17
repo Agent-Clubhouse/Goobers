@@ -183,9 +183,44 @@ type RunSummary struct {
 	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
 	// schedule tick that found nothing to do, as opposed to a genuine
 	// single-stage workflow that did real work.
-	NoWork        bool     `json:"noWork"`
-	Stages        []string `json:"-"`
+	NoWork        bool               `json:"noWork"`
+	Operator      OperatorRunSummary `json:"operator"`
+	Stages        []string           `json:"-"`
 	stageAttempts map[string][]StageAttempt
+}
+
+// OperatorRunSummary answers the operational questions that otherwise require
+// correlating the journal, claim ledger, and artifact blobs by hand.
+type OperatorRunSummary struct {
+	Issue              *OperatorIssue       `json:"issue,omitempty"`
+	CurrentStage       string               `json:"currentStage,omitempty"`
+	LastHeartbeatAt    *time.Time           `json:"lastHeartbeatAt,omitempty"`
+	HeartbeatAgeMillis *int64               `json:"heartbeatAgeMillis,omitempty"`
+	Liveness           string               `json:"liveness"`
+	Trajectory         string               `json:"trajectory"`
+	PullRequest        *journal.ExternalRef `json:"pullRequest,omitempty"`
+	PROpenerStage      string               `json:"prOpenerStage,omitempty"`
+	Claim              OperatorClaim        `json:"claim"`
+	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
+	Review             *OperatorReview      `json:"review,omitempty"`
+	NextTransition     string               `json:"nextTransition,omitempty"`
+	PotentialBlockers  []string             `json:"potentialBlockers"`
+}
+
+type OperatorIssue struct {
+	Number string `json:"number"`
+	Title  string `json:"title,omitempty"`
+}
+
+type OperatorClaim struct {
+	LeaseStatus    string     `json:"leaseStatus"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	ProviderMarker string     `json:"providerMarker"`
+}
+
+type OperatorReview struct {
+	Verdict   string `json:"verdict"`
+	Rationale string `json:"rationale,omitempty"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -953,6 +988,9 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 			break
 		}
 	}
+	if err := s.decorateOperatorClaims(kept, observedAt); err != nil {
+		return RunList{}, err
+	}
 	return paginateRuns(kept, limit)
 }
 
@@ -1031,6 +1069,9 @@ func (s *Local) runSummariesForStage(
 		}
 		return summaries[i].StartedAt.After(summaries[j].StartedAt)
 	})
+	if err := s.decorateOperatorClaims(summaries, observedAt); err != nil {
+		return nil, err
+	}
 	return summaries, nil
 }
 
@@ -1517,6 +1558,17 @@ func summarizeRunForStage(
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
+	operator := OperatorRunSummary{
+		Trajectory:        "parked",
+		Liveness:          "no-heartbeat",
+		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+		PotentialBlockers: []string{},
+	}
+	if run.identity.Trigger.Kind == journal.TriggerItem && run.identity.Trigger.Ref != "" {
+		operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
+	}
+	var lastHeartbeat time.Time
+	providerClaimRecorded := false
 	seenStages := make(map[string]struct{})
 	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
@@ -1536,7 +1588,15 @@ func summarizeRunForStage(
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
+		if event.Error != nil {
+			detail := *event.Error
+			operator.LatestError = &detail
+		}
 		switch event.Type {
+		case journal.EventStageHeartbeat:
+			if event.Time.After(lastHeartbeat) {
+				lastHeartbeat = event.Time
+			}
 		case journal.EventRunnerAnnotation:
 			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
 				currentStage = queue
@@ -1555,11 +1615,53 @@ func summarizeRunForStage(
 				currentStage = ""
 			}
 			lastStageStatus[event.Stage] = event.Status
+			if title, ok := event.Outputs["title"].(string); ok && title != "" {
+				if operator.Issue == nil {
+					operator.Issue = &OperatorIssue{}
+				}
+				operator.Issue.Title = title
+			}
 		case journal.EventGateStarted:
 			currentStage = event.Gate
 		case journal.EventGateEvaluated:
 			if currentStage == event.Gate {
 				currentStage = ""
+			}
+			review := &OperatorReview{Verdict: event.Verdict}
+			if event.Ref != nil {
+				data, err := run.reader.ArtifactBytes(*event.Ref)
+				if err != nil {
+					operator.PotentialBlockers = append(operator.PotentialBlockers,
+						fmt.Sprintf("review rationale unavailable: %v", err))
+				} else {
+					var verdict apiv1.Verdict
+					if err := json.Unmarshal(data, &verdict); err != nil {
+						operator.PotentialBlockers = append(operator.PotentialBlockers,
+							fmt.Sprintf("review rationale is invalid: %v", err))
+					} else {
+						review.Rationale = strings.TrimSpace(verdict.Rationale)
+						if review.Rationale == "" {
+							review.Rationale = strings.TrimSpace(verdict.Summary)
+						}
+					}
+				}
+			}
+			operator.Review = review
+		case journal.EventRefTouched:
+			if event.ExternalRef == nil {
+				continue
+			}
+			switch event.ExternalRef.Kind {
+			case "issue":
+				if operator.Issue == nil {
+					operator.Issue = &OperatorIssue{}
+				}
+				operator.Issue.Number = event.ExternalRef.ID
+				operation, _ := event.Runner["operation"].(string)
+				providerClaimRecorded = providerClaimRecorded || operation == "claim"
+			case "pr":
+				ref := *event.ExternalRef
+				operator.PullRequest = &ref
 			}
 		case journal.EventStageRerunRequested:
 			phase = journal.PhaseRunning
@@ -1581,6 +1683,49 @@ func summarizeRunForStage(
 	if phase == journal.PhaseRunning {
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
+		}
+		operator.CurrentStage = currentStage
+		operator.Trajectory = operatorTrajectory(currentStage, phase)
+		if !lastHeartbeat.IsZero() {
+			heartbeat := lastHeartbeat
+			operator.LastHeartbeatAt = &heartbeat
+			age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+			operator.HeartbeatAgeMillis = &age
+		}
+		if phase != journal.PhaseRunning {
+			operator.Liveness = "terminal"
+		}
+		if providerClaimRecorded {
+			operator.Claim.ProviderMarker = "recorded"
+		}
+		if graph, status, err := pinnedGraph(run); err != nil {
+			return RunSummary{}, err
+		} else if status == "pinned" {
+			for _, node := range graph.Nodes {
+				if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+					operator.PROpenerStage = node.ID
+					break
+				}
+			}
+		}
+		if operator.PullRequest != nil {
+			operator.PROpenerStage = ""
+		}
+		if phase == journal.PhaseRunning {
+			if currentStage == "" {
+				operator.NextTransition = "start the next workflow stage"
+			} else {
+				operator.NextTransition = "finish " + currentStage
+			}
+		}
+		if operator.LatestError != nil {
+			operator.PotentialBlockers = append(operator.PotentialBlockers,
+				operator.LatestError.Code+": "+operator.LatestError.Message)
+		}
+		if operator.Review != nil && operator.Review.Verdict != "" &&
+			operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
+			operator.PotentialBlockers = append(operator.PotentialBlockers,
+				"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
 		}
 	}
 	durationEnd := observedAt
@@ -1631,9 +1776,35 @@ func summarizeRunForStage(
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
 		NoWork:           noWork,
+		Operator:         operator,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
+}
+
+func operatorTrajectory(stage string, phase journal.RunPhase) string {
+	if phase != journal.PhaseRunning {
+		return "parked"
+	}
+	stage = strings.ToLower(stage)
+	switch {
+	case strings.Contains(stage, "review"):
+		return "review"
+	case strings.Contains(stage, "local-ci"), strings.Contains(stage, "local_ci"):
+		return "local CI"
+	case strings.Contains(stage, "push"):
+		return "push"
+	case strings.Contains(stage, "open-pr"), strings.Contains(stage, "open_pr"):
+		return "open PR"
+	case strings.Contains(stage, "poll"), strings.Contains(stage, "ci-status"):
+		return "CI poll"
+	case strings.Contains(stage, "close-out"), strings.Contains(stage, "close_out"):
+		return "close-out"
+	case strings.Contains(stage, "implement"):
+		return "implementing"
+	default:
+		return "parked"
+	}
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
