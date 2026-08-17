@@ -117,7 +117,46 @@ func TestWriteManifests_InterruptedPublicationKeepsPreviousGeneration(t *testing
 			if _, err := os.Stat(filepath.Join(out, "gaggle-next.yaml")); !os.IsNotExist(err) {
 				t.Fatalf("partial next generation exposed, stat error = %v", err)
 			}
+
+			if _, err := next.WriteManifests(out); err != nil {
+				t.Fatalf("recover with next generation: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(out, "gaggle-next.yaml")); err != nil {
+				t.Fatalf("recovered generation is not authoritative: %v", err)
+			}
 		})
+	}
+}
+
+func TestWriteManifests_RejectsCorruptStagedGeneration(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "rendered")
+	previous := &RenderSet{Namespace: DefaultNamespace, Objects: []client.Object{managedGaggle("previous")}}
+	if _, err := previous.WriteManifests(out); err != nil {
+		t.Fatalf("write previous generation: %v", err)
+	}
+	previousTarget, err := os.Readlink(out)
+	if err != nil {
+		t.Fatalf("read previous generation pointer: %v", err)
+	}
+
+	next := &RenderSet{Namespace: DefaultNamespace, Objects: []client.Object{managedGaggle("next")}}
+	hooks := publicationHooks{
+		beforeGenerationValidation: func(staging string) error {
+			return os.WriteFile(filepath.Join(staging, "gaggle-next.yaml"), []byte("partial"), 0o644)
+		},
+	}
+	if _, err := next.writeManifests(out, hooks); err == nil {
+		t.Fatal("corrupt staged generation unexpectedly published")
+	}
+	currentTarget, err := os.Readlink(out)
+	if err != nil {
+		t.Fatalf("read current generation pointer: %v", err)
+	}
+	if currentTarget != previousTarget {
+		t.Fatalf("current generation = %q, want previous %q", currentTarget, previousTarget)
+	}
+	if _, err := os.Stat(filepath.Join(out, "gaggle-previous.yaml")); err != nil {
+		t.Fatalf("previous generation is not authoritative: %v", err)
 	}
 }
 
