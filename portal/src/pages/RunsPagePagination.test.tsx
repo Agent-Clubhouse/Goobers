@@ -67,7 +67,73 @@ function runEvent(id: string, runIds: string[] = []): DaemonUpdateEvent {
   };
 }
 
+function expectGloballyOrderedUniqueRuns(history: HTMLElement): string[] {
+  const ids = Array.from(history.querySelectorAll(".row-title"), (row) => row.textContent ?? "");
+  const startedAt = Array.from(history.querySelectorAll("time"), (time) =>
+    Date.parse(time.dateTime),
+  );
+
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(startedAt).toEqual([...startedAt].sort((left, right) => right - left));
+  return ids;
+}
+
 describe("runs history pagination under live events", () => {
+  it("paginates attention streams independently until both exhaust", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 0,
+      running: 0,
+      failed: 101,
+      escalated: 51,
+      aborted: 0,
+    });
+    const failedRuns = fixtures.runs.runs.filter((run) => run.phase === "failed");
+    const escalatedRuns = fixtures.runs.runs.filter((run) => run.phase === "escalated");
+    const olderDuplicate = failedRuns.at(-1);
+    const newerDuplicate = escalatedRuns[0];
+    if (!olderDuplicate || !newerDuplicate) {
+      throw new Error("Expected failed and escalated pagination fixtures.");
+    }
+    newerDuplicate.id = olderDuplicate.id;
+    newerDuplicate.lastSeq = olderDuplicate.lastSeq + 1;
+
+    const client = new PushableClient(fixtures);
+    const listRuns = vi.spyOn(client, "listRuns");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "attention" }));
+
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(100));
+    expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
+    expect(
+      within(screen.getByRole("link", { name: `Open run ${olderDuplicate.id}` })).getByText(
+        "Failed",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load more runs" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(150));
+    expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
+    const replacement = screen.getByRole("link", { name: `Open run ${olderDuplicate.id}` });
+    expect(within(replacement).getByText("Escalated")).toBeInTheDocument();
+    expect(replacement.querySelector("time")).toHaveAttribute("datetime", newerDuplicate.startedAt);
+    expect(screen.getByRole("button", { name: "Load more runs" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(151));
+    expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
+    expect(screen.queryByRole("button", { name: "Load more runs" })).not.toBeInTheDocument();
+    const paginatedPhases = listRuns.mock.calls
+      .filter(([request]) => request?.cursor)
+      .map(([request]) => request?.phase);
+    expect(paginatedPhases).toEqual(["failed", "escalated", "failed"]);
+  });
+
   // #1713: a live run event collapsed the Runs page back to the first page,
   // discarding everything the user had paged in.
   //
