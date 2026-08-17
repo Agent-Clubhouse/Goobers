@@ -11,7 +11,7 @@ import (
 )
 
 // fakeDependencyCheckProvider is the narrow backlogIssueProvider slice
-// filterDeclaredDependencyEligibility depends on, stubbed via the same
+// filterDeclaredDependencyEligibilityDebug depends on, stubbed via the same
 // embedded-nil-interface pattern fakeMergePolicyProvider
 // (mergepolicycache_test.go) uses. It implements HasOpenWorkItemBlocker
 // unconditionally so tests can prove declaration — not interface
@@ -56,7 +56,7 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 	repo := providers.RepositoryRef{Owner: "acme", Name: "widgets"}
 	eligible := []providers.WorkItem{{ID: "42", BlockedByCount: 1}}
 
-	filtered, warnings := filterDeclaredDependencyEligibility(context.Background(), fake, repo, eligible)
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake, repo, eligible, nil)
 
 	if len(filtered) != 0 {
 		t.Fatalf("filtered = %+v, want empty (item with an undeclared blocker check must fail closed, not pass through)", filtered)
@@ -116,8 +116,8 @@ func TestFilterDeclaredDependencyEligibilityExcludesADOItemWithPredecessor(t *te
 		t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
 	}
 
-	filtered, warnings := filterDeclaredDependencyEligibility(
-		context.Background(), provider, repo, []providers.WorkItem{item},
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(
+		context.Background(), provider, repo, []providers.WorkItem{item}, nil,
 	)
 	if len(filtered) != 0 {
 		t.Fatalf("filtered = %+v, want blocked ADO item excluded", filtered)
@@ -139,7 +139,7 @@ func TestFilterDeclaredDependencyEligibilityDispatchesWhenDeclared(t *testing.T)
 		{ID: "unblocked-item", BlockedByCount: 0},
 	}
 
-	filtered, warnings := filterDeclaredDependencyEligibility(context.Background(), fake, repo, eligible)
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake, repo, eligible, nil)
 
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %+v, want none", warnings)
