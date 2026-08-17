@@ -15,6 +15,7 @@ import (
 const (
 	verdictHumanRationaleLimit = 4096
 	verdictHumanFindingLimit   = 50
+	verdictHumanLocationLimit  = 1024
 	verdictHumanMessageLimit   = 1024
 )
 
@@ -125,7 +126,7 @@ func renderVerdicts(stdout io.Writer, verdicts []verdictView) {
 		for _, finding := range verdict.Findings[:limit] {
 			location := ""
 			if finding.Location != "" {
-				location = " location=" + finding.Location
+				location = " location=" + truncateHuman(singleLine(finding.Location), verdictHumanLocationLimit)
 			}
 			pf(stdout, "    finding: severity=%s%s message=%s\n",
 				finding.Severity, location, indentContinuation(truncateHuman(finding.Message, verdictHumanMessageLimit), "      "))
@@ -150,5 +151,5 @@ func indentContinuation(value, indent string) string {
 }
 
 func singleLine(value string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", " "), "\n", " ")
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(value)
 }

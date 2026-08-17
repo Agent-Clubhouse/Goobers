@@ -80,11 +80,13 @@ func TestTraceVerdictHumanOutputIsBoundedButJSONIsComplete(t *testing.T) {
 	const runID = "large-verdict"
 	rationale := strings.Repeat("r", verdictHumanRationaleLimit) + "RATIONALE-TAIL"
 	message := strings.Repeat("m", verdictHumanMessageLimit) + "MESSAGE-TAIL"
+	location := "widget.go:42\r\n" + strings.Repeat("l", verdictHumanLocationLimit) + "LOCATION-TAIL"
 	recordTraceVerdict(t, root, runID, apiv1.VerdictNeedsChanges, "implement", apiv1.Verdict{
 		Decision:  apiv1.VerdictNeedsChanges,
 		Rationale: rationale,
 		Findings: []apiv1.Finding{{
 			Severity: apiv1.SeverityWarning,
+			Location: location,
 			Message:  message,
 		}},
 	}, false, "")
@@ -95,6 +97,8 @@ func TestTraceVerdictHumanOutputIsBoundedButJSONIsComplete(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "[truncated]") ||
 		strings.Contains(stdout, "RATIONALE-TAIL") ||
+		strings.Contains(stdout, "LOCATION-TAIL") ||
+		strings.Contains(stdout, "\n"+strings.Repeat("l", 16)) ||
 		strings.Contains(stdout, "MESSAGE-TAIL") {
 		t.Fatalf("human verdict was not bounded:\n%s", stdout)
 	}
@@ -109,6 +113,7 @@ func TestTraceVerdictHumanOutputIsBoundedButJSONIsComplete(t *testing.T) {
 	}
 	if len(got.Verdicts) != 1 || got.Verdicts[0].Content == nil ||
 		got.Verdicts[0].Content.Rationale != rationale ||
+		got.Verdicts[0].Content.Findings[0].Location != location ||
 		got.Verdicts[0].Content.Findings[0].Message != message {
 		t.Fatalf("JSON verdict was truncated: %+v", got.Verdicts)
 	}
