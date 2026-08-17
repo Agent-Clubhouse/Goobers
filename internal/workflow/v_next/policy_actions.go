@@ -1,7 +1,9 @@
 package vnext
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -264,12 +266,8 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
 	if task.Run != nil {
 		readOnlyArgument := readOnlyCommandArguments[command]
-		if readOnlyArgument != "" {
-			for _, arg := range task.Run.Command[2:] {
-				if arg == "--"+readOnlyArgument || arg == "-"+readOnlyArgument {
-					return nil
-				}
-			}
+		if readOnlyArgument != "" && booleanCommandArgument(task.Run.Command[2:], readOnlyArgument) {
+			return nil
 		}
 	}
 	actions := append([]string(nil), commandPolicyActions[command]...)
@@ -324,6 +322,13 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		actions = append(actions, "close-issue")
 	}
 	return actions
+}
+
+func booleanCommandArgument(args []string, name string) bool {
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	enabled := flags.Bool(name, false, "")
+	return flags.Parse(args) == nil && *enabled
 }
 
 func isCurationBacklogClaim(task apiv1.Task) bool {

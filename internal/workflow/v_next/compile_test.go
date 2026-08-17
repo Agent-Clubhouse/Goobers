@@ -1284,15 +1284,37 @@ func TestCompileBacklogHealthFeedbackRequiresUpdateAction(t *testing.T) {
 }
 
 func TestRespondToFindingsCheckDoesNotPrescribeMutation(t *testing.T) {
-	task := apiv1.Task{
-		Run: &apiv1.DeterministicRun{Command: []string{"goobers", "respond-to-findings", "--check"}},
+	cases := []struct {
+		name         string
+		args         []string
+		wantMutation bool
+	}{
+		{name: "long flag", args: []string{"--check"}},
+		{name: "short flag", args: []string{"-check"}},
+		{name: "explicit true", args: []string{"--check=true"}},
+		{name: "before path", args: []string{"--check", "path"}},
+		{name: "explicit false", args: []string{"--check=false"}, wantMutation: true},
+		{name: "overridden false", args: []string{"--check", "--check=false"}, wantMutation: true},
+		{name: "after path", args: []string{"path", "--check"}, wantMutation: true},
+		{name: "after terminator", args: []string{"--", "--check"}, wantMutation: true},
+		{name: "missing flag", wantMutation: true},
 	}
-	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
-		t.Fatalf("check policy actions = %v, want none", got)
-	}
-	task.Run.Command = task.Run.Command[:2]
-	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "respond-to-findings" {
-		t.Fatalf("write policy actions = %v, want [respond-to-findings]", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{
+				Run: &apiv1.DeterministicRun{
+					Command: append([]string{"goobers", "respond-to-findings"}, tc.args...),
+				},
+			}
+			got := prescribedCommandPolicyActions(task)
+			if tc.wantMutation {
+				if len(got) != 1 || got[0] != "respond-to-findings" {
+					t.Fatalf("policy actions = %v, want [respond-to-findings]", got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("policy actions = %v, want none", got)
+			}
+		})
 	}
 }
 
