@@ -99,7 +99,7 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 		}
 	}()
 	defer func() {
-		if resultErr == nil || !isPublicationConflict(resultErr) {
+		if resultErr == nil || !IsPublicationConflict(resultErr) {
 			return
 		}
 		if err := p.parkParent(ctx, plan.Parent.ID); err != nil {
@@ -371,7 +371,9 @@ func (p Publisher) parkParent(ctx context.Context, parentID string) error {
 	return p.releaseClaim(ctx, parent.ID)
 }
 
-func isPublicationConflict(err error) bool {
+// IsPublicationConflict reports whether publication stopped on a deterministic
+// parent, marker, or verification conflict that requires human intervention.
+func IsPublicationConflict(err error) bool {
 	var markerConflict *MarkerConflictError
 	var revisionConflict *providers.RevisionConflictError
 	var verificationConflict *verificationConflictError
