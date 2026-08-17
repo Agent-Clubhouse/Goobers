@@ -121,10 +121,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "benchworkcopyreport: %v\n", err)
 		return 1
 	}
-	recent, err := readHistory(opts.history, opts.limit)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "benchworkcopyreport: %v\n", err)
-		return 1
+	recent, warnings := readHistory(opts.history, opts.limit)
+	for _, warning := range warnings {
+		_, _ = fmt.Fprintf(stderr, "benchworkcopyreport: warning: %v\n", warning)
 	}
 	result := artifact{
 		SchemaVersion: schemaVersion, Job: jobName,
@@ -163,40 +162,45 @@ func readBenchmark(path string) (json.RawMessage, benchmarkResult, error) {
 	return raw, result, nil
 }
 
-func readHistory(root string, limit int) ([]trendSample, error) {
+func readHistory(root string, limit int) ([]trendSample, []error) {
 	if root == "" {
 		return []trendSample{}, nil
 	}
 	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
 		return []trendSample{}, nil
 	} else if err != nil {
-		return nil, fmt.Errorf("inspect history: %w", err)
+		return []trendSample{}, []error{fmt.Errorf("ignore history: inspect %s: %w", root, err)}
 	}
 	var paths []string
+	var warnings []error
 	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			warnings = append(warnings, fmt.Errorf("ignore history path %s: %w", path, err))
+			return nil
 		}
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
 			paths = append(paths, path)
 		}
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("walk history: %w", err)
+		warnings = append(warnings, fmt.Errorf("ignore history: walk %s: %w", root, err))
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
 	var samples []trendSample
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read history %s: %w", path, err)
+			warnings = append(warnings, fmt.Errorf("ignore history %s: read: %w", path, err))
+			continue
 		}
 		var prior artifact
 		if err := json.Unmarshal(raw, &prior); err != nil {
-			return nil, fmt.Errorf("decode history %s: %w", path, err)
+			warnings = append(warnings, fmt.Errorf("ignore history %s: decode: %w", path, err))
+			continue
 		}
 		if prior.SchemaVersion != schemaVersion || prior.Job != jobName || prior.RunID == "" || prior.ElapsedSeconds <= 0 {
-			return nil, fmt.Errorf("history %s is not a valid %s artifact", path, jobName)
+			warnings = append(warnings, fmt.Errorf("ignore history %s: not a valid %s artifact", path, jobName))
+			continue
 		}
 		samples = append(samples, trendSample{
 			RunID: prior.RunID, Revision: prior.Revision,
@@ -209,7 +213,7 @@ func readHistory(root string, limit int) ([]trendSample, error) {
 	if samples == nil {
 		samples = []trendSample{}
 	}
-	return samples, nil
+	return samples, warnings
 }
 
 func phases(result benchmarkResult) phaseTimings {

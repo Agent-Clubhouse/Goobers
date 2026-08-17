@@ -77,6 +77,54 @@ func TestRunRejectsMalformedCurrentArtifact(t *testing.T) {
 	}
 }
 
+func TestRunIgnoresMalformedAndIncompatibleHistory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, "raw.json")
+	historyDir := filepath.Join(dir, "history")
+	outputPath := filepath.Join(dir, "result.json")
+	writeTestJSON(t, currentPath, benchmarkResult{
+		Schema: "goobers.bench-workcopy/v2", ElapsedMs: 12_000,
+		GOOS: "linux", GOARCH: "amd64",
+	})
+	writeTestJSON(t, filepath.Join(historyDir, "100-valid.json"), artifact{
+		SchemaVersion: schemaVersion, Job: jobName, RunID: "100",
+		Revision: "old", ElapsedSeconds: 10,
+	})
+	writeTestJSON(t, filepath.Join(historyDir, "102-incompatible.json"), artifact{
+		SchemaVersion: schemaVersion + 1, Job: jobName, RunID: "102",
+		ElapsedSeconds: 11,
+	})
+	writeTestJSON(t, filepath.Join(historyDir, "103-incomplete.json"), artifact{
+		SchemaVersion: schemaVersion, Job: jobName,
+	})
+	if err := os.WriteFile(filepath.Join(historyDir, "101-malformed.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"-current", currentPath, "-history", historyDir, "-out", outputPath,
+		"-run-id", "104", "-revision", "abc123", "-runner-class", "ubuntu-24.04",
+		"-runner-name", "hosted", "-runner-image", "ubuntu24",
+		"-cpu-model", "Example CPU", "-logical-cpus", "4", "-memory-bytes", "8589934592",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run = %d, stderr = %s", code, &stderr)
+	}
+
+	var got artifact
+	readTestJSON(t, outputPath, &got)
+	if len(got.RecentRuns) != 1 || got.RecentRuns[0].RunID != "100" {
+		t.Fatalf("recent runs = %#v, want only valid history", got.RecentRuns)
+	}
+	for _, want := range []string{"warning:", "101-malformed.json", "102-incompatible.json", "103-incomplete.json"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want %q", &stderr, want)
+		}
+	}
+}
+
 func writeTestJSON(t *testing.T, path string, value any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
