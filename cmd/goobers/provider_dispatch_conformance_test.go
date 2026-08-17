@@ -343,6 +343,10 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 	t.Setenv(executor.RepoProjectEnvVar, "project")
 	t.Setenv(executor.CredentialEnvVar("github:pr:write"), "pr-token")
 	t.Setenv(executor.CredentialEnvVar("github:issues:write"), "issues-token")
+	// gather-issue-context declares github:issues:read, not :write, and exits
+	// before provider dispatch when its credential is absent — which reads as
+	// "dispatch was never attempted" rather than as a missing credential.
+	t.Setenv(executor.CredentialEnvVar("github:issues:read"), "issues-read-token")
 	t.Setenv(executor.CredentialEnvVar("repo:push"), "push-token")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "result.json"))
 }
