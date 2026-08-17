@@ -39,6 +39,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // acceptanceWorkflowYAML is the agentic build loop the dogfood implementation
@@ -166,7 +167,7 @@ func initAcceptanceDemo(t *testing.T) string {
 	calls := map[string]int{}
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				asset, err := os.ReadFile(filepath.Join(req.Workspace, ".goober-assets", "identity.txt"))
@@ -194,7 +195,7 @@ func initAcceptanceDemo(t *testing.T) string {
 						}
 					}
 				}
-				return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 			},
 		}
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 type sampleSeedCatalog struct {
@@ -380,7 +381,7 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("deterministic " + gooberName + " model boundary\n"),
 			Act: func(_ context.Context, request harness.RunRequest) error {
 				switch gooberName {
@@ -396,18 +397,18 @@ func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (
 							return err
 						}
 					}
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
 						Status:  apiv1.ResultSuccess,
 						Summary: "implemented the first seeded tutorial issue",
 					})
 				case "reviewer":
 					if implementation {
-						return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+						return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 							Decision:  apiv1.VerdictPass,
 							Rationale: "seeded issue implementation is focused and complete",
 						})
 					}
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
 						Status:  apiv1.ResultSuccess,
 						Summary: "seeded issue implementation is focused and complete",
 					})

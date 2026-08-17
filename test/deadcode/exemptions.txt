@@ -69,23 +69,8 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public 
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
 
-# Build-time generators exercised by drift tests and make docs.
-github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
-github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delta helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderCapabilityMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.writeCapabilityMatrix # Capability-matrix writer invoked by make docs through the drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.formatMatrixCell # Capability-matrix cell formatter invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllCapabilities # Capability-matrix row source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllProviderKinds # Capability-matrix column source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllProviderSupport # Capability-matrix support-designation source invoked by the checked-in drift test (#3033).
+# Cross-surface contract invariants exercised by drift tests.
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.WorkflowRequiredCapabilities # Blessed-tier CI gate's required-capability set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.classify # Capability-matrix cell classifier invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.gapIssueFor # Capability-matrix gap-registry lookup invoked through classify (CONF-2, #2075).
-github.com/goobers/goobers/providers.BuildMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
 github.com/goobers/goobers/providers.ValidateBlessedTier # Blessed-tier CI gate invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
@@ -93,25 +78,9 @@ github.com/goobers/goobers/internal/apicontract.validSurface # Contract generato
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/flake.Quarantine # Issue-backed quarantine API (#664) intentionally ships with zero occupants until a flake is diagnosed.
 github.com/goobers/goobers/internal/flake.quarantine # Clock-injected quarantine helper exercised by expiry and validation tests.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.ConformanceCoveredAdapterNames # Cross-package registry-completeness contract (#2776), exercised by cmd/goobers's TestBuildHarnessRegistryAdaptersAreConformanceCovered.
 github.com/goobers/goobers/internal/providerstage.Commands # Cross-package provider-stage inventory exercised by cmd/goobers's blessed-tier dispatch conformance gate (CONF-10, #2499).
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Utterances # Sound-free speech adapter accessor retained for deterministic cross-package notification assertions.
-github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
 github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
-github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
 github.com/goobers/goobers/internal/supportmatrix.validateSupportMatrixEvolution # Support-matrix evolution guard (DVL-7) exercised by release-history tests.

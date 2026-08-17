@@ -162,7 +162,7 @@ validation targets use POSIX host facilities; Linux additionally requires
 `bubblewrap` with unprivileged user namespaces available.
 The strict integration target additionally provisions the executable inventory
 reported by `make test-integration`; when adding a dependency, update
-`internal/testdep` and the integration CI provisioning step together.
+`test/testsupport/testdep` and the integration CI provisioning step together.
 
 ### CI platform matrix
 

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/providers"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationContractGitHubLiveSmoke is an opt-in read-only smoke test

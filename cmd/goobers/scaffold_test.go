@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestScaffoldTemplatesGolden(t *testing.T) {
@@ -246,8 +247,8 @@ func TestScaffoldedWorkflowRunsEndToEnd(t *testing.T) {
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "scaffolded agentic stage completed",
 			})

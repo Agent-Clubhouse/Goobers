@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 const continuityFile = "IMPLEMENTED"
@@ -94,7 +95,7 @@ func newContinuityRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsD
 			if ierr != nil {
 				return nil, ierr
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("fake harness session for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
 					if gooberName == "coder" {
@@ -106,9 +107,9 @@ func newContinuityRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsD
 						}
 						runSkeletonGit(t, req.Workspace, "add", continuityFile)
 						runSkeletonGit(t, req.Workspace, "-c", "user.email=impl@test", "-c", "user.name=impl", "commit", "-m", "implement: add "+continuityFile)
-						return harness.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
+						return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
 					}
-					return harness.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
+					return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
 				},
 			}
 			recorder, ok := rec.(harness.SpanRecorder)
