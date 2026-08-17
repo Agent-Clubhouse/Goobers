@@ -59,6 +59,106 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
+  unit-gate:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+
+      - name: Install Portal dependencies and pinned Chromium
+        run: |
+          npm --prefix portal ci --no-audit --no-fund
+          npm --prefix portal exec -- playwright install --with-deps chromium
+
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        shell: bash
+        run: |
+          set -o pipefail
+          curl -sSfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 15 \
+            "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run unit gate
+        run: make ci
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run end-to-end gate
+        run: make test-e2e
+
+  envtest:
+    name: envtest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Provision envtest and run the integration gate
+        run: make test-envtest
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enforce the repository coverage threshold
+        run: make cover-check
+
+      - name: Upload coverage profile
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
+
   # Platform-independent unreachable-production-code report. Ran once (it was a
   # per-OS step of the old monolith; nothing about it is OS-specific).
   deadcode:
