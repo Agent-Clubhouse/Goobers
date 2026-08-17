@@ -128,9 +128,13 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 
 	scoped := l.ForGaggle(gaggle)
 	project := gaggleProjectRef(set, gaggle)
-	runnerCfg, credentialedMgr, err := buildRunnerConfig(
-		scoped, cfg, goobers, instructions,
-		nil, // telemetry: the worker's spans come from the engine, not this client
+	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               scoped,
+		Config:               cfg,
+		Goobers:              goobers,
+		InstructionsByGoober: instructions,
+		// The worker's spans come from the engine, not this client.
+		Telemetry: nil,
 		// nil manager ON PURPOSE. buildRunnerConfig builds its own only when
 		// this is nil, and that is the branch that attaches the git
 		// environment — WithGitEnvironment, the askpass resolver that
@@ -139,11 +143,16 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 		// the first engine dispatches failed: a bare manager clones a public
 		// repo happily and dies on a private one with "could not read Username
 		// for 'https://github.com'".
-		w.shared, nil, branchNamespacesByGaggle(set), project, nil,
-		harnessInfo, stores,
-		instance.EffectiveAgenticSandbox(cfg, nil),
-		nil, // provider quota: scheduler-side concern, not the executor's
-	)
+		SharedRegistry:   w.shared,
+		WorktreeManager:  nil,
+		BranchNamespaces: branchNamespacesByGaggle(set),
+		GaggleProject:    project,
+		HarnessInfo:      harnessInfo,
+		CredentialStores: stores,
+		SandboxPosture:   instance.EffectiveAgenticSandbox(cfg, nil),
+		// Provider quota is a scheduler-side concern, not the executor's.
+		ProviderQuota: nil,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("worker: build runner config for gaggle %q: %w", gaggle, err)
 	}
