@@ -141,6 +141,7 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 		"compute claimed-item staleness":            1,
 		"compute read-only re-sweep staleness":      1,
 		"release backlog claims":                    1,
+		"verify decomposition publication barrier":  2,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)

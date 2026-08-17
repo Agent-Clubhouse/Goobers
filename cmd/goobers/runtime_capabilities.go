@@ -547,6 +547,10 @@ func init() {
 			withSynopsis(synopsisByID["validate-plan"]).
 			withHelp("validate a decomposition plan against its selector artifact and the live parent (a workflow stage)", validatePlanHelp).
 			withExamples("goobers validate-plan"),
+		stageCommand("publish-batch", apicontract.ActionWorkflowExecution, runPublishBatch).
+			withSynopsis(synopsisByID["publish-batch"]).
+			withHelp("publish a verified decomposition batch behind one eligibility barrier (a workflow stage)", publishBatchHelp).
+			withExamples("goobers publish-batch"),
 		stageCommand("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).

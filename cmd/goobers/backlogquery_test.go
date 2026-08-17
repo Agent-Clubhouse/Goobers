@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -183,6 +185,7 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !strings.Contains(stdout, "claimed 7") {
 		t.Fatalf("stdout = %q, want a mention of the claimed item", stdout)
 	}
@@ -240,6 +243,133 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	}
 	if entry, held := ledger.Lookup("7"); held {
 		t.Fatalf("losing run retained ledger claim: %+v", entry)
+	}
+}
+
+func TestBacklogQueryRequiresParentPublishedRecordForDecompositionChild(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Tracking parent", providers.LabelApproved, providers.LabelTracking)
+	server.addIssue(8, "Prepared child", "goobers", providers.LabelReady)
+	server.addIssue(9, "Published child", "goobers", providers.LabelReady)
+	const digest = "sha256:batch"
+	server.mu.Lock()
+	server.issues[8].body = decomposition.ChildBatchMarker("7", digest, "prepared")
+	server.issues[9].body = decomposition.ChildBatchMarker("7", digest, "published")
+	server.mu.Unlock()
+	server.addComment(7, decomposition.PublishedBatchRecord("7", digest, []string{"9"}))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-barrier")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", providers.LabelReady)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("claimed-item.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claimed providers.WorkItem
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != "9" {
+		t.Fatalf("claimed %s, want published child 9; prepared child 8 must remain ineligible", claimed.ID)
+	}
+}
+
+type decompositionBarrierProvider struct {
+	parent      providers.WorkItem
+	comments    []providers.Comment
+	commentsErr error
+}
+
+func (p decompositionBarrierProvider) ListWorkItems(context.Context, providers.ListWorkItemsRequest) ([]providers.WorkItem, error) {
+	return nil, nil
+}
+func (p decompositionBarrierProvider) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
+	return p.parent, nil
+}
+func (p decompositionBarrierProvider) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return p.comments, p.commentsErr
+}
+func (p decompositionBarrierProvider) CreateWorkItem(context.Context, providers.CreateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) ClaimWorkItem(context.Context, providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
+	return providers.ClaimResult{}, nil
+}
+
+func TestDecompositionEligibilityBarrierFailsClosedOnProviderError(t *testing.T) {
+	const digest = "sha256:batch"
+	providerErr := errors.New("comments unavailable")
+	_, err := filterDecompositionEligibility(
+		context.Background(),
+		decompositionBarrierProvider{parent: providers.WorkItem{ID: "7"}, commentsErr: providerErr},
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		[]providers.WorkItem{{ID: "8", Body: decomposition.ChildBatchMarker("7", digest, "child")}},
+	)
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("error = %v, want provider failure", err)
+	}
+}
+
+func TestDecompositionEligibilityBarrierRejectsConflictingPublishedRecord(t *testing.T) {
+	const digest = "sha256:batch"
+	items, err := filterDecompositionEligibility(
+		context.Background(),
+		decompositionBarrierProvider{
+			parent: providers.WorkItem{ID: "7"},
+			comments: []providers.Comment{
+				{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})},
+				{Body: decomposition.PublishedBatchRecord("7", "sha256:other", []string{"9"})},
+			},
+		},
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		[]providers.WorkItem{{ID: "8", Body: decomposition.ChildBatchMarker("7", digest, "child")}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("eligible items = %v, want conflicting batch to fail closed", items)
+	}
+}
+
+func TestDecompositionEligibilityBarrierRejectsMalformedChildMarkers(t *testing.T) {
+	const digest = "sha256:batch"
+	provider := decompositionBarrierProvider{
+		parent:   providers.WorkItem{ID: "7"},
+		comments: []providers.Comment{{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})}},
+	}
+	for name, marker := range map[string]string{
+		"extra field":      decomposition.ChildBatchMarker("7", digest, "child") + " extra=value",
+		"reordered fields": decomposition.ChildBatchMarkerPrefix + " v1 digest=" + digest + " parent=7 key=child",
+		"duplicate field":  decomposition.ChildBatchMarkerPrefix + " v1 parent=7 digest=" + digest + " parent=7",
+	} {
+		t.Run(name, func(t *testing.T) {
+			items, err := filterDecompositionEligibility(
+				context.Background(),
+				provider,
+				providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				[]providers.WorkItem{{ID: "8", Body: marker}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("eligible items = %v, want malformed marker to fail closed", items)
+			}
+		})
 	}
 }
 
