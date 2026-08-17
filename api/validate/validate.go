@@ -84,11 +84,11 @@ const (
 	ErrorUnsupportedDSLVersion WarningCode = "DVL030"
 	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
 	// (MIRC-2, #1901) targets the same repo and has an effective
-	// requireLabels scope that is not disjoint from this gaggle's own — the
-	// likely-dominant misconfiguration case for independently-configured
-	// teams sharing one repo. Non-fatal: it does not change any two
-	// instances' actual runtime behavior by itself, it only surfaces the
-	// misconfiguration risk before it produces a live claim collision.
+	// requireLabels scope that is not disjoint from this gaggle's own, or this
+	// gaggle has no effective requireLabels partition at all. Non-fatal: it
+	// does not change any two instances' actual runtime behavior by itself,
+	// it only surfaces the misconfiguration risk before it produces a live
+	// claim collision.
 	WarningSiblingLabelOverlap WarningCode = "SIB001"
 	// WarningMissingSkillPackage identifies a declared goober skill whose
 	// package directory is absent.
@@ -1460,10 +1460,6 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				continue
 			}
 			for _, sc := range scopes {
-				overlap := intersectLabels(sc.labels, sib.RequireLabels)
-				if len(overlap) == 0 {
-					continue
-				}
 				siblingDesc := sib.Label
 				if siblingDesc == "" {
 					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
@@ -1471,6 +1467,16 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				where := "spec.requireLabels"
 				if sc.workflow != "" {
 					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+				}
+				if len(sc.labels) == 0 {
+					r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+						"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
+						where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+					continue
+				}
+				overlap := intersectLabels(sc.labels, sib.RequireLabels)
+				if len(overlap) == 0 {
+					continue
 				}
 				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
 					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
