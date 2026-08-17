@@ -40,9 +40,8 @@ import (
 //
 // # Deliberately throwaway
 //
-// Wave 2 replaces this entirely with an indexed query over a stored phase
-// column (§5.4), at which point the sampler and the walk both go. It exists
-// because that is several waves away and the portal is unusable now.
+// Projected topologies now sample an indexed query over the stored phase column.
+// The historical walk remains for topologies without a projection.
 
 // ErrActiveCountsUnavailable reports that no active-run sample has been taken
 // yet. Callers surface it as an explicitly degraded state rather than blocking
@@ -64,7 +63,7 @@ type activeSample struct {
 	err error
 }
 
-// activeRunSampler walks the run roots on an interval and publishes the result.
+// activeRunSampler samples active counts on an interval and publishes the result.
 //
 // It holds no reference to a request context: the walk must not be cancellable
 // by whichever reader happened to trigger it, which was one of the ways the old
@@ -81,7 +80,7 @@ type activeRunSampler struct {
 	mu     sync.RWMutex
 	sample *activeSample
 
-	// sampling guards against overlapping walks. At 1x a walk takes seconds; an
+	// sampling guards against overlapping samples. A historical walk takes seconds; an
 	// interval shorter than the walk would otherwise stack them and turn a
 	// mitigation into a load generator.
 	sampling sync.Mutex
@@ -188,7 +187,7 @@ func (a *activeRunSampler) Stop() error {
 
 // refresh takes one sample.
 func (a *activeRunSampler) refresh(ctx context.Context) {
-	// Skip rather than queue if a walk is already running: overlapping
+	// Skip rather than queue if a sample is already running: overlapping
 	// multi-second walks would compound rather than refresh.
 	if !a.sampling.TryLock() {
 		return

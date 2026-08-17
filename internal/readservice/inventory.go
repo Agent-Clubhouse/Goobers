@@ -642,9 +642,12 @@ func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, erro
 func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
 	sampler := s.activeSampler.Load()
 	if sampler == nil {
-		// No sampler configured (a one-shot construction). Walk once rather than
-		// refuse: this is not a request path, and refusing here would break the
-		// CLI surfaces that legitimately have no daemon to have warmed a cache.
+		if s.readModelReads && s.sources.ReadModel != nil {
+			counts, err := s.projectedActiveRunCounts(context.Background())
+			return counts, 0, err
+		}
+		// A one-shot construction without a projection pays for the authoritative
+		// answer once; long-lived projected services never enter this path.
 		runDirs, err := s.sources.Layout.RunDirs()
 		if err != nil {
 			return nil, 0, fmt.Errorf("enumerate run roots: %w", err)

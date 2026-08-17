@@ -345,6 +345,37 @@ func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, err
 	return out, nil
 }
 
+// ActiveRunCounts returns active counts grouped by workflow from the stored
+// phase projection.
+func (s *Store) ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error) {
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT gaggle, workflow, COUNT(*)
+		FROM run
+		WHERE phase = ?
+		GROUP BY gaggle, workflow`, journal.PhaseRunning)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: count active runs by workflow: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []WorkflowCount
+	for rows.Next() {
+		var count WorkflowCount
+		if err := rows.Scan(&count.Gaggle, &count.Workflow, &count.Count); err != nil {
+			return nil, fmt.Errorf("readmodel: scan active workflow count: %w", err)
+		}
+		out = append(out, count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: active workflow count rows: %w", err)
+	}
+	return out, nil
+}
+
 // formatTime renders a timestamp in the store's fixed-width UTC layout, which is
 // what makes lexicographic comparison a correct time comparison and lets
 // started_at lead an ordering index.
