@@ -171,7 +171,7 @@ const (
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorRunControls              WarningCode = "WF016"
 	errorPathSimulation           WarningCode = "WF017"
-	errorCapabilityRuntimeSupport WarningCode = "WF018"
+	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -1866,6 +1866,18 @@ func (ix *index) checkCapabilityRuntimeSupport(r *Report, w apiv1.Workflow, file
 		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
 			"task %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
 			task.Name, capability.ContentsRead, w.Spec.Gaggle)
+	}
+	for _, gate := range w.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.Agentic.Workspace != apiv1.WorkspaceScratch {
+			continue
+		}
+		goober, ok := ix.goobers[gate.Agentic.Goober]
+		if !ok || !hasCapability(goober.Spec.Capabilities, capability.ContentsRead) {
+			continue
+		}
+		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
+			"gate %q reviewer goober %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
+			gate.Name, gate.Agentic.Goober, capability.ContentsRead, w.Spec.Gaggle)
 	}
 }
 

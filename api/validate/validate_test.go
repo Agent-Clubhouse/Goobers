@@ -1274,6 +1274,75 @@ func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
 	}
 }
 
+func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
+	if got, want := errorCapabilityRuntimeSupport, WarningCode("WF019"); got != want {
+		t.Fatalf("errorCapabilityRuntimeSupport = %q, want stable code %q", got, want)
+	}
+	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
+		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		wantError bool
+	}{
+		{name: "scratch rejected", workspace: apiv1.WorkspaceScratch, wantError: true},
+		{name: "repo supported", workspace: apiv1.WorkspaceRepo},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+				AdditionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			}}
+			ix.goobers["reviewer"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Start:  "prepare",
+					Tasks: []apiv1.Task{{
+						Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "Prepare.",
+						Run: &apiv1.DeterministicRun{Command: []string{"prepare"}}, Next: "review",
+					}},
+					Gates: []apiv1.Gate{{
+						Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+						Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Workspace: tc.workspace},
+						Branches: map[string]string{"pass": "", "fail": wf.TargetAbort},
+					}},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `gate "review" reviewer goober "reviewer" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
 // TestReadOnlyReferenceRepoMustNotBeProject asserts the MGV-10 (#1285) coherence
 // check: a repo cannot be both the gaggle's read-write Project and a read-only
 // AdditionalRepos reference, and a reference repo must not be listed twice.
