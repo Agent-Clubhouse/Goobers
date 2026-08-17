@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **10 goobers and 10 workflows**.
-<!-- reference-inventory: goobers=10 workflows=10 -->
+The shipped tree loads **11 goobers and 11 workflows**.
+<!-- reference-inventory: goobers=11 workflows=11 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -186,7 +186,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 10 goober(s), 10 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
