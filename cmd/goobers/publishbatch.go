@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -31,7 +30,6 @@ type publishBatchResult struct {
 
 type publishBatchProvider interface {
 	decomposition.PublisherProvider
-	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 }
 
 func runPublishBatch(args []string, stdout, stderr io.Writer) int {
@@ -104,27 +102,23 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	batch, err := (decomposition.Publisher{
-		Provider: provider,
-		Leaser: decomposition.FileTargetLeaser{
-			Directory: filepath.Join(layoutFor(root).SchedulerDir(), "decomposition-target-locks"),
-		},
-		Repo: repo,
-	}).Publish(ctx, plan)
-	if err != nil {
-		return failProviderStage(stderr, "publish decomposition batch", err, "published-batch.json")
-	}
-
 	runID, _, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-		Repository: repo, ID: plan.Parent.ID, RunID: runID,
-	}); err != nil {
-		return failProviderStage(stderr, "release decomposition parent provider claim", err, "published-batch.json")
+	batch, err := (decomposition.Publisher{
+		Provider: provider,
+		Leaser: decomposition.FileTargetLeaser{
+			Directory: filepath.Join(layoutFor(root).SchedulerDir(), "decomposition-target-locks"),
+		},
+		Repo:  repo,
+		RunID: runID,
+	}).Publish(ctx, plan)
+	if err != nil {
+		return failProviderStage(stderr, "publish decomposition batch", err, "published-batch.json")
 	}
+
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
 	if err != nil {
 		pf(stderr, "error: open claim ledger: %v\n", err)

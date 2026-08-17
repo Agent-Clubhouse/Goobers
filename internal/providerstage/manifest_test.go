@@ -130,6 +130,11 @@ func TestRequiredCapabilities(t *testing.T) {
 			args:    []string{"--delete"},
 			want:    []capability.Capability{capability.GitHubBranchDelete},
 		},
+		{
+			name:    "publish decomposition batch",
+			command: "publish-batch",
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
 	}
 
 	for _, test := range tests {
@@ -214,5 +219,8 @@ func TestResultFile(t *testing.T) {
 	}
 	if got, ok := ResultFile("push-branch"); ok || got != "" {
 		t.Fatalf("ResultFile(push-branch) = %q, %v, want empty, false", got, ok)
+	}
+	if got, ok := ResultFile("publish-batch"); !ok || got != "published-batch.json" {
+		t.Fatalf("ResultFile(publish-batch) = %q, %v, want published-batch.json, true", got, ok)
 	}
 }

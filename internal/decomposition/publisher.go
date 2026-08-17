@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ const (
 	ChildBatchMarkerPrefix = "goobers-decomposition-child:"
 	trackingSectionStart   = "<!-- goobers-decomposition-tracking:v1:start -->"
 	trackingSectionEnd     = "<!-- goobers-decomposition-tracking:v1:end -->"
+	resumeMarkerPrefix     = "<!-- goobers-decomposition-resume:"
 )
 
 // WorkItemDependencyProvider is the native declared-dependency surface used by
@@ -29,6 +31,7 @@ type WorkItemDependencyProvider interface {
 type PublisherProvider interface {
 	WorkItemMutationProvider
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 }
 
 // Publisher executes the recoverable prepare/publish protocol from design §5.
@@ -36,6 +39,7 @@ type Publisher struct {
 	Provider PublisherProvider
 	Leaser   TargetLeaser
 	Repo     providers.RepositoryRef
+	RunID    string
 }
 
 // PublishedBatch is the verified output of a completed publication.
@@ -44,15 +48,31 @@ type PublishedBatch struct {
 	Children   []providers.WorkItem
 }
 
+type verificationConflictError struct {
+	reason string
+}
+
+func (e *verificationConflictError) Error() string {
+	return e.reason
+}
+
 // Publish resumes or completes one decomposition batch.
-func (p Publisher) Publish(ctx context.Context, plan Plan) (PublishedBatch, error) {
-	if p.Provider == nil || p.Leaser == nil || p.Repo.Name == "" {
-		return PublishedBatch{}, fmt.Errorf("publisher provider, leaser, and repository are required")
+func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, resultErr error) {
+	if p.Provider == nil || p.Leaser == nil || p.Repo.Name == "" || p.RunID == "" {
+		return PublishedBatch{}, fmt.Errorf("publisher provider, leaser, repository, and run id are required")
 	}
 	digest, err := PlanDigest(plan)
 	if err != nil {
 		return PublishedBatch{}, err
 	}
+	defer func() {
+		if resultErr == nil || !isPublicationConflict(resultErr) {
+			return
+		}
+		if err := p.parkParent(ctx, plan.Parent.ID); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("park parent after publication conflict: %w", err))
+		}
+	}()
 	parent, err := p.Provider.GetWorkItem(ctx, p.Repo, plan.Parent.ID)
 	if err != nil {
 		return PublishedBatch{}, err
@@ -73,33 +93,44 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (PublishedBatch, erro
 			return PublishedBatch{}, err
 		}
 		if parent.HasLabel("goobers/status:decomposing") {
-			if _, err := p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 				Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
 				RemoveLabels: []string{"goobers/status:decomposing"},
-			}); err != nil {
+			})
+			if err != nil {
 				return PublishedBatch{}, err
 			}
 		}
+		if err := p.releaseClaim(ctx, parent.ID); err != nil {
+			return PublishedBatch{}, err
+		}
 		return PublishedBatch{PlanDigest: digest, Children: children}, nil
 	}
+	prepared := PreparedBatchRecord(plan, digest)
 	preparedRecord, preparedConflict, err := findBatchRecord(ctx, p.Provider, p.Repo, plan.Parent.ID, PreparedBatchMarkerPrefix, digest)
 	if err != nil {
 		return PublishedBatch{}, err
 	}
+	if preparedRecord != "" && preparedRecord != prepared {
+		preparedConflict = true
+	}
 	if preparedConflict {
 		return PublishedBatch{}, &MarkerConflictError{Key: digest, Reason: "parent has a conflicting prepared batch record"}
 	}
-	if preparedRecord == "" && !parentPreparing(parent) && parent.Revision != plan.Parent.ObservedRevision {
+	resuming, resumeConflict := parentResumeState(parent.Body, parent.ID, digest)
+	if resumeConflict {
+		return PublishedBatch{}, &MarkerConflictError{Key: digest, Reason: "parent has a conflicting decomposition resume marker"}
+	}
+	if preparedRecord == "" && !resuming && parent.Revision != plan.Parent.ObservedRevision {
 		return PublishedBatch{}, &providers.RevisionConflictError{
 			ItemID: parent.ID, Expected: plan.Parent.ObservedRevision, Actual: parent.Revision,
 		}
 	}
 
-	parent, err = p.ensureParentPrepared(ctx, parent)
+	parent, err = p.ensureParentPrepared(ctx, parent, digest, resuming)
 	if err != nil {
 		return PublishedBatch{}, err
 	}
-	prepared := PreparedBatchRecord(plan, digest)
 	if _, err := primitives.AppendMarkerComment(ctx, p.Repo, MarkerCommentRequest{
 		ItemID: parent.ID, ExpectedRevision: parent.Revision,
 		IdempotencyKey: digest + "/record/prepared", Body: prepared,
@@ -232,6 +263,9 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (PublishedBatch, erro
 	}); err != nil {
 		return PublishedBatch{}, err
 	}
+	if err := p.releaseClaim(ctx, parent.ID); err != nil {
+		return PublishedBatch{}, err
+	}
 	return PublishedBatch{PlanDigest: digest, Children: children}, nil
 }
 
@@ -242,42 +276,74 @@ func parentPrepared(parent providers.WorkItem) bool {
 		!parent.HasLabel(providers.LabelNeedsHuman)
 }
 
-func parentPreparing(parent providers.WorkItem) bool {
-	return parent.HasLabel(providers.LabelTracking)
-}
-
-func (p Publisher) ensureParentPrepared(ctx context.Context, parent providers.WorkItem) (providers.WorkItem, error) {
+func (p Publisher) ensureParentPrepared(ctx context.Context, parent providers.WorkItem, digest string, resuming bool) (providers.WorkItem, error) {
+	if parentPrepared(parent) {
+		return parent, nil
+	}
 	var err error
-	for _, transition := range []struct {
-		label   string
-		present bool
-	}{
-		{providers.LabelTracking, true},
-		{"goobers/status:decomposing", true},
-		{providers.LabelReady, false},
-		{providers.LabelNeedsHuman, false},
-	} {
-		parent, err = p.ensureParentLabel(ctx, parent, transition.label, transition.present)
+	if !resuming {
+		body := strings.TrimSpace(parent.Body) + "\n\n" + parentResumeMarker(parent.ID, digest)
+		parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
+			Body:      &body,
+			AddLabels: []string{"goobers/status:decomposing"},
+		})
+		if err != nil {
+			return providers.WorkItem{}, err
+		}
+	} else if !parent.HasLabel("goobers/status:decomposing") {
+		parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
+			AddLabels: []string{"goobers/status:decomposing"},
+		})
 		if err != nil {
 			return providers.WorkItem{}, err
 		}
 	}
-	return parent, nil
+	return p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
+		AddLabels:    []string{providers.LabelTracking},
+		RemoveLabels: []string{providers.LabelReady, providers.LabelNeedsHuman},
+	})
 }
 
-func (p Publisher) ensureParentLabel(ctx context.Context, parent providers.WorkItem, label string, present bool) (providers.WorkItem, error) {
-	if parent.HasLabel(label) == present {
-		return parent, nil
+func (p Publisher) releaseClaim(ctx context.Context, parentID string) error {
+	_, err := p.Provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+		Repository: p.Repo,
+		ID:         parentID,
+		RunID:      p.RunID,
+	})
+	return err
+}
+
+func (p Publisher) parkParent(ctx context.Context, parentID string) error {
+	parent, err := p.Provider.GetWorkItem(ctx, p.Repo, parentID)
+	if err != nil {
+		return err
 	}
-	req := providers.UpdateWorkItemRequest{
-		Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
+	if !parent.HasLabel(providers.LabelNeedsHuman) ||
+		!parent.HasLabel("goobers/status:decomposing") ||
+		parent.HasLabel(providers.LabelReady) {
+		if _, err := p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:       p.Repo,
+			ID:               parent.ID,
+			ExpectedRevision: parent.Revision,
+			AddLabels:        []string{providers.LabelNeedsHuman, "goobers/status:decomposing"},
+			RemoveLabels:     []string{providers.LabelReady},
+		}); err != nil {
+			return err
+		}
 	}
-	if present {
-		req.AddLabels = []string{label}
-	} else {
-		req.RemoveLabels = []string{label}
-	}
-	return p.Provider.UpdateWorkItem(ctx, req)
+	return p.releaseClaim(ctx, parent.ID)
+}
+
+func isPublicationConflict(err error) bool {
+	var markerConflict *MarkerConflictError
+	var revisionConflict *providers.RevisionConflictError
+	var verificationConflict *verificationConflictError
+	return errors.As(err, &markerConflict) ||
+		errors.As(err, &revisionConflict) ||
+		errors.As(err, &verificationConflict)
 }
 
 func (p Publisher) attachDependencies(ctx context.Context, plan Plan, children []providers.WorkItem) error {
@@ -330,7 +396,7 @@ func (p Publisher) attachDependencies(ctx context.Context, plan Plan, children [
 
 func (p Publisher) verify(ctx context.Context, plan Plan, digest string, children []providers.WorkItem, ready bool) error {
 	if len(children) != len(plan.Children) {
-		return fmt.Errorf("batch has %d children, want %d", len(children), len(plan.Children))
+		return &verificationConflictError{reason: fmt.Sprintf("batch has %d children, want %d", len(children), len(plan.Children))}
 	}
 	parent, err := p.Provider.GetWorkItem(ctx, p.Repo, plan.Parent.ID)
 	if err != nil {
@@ -338,7 +404,7 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 	}
 	wantBody := trackingBody(parent.Body, plan, children)
 	if parent.Body != wantBody {
-		return fmt.Errorf("parent %s tracking body does not match plan", parent.ID)
+		return &verificationConflictError{reason: fmt.Sprintf("parent %s tracking body does not match plan", parent.ID)}
 	}
 	for i, planned := range plan.Children {
 		item, err := p.Provider.GetWorkItem(ctx, p.Repo, children[i].ID)
@@ -346,7 +412,7 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 			return err
 		}
 		if item.Title != planned.Title || unmarkedActionBody(item.Body) != childIssueBody(parent.ID, digest, planned) {
-			return fmt.Errorf("child %s content conflicts with plan key %q", item.ID, planned.Key)
+			return &verificationConflictError{reason: fmt.Sprintf("child %s content conflicts with plan key %q", item.ID, planned.Key)}
 		}
 		wantLabels := append(append([]string(nil), planned.Labels...), providers.LabelApproved)
 		if ready {
@@ -357,7 +423,7 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 			})
 		}
 		if !sameLabels(item.Labels, wantLabels) {
-			return fmt.Errorf("child %s labels %v do not match %v", item.ID, item.Labels, wantLabels)
+			return &verificationConflictError{reason: fmt.Sprintf("child %s labels %v do not match %v", item.ID, item.Labels, wantLabels)}
 		}
 	}
 	if hierarchy, ok := p.Provider.(WorkItemHierarchyProvider); ok {
@@ -366,7 +432,7 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 			return err
 		}
 		if !sameIDs(actual, children) {
-			return fmt.Errorf("parent %s child links do not match batch", parent.ID)
+			return &verificationConflictError{reason: fmt.Sprintf("parent %s child links do not match batch", parent.ID)}
 		}
 	}
 	if dependencies, ok := p.Provider.(WorkItemDependencyProvider); ok {
@@ -388,7 +454,7 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 				}
 			}
 			if !sameStringSet(itemIDs(actual), want) {
-				return fmt.Errorf("child %s dependencies do not match plan", children[i].ID)
+				return &verificationConflictError{reason: fmt.Sprintf("child %s dependencies do not match plan", children[i].ID)}
 			}
 		}
 	}
@@ -460,21 +526,22 @@ func ChildBatchIdentity(body string) (parentID, digest, key string, marked bool,
 
 // PublishedRecordIncludes verifies the exact parent-side commit for a child.
 func PublishedRecordIncludes(comments []providers.Comment, parentID, digest, childID string) (bool, bool) {
-	var matching []string
+	var marker string
 	for _, comment := range comments {
 		for _, line := range strings.Split(strings.ReplaceAll(comment.Body, "\r\n", "\n"), "\n") {
 			if strings.HasPrefix(line, PublishedBatchMarkerPrefix) {
-				fields := recordFields(line)
-				if fields["parent"] == parentID && fields["digest"] == digest {
-					matching = append(matching, line)
+				fields, valid := parseBatchRecord(line, PublishedBatchMarkerPrefix)
+				if marker != "" || !valid || fields["parent"] != parentID || fields["digest"] != digest {
+					return false, true
 				}
+				marker = line
 			}
 		}
 	}
-	if len(matching) != 1 {
-		return false, len(matching) > 1
+	if marker == "" {
+		return false, false
 	}
-	return slices.Contains(recordList(matching[0], "children"), childID), false
+	return slices.Contains(recordList(marker, "children"), childID), false
 }
 
 func findBatchRecord(ctx context.Context, provider WorkItemMutationProvider, repo providers.RepositoryRef, parentID, prefix, digest string) (string, bool, error) {
@@ -488,8 +555,8 @@ func findBatchRecord(ctx context.Context, provider WorkItemMutationProvider, rep
 			if !strings.HasPrefix(line, prefix) {
 				continue
 			}
-			fields := recordFields(line)
-			if fields["parent"] != parentID || fields["digest"] != digest {
+			fields, valid := parseBatchRecord(line, prefix)
+			if !valid || fields["parent"] != parentID || fields["digest"] != digest {
 				return "", true, nil
 			}
 			if exact != "" {
@@ -522,10 +589,10 @@ func unmarkedActionBody(body string) string {
 }
 
 func trackingBody(current string, plan Plan, children []providers.WorkItem) string {
-	preserved := current
+	preserved := withoutResumeMarker(current)
 	if start := strings.Index(current, trackingSectionStart); start >= 0 {
 		if end := strings.Index(current[start:], trackingSectionEnd); end >= 0 {
-			preserved = strings.TrimSpace(current[start+end+len(trackingSectionEnd):])
+			preserved = withoutResumeMarker(current[start+end+len(trackingSectionEnd):])
 		}
 	}
 	var b strings.Builder
@@ -542,6 +609,72 @@ func trackingBody(current string, plan Plan, children []providers.WorkItem) stri
 		b.WriteString(preserved)
 	}
 	return b.String()
+}
+
+func parentResumeMarker(parentID, digest string) string {
+	return fmt.Sprintf("%s v1 parent=%s digest=%s -->", resumeMarkerPrefix, parentID, digest)
+}
+
+func parentResumeState(body, parentID, digest string) (bool, bool) {
+	var marker string
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		if !strings.HasPrefix(line, resumeMarkerPrefix) {
+			continue
+		}
+		if marker != "" || line != parentResumeMarker(parentID, digest) {
+			return false, true
+		}
+		marker = line
+	}
+	return marker != "", false
+}
+
+func withoutResumeMarker(body string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	lines = slices.DeleteFunc(lines, func(line string) bool {
+		return strings.HasPrefix(line, resumeMarkerPrefix)
+	})
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func parseBatchRecord(record, prefix string) (map[string]string, bool) {
+	parts := strings.Fields(record)
+	var names []string
+	switch prefix {
+	case PreparedBatchMarkerPrefix:
+		names = []string{"parent", "digest", "keys", "source"}
+	case PublishedBatchMarkerPrefix:
+		names = []string{"parent", "digest", "children"}
+	default:
+		return nil, false
+	}
+	if len(parts) != len(names)+2 || parts[0] != prefix || parts[1] != "v1" {
+		return nil, false
+	}
+	fields := map[string]string{"_version": "v1"}
+	for i, name := range names {
+		key, value, ok := strings.Cut(parts[i+2], "=")
+		if !ok || key != name || value == "" {
+			return nil, false
+		}
+		fields[key] = value
+	}
+	listField := "children"
+	if prefix == PreparedBatchMarkerPrefix {
+		listField = "keys"
+	}
+	values := strings.Split(fields[listField], ",")
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			return nil, false
+		}
+		if _, exists := seen[value]; exists {
+			return nil, false
+		}
+		seen[value] = struct{}{}
+	}
+	return fields, true
 }
 
 func recordFields(record string) map[string]string {

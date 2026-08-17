@@ -2583,46 +2583,33 @@ func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo Reposito
 // HasOpenWorkItemBlocker reports whether a GitHub issue has a native issue
 // blocker that is still open.
 func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
-	blockers, err := p.ListWorkItemBlockers(ctx, repo, id)
-	if err != nil {
+	if err := requireOwnerRepo(repo); err != nil {
 		return false, err
 	}
-	for _, blocker := range blockers {
-		if strings.EqualFold(blocker.State, "open") {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// ListWorkItemBlockers returns every native blocked-by dependency.
-func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return false, fmt.Errorf("issue id is required")
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	var blockers []WorkItem
+	open := false
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var issues []githubIssue
 		if err := json.Unmarshal(page, &issues); err != nil {
 			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
 		}
 		for _, issue := range issues {
-			if issue.PullRequest == nil {
-				blockers = append(blockers, mapGitHubIssue(issue))
+			if issue.PullRequest == nil && strings.EqualFold(issue.State, "open") {
+				open = true
+				return errStopPaging
 			}
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return false, err
 	}
-	return blockers, nil
+	return open, nil
 }
 
 // AttachWorkItemBlocker adds one native blocked-by dependency after checking

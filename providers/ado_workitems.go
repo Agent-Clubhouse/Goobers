@@ -719,17 +719,23 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if !claimed {
-		return p.GetWorkItem(ctx, req.Repository, req.ID)
-	}
-	if winner != req.RunID && !req.LedgerAuthorized {
+	if claimed && winner != req.RunID && !req.LedgerAuthorized {
 		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
 	}
 
-	// The breadcrumb lands first so a successful release never leaves a later
-	// claimer stuck behind the previous owner's durable marker.
-	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+	if claimed {
+		// The breadcrumb lands first so a successful release never leaves a later
+		// claimer stuck behind the previous owner's durable marker.
+		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
 		return WorkItem{}, err
+	}
+	if !current.HasLabel(label) {
+		return current, nil
 	}
 	remove := []string{label}
 	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.

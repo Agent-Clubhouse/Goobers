@@ -30,7 +30,7 @@ func newPublisherFake() *publisherFake {
 	return &publisherFake{
 		parentID: "7",
 		items: map[string]providers.WorkItem{
-			"7": {ID: "7", Revision: "r1", Title: "Large change", Body: "Human context.", Labels: []string{providers.LabelApproved, providers.LabelReady, providers.LabelNeedsHuman}},
+			"7": {ID: "7", Revision: "r1", Title: "Large change", Body: "Human context.", Labels: []string{providers.LabelApproved, providers.LabelReady, providers.LabelNeedsHuman, providers.LabelClaimed}},
 		},
 		comments: map[string][]providers.Comment{},
 		blockers: map[string][]string{},
@@ -115,6 +115,31 @@ func (f *publisherFake) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 	return cloneWorkItem(item), f.afterMutation()
 }
 
+func (f *publisherFake) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item := f.items[req.ID]
+	releaseMarker := "goobers-claim-release: run=" + req.RunID
+	released := slices.ContainsFunc(f.comments[req.ID], func(comment providers.Comment) bool {
+		return strings.Contains(comment.Body, releaseMarker)
+	})
+	if !released {
+		comment := providers.Comment{ID: fmt.Sprintf("%s-%d", req.ID, len(f.comments[req.ID])+1), Body: releaseMarker}
+		f.comments[req.ID] = append(f.comments[req.ID], comment)
+		if err := f.afterMutation(); err != nil {
+			return providers.WorkItem{}, err
+		}
+	}
+	if item.HasLabel(providers.LabelClaimed) {
+		item.Labels = slices.DeleteFunc(item.Labels, func(label string) bool { return label == providers.LabelClaimed })
+		f.items[req.ID] = item
+		if err := f.afterMutation(); err != nil {
+			return providers.WorkItem{}, err
+		}
+	}
+	return cloneWorkItem(item), nil
+}
+
 func (f *publisherFake) ListWorkItemChildren(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -189,12 +214,18 @@ func testPublisherPlan() Plan {
 
 func TestPublisherRecoversAfterEveryProviderMutation(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
-	const mutationBoundaries = 18
+	probe := newPublisherFake()
+	if _, err := (Publisher{
+		Provider: probe, Leaser: FileTargetLeaser{Directory: t.TempDir()}, Repo: repo, RunID: "run-1",
+	}).Publish(context.Background(), testPublisherPlan()); err != nil {
+		t.Fatalf("baseline Publish: %v", err)
+	}
+	mutationBoundaries := probe.mutations
 	for failAt := 1; failAt <= mutationBoundaries; failAt++ {
 		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
 			fake := newPublisherFake()
 			fake.failMutation = failAt
-			publisher := Publisher{Provider: fake, Leaser: FileTargetLeaser{Directory: t.TempDir()}, Repo: repo}
+			publisher := Publisher{Provider: fake, Leaser: FileTargetLeaser{Directory: t.TempDir()}, Repo: repo, RunID: "run-1"}
 			var batch PublishedBatch
 			var err error
 			for range 3 {
@@ -214,7 +245,11 @@ func TestPublisherRecoversAfterEveryProviderMutation(t *testing.T) {
 			}
 			for id, comments := range fake.comments {
 				keys := map[string]bool{}
+				releases := 0
 				for _, comment := range comments {
+					if strings.Contains(comment.Body, "goobers-claim-release: run=run-1") {
+						releases++
+					}
 					for _, line := range stringsLines(comment.Body) {
 						if line != "" && len(line) > len(actionMarkerPrefix) && line[:len(actionMarkerPrefix)] == actionMarkerPrefix {
 							if keys[line] {
@@ -224,6 +259,12 @@ func TestPublisherRecoversAfterEveryProviderMutation(t *testing.T) {
 						}
 					}
 				}
+				if releases > 1 {
+					t.Fatalf("item %s has %d release comments, want at most one", id, releases)
+				}
+			}
+			if fake.items[fake.parentID].HasLabel(providers.LabelClaimed) {
+				t.Fatal("parent remains claimed after publication")
 			}
 		})
 	}
@@ -243,9 +284,17 @@ func TestChildPublicationBarrierMarkers(t *testing.T) {
 	if eligible, _ := PublishedRecordIncludes(comments, "7", digest, "10"); eligible {
 		t.Fatal("unlisted child crossed publication barrier")
 	}
+	comments = append(comments, providers.Comment{Body: PublishedBatchRecord("7", "sha256:other", []string{"10"})})
+	if eligible, conflict := PublishedRecordIncludes(comments, "7", digest, "8"); eligible || !conflict {
+		t.Fatalf("conflicting published record: eligible = %v, conflict = %v", eligible, conflict)
+	}
+	comments = []providers.Comment{{Body: PublishedBatchMarkerPrefix + " v2 parent=7 digest=" + digest + " children=8,9"}}
+	if eligible, conflict := PublishedRecordIncludes(comments, "7", digest, "8"); eligible || !conflict {
+		t.Fatalf("malformed published record: eligible = %v, conflict = %v", eligible, conflict)
+	}
 }
 
-func TestPublisherRejectsStaleParentBeforeMutation(t *testing.T) {
+func TestPublisherParksStaleParent(t *testing.T) {
 	fake := newPublisherFake()
 	parent := fake.items[fake.parentID]
 	parent.Revision = "r2"
@@ -254,14 +303,113 @@ func TestPublisherRejectsStaleParentBeforeMutation(t *testing.T) {
 		Provider: fake,
 		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
 		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
 	}
 	_, err := publisher.Publish(context.Background(), testPublisherPlan())
 	var conflict *providers.RevisionConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("error = %v, want RevisionConflictError", err)
 	}
-	if fake.mutations != 0 {
-		t.Fatalf("mutations = %d, want none", fake.mutations)
+	assertParentParked(t, fake)
+}
+
+func TestPublisherAtomicallyQuarantinesParent(t *testing.T) {
+	fake := newPublisherFake()
+	fake.failMutation = 1
+	plan := testPublisherPlan()
+	digest, err := PlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := Publisher{
+		Provider: fake,
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	if _, err := publisher.Publish(context.Background(), plan); err == nil {
+		t.Fatal("Publish succeeded, want injected failure")
+	}
+	parent := fake.items[fake.parentID]
+	if !parent.HasLabel("goobers/status:decomposing") {
+		t.Fatalf("parent labels after failed quarantine = %v, want durable decomposing marker", parent.Labels)
+	}
+	if parent.HasLabel(providers.LabelTracking) {
+		t.Fatalf("parent labels after first failed mutation = %v, tracking must not precede quarantine", parent.Labels)
+	}
+	if resumed, conflict := parentResumeState(parent.Body, parent.ID, digest); !resumed || conflict {
+		t.Fatalf("parent resume marker after failed quarantine = %v, %v", resumed, conflict)
+	}
+}
+
+func TestPublisherParksPreexistingTrackingWithoutResumeMarker(t *testing.T) {
+	fake := newPublisherFake()
+	parent := fake.items[fake.parentID]
+	parent.Revision = "r2"
+	parent.Labels = append(parent.Labels, providers.LabelTracking)
+	fake.items[fake.parentID] = parent
+	publisher := Publisher{
+		Provider: fake,
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	_, err := publisher.Publish(context.Background(), testPublisherPlan())
+	var conflict *providers.RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want RevisionConflictError", err)
+	}
+	assertParentParked(t, fake)
+}
+
+func TestPublisherParksPreexistingDecomposingWithoutResumeMarker(t *testing.T) {
+	fake := newPublisherFake()
+	parent := fake.items[fake.parentID]
+	parent.Revision = "r2"
+	parent.Labels = append(parent.Labels, "goobers/status:decomposing")
+	fake.items[fake.parentID] = parent
+	publisher := Publisher{
+		Provider: fake,
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	_, err := publisher.Publish(context.Background(), testPublisherPlan())
+	var conflict *providers.RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want RevisionConflictError", err)
+	}
+	assertParentParked(t, fake)
+}
+
+func TestPublisherRejectsMalformedSameDigestBatchRecord(t *testing.T) {
+	plan := testPublisherPlan()
+	digest, err := PlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []string{
+		PreparedBatchMarkerPrefix + " v2 parent=7 digest=" + digest + " keys=api,cli source=source-1",
+		PreparedBatchMarkerPrefix + " v1 parent=7 digest=" + digest + " keys=cli,api source=source-1",
+		PublishedBatchMarkerPrefix + " v2 parent=7 digest=" + digest + " children=8,9",
+		PublishedBatchMarkerPrefix + " v1 parent=7 digest=" + digest + " children=8,9 extra=value",
+	} {
+		t.Run(fmt.Sprint(strings.Fields(record)[0], "/", strings.Fields(record)[1], "/", len(strings.Fields(record))), func(t *testing.T) {
+			fake := newPublisherFake()
+			fake.comments[fake.parentID] = []providers.Comment{{Body: record}}
+			publisher := Publisher{
+				Provider: fake,
+				Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+				Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				RunID:    "run-1",
+			}
+			_, err := publisher.Publish(context.Background(), plan)
+			var conflict *MarkerConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("error = %v, want MarkerConflictError", err)
+			}
+			assertParentParked(t, fake)
+		})
 	}
 }
 
@@ -271,6 +419,7 @@ func TestPublisherRejectsPublishedChildDrift(t *testing.T) {
 		Provider: fake,
 		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
 		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
 	}
 	batch, err := publisher.Publish(context.Background(), testPublisherPlan())
 	if err != nil {
@@ -281,6 +430,18 @@ func TestPublisherRejectsPublishedChildDrift(t *testing.T) {
 	fake.items[child.ID] = child
 	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil {
 		t.Fatal("Publish after child drift succeeded, want conflict")
+	}
+	assertParentParked(t, fake)
+}
+
+func assertParentParked(t *testing.T, fake *publisherFake) {
+	t.Helper()
+	parent := fake.items[fake.parentID]
+	if !parent.HasLabel(providers.LabelNeedsHuman) ||
+		!parent.HasLabel("goobers/status:decomposing") ||
+		parent.HasLabel(providers.LabelReady) ||
+		parent.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("parked parent labels = %v", parent.Labels)
 	}
 }
 

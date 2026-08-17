@@ -904,6 +904,13 @@ func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
 	if released.HasLabel(LabelClaimed) {
 		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
 	}
+	commentCount := len(m.comments)
+	if _, err := p.ReleaseWorkItemClaim(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"}); err != nil {
+		t.Fatalf("retry release claim: %v", err)
+	}
+	if len(m.comments) != commentCount {
+		t.Fatalf("retry release posted duplicate comment: %d -> %d", commentCount, len(m.comments))
+	}
 
 	next, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
 	if err != nil {

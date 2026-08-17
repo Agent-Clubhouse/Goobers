@@ -683,12 +683,14 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
+		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
 	}
-	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-		return WorkItem{}, err
+	if before.HasLabel(label) {
+		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {

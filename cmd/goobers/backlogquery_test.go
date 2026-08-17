@@ -283,6 +283,7 @@ func TestBacklogQueryRequiresParentPublishedRecordForDecompositionChild(t *testi
 
 type decompositionBarrierProvider struct {
 	parent      providers.WorkItem
+	comments    []providers.Comment
 	commentsErr error
 }
 
@@ -293,7 +294,7 @@ func (p decompositionBarrierProvider) GetWorkItem(context.Context, providers.Rep
 	return p.parent, nil
 }
 func (p decompositionBarrierProvider) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
-	return nil, p.commentsErr
+	return p.comments, p.commentsErr
 }
 func (p decompositionBarrierProvider) CreateWorkItem(context.Context, providers.CreateWorkItemRequest) (providers.WorkItem, error) {
 	return providers.WorkItem{}, nil
@@ -319,6 +320,28 @@ func TestDecompositionEligibilityBarrierFailsClosedOnProviderError(t *testing.T)
 	)
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("error = %v, want provider failure", err)
+	}
+}
+
+func TestDecompositionEligibilityBarrierRejectsConflictingPublishedRecord(t *testing.T) {
+	const digest = "sha256:batch"
+	items, err := filterDecompositionEligibility(
+		context.Background(),
+		decompositionBarrierProvider{
+			parent: providers.WorkItem{ID: "7"},
+			comments: []providers.Comment{
+				{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})},
+				{Body: decomposition.PublishedBatchRecord("7", "sha256:other", []string{"9"})},
+			},
+		},
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		[]providers.WorkItem{{ID: "8", Body: decomposition.ChildBatchMarker("7", digest, "child")}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("eligible items = %v, want conflicting batch to fail closed", items)
 	}
 }
 
