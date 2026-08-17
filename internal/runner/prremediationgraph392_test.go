@@ -143,25 +143,34 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 // validate-finding-responses, push-remediated, respond-to-findings) and for
 // `make ci`.
 type visitRecordingDeterministic struct {
-	t       *testing.T
-	rec     ArtifactRecorder
-	byTask  map[string]stubTaskResult
-	mu      *sync.Mutex
-	visited *[]string
+	t             *testing.T
+	rec           ArtifactRecorder
+	byTask        map[string]stubTaskResult
+	statusByVisit map[string][]apiv1.ResultStatus
+	visitCounts   map[string]int
+	mu            *sync.Mutex
+	visited       *[]string
 }
 
 func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, dr apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	_, stage, _ := strings.Cut(env.TaskID, ":")
 	v.mu.Lock()
 	*v.visited = append(*v.visited, stage)
+	visit := v.visitCounts[stage]
+	v.visitCounts[stage]++
+	statuses := v.statusByVisit[stage]
 	v.mu.Unlock()
+	if visit < len(statuses) {
+		return apiv1.ResultEnvelope{Status: statuses[visit]}, nil
+	}
 	return (&stubDeterministic{rec: v.rec, byTask: v.byTask}).Run(ctx, env, dr)
 }
 
 type remediationWalkOptions struct {
-	maxRepasses      int
-	validationStatus apiv1.ResultStatus
-	beforePushStatus apiv1.ResultStatus
+	maxRepasses                  int
+	validationStatus             apiv1.ResultStatus
+	beforePushStatus             apiv1.ResultStatus
+	guardBeforeImplementStatuses []apiv1.ResultStatus
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -281,7 +290,15 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-			return &visitRecordingDeterministic{t: t, rec: rec, byTask: byTask, mu: &mu, visited: &visited}, nil
+			return &visitRecordingDeterministic{
+				t: t, rec: rec, byTask: byTask,
+				statusByVisit: map[string][]apiv1.ResultStatus{
+					"guard-before-implement": opts.guardBeforeImplementStatuses,
+				},
+				visitCounts: make(map[string]int),
+				mu:          &mu,
+				visited:     &visited,
+			}, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return goober, nil
@@ -469,6 +486,29 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	}
 	if visited[len(visited)-1] != "release-claim" {
 		t.Errorf("last stage = %q, want release-claim after the remediated branch was published", visited[len(visited)-1])
+	}
+}
+
+func TestShippedPRRemediationStopsBeforeRepassWhenPRCloses(t *testing.T) {
+	goober := &remediationGoober{t: t, verdicts: []apiv1.VerdictDecision{apiv1.VerdictNeedsChanges}}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-closed-before-repass", goober, remediationWalkOptions{
+		guardBeforeImplementStatuses: []apiv1.ResultStatus{apiv1.ResultSuccess, apiv1.ResultNoWork},
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	implements := 0
+	for _, stage := range visited {
+		if stage == "implement" {
+			implements++
+		}
+	}
+	if implements != 1 {
+		t.Fatalf("implement dispatched %d times, want the terminal recheck to skip the repass (visited: %v)", implements, visited)
+	}
+	if visited[len(visited)-1] != "guard-before-implement" {
+		t.Fatalf("last stage = %q, want guard-before-implement (visited: %v)", visited[len(visited)-1], visited)
 	}
 }
 
