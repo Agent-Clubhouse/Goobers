@@ -281,7 +281,7 @@ siblingLoop:
 		key := strconv.Itoa(pr.Number)
 		prior, hit := cached[key]
 		hit = hit && prior.HeadSHA == pr.HeadSHA
-		refreshedAfterCheckFailure := false
+		retriedAfterHeadMove := false
 		for {
 			paths := prior.Files
 			lines := prior.Lines
@@ -311,9 +311,6 @@ siblingLoop:
 				break
 			}
 
-			if refreshedAfterCheckFailure {
-				return failCheckState(pr.Number, checkErr)
-			}
 			refreshed, refreshErr := provider.GetPullRequest(ctx, repo, key)
 			if refreshErr != nil || refreshed.Number != pr.Number {
 				return failCheckState(pr.Number, checkErr)
@@ -339,11 +336,14 @@ siblingLoop:
 			if outcome != "head-moved" {
 				continue siblingLoop
 			}
+			if retriedAfterHeadMove {
+				continue siblingLoop
+			}
 
 			pr = refreshed
 			prior = siblingCacheEntry{}
 			hit = false
-			refreshedAfterCheckFailure = true
+			retriedAfterHeadMove = true
 		}
 	}
 

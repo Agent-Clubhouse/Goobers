@@ -464,6 +464,97 @@ func TestGatherSiblingContextClassifiesSiblingLifecycleAfterCheckFailure(t *test
 	}
 }
 
+func TestGatherSiblingContextRefreshesBeforeClassifyingHeadMoveRetryFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		mutateOnRetry  func(*fakePR)
+		wantOutcome    string
+		wantCurrentSHA string
+	}{
+		{
+			name: "closed during retry",
+			mutateOnRetry: func(pr *fakePR) {
+				pr.state = "closed"
+			},
+			wantOutcome:    "closed",
+			wantCurrentSHA: "sha11-next",
+		},
+		{
+			name: "head moved again during retry",
+			mutateOnRetry: func(pr *fakePR) {
+				pr.headSHA = "sha11-final"
+			},
+			wantOutcome:    "head-moved",
+			wantCurrentSHA: "sha11-final",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(10, "Selected PR")
+			server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10", "base",
+				false, nil, []fakePRFile{{path: "selected.go", status: "modified"}})
+			server.addIssue(11, "Sibling PR")
+			server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11", "base",
+				false, nil, []fakePRFile{{path: "sibling.go", status: "modified"}})
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1866-retry-lifecycle")
+			t.Setenv(executor.InputEnvVar("selectedNumber"), "10")
+
+			baseHandler := server.server.Config.Handler
+			var checkFailures atomic.Int32
+			server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/commits/sha11/status" {
+					server.mu.Lock()
+					server.prs[11].headSHA = "sha11-next"
+					server.mu.Unlock()
+					checkFailures.Add(1)
+					http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+					return
+				}
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/commits/sha11-next/status" {
+					server.mu.Lock()
+					test.mutateOnRetry(server.prs[11])
+					server.mu.Unlock()
+					checkFailures.Add(1)
+					http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+					return
+				}
+				baseHandler.ServeHTTP(w, r)
+			})
+
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			if code, _, stderr := runArgs(t, "gather-sibling-context", "--no-verdict-cache", root); code != 0 {
+				t.Fatalf("gather-sibling-context: code = %d, stderr = %q", code, stderr)
+			}
+			if got := checkFailures.Load(); got != 2 {
+				t.Fatalf("check-state failures = %d, want 2 bounded attempts", got)
+			}
+
+			result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
+			outcomes, ok := result["siblingLifecycleOutcomes"].([]interface{})
+			if !ok || len(outcomes) != 2 {
+				t.Fatalf("siblingLifecycleOutcomes = %T(%v), want two outcomes", result["siblingLifecycleOutcomes"], result["siblingLifecycleOutcomes"])
+			}
+			retryOutcome, ok := outcomes[1].(map[string]interface{})
+			if !ok {
+				t.Fatalf("siblingLifecycleOutcomes[1] = %T(%v), want object", outcomes[1], outcomes[1])
+			}
+			if retryOutcome["number"] != float64(11) || retryOutcome["outcome"] != test.wantOutcome ||
+				retryOutcome["previousHeadSha"] != "sha11-next" || retryOutcome["currentHeadSha"] != test.wantCurrentSHA {
+				t.Fatalf("siblingLifecycleOutcomes[1] = %v, want PR #11 %s from sha11-next to %q",
+					retryOutcome, test.wantOutcome, test.wantCurrentSHA)
+			}
+			siblings, ok := result["siblings"].([]interface{})
+			if !ok || len(siblings) != 0 {
+				t.Fatalf("siblings = %T(%v), want retry-raced sibling omitted", result["siblings"], result["siblings"])
+			}
+		})
+	}
+}
+
 func TestGatherSiblingContextFailedLifecycleRefreshKeepsGenericEnvelope(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
