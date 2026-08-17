@@ -175,11 +175,16 @@ const (
 )
 
 const (
-	RunnerAnnotationRunRecovery     = "run.recovery"
+	// RunnerAnnotationRunRecovery identifies a recovered run.
+	RunnerAnnotationRunRecovery = "run.recovery"
+	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
 	RunnerAnnotationTriggerRecovery = "trigger.recovery"
-	RecoveryActionResumed           = "resumed"
-	RecoveryActionRetried           = "retried"
-	RecoveryActionNewClaim          = "new_claim"
+	// RecoveryActionResumed records continuation of an interrupted stage.
+	RecoveryActionResumed = "resumed"
+	// RecoveryActionRetried records a new attempt after interruption.
+	RecoveryActionRetried = "retried"
+	// RecoveryActionNewClaim records an item claimed after daemon restart.
+	RecoveryActionNewClaim = "new_claim"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
