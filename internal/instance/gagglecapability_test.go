@@ -127,6 +127,7 @@ func TestApplyGaggleCICommand_CopiesSoNoAliasing(t *testing.T) {
 			workflowWithLocalCI("b", "web", []string{"make", "ci"}),
 		},
 	}
+
 	ApplyGaggleCICommand(set)
 	// Mutating one workflow's resolved command must not disturb the gaggle
 	// source or the sibling workflow.
@@ -136,6 +137,25 @@ func TestApplyGaggleCICommand_CopiesSoNoAliasing(t *testing.T) {
 	}
 	if got := set.Workflows[1].Spec.Tasks[1].Run.Command[0]; got != "npm" {
 		t.Errorf("sibling workflow aliased: %v", got)
+	}
+}
+
+func TestApplyGaggleOutboxMirrorPrecedence(t *testing.T) {
+	set := &ConfigSet{
+		Gaggles: []apiv1.Gaggle{gaggle("web", apiv1.GaggleSpec{OutboxMirrorPath: "/gaggle"})},
+		Workflows: []apiv1.Workflow{
+			{Spec: apiv1.WorkflowSpec{Gaggle: "web"}},
+			{Spec: apiv1.WorkflowSpec{Gaggle: "web", OutboxMirrorPath: "/workflow"}},
+		},
+	}
+
+	ApplyGaggleOutboxMirror(set)
+
+	if got := set.Workflows[0].Spec.OutboxMirrorPath; got != "/gaggle" {
+		t.Fatalf("inherited path = %q, want /gaggle", got)
+	}
+	if got := set.Workflows[1].Spec.OutboxMirrorPath; got != "/workflow" {
+		t.Fatalf("override path = %q, want /workflow", got)
 	}
 }
 

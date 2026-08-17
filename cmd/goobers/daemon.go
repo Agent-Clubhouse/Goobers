@@ -578,6 +578,7 @@ func buildSchedulerDefinitions(
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
 ) (*schedulerDefinitions, error) {
+	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {

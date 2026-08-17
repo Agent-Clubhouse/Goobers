@@ -144,6 +144,12 @@ func WithPreviewFeatures(enabled bool) Option {
 
 // Compile dispatches a pinned definition to its versioned interpreter.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	def.Spec.Tasks = append([]apiv1.Task(nil), def.Spec.Tasks...)
+	for i := range def.Spec.Tasks {
+		if def.Spec.Tasks[i].OutboxMirrorPath == "" {
+			def.Spec.Tasks[i].OutboxMirrorPath = def.Spec.OutboxMirrorPath
+		}
+	}
 	if err := runcontrol.ValidateWorkflow(def.Spec); err != nil {
 		return nil, fmt.Errorf("compile workflow %q: %w", def.Name, err)
 	}

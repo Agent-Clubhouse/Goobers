@@ -222,6 +222,14 @@ spec:
                 required:
                 - namespace
                 type: object
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where workflows in
+                  this gaggle mirror their durable journal outbox. A workflow or task may
+                  override it. The local runner appends the run id and journal outbox layout
+                  beneath this root; the journal remains the source of truth.
+                minLength: 1
+                type: string
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
