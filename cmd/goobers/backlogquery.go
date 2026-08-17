@@ -1544,8 +1544,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	}
 	result.eligible, err = filterDecompositionEligibility(ctx, env.issueProvider, env.backlogRepo, result.eligible)
 	if err != nil {
-		pf(env.stderr, "error: verify decomposition publication barrier: %v\n", err)
-		return result, 1
+		return result, failProviderStage(env.stderr, "verify decomposition publication barrier", err, "claimed-item.json")
 	}
 	if opts.openIssues != nil {
 		backstopped := result.eligible[:0]

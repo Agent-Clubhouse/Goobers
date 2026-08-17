@@ -34,7 +34,7 @@ type publishBatchProvider interface {
 }
 
 func runPublishBatch(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("publish-batch", flag.ContinueOnError)
+	fs := newCLIFlagSet("publish-batch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "publish-batch")
 	if err := fs.Parse(args); err != nil {
