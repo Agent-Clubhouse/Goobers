@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -80,7 +81,25 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	observedAt := s.now()
 	out := RunList{Runs: make([]RunSummary, 0, len(page.Runs))}
 	for _, row := range page.Runs {
-		out.Runs = append(out.Runs, summaryFromReadModel(row, observedAt))
+		summary := summaryFromReadModel(row, observedAt)
+		if row.RunID == "" {
+			out.Runs = append(out.Runs, summary)
+			continue
+		}
+		run, err := s.openRun(row.RunID)
+		if err == nil {
+			journalSummary, summarizeErr := summarizeRun(run, observedAt)
+			if summarizeErr != nil {
+				return RunList{}, fmt.Errorf("summarize operator status for run %q: %w", row.RunID, summarizeErr)
+			}
+			summary.Operator = journalSummary.Operator
+		} else if !errors.Is(err, ErrNotFound) {
+			return RunList{}, fmt.Errorf("read operator status for run %q: %w", row.RunID, err)
+		}
+		out.Runs = append(out.Runs, summary)
+	}
+	if err := s.decorateOperatorClaims(ctx, out.Runs, observedAt); err != nil {
+		return RunList{}, err
 	}
 	if page.HasMore && len(out.Runs) > 0 {
 		// The cursor is encoded from the last RETURNED summary, using the same

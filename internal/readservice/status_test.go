@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
@@ -93,6 +94,12 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 		t.Fatalf("claim = %v, %v", ok, err)
 	}
 	service.now = func() time.Time { return startedAt.Add(6 * time.Minute) }
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{
+			Title:  "Operator status cannot answer run progress",
+			Labels: []string{providers.LabelClaimed},
+		}, nil
+	}
 
 	runs, err := service.ListStatusRuns(context.Background())
 	if err != nil {
@@ -121,6 +128,17 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 	if got.NextTransition != "finish implementation" || len(got.PotentialBlockers) != 2 {
 		t.Fatalf("next/blockers = %+v", got)
+	}
+
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{}, nil
+	}
+	runs, err = service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runs[0].Operator.Claim.ProviderMarker; got != "drift" {
+		t.Fatalf("provider marker after label removal = %q, want drift", got)
 	}
 }
 

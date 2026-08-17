@@ -152,8 +152,10 @@ function run(
             trajectory: "review",
             prOpenerStage: "open-pr",
             claim: { leaseStatus: "active", providerMarker: "verified" },
+            latestError: { code: "provider.rate_limit", message: "quota exhausted" },
+            review: { verdict: "needs-changes", rationale: "Show operator context." },
             nextTransition: "finish review",
-            potentialBlockers: [],
+            potentialBlockers: ["provider quota is exhausted"],
           }
         : undefined,
   };

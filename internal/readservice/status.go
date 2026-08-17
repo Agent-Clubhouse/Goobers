@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resumes at "
@@ -27,13 +28,16 @@ type SchedulerStatus struct {
 	ProviderQuotaResumeAt *time.Time
 }
 
+// WorkItemLookup reads the current provider state for a claimed item.
+type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, error)
+
 // ListStatusRuns returns every readable run in display order. Individual
 // malformed historical journals are omitted so status remains best-effort.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
 }
 
-func (s *Local) decorateOperatorClaims(runs []RunSummary, now time.Time) error {
+func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, now time.Time) error {
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
 	if err != nil {
 		return fmt.Errorf("read claim leases for status: %w", err)
@@ -69,23 +73,36 @@ func (s *Local) decorateOperatorClaims(runs []RunSummary, now time.Time) error {
 		case len(history) > 0:
 			runs[i].Operator.Claim.LeaseStatus = "released"
 		}
+		markerPresent := runs[i].Operator.Claim.ProviderMarker == "recorded"
+		if s.sources.WorkItemLookup != nil && runs[i].Operator.Issue != nil &&
+			runs[i].Operator.Issue.Number != "" {
+			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
+			if err != nil {
+				return fmt.Errorf("verify provider claim marker for run %q: %w", runs[i].ID, err)
+			}
+			markerPresent = item.HasLabel(providers.LabelClaimed)
+			if runs[i].Operator.Issue.Title == "" {
+				runs[i].Operator.Issue.Title = item.Title
+			}
+		}
 		if runs[i].Phase == journal.PhaseRunning &&
 			runs[i].Operator.Claim.LeaseStatus != "active" &&
-			runs[i].Operator.Claim.ProviderMarker == "recorded" {
+			markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "drift"
 			runs[i].Operator.PotentialBlockers = append(
 				runs[i].Operator.PotentialBlockers,
 				"provider claim marker exists without an active lease",
 			)
-		} else if runs[i].Operator.Claim.LeaseStatus == "active" &&
-			runs[i].Operator.Claim.ProviderMarker != "recorded" {
+		} else if runs[i].Operator.Claim.LeaseStatus == "active" && !markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "drift"
 			runs[i].Operator.PotentialBlockers = append(
 				runs[i].Operator.PotentialBlockers,
 				"active claim lease has no recorded provider marker",
 			)
-		} else if runs[i].Operator.Claim.LeaseStatus == "active" {
+		} else if runs[i].Operator.Claim.LeaseStatus == "active" && markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "verified"
+		} else if !markerPresent {
+			runs[i].Operator.Claim.ProviderMarker = "not-present"
 		}
 	}
 	return nil

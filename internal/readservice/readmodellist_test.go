@@ -176,4 +176,76 @@ func TestReadModelPathHidesNoWorkByDefault(t *testing.T) {
 	}
 }
 
+func TestReadModelPathHydratesOperatorSummaryFromJournal(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"projected-operator",
+		"implementation",
+		"goobers",
+		fixedTime,
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"},
+		true,
+	)
+	clock.now = fixedTime.Add(time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = fixedTime.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	identity := journal.RunIdentity{
+		RunID:     "projected-operator",
+		Gaggle:    "goobers",
+		Workflow:  "implementation",
+		StartedAt: fixedTime,
+		Trigger:   journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"},
+	}
+	events := []journal.Event{
+		{Schema: journal.EventSchema, Seq: 1, Time: fixedTime.Add(time.Minute), Type: journal.EventStageStarted, Stage: "implementation"},
+		{Schema: journal.EventSchema, Seq: 2, Time: fixedTime.Add(2 * time.Minute), Type: journal.EventStageHeartbeat, Stage: "implementation"},
+	}
+	if err := store.UpsertRun(ctx, readmodel.ProjectRun(identity, readmodel.Projection{}, events)); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return fixedTime.Add(3 * time.Minute) }
+
+	page, err := service.ListRuns(ctx, RunListOptions{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 {
+		t.Fatalf("runs = %+v, want one", page.Runs)
+	}
+	operator := page.Runs[0].Operator
+	if operator.Issue == nil || operator.Issue.Number != "3088" ||
+		operator.CurrentStage != "implementation" ||
+		operator.HeartbeatAgeMillis == nil ||
+		*operator.HeartbeatAgeMillis != time.Minute.Milliseconds() {
+		t.Fatalf("operator = %+v", operator)
+	}
+}
+
 var fixedTime = time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)

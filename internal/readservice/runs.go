@@ -988,7 +988,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 			break
 		}
 	}
-	if err := s.decorateOperatorClaims(kept, observedAt); err != nil {
+	if err := s.decorateOperatorClaims(ctx, kept, observedAt); err != nil {
 		return RunList{}, err
 	}
 	return paginateRuns(kept, limit)
@@ -1069,7 +1069,7 @@ func (s *Local) runSummariesForStage(
 		}
 		return summaries[i].StartedAt.After(summaries[j].StartedAt)
 	})
-	if err := s.decorateOperatorClaims(summaries, observedAt); err != nil {
+	if err := s.decorateOperatorClaims(ctx, summaries, observedAt); err != nil {
 		return nil, err
 	}
 	return summaries, nil

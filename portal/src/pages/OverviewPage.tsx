@@ -461,6 +461,9 @@ function RunSection({
                     ? operatorSubtitle(run)
                     : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
                 </span>
+                {active && operatorContext(run) ? (
+                  <span className="row-subtitle">{operatorContext(run)}</span>
+                ) : null}
               </span>
               {active ? (
                 <>
@@ -527,6 +530,24 @@ function operatorProgress(run: RunSummary): string {
       ? `PR via ${operator.prOpenerStage}`
       : "no PR stage";
   return `${operator.currentStage ?? "Awaiting stage"} · ${pr} · ${operator.nextTransition ?? "no next transition"}`;
+}
+
+function operatorContext(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return "";
+  }
+  const details: string[] = [];
+  if (operator.latestError) {
+    details.push(`Error ${operator.latestError.code}${operator.latestError.message ? `: ${operator.latestError.message}` : ""}`);
+  }
+  if (operator.review) {
+    details.push(`Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`);
+  }
+  if (operator.potentialBlockers.length > 0) {
+    details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  }
+  return details.join(" · ");
 }
 
 function attentionHeading(count: number): string {

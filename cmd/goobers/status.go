@@ -610,10 +610,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	warnings := report.CLIWarnings()
 	sources := readservice.LocalSources{
-		Layout:      l,
-		Config:      cfg,
-		Definitions: set,
-		Validation:  report,
+		Layout:         l,
+		Config:         cfg,
+		Definitions:    set,
+		Validation:     report,
+		WorkItemLookup: statusWorkItemLookup(l.Root, set),
 	}
 	livenessTimeout, err := cfg.Runner.LivenessTimeoutDuration()
 	if err != nil {
