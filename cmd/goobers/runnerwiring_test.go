@@ -836,6 +836,37 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 	}
 }
 
+func TestBuildAgenticExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterRegistry := harness.NewRegistry()
+	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harness.FakeAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	scrubber := journal.NewRegistryScrubber()
+	got, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName:      "coder",
+		Goobers:         map[string]apiv1.GooberSpec{"coder": {}},
+		Instructions:    map[string]string{"coder": "instructions"},
+		AdapterRegistry: adapterRegistry,
+		Resolver:        resolver,
+		SharedRegistry:  scrubber,
+		RunsDir:         t.TempDir(),
+		ArtifactRecorder: runnerWiringHarnessRecorder{
+			dir: t.TempDir(),
+		},
+		SecretRegistrar: scrubber,
+	})
+	if err != nil {
+		t.Fatalf("buildAgenticExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildAgenticExecutor returned nil")
+	}
+}
+
 func TestBuildAgenticExecutorIndependentlyRejectsUnknownGoober(t *testing.T) {
 	_, err := buildAgenticExecutor(agenticExecutorInput{
 		GooberName: "missing",
