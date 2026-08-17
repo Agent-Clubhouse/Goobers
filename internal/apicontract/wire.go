@@ -565,6 +565,7 @@ func newWireFixtures() wireFixtures {
 				P50CopilotPremiumRequests: &p50PremiumRequests,
 				P95CopilotPremiumRequests: &p95PremiumRequests,
 				CostSamples:               4,
+				CostUSD:                   &modelCostUSD,
 				P50CostUSD:                &p50CostUSD,
 				P95CostUSD:                &p95CostUSD,
 				RetryWasteAttempts:        1,

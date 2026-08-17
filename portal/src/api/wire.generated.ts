@@ -772,6 +772,7 @@ export const goWireFixtures = {
         "p50CopilotPremiumRequests": 1,
         "p95CopilotPremiumRequests": 2,
         "costSamples": 4,
+        "costUSD": 1.5,
         "p50CostUSD": 1.25,
         "p95CostUSD": 2.5,
         "retryWasteAttempts": 1,

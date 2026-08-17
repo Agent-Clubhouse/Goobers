@@ -200,6 +200,7 @@ type UsageStats struct {
 	HasPremiumRequests        bool    `json:"-"`
 
 	CostSamples int     `json:"costSamples"`
+	CostUSD     float64 `json:"costUSD"`
 	P50CostUSD  float64 `json:"p50CostUSD"`
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
