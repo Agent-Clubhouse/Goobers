@@ -178,6 +178,17 @@ func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
 	}
 }
 
+func TestOperatorTrajectoryDefaultsActiveStagesToImplementing(t *testing.T) {
+	for _, stage := range []string{"query-backlog", "gather-implement-context", "custom-active-stage"} {
+		if got := OperatorTrajectory(stage, journal.PhaseRunning); got != "implementing" {
+			t.Errorf("OperatorTrajectory(%q, running) = %q, want implementing", stage, got)
+		}
+	}
+	if got := OperatorTrajectory("query-backlog", journal.PhaseCompleted); got != "parked" {
+		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
+
 // TestProjectionMatchesTheRunContract checks the projected values against what
 // the read contract says a run summary means.
 func TestProjectionMatchesTheRunContract(t *testing.T) {

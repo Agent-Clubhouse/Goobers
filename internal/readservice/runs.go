@@ -1796,28 +1796,7 @@ func summarizeRunForStage(
 }
 
 func operatorTrajectory(stage string, phase journal.RunPhase) string {
-	if phase != journal.PhaseRunning {
-		return "parked"
-	}
-	stage = strings.ToLower(stage)
-	switch {
-	case strings.Contains(stage, "review"):
-		return "review"
-	case strings.Contains(stage, "local-ci"), strings.Contains(stage, "local_ci"):
-		return "local CI"
-	case strings.Contains(stage, "push"):
-		return "push"
-	case strings.Contains(stage, "open-pr"), strings.Contains(stage, "open_pr"):
-		return "open PR"
-	case strings.Contains(stage, "poll"), strings.Contains(stage, "ci-status"):
-		return "CI poll"
-	case strings.Contains(stage, "close-out"), strings.Contains(stage, "close_out"):
-		return "close-out"
-	case strings.Contains(stage, "implement"):
-		return "implementing"
-	default:
-		return "implementing"
-	}
+	return readmodel.OperatorTrajectory(stage, phase)
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {

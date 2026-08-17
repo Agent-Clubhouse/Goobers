@@ -564,7 +564,7 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 			return Projection{}, fmt.Errorf("readmodel: pinned graph identity does not match run")
 		}
 		for _, node := range graph.Nodes {
-			if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+			if OperatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
 				projection.Run.Operator.PROpenerStage = node.ID
 				break
 			}
@@ -577,7 +577,8 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 	return projection, nil
 }
 
-func operatorTrajectory(stage string, phase journal.RunPhase) string {
+// OperatorTrajectory classifies a run's current stage for operator-facing status.
+func OperatorTrajectory(stage string, phase journal.RunPhase) string {
 	if phase != journal.PhaseRunning {
 		return "parked"
 	}
@@ -598,7 +599,7 @@ func operatorTrajectory(stage string, phase journal.RunPhase) string {
 	case strings.Contains(stage, "implement"):
 		return "implementing"
 	default:
-		return "parked"
+		return "implementing"
 	}
 }
 
