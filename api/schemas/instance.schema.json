@@ -543,7 +543,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Instance default for consecutive non-pass gate evaluations before a run escalates instead of looping. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
+          "description": "Instance default for how many times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
         },
         "stalledRunTimeout": {
           "description": "How long a running journal may stay silent before the watchdog escalates the run. Empty defaults to 45 minutes. Size it above your slowest single stage, or a healthy long stage looks stalled.",
