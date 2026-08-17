@@ -1,3 +1,4 @@
+// Package speechnotify provides test doubles for speech notifications.
 package speechnotify
 
 import (
@@ -7,6 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/speechnotify"
 )
 
+// FakeSynthesizer is a configurable synthesizer that records utterances.
 type FakeSynthesizer struct {
 	Report       speechnotify.Preflight
 	PreflightErr error
@@ -16,8 +18,10 @@ type FakeSynthesizer struct {
 	utterances []string
 }
 
+// Name returns the fake synthesizer's engine name.
 func (*FakeSynthesizer) Name() string { return "fake" }
 
+// Preflight returns the configured report and error.
 func (f *FakeSynthesizer) Preflight(context.Context, speechnotify.Config) (speechnotify.Preflight, error) {
 	report := f.Report
 	if report.Engine == "" {
@@ -34,6 +38,7 @@ func (f *FakeSynthesizer) Preflight(context.Context, speechnotify.Config) (speec
 	return report, f.PreflightErr
 }
 
+// Synthesize records text unless the context is canceled.
 func (f *FakeSynthesizer) Synthesize(ctx context.Context, _ speechnotify.Config, text string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -44,6 +49,7 @@ func (f *FakeSynthesizer) Synthesize(ctx context.Context, _ speechnotify.Config,
 	return f.Err
 }
 
+// Utterances returns a copy of the recorded utterances.
 func (f *FakeSynthesizer) Utterances() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

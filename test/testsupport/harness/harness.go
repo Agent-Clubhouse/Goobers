@@ -1,3 +1,4 @@
+// Package harness provides shared test doubles for the agent runtime harness.
 package harness
 
 import (
@@ -10,6 +11,7 @@ import (
 	runtimeharness "github.com/goobers/goobers/internal/harness"
 )
 
+// FakeAdapter is a configurable in-process runtime harness adapter.
 type FakeAdapter struct {
 	AdapterName            string
 	Act                    func(context.Context, runtimeharness.RunRequest) error
@@ -21,6 +23,7 @@ type FakeAdapter struct {
 	Version                string
 }
 
+// Name returns the configured adapter name, or "fake" when none is configured.
 func (f *FakeAdapter) Name() string {
 	if f.AdapterName != "" {
 		return f.AdapterName
@@ -28,6 +31,7 @@ func (f *FakeAdapter) Name() string {
 	return "fake"
 }
 
+// Preflight returns the configured version and preflight error.
 func (f *FakeAdapter) Preflight(context.Context) (runtimeharness.PreflightInfo, error) {
 	if f.PreflightErr != nil {
 		return runtimeharness.PreflightInfo{}, f.PreflightErr
@@ -39,6 +43,7 @@ func (f *FakeAdapter) Preflight(context.Context) (runtimeharness.PreflightInfo, 
 	return runtimeharness.PreflightInfo{Version: version}, nil
 }
 
+// Run invokes Act and reads its completion payload from the request workspace.
 func (f *FakeAdapter) Run(ctx context.Context, req runtimeharness.RunRequest) (runtimeharness.Outcome, error) {
 	out := runtimeharness.Outcome{
 		Transcript:             f.Transcript,
@@ -62,6 +67,7 @@ func (f *FakeAdapter) Run(ctx context.Context, req runtimeharness.RunRequest) (r
 	return out, nil
 }
 
+// WriteCompletion marshals v to the requested workspace-relative path.
 func WriteCompletion(workspace, relPath string, v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
