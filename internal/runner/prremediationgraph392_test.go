@@ -285,6 +285,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":respond-to-findings": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
 		},
+		runID + ":resolve-review-threads": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"unresolvedThreadCount": "0"},
+		},
 		runID + ":release-claim":                  {status: apiv1.ResultSuccess},
 		runID + ":release-escalated-claim":        {status: apiv1.ResultSuccess},
 		runID + ":park-escalated":                 {status: apiv1.ResultSuccess},
@@ -370,6 +373,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"guard-before-push",
 		"push-remediated",
 		"respond-to-findings",
+		"resolve-review-threads",
 		"release-claim",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {

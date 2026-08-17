@@ -145,6 +145,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
+| [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
@@ -2211,6 +2212,25 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 
 ~~~console
 $ goobers reset-rate-limit
+~~~
+
+## `goobers resolve-review-threads`
+
+reply to and resolve remediated native review threads (a workflow stage)
+
+~~~text
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers resolve-review-threads
 ~~~
 
 ## `goobers respond-to-findings`
