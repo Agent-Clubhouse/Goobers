@@ -147,6 +147,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Download modules
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
       - name: Enforce the repository coverage threshold
         run: make cover-check
 
