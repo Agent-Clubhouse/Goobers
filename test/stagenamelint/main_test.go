@@ -79,6 +79,27 @@ func TestCheckRepositoryRejectsStaleException(t *testing.T) {
 	}
 }
 
+func TestCheckRepositoryRejectsExceptionWhenWorkflowIsNoLongerShipped(t *testing.T) {
+	root := fixtureRepository(t)
+	const path = "cmd/goobers/stage.go"
+	writeFixture(t, root, "reference-workflows/gaggles/goobers/workflows/example.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: replacement-workflow
+`)
+	writeFixture(t, root, path, "package main\nconst name = \"renamed-workflow\"\n")
+
+	violations, err := checkRepositoryWithExceptions(root, []exception{{
+		Path: path, Value: "renamed-workflow", Reason: "fixture registry",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || !strings.Contains(violations[0].Message, "stale exception") {
+		t.Fatalf("violations = %+v, want one stale-exception violation", violations)
+	}
+}
+
 func TestRepositoryCompliesWithStageNameLint(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

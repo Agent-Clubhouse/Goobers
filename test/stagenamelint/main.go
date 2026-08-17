@@ -34,7 +34,6 @@ var exceptions = []exception{
 	{Path: "internal/instance/guided.go", Value: "backlog-curation", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/guided.go", Value: "work-nomination", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/instance.go", Value: "docs-updater", Reason: "canonical scaffold directory name"},
-	{Path: "internal/providerstage/manifest.go", Value: "post-merge", Reason: "stage command registry key"},
 	{Path: "cmd/goobers/clisynopsis.go", Value: "self-update", Reason: "CLI command registry key"},
 	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key"},
 	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry lookup"},
@@ -227,12 +226,12 @@ func checkGoFile(path, relative string, workflowNames map[string]bool, allowed *
 		if err != nil {
 			return true
 		}
-		if allowed.allow(relative, value) {
-			return true
-		}
 		isWorkflow := workflowNames[value]
 		isLabel := isGoobersLabelList(value)
 		if !isWorkflow && !isLabel {
+			return true
+		}
+		if allowed.allow(relative, value) {
 			return true
 		}
 		line := files.Position(literal.Pos()).Line
