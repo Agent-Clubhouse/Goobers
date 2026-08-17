@@ -192,6 +192,7 @@ func TestRunnerExportOutboxEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("journal.Create: %v", err)
 	}
+
 	t.Cleanup(func() { _ = jr.Close() })
 
 	var r *Runner
@@ -203,6 +204,56 @@ func TestRunnerExportOutboxEndToEnd(t *testing.T) {
 	want := filepath.Join(runsDir, "run-outbox-e2e", "artifacts", "outbox", "build", "attempt-1", "report.json")
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("expected exported outbox file at %s: %v", want, err)
+	}
+}
+
+func TestRunnerExportOutboxMirrorsDurableCopy(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "reports/report.json", `{"token":"scrubbed"}`)
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-outbox-mirror"}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+
+	mirror := t.TempDir()
+	task := apiv1.Task{
+		Name:             "build",
+		Outbox:           []string{"reports/report.json"},
+		OutboxMirrorPath: mirror,
+	}
+	var r *Runner
+	if err := r.exportOutbox(jr, root, task, 2, journal.AttemptPolicy); err != nil {
+		t.Fatalf("exportOutbox: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(mirror, "run-outbox-mirror", "build", "attempt-2", "reports", "report.json"))
+	if err != nil {
+		t.Fatalf("read mirrored outbox: %v", err)
+	}
+	if string(got) != `{"token":"scrubbed"}` {
+		t.Fatalf("mirrored content = %q", got)
+	}
+}
+
+func TestMirrorOutboxRejectsRelativeRoot(t *testing.T) {
+	if err := mirrorOutbox(t.TempDir(), "relative/path", nil); err == nil {
+		t.Fatal("mirrorOutbox accepted a relative root")
+	}
+}
+
+func TestMakeContainedDirRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	if _, err := makeContainedDir(root, filepath.Join("escape", "nested")); err == nil {
+		t.Fatal("makeContainedDir followed a symlink outside the mirror root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("escape created an outside directory, stat err = %v", err)
 	}
 }
 

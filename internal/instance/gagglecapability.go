@@ -57,6 +57,27 @@ func ApplyGaggleCICommand(set *ConfigSet) {
 	}
 }
 
+// ApplyGaggleOutboxMirror resolves the gaggle-level outbox mirror default onto
+// each workflow before compilation. Workflow and task values remain untouched,
+// so the compiler can finish the most-specific-wins resolution.
+func ApplyGaggleOutboxMirror(set *ConfigSet) {
+	if set == nil {
+		return
+	}
+	paths := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		if path := set.Gaggles[i].Spec.OutboxMirrorPath; path != "" {
+			paths[set.Gaggles[i].Name] = path
+		}
+	}
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		if wf.Spec.OutboxMirrorPath == "" {
+			wf.Spec.OutboxMirrorPath = paths[wf.Spec.Gaggle]
+		}
+	}
+}
+
 // WorkflowRequiredCapabilities returns the runner capabilities a single run of
 // wf needs: its gaggle's own GaggleSpec.RequiredCapabilities plus every stage's
 // Task.RequiredCapabilities in wf. Because a run executes all of a workflow's

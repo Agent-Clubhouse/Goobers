@@ -56,6 +56,7 @@
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",

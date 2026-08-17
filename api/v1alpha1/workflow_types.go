@@ -304,6 +304,12 @@ type Task struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	Outbox []string `json:"outbox,omitempty" yaml:"outbox,omitempty"`
+	// OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+	// root for this task. It is used only when Outbox exports at least one file.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
@@ -548,6 +554,12 @@ type WorkflowSpec struct {
 	// MaxRepasses.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where this
+	// workflow mirrors durable journal outbox files. A task may override it.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`

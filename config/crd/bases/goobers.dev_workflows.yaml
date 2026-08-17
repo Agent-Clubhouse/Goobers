@@ -238,6 +238,13 @@ spec:
                   - message: maxRepasses is only valid for automated or agentic gates
                     rule: '!has(self.maxRepasses) || self.evaluator != ''human'''
                 type: array
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where this
+                  workflow mirrors durable journal outbox files. A task may override it.
+                  The configured path must be absolute, or start with "~/".
+                minLength: 1
+                type: string
               parallels:
                 description: |-
                   Parallels are the fan-out/fan-in states of the machine: a parallel forks
@@ -585,6 +592,13 @@ spec:
                         type: string
                       maxItems: 32
                       type: array
+                    outboxMirrorPath:
+                      description: |-
+                        OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+                        root for this task. It is used only when Outbox exports at least one file.
+                        The configured path must be absolute, or start with "~/".
+                      minLength: 1
+                      type: string
                     policyActions:
                       description: |-
                         PolicyActions declares the closed vocabulary of externally mutating

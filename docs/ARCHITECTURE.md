@@ -160,6 +160,10 @@ Rules:
 - **Content digests** on inputs and artifacts make runs comparable and make those
   files tamper-evident (the event log itself is trusted-at-rest at tiers 1–2; hash
   chaining is a tier-2+ option, not a baseline claim).
+- A stage may additionally mirror its durable outbox files to a configured local
+  filesystem root. Stage, workflow, then gaggle configuration wins in that order.
+  The mirror is arranged beneath `<root>/<run-id>/`; the journal remains the
+  source of truth, and every source and destination path is containment-checked.
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
 - **Redaction at the boundary:** raw secrets MUST NOT land at rest anywhere under

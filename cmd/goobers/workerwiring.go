@@ -107,6 +107,7 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 		return nil, fmt.Errorf("worker: load config directory: %w", err)
 	}
 	instance.ApplyGaggleCICommand(set)
+	instance.ApplyGaggleOutboxMirror(set)
 
 	goobers, err := resolveGoobersForGaggle(set, gaggle)
 	if err != nil {

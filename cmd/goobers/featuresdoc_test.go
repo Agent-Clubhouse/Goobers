@@ -112,9 +112,10 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.Next":             {"task.next"},
 	}
 	excluded := map[string]string{
-		"WorkflowSpec.DocsRoots":  "operational write boundary, not interpreted workflow behavior",
-		"WorkflowSpec.TutorScope": "tutor topology metadata",
-		"WorkflowSpec.Requires":   "provider admission metadata",
+		"WorkflowSpec.DocsRoots":        "operational write boundary, not interpreted workflow behavior",
+		"WorkflowSpec.TutorScope":       "tutor topology metadata",
+		"WorkflowSpec.Requires":         "provider admission metadata",
+		"WorkflowSpec.OutboxMirrorPath": "local artifact mirror configuration",
 
 		"GaggleSpec.DisplayName":          "portal metadata",
 		"GaggleSpec.SelfIdentity":         "provider identity configuration",
@@ -126,6 +127,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GaggleSpec.RequiredCapabilities": "runner admission metadata",
 		"GaggleSpec.BranchNamespace":      "provider naming configuration",
 		"GaggleSpec.RunControls":          "gaggle-level runner defaults",
+		"GaggleSpec.OutboxMirrorPath":     "local artifact mirror configuration",
 		"GaggleSpec.Workcopies":           "local storage configuration",
 		"GaggleSpec.RequireLabels":        "provider query default",
 		"GaggleSpec.Siblings":             "coordination metadata",
@@ -137,6 +139,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 
 		"Task.RequiredCapabilities": "runner admission metadata",
 		"Task.Outbox":               "artifact export configuration",
+		"Task.OutboxMirrorPath":     "local artifact mirror configuration",
 	}
 
 	registry := make(map[workflow.FeatureID]struct{})
