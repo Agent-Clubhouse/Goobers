@@ -128,6 +128,8 @@ func electionClusterBlockers(findings []apiv1.Finding, overlappingSiblings []int
 	return unionBlockingPRs(combined)
 }
 
+const noLanderEscalationPrefix = "Cluster has no lander under policy"
+
 // noLanderEscalationReason detects the asymmetric zero-winner case: the
 // deterministic policy winner cannot be crowned because its own review contains
 // a real defect (severity above `info` — see findingIsRealDefect), while every
@@ -148,7 +150,7 @@ func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.F
 		siblings = append(siblings, fmt.Sprintf("#%d", blocker))
 	}
 	return fmt.Sprintf(
-		"Cluster has no lander under policy %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
+		noLanderEscalationPrefix+" %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
 		policyName, selectedNumber, strings.Join(siblings, ", "))
 }
 
@@ -342,6 +344,11 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
 	}
+	ineligible, ierr := electionIneligibleSet(ctx, provider, repo, prs)
+	if ierr != nil {
+		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	}
+	demoted = unionPRSets(demoted, ineligible)
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
 		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)
