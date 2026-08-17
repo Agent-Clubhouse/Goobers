@@ -120,6 +120,12 @@ func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte,
 	if versionNode.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return nil, errors.New("block-style dslVersion is not supported for source-preserving migration")
 	}
+	if versionNode.Style&yaml.TaggedStyle != 0 {
+		return nil, errors.New("tagged dslVersion is not supported for source-preserving migration")
+	}
+	if versionNode.Anchor != "" {
+		return nil, errors.New("anchored dslVersion is not supported for source-preserving migration")
+	}
 	start, err := sourceOffset(source, versionNode.Line, versionNode.Column)
 	if err != nil {
 		return nil, err

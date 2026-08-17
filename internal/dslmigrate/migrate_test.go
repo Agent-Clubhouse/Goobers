@@ -200,6 +200,27 @@ func TestMigratePinOnlyRejectsBlockStyleVersion(t *testing.T) {
 	}
 }
 
+func TestMigratePinOnlyRejectsDecoratedVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		wantErr string
+	}{
+		{name: "tagged", version: "!!str 1.4", wantErr: "tagged dslVersion is not supported"},
+		{name: "anchored", version: "&version 1.4", wantErr: "anchored dslVersion is not supported"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, "dslVersion: "+test.version, 1)
+
+			_, err := Migrate([]byte(source), "2.0")
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("err = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestMigrateRefusesAlreadyAtTarget(t *testing.T) {
 	source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
 	_, err := Migrate([]byte(source), "2.0")
