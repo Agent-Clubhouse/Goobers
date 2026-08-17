@@ -88,7 +88,8 @@ func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 		if err == nil {
 			_, err = tmp.Write(data)
 		}
-		if closeErr := tmp.Close(); err == nil {
+		closeErr := tmp.Close()
+		if err == nil {
 			err = closeErr
 		}
 		if err == nil {

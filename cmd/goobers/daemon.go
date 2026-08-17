@@ -178,7 +178,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// stage before the workflows are compiled, so the runner executes the
 	// gaggle's own suite in place of the stage's declared `make ci` default.
 	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
 	// RRQ-1/#1101, revised for fleets (#2860): a gaggle/stage requiring a runner
 	// capability nothing claims is REPORTED at startup, not fatal.
 	//
@@ -579,6 +578,7 @@ func buildSchedulerDefinitions(
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
 ) (*schedulerDefinitions, error) {
+	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
