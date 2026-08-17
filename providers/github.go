@@ -2583,33 +2583,80 @@ func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo Reposito
 // HasOpenWorkItemBlocker reports whether a GitHub issue has a native issue
 // blocker that is still open.
 func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo RepositoryRef, id string) (bool, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return false, err
-	}
-	if id == "" {
-		return false, fmt.Errorf("issue id is required")
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	blockers, err := p.ListWorkItemBlockers(ctx, repo, id)
 	if err != nil {
 		return false, err
 	}
-	open := false
+	for _, blocker := range blockers {
+		if strings.EqualFold(blocker.State, "open") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListWorkItemBlockers returns every native blocked-by dependency.
+func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo RepositoryRef, id string) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
+	if err != nil {
+		return nil, err
+	}
+	var blockers []WorkItem
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var issues []githubIssue
 		if err := json.Unmarshal(page, &issues); err != nil {
 			return fmt.Errorf("decode blocked-by dependencies page: %w", err)
 		}
 		for _, issue := range issues {
-			if issue.PullRequest == nil && strings.EqualFold(issue.State, "open") {
-				open = true
-				return errStopPaging
+			if issue.PullRequest == nil {
+				blockers = append(blockers, mapGitHubIssue(issue))
 			}
 		}
 		return nil
 	}); err != nil {
-		return false, err
+		return nil, err
 	}
-	return open, nil
+	return blockers, nil
+}
+
+// AttachWorkItemBlocker adds one native blocked-by dependency after checking
+// both immediately observed revisions.
+func (p *GitHubProvider) AttachWorkItemBlocker(ctx context.Context, req AttachWorkItemBlockerRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.ItemID == "" || req.BlockerID == "" {
+		return fmt.Errorf("item and blocker issue ids are required")
+	}
+	item, err := p.GetWorkItem(ctx, req.Repository, req.ItemID)
+	if err != nil {
+		return err
+	}
+	blocker, err := p.GetWorkItem(ctx, req.Repository, req.BlockerID)
+	if err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(item, req.ExpectedItemRevision); err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(blocker, req.ExpectedBlockerRevision); err != nil {
+		return err
+	}
+	blockerDatabaseID, err := strconv.ParseInt(blocker.ExternalID, 10, 64)
+	if err != nil || blockerDatabaseID <= 0 {
+		return fmt.Errorf("blocker issue %q has invalid provider id %q", req.BlockerID, blocker.ExternalID)
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ItemID, "dependencies", "blocked_by")
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"issue_id": blockerDatabaseID}, nil)
 }
 
 // CreateWorkItem creates a GitHub issue from a unified work item request.

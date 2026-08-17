@@ -467,6 +467,11 @@ func (p *GiteaProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRe
 	if err != nil {
 		return WorkItem{}, err
 	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
 
 	fields := map[string]FieldDigest{}
 	patch := map[string]interface{}{}

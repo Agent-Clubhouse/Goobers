@@ -383,6 +383,11 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 	if err != nil {
 		return WorkItem{}, err
 	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
 
 	fields := map[string]FieldDigest{}
 	patch := map[string]interface{}{}

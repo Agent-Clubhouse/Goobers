@@ -477,6 +477,11 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	if err != nil {
 		return WorkItem{}, err
 	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(current, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
 	raw, err := rawADOWorkItem(current)
 	if err != nil {
 		return WorkItem{}, err

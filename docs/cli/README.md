@@ -136,6 +136,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
+| [`goobers publish-batch`](#goobers-publish-batch) | publish a verified decomposition batch behind one eligibility barrier (a workflow stage) |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
@@ -1930,6 +1931,28 @@ preserved.
 $ goobers preflight
 $ goobers preflight --distro Ubuntu-24.04
 $ goobers preflight --launch-wsl -- run implementation .
+~~~
+
+## `goobers publish-batch`
+
+publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+
+~~~text
+Usage: goobers publish-batch [path]
+
+publish-batch is the decomposition workflow's deterministic publication
+stage (docs/design/decomposition-workflow.md §5.2-5.3, DEC-4). It consumes
+a validated decomposition plan, resumes the prepare/publish protocol by
+stable markers, verifies the complete batch, commits eligibility through
+the parent published record, and releases the parent claim.
+
+Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers publish-batch
 ~~~
 
 ## `goobers push-branch`
