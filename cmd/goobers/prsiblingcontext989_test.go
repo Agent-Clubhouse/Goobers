@@ -85,6 +85,7 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 		HasSubstantive      string `json:"hasSubstantiveFindings"`
 		HasFailingCI        string `json:"hasFailingCI"`
 		HasSiblingOverlap   string `json:"hasSiblingOverlap"`
+		WorkspaceBranch     string `json:"workspaceBranch"`
 	}
 	if err := json.Unmarshal(data, &ctx); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -105,9 +106,9 @@ func TestGatherSiblingContextComputesFileOverlap(t *testing.T) {
 	}
 	if ctx.Head != "goobers/implementation/run-10" || ctx.Base != "main" ||
 		ctx.HasSubstantive != "false" || ctx.HasFailingCI != "false" ||
-		ctx.HasSiblingOverlap != "true" {
-		t.Fatalf("routing outputs = head=%q base=%q substantive=%q failingCI=%q siblingOverlap=%q",
-			ctx.Head, ctx.Base, ctx.HasSubstantive, ctx.HasFailingCI, ctx.HasSiblingOverlap)
+		ctx.HasSiblingOverlap != "true" || ctx.WorkspaceBranch != ctx.Head {
+		t.Fatalf("routing outputs = head=%q base=%q substantive=%q failingCI=%q siblingOverlap=%q workspaceBranch=%q",
+			ctx.Head, ctx.Base, ctx.HasSubstantive, ctx.HasFailingCI, ctx.HasSiblingOverlap, ctx.WorkspaceBranch)
 	}
 }
 

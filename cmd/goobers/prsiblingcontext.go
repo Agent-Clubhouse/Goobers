@@ -460,8 +460,20 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		"advisoryMode":           strconv.FormatBool(advisoryMode),
 		"selectedHeadSha":        selectedHeadSHA,
 		"selectedBaseSha":        selectedBaseSHA,
-		"reviewDigest":           reviewDigest,
-		"siblings":               siblings,
+		// Rebind the following review gate to the selected managed PR branch.
+		// The runner can then produce its normal provider-independent
+		// base...HEAD reviewer diff instead of asking the model to infer the
+		// selected PR's implementation from its tip commit and file names.
+		// Advisory PR branches outside the protected run namespace are left
+		// empty and therefore cannot steer the runner's workspace.
+		"workspaceBranch": func() string {
+			if strings.HasPrefix(selectedHead, managedHeadPrefix) {
+				return selectedHead
+			}
+			return ""
+		}(),
+		"reviewDigest": reviewDigest,
+		"siblings":     siblings,
 		// overlappingSiblings: PR numbers whose files intersect the selected
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".
