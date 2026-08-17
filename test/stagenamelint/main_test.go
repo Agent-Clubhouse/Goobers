@@ -16,7 +16,7 @@ func stage(workflow string) bool {
 }
 `)
 
-	violations, err := checkRepository(root)
+	violations, err := checkRepositoryWithExceptions(root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,12 +34,48 @@ func TestCheckRepositoryIgnoresTestsAndUnshippedNames(t *testing.T) {
 	writeFixture(t, root, "cmd/goobers/stage.go", "package main\nconst name = \"custom-workflow\"\n")
 	writeFixture(t, root, "internal/helper/helper_test.go", "package helper\nconst name = \"renamed-workflow\"\n")
 
-	violations, err := checkRepository(root)
+	violations, err := checkRepositoryWithExceptions(root, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(violations) != 0 {
 		t.Fatalf("violations = %+v, want none", violations)
+	}
+}
+
+func TestExceptionsIgnoreUnrelatedLineShifts(t *testing.T) {
+	root := fixtureRepository(t)
+	const path = "cmd/goobers/stage.go"
+	writeFixture(t, root, path, `package main
+
+
+const name = "renamed-workflow"
+`)
+
+	violations, err := checkRepositoryWithExceptions(root, []exception{{
+		Path: path, Value: "renamed-workflow", Reason: "fixture registry",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("violations = %+v, want none", violations)
+	}
+}
+
+func TestCheckRepositoryRejectsStaleException(t *testing.T) {
+	root := fixtureRepository(t)
+	const path = "cmd/goobers/stage.go"
+	writeFixture(t, root, path, "package main\nconst name = \"custom-workflow\"\n")
+
+	violations, err := checkRepositoryWithExceptions(root, []exception{{
+		Path: path, Value: "renamed-workflow", Reason: "fixture registry",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(violations) != 1 || !strings.Contains(violations[0].Message, "stale exception") {
+		t.Fatalf("violations = %+v, want one stale-exception violation", violations)
 	}
 }
 
