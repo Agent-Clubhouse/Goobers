@@ -99,22 +99,15 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 			}},
 		},
 	}
-	runnerConfig, _, err := buildRunnerConfig(
-		layout,
-		config,
-		map[string]apiv1.GooberSpec{},
-		map[string]string{},
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		repos[identity],
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	runnerConfig, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               layout,
+		Config:               config,
+		Goobers:              map[string]apiv1.GooberSpec{},
+		InstructionsByGoober: map[string]string{},
+		SharedRegistry:       journal.NewRegistryScrubber(),
+		GaggleProject:        repos[identity],
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("build runner config: %v", err)
 	}
