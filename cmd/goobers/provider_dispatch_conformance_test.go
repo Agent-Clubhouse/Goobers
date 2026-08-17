@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/providers"
@@ -20,7 +22,7 @@ type providerDispatchEvidence struct {
 // CONF-8 (#2497) and CONF-9 (#2498) landed before this gate, so their fixed
 // commands are coverage entries rather than stale allowlist entries.
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
-	"apply-verdict":            {test: TestCloseMootPullRequestDispatchesToADO},
+	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestADOBacklogStagesDispatchFromCommands},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
 	"backlog-health":           {test: TestBacklogHealthCommandRunsWithADO},
@@ -33,6 +35,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"issue-close-out":          {test: TestADOBacklogStagesDispatchFromCommands},
 	"open-pr":                  {test: TestOpenPRRoutesADOThroughExecutorInjectedAuthentication},
 	"pr-claim":                 {test: TestRemediationStagesDispatchFromCommands},
+	"publish-batch":            {test: TestDecompositionStagesDispatchFromCommands},
 	"push-branch":              {test: TestPushBranchDispatchesADOOrigin},
 	"push-remediated":          {test: TestRemediationStagesDispatchFromCommands},
 	"rebase-pr":                {test: TestRemediationStagesDispatchFromCommands},
@@ -250,7 +253,33 @@ func TestDecompositionStagesDispatchFromCommands(t *testing.T) {
 		command string
 		setup   func(*testing.T)
 	}{
-		{"select-source", func(*testing.T) {}},
+		{"select-source", func(t *testing.T) {
+			t.Setenv(executor.InputEnvVar("trustLabel"), providers.LabelApproved)
+		}},
+		{"publish-batch", func(t *testing.T) {
+			plan := validDecompositionPlan(decomposition.Selection{})
+			digest, err := decomposition.PlanDigest(plan)
+			if err != nil {
+				t.Fatalf("digest plan: %v", err)
+			}
+			writeJSON := func(name string, value any) string {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), name)
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatalf("marshal %s: %v", name, err)
+				}
+				if err := os.WriteFile(path, data, 0o644); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+				return path
+			}
+			t.Setenv(executor.InputEnvVar("planFile"), writeJSON("plan.json", plan))
+			t.Setenv(executor.InputEnvVar("validationFile"), writeJSON("plan-validation.json", validatePlanResult{
+				Valid:      true,
+				PlanDigest: digest,
+			}))
+		}},
 		{"validate-plan", func(t *testing.T) {
 			dir := t.TempDir()
 			planFile := filepath.Join(dir, "plan.json")
