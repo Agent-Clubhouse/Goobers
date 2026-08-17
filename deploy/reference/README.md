@@ -197,8 +197,8 @@ and set the matching `runner.harnessCommand` in `instance.yaml`. Which harness t
 install is deliberately yours: `harnessCommand` is a map keyed by harness name.
 
 Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
-pull on a fresh node. Scale a Windows pool to zero when idle, but expect that pull
-on the first run after it scales up.
+pull on a fresh node. If your operator-selected capacity policy scales the Windows
+pool to zero, expect that pull on the first run after it scales up.
 
 ### Timezones
 
