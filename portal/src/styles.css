@@ -1188,8 +1188,10 @@ summary:focus-visible {
 
 .scope-pivot {
   display: inline-flex;
+  flex-shrink: 0;
   gap: 8px;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .scope-pivot-link {
