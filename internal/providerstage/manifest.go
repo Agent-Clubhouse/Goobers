@@ -67,7 +67,7 @@ var commands = map[string]Command{
 	"backlog-dedupe": {
 		ResultFile: "dedupe-candidates.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
 		},
 	},
 	"backlog-assignment": {
@@ -79,7 +79,8 @@ var commands = map[string]Command{
 	"backlog-health": {
 		ResultFile: "backlog-health.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesWrite, []string{"feedback"}, "the write capability-scoped credential is not injected, so implementation feedback fails at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesRead, []string{"feedback"}, "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
 		},
 	},
 	"backlog-query": {
@@ -139,7 +140,7 @@ var commands = map[string]Command{
 		ResultFile: "remediation-brief.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
 		},
 	},
 	"gather-pr-context": {
@@ -147,7 +148,6 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation issue routing fails at runtime"),
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediation branch preparation fails at runtime"),
 		},
 	},
@@ -260,7 +260,7 @@ var commands = map[string]Command{
 	"respond-to-findings": {
 		ResultFile: "remediation-response.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
 		},
 	},
 	"set-milestone": {
