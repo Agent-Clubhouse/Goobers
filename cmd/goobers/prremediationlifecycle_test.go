@@ -26,8 +26,8 @@ func TestPRRemediationLifecycleReleasesTerminalPRClaim(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "no longer open") {
-		t.Fatalf("stdout = %q, want terminal PR reason", stdout)
+	if !strings.Contains(stdout, "this run's claimed PR #77 is no longer open") {
+		t.Fatalf("stdout = %q, want entry-guard terminal PR reason", stdout)
 	}
 	var result prRemediationLifecycleResult
 	raw, err := os.ReadFile(resultFile)
