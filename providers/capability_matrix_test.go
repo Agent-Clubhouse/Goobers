@@ -51,6 +51,7 @@ func TestBuildMatrixCoversEveryCapabilityAndProvider(t *testing.T) {
 		t.Fatalf("BuildMatrix() returned %d cells, want %d (%d capabilities x %d providers)",
 			len(cells), want, len(AllCapabilities()), len(AllProviderKinds()))
 	}
+
 	seen := make(map[[2]string]bool, len(cells))
 	for _, cell := range cells {
 		key := [2]string{string(cell.Capability), string(cell.Provider)}
@@ -59,6 +60,22 @@ func TestBuildMatrixCoversEveryCapabilityAndProvider(t *testing.T) {
 		}
 		seen[key] = true
 	}
+}
+
+func TestGiteaSupportIsExperimentalWithPromotionCriteria(t *testing.T) {
+	for _, support := range AllProviderSupport() {
+		if support.Provider != ProviderGitea {
+			continue
+		}
+		if support.Level != ProviderExperimental {
+			t.Fatalf("Gitea support level = %q, want %q", support.Level, ProviderExperimental)
+		}
+		if support.PromotionCriteria == "" {
+			t.Fatal("Gitea promotion criteria are empty")
+		}
+		return
+	}
+	t.Fatal("Gitea is missing from provider support declarations")
 }
 
 // TestGitHubIsFullyConformantOnRequiredSet pins the positive counterpart:

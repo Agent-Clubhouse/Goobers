@@ -51,3 +51,16 @@ func TestCapabilityMatrixCoversEveryCapability(t *testing.T) {
 		}
 	}
 }
+
+func TestCapabilityMatrixDocumentsExperimentalGiteaPromotion(t *testing.T) {
+	doc := renderCapabilityMatrix()
+	for _, want := range []string{
+		"| gitea | experimental |",
+		"an in-repo `provider: gitea` config exercised in merge-tier CI and live conformance per #2441",
+		"gitea (experimental)",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("generated capability matrix does not contain %q", want)
+		}
+	}
+}

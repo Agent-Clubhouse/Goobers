@@ -80,6 +80,7 @@ github.com/goobers/goobers/cmd/goobers.writeCapabilityMatrix # Capability-matrix
 github.com/goobers/goobers/cmd/goobers.formatMatrixCell # Capability-matrix cell formatter invoked by the checked-in drift test (CONF-2, #2075).
 github.com/goobers/goobers/providers.AllCapabilities # Capability-matrix row source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
 github.com/goobers/goobers/providers.AllProviderKinds # Capability-matrix column source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
+github.com/goobers/goobers/providers.AllProviderSupport # Capability-matrix support-designation source invoked by the checked-in drift test (#3033).
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/providers.WorkflowRequiredCapabilities # Blessed-tier CI gate's required-capability set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/providers.classify # Capability-matrix cell classifier invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).

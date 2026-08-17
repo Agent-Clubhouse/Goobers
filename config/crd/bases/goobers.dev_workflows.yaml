@@ -465,10 +465,11 @@ spec:
                         ContextFrom limits this task's context pointers to artifacts and verdicts
                         produced by the named tasks or gates. Empty preserves the historical
                         behavior of receiving every accumulated pointer.
+                        Duplicate entries are rejected by api/validate (CTX001) rather than by a
+                        CRD uniqueness marker, which Kubernetes refuses to install.
                       items:
                         type: string
                       type: array
-                      uniqueItems: true
                     continueOnError:
                       description: |-
                         ContinueOnError makes a ResultFailure best-effort: the failed status is
@@ -737,6 +738,7 @@ spec:
                   - name
                   - type
                   type: object
+                maxItems: 128
                 type: array
               triggers:
                 description: |-
