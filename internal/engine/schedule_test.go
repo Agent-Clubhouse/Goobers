@@ -491,9 +491,8 @@ func (b *blockingScheduleStages) callCount() int {
 }
 
 func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
+	startupCtx, cancelStartup := context.WithTimeout(t.Context(), 5*time.Minute)
+	server, err := testsuite.StartDevServer(startupCtx, testsuite.DevServerOptions{
 		CachedDownload: testsuite.CachedDownload{Version: "default"},
 		LogLevel:       "error",
 		Stdout:         io.Discard,
@@ -502,6 +501,7 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 			"--dynamic-config-value", "history.enableCHASMSchedulerCreation=true",
 		},
 	})
+	cancelStartup()
 	if err != nil {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
@@ -510,6 +510,8 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
 
 	const (
 		namespace = "default"
