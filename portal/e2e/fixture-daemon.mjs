@@ -173,28 +173,37 @@ const contentTypes = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
 };
+const eventStreams = new Set();
+let eventSequence = 0;
 
 function sendJSON(response, value) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
 }
 
-function serveEvents(request, response) {
+function emitInvalidation() {
+  eventSequence += 1;
+  const cursor = `fixture:${eventSequence}`;
+  const event = {
+    cursor,
+    models: ["instance", "gaggle", "workflow", "goober", "run"],
+    runIds: [run.id],
+    workflows: [identity],
+  };
+  for (const stream of eventStreams) {
+    stream.write(`id: ${cursor}\nevent: invalidate\ndata: ${JSON.stringify(event)}\n\n`);
+  }
+}
+
+function serveEvents(response) {
   response.writeHead(200, {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "Content-Type": "text/event-stream",
   });
-  const timer = setTimeout(() => {
-    const event = {
-      cursor: "fixture:1",
-      models: ["instance", "gaggle", "workflow", "goober", "run"],
-      runIds: [run.id],
-      workflows: [identity],
-    };
-    response.write(`id: fixture:1\nevent: invalidate\ndata: ${JSON.stringify(event)}\n\n`);
-  }, 100);
-  request.on("close", () => clearTimeout(timer));
+  response.flushHeaders();
+  eventStreams.add(response);
+  response.on("close", () => eventStreams.delete(response));
 }
 
 function serveStatic(pathname, response) {
@@ -214,7 +223,22 @@ function serveStatic(pathname, response) {
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
   if (url.pathname === "/api/v1/events") {
-    serveEvents(request, response);
+    serveEvents(response);
+    return;
+  }
+  if (url.pathname === "/api/v1/test/invalidate") {
+    if (request.method !== "POST") {
+      response.writeHead(405);
+      response.end("method not allowed");
+      return;
+    }
+    if (eventStreams.size === 0) {
+      response.writeHead(409);
+      response.end("no event stream connected");
+      return;
+    }
+    emitInvalidation();
+    sendJSON(response, { delivered: eventStreams.size });
     return;
   }
   if (url.pathname === "/api/v1/runs") {
