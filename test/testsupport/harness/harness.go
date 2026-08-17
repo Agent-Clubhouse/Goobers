@@ -11,14 +11,14 @@ import (
 )
 
 type FakeAdapter struct {
-	AdapterName           string
-	Act                   func(context.Context, runtimeharness.RunRequest) error
-	Transcript            []byte
-	TranscriptTruncated   bool
+	AdapterName            string
+	Act                    func(context.Context, runtimeharness.RunRequest) error
+	Transcript             []byte
+	TranscriptTruncated    bool
 	TranscriptDroppedBytes int64
-	Stderr                []byte
-	PreflightErr          error
-	Version               string
+	Stderr                 []byte
+	PreflightErr           error
+	Version                string
 }
 
 func (f *FakeAdapter) Name() string {
