@@ -24,22 +24,23 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"on-main builds the configured branch. Config is never changed.\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
-	return runSelfUpdateWith(args, stdout, stderr, selfupdate.Prepare)
+	return runSelfUpdateWith(args, stdout, stderr, "self-update", selfupdate.Prepare)
 }
 
 func runSelfUpdateWith(
 	args []string,
 	stdout, stderr io.Writer,
+	command string,
 	prepare func(context.Context, selfupdate.PrepareOptions) (selfupdate.PrepareResult, error),
 ) int {
-	fs := newCLIFlagSet("self-update", flag.ContinueOnError)
+	fs := newCLIFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")
 	target := fs.String("target", providerInput("target", ""), "manual release tag")
 	healthTicks := fs.Int("health-ticks", selfupdate.DefaultHealthTicks, "required clean heartbeat ticks")
 	healthTimeout := fs.Duration("health-timeout", 0, "bounded candidate health window (derived from daemon liveness when omitted)")
-	fs.Usage = helpUsage(stderr, "self-update")
+	fs.Usage = helpUsage(stderr, command)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

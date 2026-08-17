@@ -33,6 +33,7 @@ func TestSelfUpdateCommandRoutesManualTarget(t *testing.T) {
 		[]string{"--policy", "manual", "--target", "v1.2.3", root},
 		&stdout,
 		&stderr,
+		"self-update",
 		prepare,
 	)
 
@@ -57,7 +58,7 @@ func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 		return selfupdate.PrepareResult{Policy: opts.Policy, Target: "v1.2.3"}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := runSelfUpdateWith([]string{root}, &stdout, &stderr, prepare)
+	code := runSelfUpdateWith([]string{root}, &stdout, &stderr, "self-update", prepare)
 
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
@@ -117,7 +118,7 @@ func TestSelfUpdateCommandDerivesHealthWindowFromDaemonLiveness(t *testing.T) {
 		return selfupdate.PrepareResult{Policy: opts.Policy, Target: "v1"}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	if code := runSelfUpdateWith([]string{"--health-ticks", "3", root}, &stdout, &stderr, prepare); code != 0 {
+	if code := runSelfUpdateWith([]string{"--health-ticks", "3", root}, &stdout, &stderr, "self-update", prepare); code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
 	if got.HeartbeatInterval != 10*time.Minute {
