@@ -14,12 +14,15 @@
 // # Why mode bits are not portable
 //
 // On Unix the check is the historical one: the file must not be readable or
-// writable by group or other (mode & 0o077 == 0). On Windows, Unix mode bits
-// are fiction — Go's os.Stat synthesizes a mode from the read-only attribute
-// alone, so a world-readable file happily reports 0600-compatible bits. The
-// real protection mechanism on NTFS is the file's DACL, so the Windows
-// implementation reads the security descriptor (GetNamedSecurityInfo) and
-// inspects the discretionary ACL directly, never the mode.
+// writable by group or other (mode & 0o077 == 0). Linux additionally accepts
+// looser mode bits when the file is proven to be on a read-only tmpfs, where
+// Kubernetes projects pod-private secrets with fixed modes. On Windows, Unix
+// mode bits are fiction — Go's os.Stat synthesizes a mode from the read-only
+// attribute alone, so a world-readable file happily reports 0600-compatible
+// bits. The real protection mechanism on NTFS is the file's DACL, so the
+// Windows implementation reads the security descriptor
+// (GetNamedSecurityInfo) and inspects the discretionary ACL directly, never
+// the mode.
 //
 // # Windows tolerance decision: current user, SYSTEM, and Administrators are allowed
 //

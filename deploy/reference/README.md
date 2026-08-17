@@ -146,12 +146,13 @@ writers racing on one digest are writing identical bytes.
 
 ### Secrets
 
-The Secrets Store CSI driver mounts secrets `0644` by design, and
-`internal/platform/secfile` fail-closes on any token file readable by group or
-other. A Kubernetes Secret volume with `defaultMode: 0600` does not help either:
-those files are owned by root, so `0600` makes them unreadable to a non-root
-`runAsUser`. The working shape today is an initContainer that copies and chmods
-into a memory-backed `emptyDir` (#2844 tracks making this unnecessary).
+The Secrets Store CSI driver mounts secrets `0644` by design. Goobers accepts
+those mode bits only when `internal/platform/secfile` can prove that the file is
+on a read-only tmpfs, as Kubernetes uses for pod-private CSI and Secret-volume
+mounts. Everywhere else, token files remain owner-only and the check fails
+closed if the mount protection cannot be established. For providers that do not
+expose a read-only tmpfs, use an initContainer to copy and chmod the secret into
+a memory-backed `emptyDir`.
 
 On Windows the same control is expressed through ACLs rather than mode bits, and
 a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
