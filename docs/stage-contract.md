@@ -430,12 +430,14 @@ currently backs both agent-authored issue intent and runner bookkeeping whose
 ordering is part of the scheduler or PR-lifecycle contract. Migration assigns
 every existing operation to exactly one of these routes:
 
-| Route | Operations and preserved contract |
+| Exclusive owner | Closed method surface and preserved contract |
 |---|---|
-| `github:issues:write` proposals | Agentic curation and nomination create/edit/comment/label/state intents. These are the only initial agent-produced issue mutations; reserved trust labels remain excluded. |
-| Claim adapter | Backlog claim/release, expired/terminal claim cleanup, and orphaned-claim reconciliation. It owns the claim-ledger lock and provider claim epoch as one runner operation: reserve in the ledger, publish the provider breadcrumb, settle the server-assigned winner, roll back a losing provisional ledger reservation, and only then expose the claimed item. Release posts the release breadcrumb and removes the provider marker before freeing the ledger entry, preserving retry ownership if provider cleanup fails. These steps are not decomposed into independently replayable proposals. |
-| Backlog metadata adapter | Ready/stale/tracking/status drift reconciliation and closed-unmerged requeue. Its closed inputs are the trusted label policy, ledger snapshot, provider item/child state, and selected item IDs; it cannot perform arbitrary edits or comments. |
-| Issue disposition adapter | Implementation close-out and parking, scheduler/gate escalation notification, post-merge issue closure, queue outcome routing, and other run-terminal status/claim-marker bookkeeping. It preserves each command's fixed operation ordering, comments, and status vocabulary. |
+| `github:issues:write` proposal executor | Agentic curator and nominator create/edit/comment/label/state intents. These are the only initial agent-produced issue mutations; reserved trust labels remain excluded. |
+| `backlog-query` adapter | Claim, release, expired/terminal claim cleanup, orphaned-claim reconciliation, and ready/stale/tracking/status drift repair performed while selecting work, including policy-authorized tracking-item auto-close. It owns the claim-ledger lock and provider claim epoch as one runner operation: reserve in the ledger, publish the provider breadcrumb, settle the server-assigned winner, roll back a losing provisional ledger reservation, and only then expose the claimed item. Release posts its breadcrumb and removes the provider marker before freeing the ledger entry, preserving retry ownership if provider cleanup fails. It cannot perform caller-supplied issue edits or comments. |
+| `backlog-health` adapter | Ready-pool health sampling and implementation-failure feedback: remove the ready marker and append the bounded run/error evidence only after the configured threshold is met. Its inputs are the pinned trust/ready labels, threshold, telemetry evidence, and provider issue state; it cannot claim, release, close, or make free-form edits. |
+| `issue-close-out` adapter | Implementation close-out and parking only: publish the fixed status comment/labels, remove the ready marker when required, and release the claim in the command's fixed order. Its status and outcome vocabularies are closed; it cannot select another issue or create/edit arbitrary content. |
+| Backlog-assignment adapter | Assign or clear the configured assignee for selector-admitted backlog items. It cannot alter issue content, labels, state, or claims. |
+| Issue-disposition adapter | Scheduler/gate escalation notification, post-merge issue closure, queue outcome routing, self-update rollback escalation issue creation, and other run-terminal status/claim-marker bookkeeping not owned by `issue-close-out`. It preserves each entrypoint's fixed operation ordering, comments, and status vocabulary. |
 | PR-lifecycle bookkeeping adapter | Merge-review verdict labels/status comments, queue eviction/timeout remediation, merge-refusal demotion, post-merge fan-out/unparking/healing, remediation checkpoint/escalation, update-behind/rebase/push-remediated cleanup, and finding responses. It is target-scoped to the selected PR and any trusted selector outputs already admitted by the run. |
 
 Read-only issue/PR consumers use broker-held read handles and receive no writer
@@ -448,6 +450,33 @@ and compatibility entrypoints and reject the new routing version if any
 `github:issues:write` provider mutation is unassigned. Older workflow versions
 remain pinned to direct injection until that inventory and all adapters land
 together; curation/nomination alone are not a completed capability migration.
+
+#### Shipped and example issue-write route audit
+
+The route inventory below was checked on 2026-08-17 against every workflow
+under `reference-workflows/` and `config-examples/`. A listed entrypoint maps to
+one owner in the table above; braces denote identical workflow paths in the two
+ACME examples. Entries that currently declare the broad capability but only read issue state
+are called out separately and do not acquire an issue-write method in the
+migrated route; any PR mutation they perform belongs to the PR route.
+
+| Exclusive owner | Shipped/example workflow paths |
+|---|---|
+| Proposal executor (curator) | `reference-workflows`: `backlog-curation/curate`; `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/curate` |
+| Proposal executor (nominator) | `reference-workflows`: `work-nomination/nominate`, `quality-sprint/nominate`; `config-examples/{acme-web,acme-web-claude}`: `work-nomination/nominate` |
+| `backlog-query` | `reference-workflows`: `backlog-curation/{reconcile-backlog,query-backlog,release-claim}`, `implementation/query-backlog`; `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/{reconcile-backlog,query-backlog,release-claim}`, `{default-implement,implementation}/query-backlog` |
+| `backlog-health` | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/{implementation-feedback,sample-ready-pool}` |
+| `issue-close-out` | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `implementation/{close-out,park-escalated,park-needs-human}` |
+| Backlog-assignment adapter | `config-examples/{acme-web,acme-web-claude}`: `backlog-assignment/assign-backlog` |
+| Issue-disposition adapter | `reference-workflows`: `self-update/stage-update`; `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `merge-review/{queue-watch,post-merge}` |
+| PR-lifecycle bookkeeping adapter | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `merge-review/{reconcile-post-merge,record-merge-refusal}`; `reference-workflows`: `pr-remediation/{update-behind-pr,rebase-pr,remediation-checkpoint,push-remediated,respond-to-findings,park-escalated,park-infrastructure-failure,park-invalid-finding-responses}` |
+| No issue-write owner (issue access is read-only) | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/surface-duplicates`, `merge-review/check-issue-staleness`; `reference-workflows`: `pr-remediation/{gather-pr-context,gather-issue-context,validate-finding-responses}` |
+
+This assignment is exhaustive and disjoint for the audited trees: no
+shipped/example issue mutation is unassigned or has two owners. The audit found
+no implementation gap requiring a follow-up issue. Adding a workflow entry that
+declares `github:issues:write` must update this inventory and select exactly one
+owner before the migrated routing version can validate.
 
 The DSL implementation adds runner-owned deterministic run kinds, mutually
 exclusive with `run.command`. The initial kinds are `prepare-merge-proposal`,

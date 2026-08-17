@@ -27,9 +27,10 @@ const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
 // valid plan) and park-for-human's routing (a conflict) can both read it
 // without parsing prose.
 type validatePlanResult struct {
-	Valid    bool                          `json:"valid"`
-	Errors   []string                      `json:"errors,omitempty"`
-	Conflict *decomposition.ParentConflict `json:"conflict,omitempty"`
+	Valid      bool                          `json:"valid"`
+	PlanDigest string                        `json:"planDigest,omitempty"`
+	Errors     []string                      `json:"errors,omitempty"`
+	Conflict   *decomposition.ParentConflict `json:"conflict,omitempty"`
 }
 
 func runValidatePlan(args []string, stdout, stderr io.Writer) int {
@@ -88,8 +89,16 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		State:  item.State,
 	}
 	result := decomposition.ValidatePlan(plan, selection, live)
+	planDigest := ""
+	if result.Valid {
+		planDigest, err = decomposition.PlanDigest(plan)
+		if err != nil {
+			pf(stderr, "error: digest validated plan: %v\n", err)
+			return 1
+		}
+	}
 
-	data, err := json.Marshal(validatePlanResult{Valid: result.Valid, Errors: result.Errors, Conflict: result.Conflict})
+	data, err := json.Marshal(validatePlanResult{Valid: result.Valid, PlanDigest: planDigest, Errors: result.Errors, Conflict: result.Conflict})
 	if err != nil {
 		pf(stderr, "error: marshal plan-validation result: %v\n", err)
 		return 1

@@ -220,8 +220,9 @@ spec:
                       type: object
                     maxRepasses:
                       description: |-
-                        MaxRepasses overrides the inherited workflow repass budget for this gate.
-                        It is valid only for automated and agentic gates.
+                        MaxRepasses overrides the inherited target-stage re-entry budget when this
+                        gate routes to an already-completed stage. It is valid only for automated
+                        and agentic gates.
                       format: int32
                       minimum: 1
                       type: integer
@@ -422,8 +423,9 @@ spec:
                   MaxRepasses.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer

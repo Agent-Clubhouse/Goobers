@@ -429,12 +429,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	ws := &walkState{
-		jr:        jr,
-		reg:       registrar,
-		pointers:  reconstructPointers(pointerEvents, in.Machine),
-		completed: reconstructStageOutputs(seedEvents, in.Machine),
-		parallel:  activeParallel,
-		fanIn:     pendingFanIn(seedEvents, in.Machine),
+		jr:            jr,
+		reg:           registrar,
+		pointers:      reconstructPointers(pointerEvents, in.Machine),
+		completed:     reconstructStageOutputs(seedEvents, in.Machine),
+		visitedStages: stageVisitSeed(seedEvents),
+		parallel:      activeParallel,
+		fanIn:         pendingFanIn(seedEvents, in.Machine),
 	}
 	if activeParallel != nil {
 		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
@@ -694,7 +695,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	ws.gateAttempts, ws.gateDiffDigests = gateAttempts, gateDiffDigests
+	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -1463,7 +1464,10 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
-		n, ok := e.Runner["repassAttempt"].(float64)
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
 		if !ok {
 			continue
 		}
@@ -1471,6 +1475,43 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 			seed = make(map[string]int)
 		}
 		seed[e.Gate] = int(n)
+	}
+	return seed
+}
+
+// targetRepassSeed reconstructs the cumulative repass count for each target
+// stage. repassTarget preserves the configured branch when an exhausted
+// evaluation was instead routed to escalation.
+func targetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && e.Verdict != gate.OutcomePass && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func stageVisitSeed(events []journal.Event) map[string]bool {
+	seed := make(map[string]bool)
+	for _, e := range events {
+		if e.Type == journal.EventStageFinished && e.Stage != "" {
+			seed[e.Stage] = true
+		}
 	}
 	return seed
 }

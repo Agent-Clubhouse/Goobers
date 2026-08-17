@@ -11,10 +11,9 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
-// DefaultMaxRepasses is the default bounded-repass budget: a gate may
-// evaluate to a non-"pass" outcome this many times before Evaluator overrides
-// its own configured branch and routes to workflow.TargetEscalate instead —
-// "bounded repass loops (loop budget journaled and enforced)" (issue #20).
+// DefaultMaxRepasses is the default bounded-repass budget: a stage may be
+// re-entered from a gate this many times before Evaluator overrides the gate's
+// configured branch and routes to workflow.TargetEscalate instead.
 // Inherited run policy may override this default, and Gate.MaxRepasses may
 // override the inherited value for one automated or agentic gate.
 const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
@@ -34,10 +33,15 @@ type Result struct {
 	// Outcome, unless the repass budget was exhausted, in which case it is the
 	// optional escalate control branch or workflow.TargetEscalate.
 	Target string
-	// Attempt is this gate's consecutive non-pass evaluation count,
-	// including this one when Outcome != OutcomePass (0 when Outcome ==
-	// OutcomePass, since a pass resets the budget).
+	// Attempt is the number of times the repass target has been re-entered,
+	// including this evaluation. It is 0 when the outcome does not repass.
 	Attempt int
+	// RepassTarget is the configured branch target charged by Attempt. It
+	// remains set when budget exhaustion overrides Target with escalation.
+	RepassTarget string
+	// GateAttempt is this gate's consecutive non-pass evaluation count. It is
+	// retained separately to recover dangling gate evaluations after a crash.
+	GateAttempt int
 	// Escalated is true when Target was overridden by the runner because the
 	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
@@ -131,22 +135,22 @@ type Evaluator struct {
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
-	// Attempts holds each gate's current consecutive non-pass count, keyed by
-	// gate name — the same value Result.Attempt reports after Evaluate. Nil
-	// (equivalently, a zero count for every gate) is the correct zero value
-	// for a fresh run. A caller resuming an interrupted run seeds this on
-	// construction (Evaluator{Attempts: restored, ...}) so the repass budget
-	// continues rather than resetting to 0 — e.g. Runner.Resume (#89)
-	// reconstructing it from each gate's last gate.started/gate.evaluated
-	// event (Runner["repassAttempt"], journal.go), the same source state.json
-	// itself is always reconstructable from. Evaluate mutates this map in
-	// place, so it also serves as the live, inspectable checkpoint source for
-	// a caller that wants to persist it after each gate — read
-	// Attempts[gateName], not Result.Attempt, if a pass may have reset it
-	// since the last read. Nil-safe: Evaluate lazily allocates it on first
-	// use. Exported instead of a constructor because every other Evaluator
-	// field is already set via struct literal (see internal/runner/run.go).
+	// Attempts holds each gate's consecutive non-pass count for recovering
+	// crash-interrupted evaluations. Budget enforcement uses RepassAttempts.
+	// A resuming caller reconstructs this map from gateAttempt annotations.
 	Attempts map[string]int
+
+	// RepassAttempts holds cumulative repasses keyed by configured branch
+	// target. Unlike Attempts, the verdict does not affect this count: every
+	// branch back to an already-completed stage consumes its shared budget. A
+	// resuming caller reconstructs it from repassTarget and repassAttempt
+	// annotations.
+	RepassAttempts map[string]int
+
+	// IsReentry reports whether a configured branch target is a stage that has
+	// already completed in this run. Nil preserves the historical assumption
+	// that non-pass branches are repasses for direct Evaluator callers.
+	IsReentry func(target string) bool
 
 	// LastDiffDigest holds each agentic gate's most recently evaluated diff
 	// digest, keyed by gate name (issue #316: an implementer stuck in a
@@ -401,7 +405,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, exceeded := e.trackRepass(g, outcome)
+	attempt, gateAttempt, repassTarget, exceeded := e.trackRepass(g, outcome, target)
 	escalated := exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
@@ -411,7 +415,11 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	if duplicateDiff {
 		repassCause = e.RepassCause
 	}
-	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, RepassCause: repassCause, CacheHit: cacheHit, Verdict: verdict}
+	r := Result{
+		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
+		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
+		DuplicateDiff: duplicateDiff, RepassCause: repassCause, CacheHit: cacheHit, Verdict: verdict,
+	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
@@ -434,6 +442,7 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 		Outcome:     OutcomeFail,
 		Target:      escalationTarget(g),
 		Attempt:     attempt,
+		GateAttempt: attempt,
 		Escalated:   true,
 		Interrupted: true,
 	}
@@ -452,21 +461,33 @@ func escalationTarget(g apiv1.Gate) string {
 	return wf.TargetEscalate
 }
 
-// trackRepass updates gate g's consecutive non-pass counter: a "pass" outcome
-// resets it to 0; any other outcome increments it. It returns the post-update
-// count and whether that count exceeds the repass budget (in which case the
-// caller must escalate instead of following the gate's own branch).
-func (e *Evaluator) trackRepass(g apiv1.Gate, outcome string) (attempt int, exceeded bool) {
+// trackRepass charges branches that re-enter an already-completed target stage.
+// The per-gate counter remains for interrupted-evaluation recovery, but budget
+// enforcement uses the target counter so distinct gates and outcomes cannot
+// grant each other fresh repass budgets.
+func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, gateAttempt int, repassTarget string, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
 	if outcome == OutcomePass {
 		e.Attempts[g.Name] = 0
-		return 0, false
+	} else {
+		e.Attempts[g.Name]++
+		gateAttempt = e.Attempts[g.Name]
 	}
-	e.Attempts[g.Name]++
-	attempt = e.Attempts[g.Name]
-	return attempt, attempt > e.maxRepasses(g)
+	reentry := outcome != OutcomePass
+	if e.IsReentry != nil {
+		reentry = e.IsReentry(target)
+	}
+	if !reentry {
+		return 0, gateAttempt, "", false
+	}
+	if e.RepassAttempts == nil {
+		e.RepassAttempts = make(map[string]int)
+	}
+	e.RepassAttempts[target]++
+	attempt = e.RepassAttempts[target]
+	return attempt, gateAttempt, target, attempt > e.maxRepasses(g)
 }
 
 func (e *Evaluator) maxRepasses(g apiv1.Gate) int {
