@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestShellStageTelemetryRoundTripsToRollup(t *testing.T) {
@@ -190,7 +191,7 @@ done >> "$GOOBERS_TELEMETRY_DIR/events.jsonl"`
 }
 
 func TestAgenticTaskSpanCarriesProvenanceWhenPreparationFails(t *testing.T) {
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-agent-provenance-test",
 		SpanExporter: exporter,
@@ -432,7 +433,7 @@ func TestAgenticGateTelemetryRoundTripsToRollup(t *testing.T) {
 
 func TestResumeFailedRunSpanMatchesJournalOutcome(t *testing.T) {
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "runner-resume-telemetry-test",
 		SpanExporter: exporter,

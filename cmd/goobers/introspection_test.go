@@ -12,6 +12,7 @@ import (
 	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestDiagnosticsJSONGolden(t *testing.T) {
@@ -345,7 +346,7 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 	t.Run("harness", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
-			return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+			return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 		})
 
 		code, stdout, stderr := runArgs(t, "validate", "--json", "--check-harness", root)

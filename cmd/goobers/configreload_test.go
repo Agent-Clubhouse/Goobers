@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
@@ -643,8 +644,8 @@ spec:
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "completed fixture task",
 			})

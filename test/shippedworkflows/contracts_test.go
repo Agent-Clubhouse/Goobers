@@ -33,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 const (
@@ -1717,7 +1718,7 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 			return err
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, result)
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
 		outcome, ok := s.nextGateOutcome(stage)
 		if !ok {
@@ -1734,7 +1735,7 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		default:
 			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
 			Rationale: "scripted fake-harness verdict",
 		})
@@ -1912,7 +1913,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if !ok {
 				return nil, fmt.Errorf("secret registrar %T is not a journal scrubber", registrar)
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Act:        script.harnessAct,
 				Transcript: []byte("scripted shipped-workflow contract harness\n"),
 			}

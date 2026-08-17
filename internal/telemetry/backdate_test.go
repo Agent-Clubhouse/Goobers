@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 // A tier-3 run's spans are synthesized after the fact, from workflow history via
@@ -12,7 +14,7 @@ import (
 // run, which is worse than no telemetry: it looks authoritative and is wrong.
 func TestStartRunBackdatesWhenStartedAtIsSet(t *testing.T) {
 	t.Parallel()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +49,7 @@ func TestStartRunBackdatesWhenStartedAtIsSet(t *testing.T) {
 // Backdating is opt-in or it is a behaviour change to every existing caller.
 func TestStartRunStampsNowWhenStartedAtIsZero(t *testing.T) {
 	t.Parallel()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +83,7 @@ func TestStartRunStampsNowWhenStartedAtIsZero(t *testing.T) {
 // Start and end are backdated together or the pair is meaningless.
 func TestEndAtBackdatesSpanCompletion(t *testing.T) {
 	t.Parallel()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +122,7 @@ func TestEndAtBackdatesSpanCompletion(t *testing.T) {
 // behaviour for a caller that does not know the real completion time.
 func TestEndAtWithZeroTimeFallsBackToNow(t *testing.T) {
 	t.Parallel()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationExecProcessRunnerTimeout(t *testing.T) {

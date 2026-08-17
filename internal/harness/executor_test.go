@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -191,7 +192,7 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 }
 
 func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "harness-provenance-test",
 		SpanExporter: exporter,
@@ -295,7 +296,7 @@ func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-integration-test").Start(context.Background(), "attempt")
@@ -442,7 +443,7 @@ func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-error-test").Start(context.Background(), "attempt")
