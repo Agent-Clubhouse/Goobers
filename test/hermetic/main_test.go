@@ -137,7 +137,8 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 		"CC=ambient-cc",
 		"GOOBERS_OTLP_ENDPOINT=http://127.0.0.1:4317",
 		"GOOBERS_OTLP_INSECURE=true",
-	}, "/isolated/tools", "hermetic-cc")
+		"GOROOT=/ambient/goroot",
+	}, "/isolated/tools", "hermetic-cc", "/isolated/goroot")
 
 	values := environmentMap(got)
 	for _, name := range []string{"GOOBERS_OTLP_ENDPOINT", "GOOBERS_OTLP_INSECURE"} {
@@ -154,6 +155,7 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 		"GONOSUMDB":   "none",
 		"GOPRIVATE":   "",
 		"GOPROXY":     "off",
+		"GOROOT":      "/isolated/goroot",
 		"GOSUMDB":     "off",
 		"GOTOOLCHAIN": "local",
 		"GOVCS":       "*:off",

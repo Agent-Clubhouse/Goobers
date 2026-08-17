@@ -106,6 +106,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
 	}
+	goroot, err := resolveGoroot(tools[0].path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
+		return 1
+	}
+
 	allowed := toolNames(tools)
 	violations, err := auditTestExecs(root, allowed)
 	if err != nil {
@@ -143,7 +149,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	goArgs := goCommandArgs(invocation)
 	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
 	command.Dir = root
-	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName)
+	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName, goroot)
 
 	collector := &diagnosticCollector{allowed: allowed, tools: make(map[string]struct{})}
 	stdoutWriter := &diagnosticWriter{destination: stdout, collector: collector}
@@ -498,7 +504,28 @@ func executableName(name string) string {
 	return name
 }
 
-func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
+// resolveGoroot asks the real Go binary where its GOROOT is, before that binary
+// is linked into the hermetic tool PATH.
+//
+// The tool PATH cannot be relied on to answer this. Off Windows linkTool makes
+// a symlink, so the Go runtime follows it back to the original binary and infers
+// GOROOT by itself. On Windows linkTool hardlinks or copies, and a copied go.exe
+// has no path home — it fails with "'go' binary is trimmed and GOROOT is not
+// set". Setting GOROOT explicitly makes the environment correct on every
+// platform rather than relying on symlink resolution.
+func resolveGoroot(goPath string) (string, error) {
+	output, err := exec.Command(goPath, "env", "GOROOT").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve GOROOT from %s: %w", goPath, err)
+	}
+	goroot := strings.TrimSpace(string(output))
+	if goroot == "" {
+		return "", fmt.Errorf("resolve GOROOT from %s: empty result", goPath)
+	}
+	return goroot, nil
+}
+
+func hermeticEnvironment(base []string, toolPath, compilerName, goroot string) []string {
 	excluded := map[string]string{
 		"GOOBERS_OTLP_ENDPOINT": "",
 		"GOOBERS_OTLP_INSECURE": "",
@@ -506,6 +533,7 @@ func hermeticEnvironment(base []string, toolPath, compilerName string) []string 
 	overrides := map[string]string{
 		"CC":          compilerName,
 		"GO":          executableName("go"),
+		"GOROOT":      goroot,
 		"GOENV":       "off",
 		"GOFLAGS":     "-mod=readonly",
 		"GONOPROXY":   "none",
