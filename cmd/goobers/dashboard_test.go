@@ -267,6 +267,21 @@ func freeNonLoopbackTestPort(t *testing.T) int {
 	return port
 }
 
+func useLoopbackDashboardTestListener(t *testing.T) {
+	t.Helper()
+	original := listenDashboardTCP
+	listenDashboardTCP = func(network, address string) (net.Listener, error) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		return net.Listen(network, net.JoinHostPort("127.0.0.1", port))
+	}
+	t.Cleanup(func() {
+		listenDashboardTCP = original
+	})
+}
+
 // TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth pins the
 // fail-closed CLI behaviour (#2884): --listen to a non-loopback host is
 // refused at startup, before anything is served, when instance.yaml has no
@@ -292,6 +307,11 @@ func TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth(t *testing.T) {
 func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 	root := initDemo(t)
 	setDashboardAPIAuth(t, root)
+	// Preserve the configured non-loopback host through validation and URL
+	// publication, but never expose the disposable test binary off-loopback.
+	// Windows Defender otherwise asks for a persistent firewall decision for
+	// the temporary goobers.test.exe.
+	useLoopbackDashboardTestListener(t)
 	port := freeNonLoopbackTestPort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &dashboardURLWriter{url: make(chan string, 1)}
