@@ -227,6 +227,21 @@ func TestValidatePlanFlagsLiveParentConflictDistinctlyFromErrors(t *testing.T) {
 	}
 }
 
+func TestValidatePlanFlagsUnresolvedProductDecision(t *testing.T) {
+	live := validLiveParent()
+	selection := validSelection(t, live)
+	plan := validPlan(selection)
+	plan.UnresolvedDecision = "Should the replacement preserve the legacy API?"
+
+	result := ValidatePlan(plan, selection, live)
+	if result.Valid || !result.UnresolvedDecision {
+		t.Fatalf("result = %+v, want a distinct unresolved-decision signal", result)
+	}
+	if len(result.Errors) != 0 || result.Conflict != nil {
+		t.Fatalf("result = %+v, want no structural errors or parent conflict", result)
+	}
+}
+
 func containsSubstring(errs []string, substr string) bool {
 	for _, e := range errs {
 		if strings.Contains(e, substr) {

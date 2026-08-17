@@ -201,11 +201,67 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Valid || got.Conflict == nil {
+	if got.Valid || !got.Conflict {
 		t.Fatalf("plan-validation = %+v, want a conflict, not an ordinary valid/invalid result", got)
 	}
 	if len(got.Errors) != 0 {
 		t.Fatalf("plan-validation errors = %v, want none alongside a conflict", got.Errors)
+	}
+}
+
+func TestValidatePlanEmitsScalarUnresolvedDecisionSignal(t *testing.T) {
+	root := t.TempDir()
+	server := newFakeGitHubServer(t, "acme", "widgets")
+	server.addIssue(422, "A product decision is needed", providers.LabelApproved)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
+	decompositionInstanceEnv(t, root)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	selection := decomposition.Selection{
+		Mode: decomposition.SelectionModeEscalation, SourceRunID: "r1",
+		Parent: decomposition.ParentRef{Provider: "github", Repository: "acme/widgets", ID: "422"},
+	}
+	digest, err := decomposition.IssueSnapshotDigest(
+		"422", "A product decision is needed", "", []string{providers.LabelApproved}, "open",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.IssueSnapshotDigest = digest
+	plan := validDecompositionPlan(selection)
+	plan.UnresolvedDecision = "Should this preserve the legacy API?"
+	selectionData, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("selection.json", selectionData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planData, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("plan.json", planData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate-plan", root)
+	if code != 0 {
+		t.Fatalf("validate-plan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	resultData, err := os.ReadFile("plan-validation.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got validatePlanResult
+	if err := json.Unmarshal(resultData, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Valid || got.Conflict || !got.UnresolvedDecision ||
+		got.UnresolvedDecisionReason != plan.UnresolvedDecision {
+		t.Fatalf("plan-validation = %+v, want unresolved-decision routing output", got)
 	}
 }
 

@@ -31,10 +31,13 @@ const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
 // valid plan) and park-for-human's routing (a conflict) can both read it
 // without parsing prose.
 type validatePlanResult struct {
-	Valid      bool                          `json:"valid"`
-	PlanDigest string                        `json:"planDigest,omitempty"`
-	Errors     []string                      `json:"errors,omitempty"`
-	Conflict   *decomposition.ParentConflict `json:"conflict,omitempty"`
+	Valid                    bool     `json:"valid"`
+	PlanDigest               string   `json:"planDigest,omitempty"`
+	Errors                   []string `json:"errors,omitempty"`
+	Conflict                 bool     `json:"conflict"`
+	ConflictReason           string   `json:"conflictReason,omitempty"`
+	UnresolvedDecision       bool     `json:"unresolvedDecision"`
+	UnresolvedDecisionReason string   `json:"unresolvedDecisionReason,omitempty"`
 }
 
 func runValidatePlan(args []string, stdout, stderr io.Writer) int {
@@ -102,7 +105,19 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	data, err := json.Marshal(validatePlanResult{Valid: result.Valid, PlanDigest: planDigest, Errors: result.Errors, Conflict: result.Conflict})
+	conflictReason := ""
+	if result.Conflict != nil {
+		conflictReason = result.Conflict.Reason
+	}
+	data, err := json.Marshal(validatePlanResult{
+		Valid:                    result.Valid,
+		PlanDigest:               planDigest,
+		Errors:                   result.Errors,
+		Conflict:                 result.Conflict != nil,
+		ConflictReason:           conflictReason,
+		UnresolvedDecision:       result.UnresolvedDecision,
+		UnresolvedDecisionReason: plan.UnresolvedDecision,
+	})
 	if err != nil {
 		pf(stderr, "error: marshal plan-validation result: %v\n", err)
 		return 1

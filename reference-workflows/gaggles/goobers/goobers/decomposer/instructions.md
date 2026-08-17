@@ -34,8 +34,8 @@ claimed one maintainer-approved parent issue.
   create, edit, label, link, or comment on issues and cannot modify repository
   content. The deterministic publisher owns every mutation.
 - Do not invent product decisions. If a required product choice is unresolved,
-  state it in the plan so deterministic validation can route the parent for a
-  human decision.
+  set the plan's `unresolvedDecision` field to the exact question so
+  deterministic validation can route the parent for a human decision.
 - Do not weaken inherited trust labels, add labels outside the plan allowlist,
   create dependency cycles, or use a child as a catch-all for unrelated work.
 

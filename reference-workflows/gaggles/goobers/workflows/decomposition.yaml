@@ -71,6 +71,9 @@ spec:
         - planDigest
         - errors
         - conflict
+        - conflictReason
+        - unresolvedDecision
+        - unresolvedDecisionReason
       next: parent-unchanged
 
     - name: publish-slices
@@ -91,6 +94,9 @@ spec:
         - parentId
         - planDigest
         - childIds
+        - publicationConflict
+        - conflictReason
+      next: publication-clean
 
     - name: park-for-human
       type: deterministic
@@ -114,7 +120,18 @@ spec:
         check: output-equals
         params:
           key: conflict
-          equals: ""
+          equals: "false"
+      branches:
+        pass: decision-resolved
+        fail: park-for-human
+
+    - name: decision-resolved
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: unresolvedDecision
+          equals: "false"
       branches:
         pass: plan-valid
         fail: park-for-human
@@ -131,3 +148,14 @@ spec:
         pass: publish-slices
         fail: design-slices
         escalate: park-for-human
+
+    - name: publication-clean
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: publicationConflict
+          equals: "false"
+      branches:
+        pass: ""
+        fail: park-for-human

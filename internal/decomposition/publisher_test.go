@@ -501,6 +501,9 @@ func TestPublisherParksStaleParent(t *testing.T) {
 	if !errors.As(err, &conflict) {
 		t.Fatalf("error = %v, want RevisionConflictError", err)
 	}
+	if !IsPublicationConflict(err) {
+		t.Fatalf("IsPublicationConflict(%v) = false, want workflow-routable conflict", err)
+	}
 	assertParentParked(t, fake)
 }
 

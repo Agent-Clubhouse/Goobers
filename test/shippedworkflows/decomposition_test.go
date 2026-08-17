@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -33,7 +34,7 @@ func TestDecompositionWorkflowContract(t *testing.T) {
 	publish := requireTask(t, spec, "publish-slices")
 	park := requireTask(t, spec, "park-for-human")
 	if selectSource.Next != "design-slices" || design.Next != "validate-plan" ||
-		validate.Next != "parent-unchanged" || publish.Next != "" || park.Next != "@escalate" {
+		validate.Next != "parent-unchanged" || publish.Next != "publication-clean" || park.Next != "@escalate" {
 		t.Fatal("unexpected decomposition stage wiring")
 	}
 	if design.Goober != "decomposer" ||
@@ -47,14 +48,30 @@ func TestDecompositionWorkflowContract(t *testing.T) {
 	}
 
 	parentGate := requireGate(t, spec, "parent-unchanged")
+	decisionGate := requireGate(t, spec, "decision-resolved")
 	planGate := requireGate(t, spec, "plan-valid")
-	if parentGate.Branches["pass"] != "plan-valid" || parentGate.Branches["fail"] != "park-for-human" {
+	publicationGate := requireGate(t, spec, "publication-clean")
+	if parentGate.Automated.Params["key"] != "conflict" || parentGate.Automated.Params["equals"] != "false" ||
+		parentGate.Branches["pass"] != "decision-resolved" || parentGate.Branches["fail"] != "park-for-human" {
 		t.Fatalf("parent-unchanged branches = %v", parentGate.Branches)
+	}
+	if decisionGate.Automated.Params["key"] != "unresolvedDecision" ||
+		decisionGate.Automated.Params["equals"] != "false" ||
+		decisionGate.Branches["pass"] != "plan-valid" || decisionGate.Branches["fail"] != "park-for-human" {
+		t.Fatalf("decision-resolved gate = %+v", decisionGate)
 	}
 	if planGate.Branches["pass"] != "publish-slices" || planGate.Branches["fail"] != "design-slices" ||
 		planGate.Branches["escalate"] != "park-for-human" || planGate.MaxRepasses != 1 {
 		t.Fatalf("plan-valid bounded branches = %+v", planGate)
 	}
+	if publicationGate.Automated.Params["key"] != "publicationConflict" ||
+		publicationGate.Automated.Params["equals"] != "false" ||
+		publicationGate.Branches["pass"] != "" || publicationGate.Branches["fail"] != "park-for-human" {
+		t.Fatalf("publication-clean gate = %+v", publicationGate)
+	}
+	assertOutputGateRoute(t, parentGate, map[string]interface{}{"conflict": true}, gate.OutcomeFail)
+	assertOutputGateRoute(t, decisionGate, map[string]interface{}{"unresolvedDecision": true}, gate.OutcomeFail)
+	assertOutputGateRoute(t, publicationGate, map[string]interface{}{"publicationConflict": true}, gate.OutcomeFail)
 
 	var decomposer apiv1.Goober
 	for _, candidate := range set.Goobers {
@@ -72,5 +89,18 @@ func TestDecompositionWorkflowContract(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(decomposer.Spec.Capabilities, ","), ":write") {
 		t.Fatalf("decomposer has write capability: %v", decomposer.Spec.Capabilities)
+	}
+}
+
+func assertOutputGateRoute(t *testing.T, workflowGate apiv1.Gate, outputs map[string]interface{}, want string) {
+	t.Helper()
+	check := gate.DefaultChecks()[workflowGate.Automated.Check]
+	got, err := check(outputs, workflowGate.Automated.Params)
+	if err != nil {
+		t.Fatalf("evaluate gate %q: %v", workflowGate.Name, err)
+	}
+	if got != want || workflowGate.Branches[got] != "park-for-human" {
+		t.Fatalf("gate %q routed output %v to %q/%q, want %q/park-for-human",
+			workflowGate.Name, outputs, got, workflowGate.Branches[got], want)
 	}
 }

@@ -167,6 +167,7 @@ an explicitly unresolved product decision, or exhausted design repasses reaches
     "observedRevision": "provider revision"
   },
   "summary": "Why these slices form one coherent delivery plan.",
+  "unresolvedDecision": "",
   "children": [
     {
       "key": "selector",
@@ -185,6 +186,8 @@ and validation.
 
 The validator requires:
 
+- `unresolvedDecision` to be empty before publication; a non-empty question is
+  emitted as a scalar routing signal and parks the parent for a human decision;
 - at least two children unless the plan explicitly rewrites the parent into one
   smaller replacement and explains why no split is needed;
 - unique, stable child keys and non-empty titles, bodies, and acceptance criteria;
