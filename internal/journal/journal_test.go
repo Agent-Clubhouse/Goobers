@@ -311,13 +311,17 @@ func TestFutureEventSchemaFailsClosed(t *testing.T) {
 	_, _ = f.WriteString(`{"schema":"goobers.dev/journal/event/v2","seq":99,"type":"quantum.entangled","branch":0,"time":"2027-01-01T00:00:00Z"}` + "\n")
 	_ = f.Close()
 
-	_, err = OpenRead(filepath.Join(root, testIdentity().RunID))
+	reader, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	_, err = reader.Events()
 	if err == nil {
-		t.Fatal("OpenRead accepted a newer event schema")
+		t.Fatal("Events accepted a newer event schema")
 	}
 	for _, want := range []string{"event schema", "event/v2", "event/v1", "minimum binary"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("OpenRead error %q does not contain %q", err, want)
+			t.Errorf("Events error %q does not contain %q", err, want)
 		}
 	}
 }

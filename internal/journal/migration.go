@@ -185,9 +185,6 @@ func admitJournalSchema(dir string, info SchemaInfo, exists bool) (bool, error) 
 		return false, errors.New("journal: schema.json minimumBinary is required")
 	}
 	if info.Version == CurrentSchemaVersion {
-		if err := validateJournalPayloadSchemas(dir); err != nil {
-			return false, err
-		}
 		return true, nil
 	}
 	return false, nil

@@ -373,10 +373,18 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	var schemaMetaExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'schema_meta'
+		)`).Scan(&schemaMetaExists); err != nil {
+		return fmt.Errorf("rollup: inspect schema_meta: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("rollup: create schema_meta: %w", err)
 	}
-	version, err := schemaVersionTx(ctx, tx)
+	version, err := schemaVersionTx(ctx, tx, schemaMetaExists)
 	if err != nil {
 		return err
 	}
@@ -424,14 +432,21 @@ func isSQLiteBusy(err error) bool {
 // schemaVersionTx reads the recorded schema version within the migration
 // transaction (so the read shares the write lock migrateOnce already holds — no
 // separate autocommit read that could race a concurrent first-opener).
-func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
-	if err == sql.ErrNoRows {
+func schemaVersionTx(ctx context.Context, tx *sql.Tx, schemaMetaExisted bool) (int, error) {
+	var count, version int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MIN(version), 0)
+		FROM schema_meta`).Scan(&count, &version); err != nil {
+		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	}
+	if count == 0 && !schemaMetaExisted {
 		return 0, nil
 	}
-	if err != nil {
-		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	if count != 1 {
+		return 0, fmt.Errorf(
+			"rollup: schema_meta must contain exactly one version row, found %d; restore telemetry.db from backup",
+			count,
+		)
 	}
 	return version, nil
 }

@@ -204,8 +204,12 @@ func TestIdentityRefusesUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := OpenRead(dir); err == nil {
-		t.Fatal("OpenRead accepted an unknown run schema version instead of refusing it")
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.Identity(); err == nil {
+		t.Fatal("Identity accepted an unknown run schema version instead of refusing it")
 	} else if !strings.Contains(err.Error(), "unsupported") {
 		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}
@@ -234,8 +238,12 @@ func TestStateRefusesUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := OpenRead(dir); err == nil {
-		t.Fatal("OpenRead accepted an unknown state schema version instead of refusing it")
+	reader, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	if _, err := reader.State(); err == nil {
+		t.Fatal("State accepted an unknown state schema version instead of refusing it")
 	} else if !strings.Contains(err.Error(), "unsupported") {
 		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}

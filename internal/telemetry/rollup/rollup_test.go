@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -813,6 +814,55 @@ func TestOpenRejectsUnsupportedSchemaVersions(t *testing.T) {
 			}
 			if got != tt.version {
 				t.Fatalf("schema version after rejected Open = %d, want %d", got, tt.version)
+			}
+		})
+	}
+}
+
+func TestOpenRejectsMalformedSchemaMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		versions []int
+	}{
+		{name: "empty"},
+		{name: "multiple including unsupported", versions: []int{len(migrations), len(migrations) + 1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "telemetry.db")
+			fixture, err := sql.Open("sqlite", path+dsnParams)
+			if err != nil {
+				t.Fatalf("open schema fixture: %v", err)
+			}
+			if _, err := fixture.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+				_ = fixture.Close()
+				t.Fatalf("create schema metadata: %v", err)
+			}
+			for _, version := range tt.versions {
+				if _, err := fixture.Exec(`INSERT INTO schema_meta (version) VALUES (?)`, version); err != nil {
+					_ = fixture.Close()
+					t.Fatalf("insert schema version: %v", err)
+				}
+			}
+			if err := fixture.Close(); err != nil {
+				t.Fatalf("close schema fixture: %v", err)
+			}
+
+			db, err := Open(path)
+			if db != nil {
+				_ = db.Close()
+			}
+			if err == nil {
+				t.Fatal("Open accepted malformed schema metadata")
+			}
+			for _, want := range []string{
+				"schema_meta must contain exactly one version row",
+				fmt.Sprintf("found %d", len(tt.versions)),
+				"restore telemetry.db from backup",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Open error %q does not contain %q", err, want)
+				}
 			}
 		})
 	}

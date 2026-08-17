@@ -78,7 +78,7 @@ func openCurrentJournal(dir string) (*Reader, error) {
 	return &Reader{dir: dir, schema: info}, nil
 }
 
-// Identity parses run.yaml after OpenRead has admitted its payload schema.
+// Identity parses run.yaml and rejects payload schemas this build does not own.
 func (r *Reader) Identity() (RunIdentity, error) {
 	b, err := os.ReadFile(filepath.Join(r.dir, fileRunYAML))
 	if err != nil {
@@ -175,8 +175,8 @@ func (r *Reader) EventRecords() ([]EventRecord, error) {
 }
 
 // KnownSchema reports whether an event uses the schema version this build owns.
-// OpenRead rejects unsupported versions, so successfully read journals contain
-// only events whose type-specific fields this build can interpret.
+// Event consumers reject unsupported versions before interpreting type-specific
+// fields.
 func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 
 // ArtifactBytes reads and verifies a stored blob against its Ref.Digest,
