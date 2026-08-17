@@ -53,6 +53,8 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
   pull from (§1) — Goobers does not publish images yet (CI publishing is a follow-up).
+  The image includes Node.js, GitHub CLI, and the Copilot CLI default agent harness, so
+  the reference worker can run deterministic and agentic stages.
 - **Mixed-OS safety**: the Linux control-plane workloads are pinned with
   `kubernetes.io/os: linux`. In a cluster with Windows nodes, also taint every Windows
   node so an unpinned Linux workload cannot attach and initialize a Linux volume there:
@@ -185,17 +187,11 @@ inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
 
 ### Images
 
-The default image carries the binary, git and ca-certificates — **no agent
-harness** — so deterministic stages run and agentic stages fail at the harness
-preflight (#2849). Build your own from it:
-
-```dockerfile
-FROM <registry>/goobers:<tag>
-RUN npm install -g @github/copilot     # or whichever harness you use
-```
-
-and set the matching `runner.harnessCommand` in `instance.yaml`. Which harness to
-install is deliberately yours: `harnessCommand` is a map keyed by harness name.
+The default image carries the Copilot CLI agent harness. Its home is mounted from
+an `emptyDir` in the reference worker so `$HOME/.copilot` remains writable while
+the container root filesystem stays read-only. To use another harness, derive an
+image that installs it and set the matching `runner.harnessCommand` in
+`instance.yaml`; the map is keyed by harness name.
 
 Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
 pull on a fresh node. If your operator-selected capacity policy scales the Windows
