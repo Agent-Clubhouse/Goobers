@@ -98,6 +98,7 @@ github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted con
 github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.ConformanceCoveredAdapterNames # Cross-package registry-completeness contract (#2776), exercised by cmd/goobers's TestBuildHarnessRegistryAdaptersAreConformanceCovered.
+github.com/goobers/goobers/internal/providerstage.Commands # Cross-package provider-stage inventory exercised by cmd/goobers's blessed-tier dispatch conformance gate (CONF-10, #2499).
 github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
 github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
 github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
