@@ -301,6 +301,10 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	comment := providerInput("comment", "")
+	reason := strings.TrimSpace(providerInput("reason", ""))
+	if reason != "" {
+		comment = reason + "\n\n" + comment
+	}
 	if issueCloseOutIsParkStatus(status) {
 		// #2028: the comment prefix names the disposition — a genuine
 		// needs-human park is framed as awaiting a human's review; a

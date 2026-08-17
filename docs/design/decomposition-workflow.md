@@ -145,7 +145,8 @@ not part of this workflow contract.
 
 A structurally valid but inadequately scoped plan returns the validator's bounded,
 deterministic findings to `design-slices` through the ordinary repass context. A
-schema-invalid artifact fails closed without publication. Only a parent conflict,
+schema-invalid artifact fails closed at a terminal abort without publication or
+consuming the design-repass budget. Only a parent conflict,
 an explicitly unresolved product decision, or exhausted design repasses reaches
 `park-for-human`.
 

@@ -38,6 +38,8 @@ type validatePlanResult struct {
 	ConflictReason           string   `json:"conflictReason,omitempty"`
 	UnresolvedDecision       bool     `json:"unresolvedDecision"`
 	UnresolvedDecisionReason string   `json:"unresolvedDecisionReason,omitempty"`
+	SchemaInvalid            bool     `json:"schemaInvalid"`
+	Repassable               bool     `json:"repassable"`
 }
 
 func runValidatePlan(args []string, stdout, stderr io.Writer) int {
@@ -117,6 +119,8 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		ConflictReason:           conflictReason,
 		UnresolvedDecision:       result.UnresolvedDecision,
 		UnresolvedDecisionReason: plan.UnresolvedDecision,
+		SchemaInvalid:            result.SchemaInvalid,
+		Repassable:               result.Repassable(),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal plan-validation result: %v\n", err)

@@ -312,4 +312,10 @@ func TestValidatePlanRejectsUnsupportedSchemaVersionCLI(t *testing.T) {
 	if got.Valid {
 		t.Fatalf("plan-validation = %+v, want invalid for an unsupported schema version", got)
 	}
+	if !got.SchemaInvalid {
+		t.Fatalf("plan-validation = %+v, want distinct schema-invalid outcome", got)
+	}
+	if got.Repassable {
+		t.Fatalf("plan-validation = %+v, schema-invalid outcome must not be repassable", got)
+	}
 }

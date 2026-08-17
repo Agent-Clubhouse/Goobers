@@ -86,6 +86,12 @@ func TestValidatePlanRejectsUnsupportedSchemaVersion(t *testing.T) {
 	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "schemaVersion") {
 		t.Fatalf("errors = %v, want exactly one schemaVersion error", result.Errors)
 	}
+	if !result.SchemaInvalid {
+		t.Fatal("unsupported schema version was not classified as schema-invalid")
+	}
+	if result.Repassable() {
+		t.Fatal("schema-invalid result must not consume the design-repass budget")
+	}
 }
 
 func TestValidatePlanRejectsMalformedSchemaVersion(t *testing.T) {

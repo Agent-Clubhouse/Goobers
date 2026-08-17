@@ -74,7 +74,9 @@ spec:
         - conflictReason
         - unresolvedDecision
         - unresolvedDecisionReason
-      next: parent-unchanged
+        - schemaInvalid
+        - repassable
+      next: plan-valid
 
     - name: publish-slices
       type: deterministic
@@ -100,12 +102,46 @@ spec:
 
     - name: park-for-human
       type: deterministic
-      goal: Explain why decomposition stopped, park the parent for a human decision, and release its claim.
+      goal: Explain the validation or publication conflict, park the parent for a human decision, and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputsFrom:
+        reason: conflictReason
+      inputs:
+        status: "needs-human"
+        comment: "How should the decomposition proceed after this conflict?"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@escalate"
+
+    - name: park-unresolved-decision
+      type: deterministic
+      goal: Explain the unresolved product decision, park the parent for a human decision, and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputsFrom:
+        reason: unresolvedDecisionReason
+      inputs:
+        status: "needs-human"
+        comment: "Which product decision should the decomposition use?"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@escalate"
+
+    - name: park-repass-exhausted
+      type: deterministic
+      goal: Explain that bounded design repasses were exhausted, park the parent for a human decision, and release its claim.
       run:
         command: ["goobers", "issue-close-out"]
       inputs:
         status: "needs-human"
-        comment: "Decomposition could not be published because the parent changed, the plan remained inadequately scoped, an unresolved product decision remains, or the bounded design repass budget was exhausted. What decomposition or product decision should replace this plan?"
+        comment: "The decomposition plan remained inadequately scoped after the bounded design repass was exhausted. What decomposition should replace this plan?"
         resultFile: "issue-close-out-result.json"
       capabilities:
         - github:issues:write
@@ -114,6 +150,17 @@ spec:
       next: "@escalate"
 
   gates:
+    - name: schema-supported
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: schemaInvalid
+          equals: "false"
+      branches:
+        pass: parent-unchanged
+        fail: "@abort"
+
     - name: parent-unchanged
       evaluator: automated
       automated:
@@ -133,21 +180,21 @@ spec:
           key: unresolvedDecision
           equals: "false"
       branches:
-        pass: plan-valid
-        fail: park-for-human
+        pass: publish-slices
+        fail: park-unresolved-decision
 
     - name: plan-valid
       evaluator: automated
       automated:
         check: output-equals
         params:
-          key: valid
-          equals: "true"
+          key: repassable
+          equals: "false"
       maxRepasses: 1
       branches:
-        pass: publish-slices
+        pass: schema-supported
         fail: design-slices
-        escalate: park-for-human
+        escalate: park-repass-exhausted
 
     - name: publication-clean
       evaluator: automated

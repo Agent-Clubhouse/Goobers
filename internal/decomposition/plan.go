@@ -96,6 +96,12 @@ type ValidationResult struct {
 	Errors             []string
 	Conflict           *ParentConflict
 	UnresolvedDecision bool
+	SchemaInvalid      bool
+}
+
+// Repassable reports whether design-slices can safely correct this result.
+func (r ValidationResult) Repassable() bool {
+	return !r.Valid && !r.SchemaInvalid && r.Conflict == nil && !r.UnresolvedDecision
 }
 
 // disallowedChildLabels are publisher-owned trust/readiness/status markers —
@@ -114,7 +120,10 @@ const minChildBodyLength = 20
 // not recognize.
 func ValidatePlan(plan Plan, selection Selection, live LiveParentSnapshot) ValidationResult {
 	if !SupportedPlanSchemaVersion(plan.SchemaVersion) {
-		return ValidationResult{Errors: []string{fmt.Sprintf("unsupported or malformed plan schemaVersion %q", plan.SchemaVersion)}}
+		return ValidationResult{
+			Errors:        []string{fmt.Sprintf("unsupported or malformed plan schemaVersion %q", plan.SchemaVersion)},
+			SchemaInvalid: true,
+		}
 	}
 
 	var errs []string
