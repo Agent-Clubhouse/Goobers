@@ -334,6 +334,7 @@ func padJournal(n, size int, trailing ...Event) func(*testing.T, string) {
 		records = append(records, trailing...)
 		var buf bytes.Buffer
 		for _, ev := range records {
+			ev.Schema = EventSchema
 			line, err := json.Marshal(ev)
 			if err != nil {
 				t.Fatalf("marshal pad record: %v", err)

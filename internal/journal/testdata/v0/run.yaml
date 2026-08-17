@@ -1,0 +1,8 @@
+schema: goobers.dev/journal/run/v1
+runId: 4bf92f3577b34da6a3ce929d0e0e4736
+workflow: legacy-workflow
+workflowVersion: 1
+gaggle: legacy
+trigger:
+  kind: manual
+startedAt: "2026-01-01T00:00:00Z"

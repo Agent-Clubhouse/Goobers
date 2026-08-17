@@ -65,6 +65,9 @@ func readEvents(runDir string) ([]journalEvent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
 	}
+	if err := validateJournalEventSchemas(events); err != nil {
+		return nil, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
+	}
 	return events, nil
 }
 
@@ -80,7 +83,14 @@ func readEvents(runDir string) ([]journalEvent, error) {
 // (potentially multi-GB) journal every tick (#1411). See readJSONLTail for the
 // offset/reset contract.
 func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []journalEvent, newOffset int64, reset bool, err error) {
-	return readJSONLTail[journalEvent](filepath.Join(schedulerDir, fileEvents), byteOffset)
+	events, newOffset, reset, err = readJSONLTail[journalEvent](filepath.Join(schedulerDir, fileEvents), byteOffset)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if err := validateJournalEventSchemas(events); err != nil {
+		return nil, 0, false, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
+	}
+	return events, newOffset, reset, nil
 }
 
 // readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
@@ -208,4 +218,16 @@ func decodeJSONLTolerant[T any](data []byte) ([]T, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func validateJournalEventSchemas(events []journalEvent) error {
+	for _, event := range events {
+		if event.Schema != eventSchema {
+			return fmt.Errorf(
+				"event schema %q is unsupported (supported %q); upgrade Goobers to a binary that supports %s",
+				event.Schema, eventSchema, event.Schema,
+			)
+		}
+	}
+	return nil
 }

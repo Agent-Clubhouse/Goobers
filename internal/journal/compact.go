@@ -119,6 +119,7 @@ func compactInstanceEventsData(
 			continue
 		}
 		var meta struct {
+			Schema   string    `json:"schema"`
 			Seq      uint64    `json:"seq"`
 			Time     time.Time `json:"time"`
 			Type     EventType `json:"type"`
@@ -128,6 +129,9 @@ func compactInstanceEventsData(
 		}
 		if err := json.Unmarshal(bytes.TrimSpace(line), &meta); err != nil {
 			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
+		}
+		if meta.Schema != EventSchema {
+			return InstanceEventsCompaction{}, nil, unsupportedPayloadSchema("event", meta.Schema, EventSchema)
 		}
 		rec := record{line: line, time: meta.Time}
 		rec.runStarted = meta.Type == EventRunStarted

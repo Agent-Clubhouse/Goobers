@@ -113,6 +113,7 @@ func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	result, err := CompactInstanceEvents(dir, cutoff, cutoff, true)
@@ -128,6 +129,28 @@ func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatalf("dry-run modified the journal")
+	}
+}
+
+func TestCompactInstanceEventsRejectsUnsupportedSchemaWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	future := `{"schema":"goobers.dev/journal/event/v2","seq":1,"time":"2026-01-01T00:00:00Z","type":"future.event"}`
+	writeRawInstanceLog(t, dir, future)
+	path := filepath.Join(dir, fileEvents)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CompactInstanceEvents(dir, time.Now(), time.Time{}, false); err == nil {
+		t.Fatal("CompactInstanceEvents accepted an unsupported event schema")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("CompactInstanceEvents mutated the journal before rejecting its schema")
 	}
 }
 

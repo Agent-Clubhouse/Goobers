@@ -66,7 +66,7 @@ func TestMigrateOnceRefusesANewerSchema(t *testing.T) {
 
 	if _, err := Open(path); err == nil {
 		t.Fatal("opened a store whose schema is newer than this build supports")
-	} else if !strings.Contains(err.Error(), "newer than this build") {
+	} else if !strings.Contains(err.Error(), "newer than supported") {
 		t.Errorf("error = %v; want a clear newer-schema refusal", err)
 	}
 }
@@ -98,8 +98,8 @@ func TestIngestRefusesUnknownRunSchema(t *testing.T) {
 	db := openTestDB(t, tmp)
 	if err := db.IngestRun(context.Background(), runDir); err == nil {
 		t.Fatal("IngestRun accepted a run.yaml with an unknown schema version instead of refusing it")
-	} else if !strings.Contains(err.Error(), "unknown schema") {
-		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	} else if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}
 
 	runs, err := db.Runs(context.Background())
