@@ -1,6 +1,7 @@
 package configsync
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,11 +22,12 @@ type renderedManifest struct {
 }
 
 type publicationHooks struct {
-	beforeGenerationWrite   func() error
-	duringGenerationWrite   func() error
-	afterGenerationPublish  func() error
-	beforeAuthoritativeSwap func() error
-	syncAuthoritativeSwitch func(string) error
+	beforeGenerationWrite      func() error
+	duringGenerationWrite      func() error
+	beforeGenerationValidation func(string) error
+	afterGenerationPublish     func() error
+	beforeAuthoritativeSwap    func() error
+	syncAuthoritativeSwitch    func(string) error
 }
 
 // ManifestGenerationDir returns the sibling directory that stores immutable
@@ -87,6 +89,14 @@ func (rs *RenderSet) writeManifests(outDir string, hooks publicationHooks) ([]st
 	metadata := generationMetadataContent(generationName, manifests)
 	if err := writeDurableFile(filepath.Join(staging, generationMetadata), metadata, 0o644); err != nil {
 		return nil, fmt.Errorf("write manifest generation metadata: %w", err)
+	}
+	if hooks.beforeGenerationValidation != nil {
+		if err := hooks.beforeGenerationValidation(staging); err != nil {
+			return nil, fmt.Errorf("before manifest generation validation: %w", err)
+		}
+	}
+	if err := validateManifestGeneration(staging, manifests, metadata); err != nil {
+		return nil, fmt.Errorf("validate manifest generation: %w", err)
 	}
 	if err := durability.SyncDir(staging); err != nil {
 		return nil, fmt.Errorf("sync manifest generation: %w", err)
@@ -200,6 +210,39 @@ func generationMetadataContent(generationName string, manifests []renderedManife
 		fmt.Fprintf(&metadata, "manifest=%s\n", manifest.name)
 	}
 	return []byte(metadata.String())
+}
+
+func validateManifestGeneration(dir string, manifests []renderedManifest, metadata []byte) error {
+	expected := make(map[string][]byte, len(manifests)+1)
+	expected[generationMetadata] = metadata
+	for _, manifest := range manifests {
+		expected[manifest.name] = manifest.data
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != len(expected) {
+		return fmt.Errorf("contains %d files, want %d", len(entries), len(expected))
+	}
+	for _, entry := range entries {
+		want, ok := expected[entry.Name()]
+		if !ok {
+			return fmt.Errorf("contains unexpected file %s", entry.Name())
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", entry.Name())
+		}
+		got, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", entry.Name(), err)
+		}
+		if !bytes.Equal(got, want) {
+			return fmt.Errorf("%s content does not match rendered manifest", entry.Name())
+		}
+	}
+	return nil
 }
 
 func switchManifestOutput(pointer, outDir, generations, generationName string) (func() error, error) {
