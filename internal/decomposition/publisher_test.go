@@ -101,18 +101,35 @@ func (f *publisherFake) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 	}
 	if req.Body != nil {
 		item.Body = *req.Body
+		f.storeUpdatedItem(req.ID, item)
+		if err := f.afterMutation(); err != nil {
+			return providers.WorkItem{}, err
+		}
+	}
+	if len(req.AddLabels) > 0 {
+		for _, label := range req.AddLabels {
+			if !slices.Contains(item.Labels, label) {
+				item.Labels = append(item.Labels, label)
+			}
+		}
+		f.storeUpdatedItem(req.ID, item)
+		if err := f.afterMutation(); err != nil {
+			return providers.WorkItem{}, err
+		}
 	}
 	for _, label := range req.RemoveLabels {
 		item.Labels = slices.DeleteFunc(item.Labels, func(existing string) bool { return existing == label })
-	}
-	for _, label := range req.AddLabels {
-		if !slices.Contains(item.Labels, label) {
-			item.Labels = append(item.Labels, label)
+		f.storeUpdatedItem(req.ID, item)
+		if err := f.afterMutation(); err != nil {
+			return providers.WorkItem{}, err
 		}
 	}
+	return cloneWorkItem(f.items[req.ID]), nil
+}
+
+func (f *publisherFake) storeUpdatedItem(id string, item providers.WorkItem) {
 	item.Revision = fmt.Sprintf("r%d", f.mutations+2)
-	f.items[req.ID] = item
-	return cloneWorkItem(item), f.afterMutation()
+	f.items[id] = item
 }
 
 func (f *publisherFake) ReleaseWorkItemClaim(_ context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
@@ -270,6 +287,43 @@ func TestPublisherRecoversAfterEveryProviderMutation(t *testing.T) {
 	}
 }
 
+func TestPublisherRetryPreservesHumanContextAroundTrackingSection(t *testing.T) {
+	fake := newPublisherFake()
+	fake.failMutation = 11
+	publisher := Publisher{
+		Provider: fake,
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil {
+		t.Fatal("Publish succeeded, want injected failure after tracking body update")
+	}
+	parent := fake.items[fake.parentID]
+	if !strings.Contains(parent.Body, trackingSectionStart) {
+		t.Fatalf("parent body after failure = %q, want tracking section", parent.Body)
+	}
+
+	before := "Human context added before the decomposition."
+	after := "Human context added after the decomposition."
+	parent.Body = before + "\n\n" + parent.Body + "\n\n" + after
+	fake.items[parent.ID] = parent
+	fake.failMutation = 0
+
+	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err != nil {
+		t.Fatalf("Publish after retry: %v", err)
+	}
+	body := fake.items[fake.parentID].Body
+	start := strings.Index(body, trackingSectionStart)
+	end := strings.Index(body, trackingSectionEnd)
+	if beforeAt := strings.Index(body, before); beforeAt < 0 || beforeAt > start {
+		t.Fatalf("parent body did not preserve context before tracking section: %q", body)
+	}
+	if afterAt := strings.Index(body, after); afterAt < end {
+		t.Fatalf("parent body did not preserve context after tracking section: %q", body)
+	}
+}
+
 func TestChildPublicationBarrierMarkers(t *testing.T) {
 	digest := "sha256:abc"
 	body := "body\n\n" + ChildBatchMarker("7", digest, "api")
@@ -294,6 +348,23 @@ func TestChildPublicationBarrierMarkers(t *testing.T) {
 	}
 }
 
+func TestChildBatchIdentityRejectsMalformedMarkers(t *testing.T) {
+	for name, marker := range map[string]string{
+		"extra field":      ChildBatchMarker("7", "sha256:abc", "api") + " extra=value",
+		"reordered fields": ChildBatchMarkerPrefix + " v1 digest=sha256:abc parent=7 key=api",
+		"duplicate field":  ChildBatchMarkerPrefix + " v1 parent=7 digest=sha256:abc parent=7",
+		"missing field":    ChildBatchMarkerPrefix + " v1 parent=7 digest=sha256:abc",
+		"wrong version":    ChildBatchMarkerPrefix + " v2 parent=7 digest=sha256:abc key=api",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, marked, conflict := ChildBatchIdentity(marker)
+			if !marked || !conflict {
+				t.Fatalf("marked = %v, conflict = %v; want malformed marker conflict", marked, conflict)
+			}
+		})
+	}
+}
+
 func TestPublisherParksStaleParent(t *testing.T) {
 	fake := newPublisherFake()
 	parent := fake.items[fake.parentID]
@@ -313,32 +384,33 @@ func TestPublisherParksStaleParent(t *testing.T) {
 	assertParentParked(t, fake)
 }
 
-func TestPublisherAtomicallyQuarantinesParent(t *testing.T) {
-	fake := newPublisherFake()
-	fake.failMutation = 1
+func TestPublisherQuarantinesParentBeforeOtherProviderMutations(t *testing.T) {
 	plan := testPublisherPlan()
 	digest, err := PlanDigest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publisher := Publisher{
-		Provider: fake,
-		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
-		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunID:    "run-1",
-	}
-	if _, err := publisher.Publish(context.Background(), plan); err == nil {
-		t.Fatal("Publish succeeded, want injected failure")
-	}
-	parent := fake.items[fake.parentID]
-	if !parent.HasLabel("goobers/status:decomposing") {
-		t.Fatalf("parent labels after failed quarantine = %v, want durable decomposing marker", parent.Labels)
-	}
-	if parent.HasLabel(providers.LabelTracking) {
-		t.Fatalf("parent labels after first failed mutation = %v, tracking must not precede quarantine", parent.Labels)
-	}
-	if resumed, conflict := parentResumeState(parent.Body, parent.ID, digest); !resumed || conflict {
-		t.Fatalf("parent resume marker after failed quarantine = %v, %v", resumed, conflict)
+	for failAt := 1; failAt <= 3; failAt++ {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			fake := newPublisherFake()
+			fake.failMutation = failAt
+			publisher := Publisher{
+				Provider: fake,
+				Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+				Repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				RunID:    "run-1",
+			}
+			if _, err := publisher.Publish(context.Background(), plan); err == nil {
+				t.Fatal("Publish succeeded, want injected failure")
+			}
+			parent := fake.items[fake.parentID]
+			if !parentQuarantined(parent) {
+				t.Fatalf("parent labels after mutation %d = %v, want durable quarantine", failAt, parent.Labels)
+			}
+			if resumed, conflict := parentResumeState(parent.Body, parent.ID, digest); resumed || conflict {
+				t.Fatalf("parent resume marker after label mutation %d = %v, %v; marker must follow quarantine", failAt, resumed, conflict)
+			}
+		})
 	}
 }
 
@@ -446,9 +518,5 @@ func assertParentParked(t *testing.T, fake *publisherFake) {
 }
 
 func stringsLines(value string) []string {
-	var lines []string
-	for _, line := range strings.Split(value, "\n") {
-		lines = append(lines, line)
-	}
-	return lines
+	return strings.Split(value, "\n")
 }

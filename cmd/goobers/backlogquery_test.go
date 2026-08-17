@@ -345,6 +345,34 @@ func TestDecompositionEligibilityBarrierRejectsConflictingPublishedRecord(t *tes
 	}
 }
 
+func TestDecompositionEligibilityBarrierRejectsMalformedChildMarkers(t *testing.T) {
+	const digest = "sha256:batch"
+	provider := decompositionBarrierProvider{
+		parent:   providers.WorkItem{ID: "7"},
+		comments: []providers.Comment{{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})}},
+	}
+	for name, marker := range map[string]string{
+		"extra field":      decomposition.ChildBatchMarker("7", digest, "child") + " extra=value",
+		"reordered fields": decomposition.ChildBatchMarkerPrefix + " v1 digest=" + digest + " parent=7 key=child",
+		"duplicate field":  decomposition.ChildBatchMarkerPrefix + " v1 parent=7 digest=" + digest + " parent=7",
+	} {
+		t.Run(name, func(t *testing.T) {
+			items, err := filterDecompositionEligibility(
+				context.Background(),
+				provider,
+				providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				[]providers.WorkItem{{ID: "8", Body: marker}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("eligible items = %v, want malformed marker to fail closed", items)
+			}
+		})
+	}
+}
+
 func TestBacklogQuerySkipsMalformedReadyItemAndClaimsNext(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")

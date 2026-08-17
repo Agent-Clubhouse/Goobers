@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	// ChildBatchMarkerPrefix identifies decomposition child metadata.
 	ChildBatchMarkerPrefix = "goobers-decomposition-child:"
 	trackingSectionStart   = "<!-- goobers-decomposition-tracking:v1:start -->"
 	trackingSectionEnd     = "<!-- goobers-decomposition-tracking:v1:end -->"
@@ -121,7 +122,7 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	if resumeConflict {
 		return PublishedBatch{}, &MarkerConflictError{Key: digest, Reason: "parent has a conflicting decomposition resume marker"}
 	}
-	if preparedRecord == "" && !resuming && parent.Revision != plan.Parent.ObservedRevision {
+	if preparedRecord == "" && !resuming && !parentQuarantined(parent) && parent.Revision != plan.Parent.ObservedRevision {
 		return PublishedBatch{}, &providers.RevisionConflictError{
 			ItemID: parent.ID, Expected: plan.Parent.ObservedRevision, Actual: parent.Revision,
 		}
@@ -270,41 +271,39 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 }
 
 func parentPrepared(parent providers.WorkItem) bool {
-	return parent.HasLabel(providers.LabelTracking) &&
-		parent.HasLabel("goobers/status:decomposing") &&
+	return parentQuarantined(parent) &&
 		!parent.HasLabel(providers.LabelReady) &&
 		!parent.HasLabel(providers.LabelNeedsHuman)
 }
 
+func parentQuarantined(parent providers.WorkItem) bool {
+	return parent.HasLabel(providers.LabelTracking) &&
+		parent.HasLabel("goobers/status:decomposing")
+}
+
 func (p Publisher) ensureParentPrepared(ctx context.Context, parent providers.WorkItem, digest string, resuming bool) (providers.WorkItem, error) {
-	if parentPrepared(parent) {
-		return parent, nil
-	}
 	var err error
+	if !parentPrepared(parent) {
+		parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
+			AddLabels:    []string{providers.LabelTracking, "goobers/status:decomposing"},
+			RemoveLabels: []string{providers.LabelReady, providers.LabelNeedsHuman},
+		})
+		if err != nil {
+			return providers.WorkItem{}, err
+		}
+	}
 	if !resuming {
 		body := strings.TrimSpace(parent.Body) + "\n\n" + parentResumeMarker(parent.ID, digest)
 		parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
-			Body:      &body,
-			AddLabels: []string{"goobers/status:decomposing"},
-		})
-		if err != nil {
-			return providers.WorkItem{}, err
-		}
-	} else if !parent.HasLabel("goobers/status:decomposing") {
-		parent, err = p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
-			AddLabels: []string{"goobers/status:decomposing"},
+			Body: &body,
 		})
 		if err != nil {
 			return providers.WorkItem{}, err
 		}
 	}
-	return p.Provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: p.Repo, ID: parent.ID, ExpectedRevision: parent.Revision,
-		AddLabels:    []string{providers.LabelTracking},
-		RemoveLabels: []string{providers.LabelReady, providers.LabelNeedsHuman},
-	})
+	return parent, nil
 }
 
 func (p Publisher) releaseClaim(ctx context.Context, parentID string) error {
@@ -516,11 +515,19 @@ func ChildBatchIdentity(body string) (parentID, digest, key string, marked bool,
 	if len(markers) != 1 {
 		return "", "", "", true, true
 	}
-	fields := recordFields(markers[0])
-	parentID, digest, key = fields["parent"], fields["digest"], fields["key"]
-	if fields["_version"] != "v1" || parentID == "" || digest == "" || key == "" {
-		return parentID, digest, key, true, true
+	parts := strings.Fields(markers[0])
+	if len(parts) != 5 || parts[0] != ChildBatchMarkerPrefix || parts[1] != "v1" {
+		return "", "", "", true, true
 	}
+	values := make([]string, 3)
+	for i, name := range []string{"parent", "digest", "key"} {
+		field, value, ok := strings.Cut(parts[i+2], "=")
+		if !ok || field != name || value == "" {
+			return "", "", "", true, true
+		}
+		values[i] = value
+	}
+	parentID, digest, key = values[0], values[1], values[2]
 	return parentID, digest, key, true, false
 }
 
@@ -590,11 +597,6 @@ func unmarkedActionBody(body string) string {
 
 func trackingBody(current string, plan Plan, children []providers.WorkItem) string {
 	preserved := withoutResumeMarker(current)
-	if start := strings.Index(current, trackingSectionStart); start >= 0 {
-		if end := strings.Index(current[start:], trackingSectionEnd); end >= 0 {
-			preserved = withoutResumeMarker(current[start+end+len(trackingSectionEnd):])
-		}
-	}
 	var b strings.Builder
 	b.WriteString(trackingSectionStart)
 	b.WriteString("\n## Decomposition\n\n")
@@ -604,11 +606,30 @@ func trackingBody(current string, plan Plan, children []providers.WorkItem) stri
 		fmt.Fprintf(&b, "- [ ] #%s — %s\n", child.ID, plan.Children[i].Title)
 	}
 	b.WriteString(trackingSectionEnd)
-	if preserved != "" {
-		b.WriteString("\n\n")
-		b.WriteString(preserved)
+	tracking := b.String()
+
+	start := strings.Index(preserved, trackingSectionStart)
+	if start < 0 {
+		if preserved == "" {
+			return tracking
+		}
+		return tracking + "\n\n" + preserved
 	}
-	return b.String()
+	end := strings.Index(preserved[start:], trackingSectionEnd)
+	if end < 0 {
+		return tracking + "\n\n" + preserved
+	}
+	end += start + len(trackingSectionEnd)
+
+	parts := make([]string, 0, 3)
+	if before := strings.TrimSpace(preserved[:start]); before != "" {
+		parts = append(parts, before)
+	}
+	parts = append(parts, tracking)
+	if after := strings.TrimSpace(preserved[end:]); after != "" {
+		parts = append(parts, after)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func parentResumeMarker(parentID, digest string) string {

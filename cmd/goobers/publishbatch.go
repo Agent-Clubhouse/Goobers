@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -119,15 +120,17 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "publish decomposition batch", err, "published-batch.json")
 	}
 
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
+	schedulerDir := layoutFor(root).SchedulerDir()
+	instanceLog, _, err := journal.OpenInstanceLog(schedulerDir)
 	if err != nil {
-		pf(stderr, "error: open claim ledger: %v\n", err)
+		pf(stderr, "error: open instance log: %v\n", err)
 		return 1
 	}
+	defer func() { _ = instanceLog.Close() }()
 	key := localscheduler.ClaimKey{
 		Gaggle: providerGaggle(), Provider: string(repo.Provider), ExternalID: plan.Parent.ID,
 	}
-	if err := releaseSelectSourceParent(ledger, key, runID); err != nil {
+	if err := releaseSelectSourceParent(schedulerDir, instanceLog, key, runID); err != nil {
 		pf(stderr, "error: release parent claim: %v\n", err)
 		return 1
 	}
