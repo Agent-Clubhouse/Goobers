@@ -503,7 +503,7 @@ func TestPublisherPersistsBatchIdentityBeforeQuarantine(t *testing.T) {
 	}
 }
 
-func TestPublisherRejectsProviderWithoutNativeHierarchyBeforeMutation(t *testing.T) {
+func TestPublisherSkipsNativeHierarchyWhenUnsupported(t *testing.T) {
 	fake := newPublisherFake()
 	publisher := Publisher{
 		Provider: publisherWithoutHierarchy{PublisherProvider: fake},
@@ -511,12 +511,33 @@ func TestPublisherRejectsProviderWithoutNativeHierarchyBeforeMutation(t *testing
 		Repo:     providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Name: "app"},
 		RunID:    "run-1",
 	}
-	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil ||
-		!strings.Contains(err.Error(), "does not support native work item hierarchy") {
-		t.Fatalf("Publish error = %v, want unsupported native hierarchy", err)
+	plan := testPublisherPlan()
+	plan.Children[1].DependsOn = nil
+	batch, err := publisher.Publish(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
-	if fake.mutations != 0 {
-		t.Fatalf("provider mutations = %d, want none", fake.mutations)
+	if len(batch.Children) != 2 || len(fake.children) != 0 {
+		t.Fatalf("published children = %d, native hierarchy = %v; want 2 children without native links", len(batch.Children), fake.children)
+	}
+	for _, child := range batch.Children {
+		if !child.HasLabel(providers.LabelReady) {
+			t.Fatalf("child %s labels = %v, want ready", child.ID, child.Labels)
+		}
+	}
+}
+
+func TestPublisherStillRequiresDeclaredDependencySupportWithoutHierarchy(t *testing.T) {
+	fake := newPublisherFake()
+	publisher := Publisher{
+		Provider: publisherWithoutHierarchy{PublisherProvider: fake},
+		Leaser:   FileTargetLeaser{Directory: t.TempDir()},
+		Repo:     providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "acme", Name: "app"},
+		RunID:    "run-1",
+	}
+	if _, err := publisher.Publish(context.Background(), testPublisherPlan()); err == nil ||
+		!strings.Contains(err.Error(), "does not support declared work item dependencies") {
+		t.Fatalf("Publish error = %v, want unsupported declared dependencies", err)
 	}
 }
 

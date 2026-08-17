@@ -75,9 +75,6 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	if p.Provider == nil || p.Leaser == nil || p.Repo.Name == "" || p.RunID == "" {
 		return PublishedBatch{}, fmt.Errorf("publisher provider, leaser, repository, and run id are required")
 	}
-	if _, ok := p.Provider.(WorkItemHierarchyProvider); !ok {
-		return PublishedBatch{}, fmt.Errorf("provider %q does not support native work item hierarchy", p.Repo.Provider)
-	}
 	digest, err := PlanDigest(plan)
 	if err != nil {
 		return PublishedBatch{}, err
@@ -189,20 +186,22 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 		children = append(children, child)
 	}
 
-	for i := range children {
-		parent, err = p.Provider.GetWorkItem(ctx, p.Repo, parent.ID)
-		if err != nil {
-			return PublishedBatch{}, err
-		}
-		children[i], err = p.Provider.GetWorkItem(ctx, p.Repo, children[i].ID)
-		if err != nil {
-			return PublishedBatch{}, err
-		}
-		if err := primitives.AttachChild(ctx, p.Repo, providers.AttachWorkItemChildRequest{
-			ParentID: parent.ID, ChildID: children[i].ID,
-			ExpectedParentRevision: parent.Revision, ExpectedChildRevision: children[i].Revision,
-		}); err != nil {
-			return PublishedBatch{}, err
+	if _, supported := p.Provider.(WorkItemHierarchyProvider); supported {
+		for i := range children {
+			parent, err = p.Provider.GetWorkItem(ctx, p.Repo, parent.ID)
+			if err != nil {
+				return PublishedBatch{}, err
+			}
+			children[i], err = p.Provider.GetWorkItem(ctx, p.Repo, children[i].ID)
+			if err != nil {
+				return PublishedBatch{}, err
+			}
+			if err := primitives.AttachChild(ctx, p.Repo, providers.AttachWorkItemChildRequest{
+				ParentID: parent.ID, ChildID: children[i].ID,
+				ExpectedParentRevision: parent.Revision, ExpectedChildRevision: children[i].Revision,
+			}); err != nil {
+				return PublishedBatch{}, err
+			}
 		}
 	}
 	if err := p.attachDependencies(ctx, plan, children); err != nil {
@@ -451,13 +450,14 @@ func (p Publisher) verify(ctx context.Context, plan Plan, digest string, childre
 			return &verificationConflictError{reason: fmt.Sprintf("child %s labels %v do not match %v", item.ID, item.Labels, wantLabels)}
 		}
 	}
-	hierarchy := p.Provider.(WorkItemHierarchyProvider)
-	actual, err := hierarchy.ListWorkItemChildren(ctx, p.Repo, parent.ID)
-	if err != nil {
-		return err
-	}
-	if !sameIDs(actual, children) {
-		return &verificationConflictError{reason: fmt.Sprintf("parent %s child links do not match batch", parent.ID)}
+	if hierarchy, supported := p.Provider.(WorkItemHierarchyProvider); supported {
+		actual, err := hierarchy.ListWorkItemChildren(ctx, p.Repo, parent.ID)
+		if err != nil {
+			return err
+		}
+		if !sameIDs(actual, children) {
+			return &verificationConflictError{reason: fmt.Sprintf("parent %s child links do not match batch", parent.ID)}
+		}
 	}
 	if dependencies, ok := p.Provider.(WorkItemDependencyProvider); ok {
 		keyIDs := make(map[string]string, len(children))
