@@ -179,11 +179,11 @@ func TestGitHubListPullRequestReviewThreadsSnapshotsCommentsBeforeThreadState(t 
 func TestGitHubReviewThreadMutationsReturnAndVerifyProviderState(t *testing.T) {
 	var sawReply bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/acme/web/pulls/42/comments/101/replies":
+		switch r.URL.Path {
+		case "/repos/acme/web/pulls/42/comments/101/replies":
 			sawReply = true
 			_, _ = w.Write([]byte(`{"id":102,"body":"fixed","in_reply_to_id":101}`))
-		case r.URL.Path == "/graphql":
+		case "/graphql":
 			var request struct {
 				Query     string         `json:"query"`
 				Variables map[string]any `json:"variables"`
