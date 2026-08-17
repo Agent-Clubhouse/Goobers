@@ -200,6 +200,7 @@ Workflow-stage and connector commands:
   goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -256,6 +257,7 @@ Usage:
   goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -1301,6 +1303,17 @@ arguments.
 Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
 command failed, 2 = usage error. A forwarded command's non-zero exit code is
 preserved.
+
+### publish-batch
+Usage: goobers publish-batch [path]
+
+publish-batch is the decomposition workflow's deterministic publication
+stage (docs/design/decomposition-workflow.md §5.2-5.3, DEC-4). It consumes
+a validated decomposition plan, resumes the prepare/publish protocol by
+stable markers, verifies the complete batch, commits eligibility through
+the parent published record, and releases the parent claim.
+
+Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.
 
 ### push-branch
 Usage: goobers push-branch [path]

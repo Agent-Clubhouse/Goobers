@@ -112,6 +112,9 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 	if !got.Valid {
 		t.Fatalf("plan-validation = %+v, stdout = %q, want valid", got, stdout)
 	}
+	if got.PlanDigest == "" {
+		t.Fatalf("plan-validation = %+v, want digest binding for publisher", got)
+	}
 }
 
 func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
