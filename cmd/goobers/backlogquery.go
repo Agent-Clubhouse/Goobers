@@ -631,7 +631,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return
 		}
 		for _, item := range session.newlyClaimed {
-			if releaseErr := session.release(item); releaseErr != nil {
+			if releaseErr := session.rollback(ctx, item); releaseErr != nil {
 				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
 			}
 		}
@@ -695,7 +695,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
 		maxItems:            maxItems,
-		runID:               runID,
 		curationRun:         curationRun,
 		stalenessPolicy:     stalenessPolicy,
 		observedAt:          observedAt,
@@ -710,7 +709,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 
 type claimedBacklogResultOptions struct {
 	maxItems            int
-	runID               string
 	curationRun         bool
 	stalenessPolicy     backlogStalenessPolicy
 	observedAt          time.Time
@@ -761,15 +759,6 @@ func writeClaimedBacklogResult(
 	if err := opts.persistResweepState(); err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
-	}
-	for index := range claimed {
-		if _, err := env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-			Repository: env.backlogRepo,
-			ID:         claimed[index].ID,
-			RunID:      opts.runID,
-		}); err != nil {
-			pf(env.stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[index].ID, err)
-		}
 	}
 	writeClaimedBacklogSummary(env.stdout, claimed, readOnly)
 	return 0
@@ -868,32 +857,36 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			pf(session.env.stderr, "error: %v\n", err)
 			return malformedReadyItems, 1
 		}
-		if !labelFilter.ReferencesLabel(providers.LabelReady) {
-			continue
-		}
-		for index := firstNewClaim; index < len(session.claimed); {
-			if !session.claimed[index].HasLabel(providers.LabelReady) {
-				index++
-				continue
-			}
-			transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
-				ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
-			)
-			if err != nil {
-				return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
-			}
-			if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
-				malformed := session.claimed[index]
-				if releaseErr := session.release(malformed); releaseErr != nil {
-					pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
-					return malformedReadyItems, 1
+		if labelFilter.ReferencesLabel(providers.LabelReady) {
+			for index := firstNewClaim; index < len(session.claimed); {
+				if !session.claimed[index].HasLabel(providers.LabelReady) {
+					index++
+					continue
 				}
-				pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
-				session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
-				malformedReadyItems++
-				continue
+				transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
+					ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
+				)
+				if err != nil {
+					return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
+				}
+				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
+					malformed := session.claimed[index]
+					if releaseErr := session.releaseLedger(malformed); releaseErr != nil {
+						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+						return malformedReadyItems, 1
+					}
+					session.forgetNewClaim(malformed.ID)
+					pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
+					session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+					malformedReadyItems++
+					continue
+				}
+				index++
 			}
-			index++
+		}
+		if err := session.confirmProviderClaims(ctx, firstNewClaim); err != nil {
+			pf(session.env.stderr, "error: confirm provider claim: %v\n", err)
+			return malformedReadyItems, 1
 		}
 	}
 	return malformedReadyItems, 0
@@ -1012,7 +1005,53 @@ func (session *backlogClaimSession) claimItem(ledger backlogClaimLedger, item pr
 	return ok, nil
 }
 
-func (session *backlogClaimSession) release(item providers.WorkItem) error {
+func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
+	for index := start; index < len(session.claimed); {
+		item := session.claimed[index]
+		result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
+			Repository: session.env.backlogRepo,
+			ID:         item.ID,
+			RunID:      session.runID,
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", item.ID, err)
+		}
+		if result.Claimed {
+			index++
+			continue
+		}
+
+		if err := session.releaseLedger(item); err != nil {
+			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
+		}
+		session.forgetNewClaim(item.ID)
+		session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
+	}
+	return nil
+}
+
+func (session *backlogClaimSession) forgetNewClaim(itemID string) {
+	for index := range session.newlyClaimed {
+		if session.newlyClaimed[index].ID != itemID {
+			continue
+		}
+		session.newlyClaimed = append(session.newlyClaimed[:index], session.newlyClaimed[index+1:]...)
+		return
+	}
+}
+
+func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
+	_, providerErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+		Repository: session.env.backlogRepo,
+		ID:         item.ID,
+		RunID:      session.runID,
+	})
+	ledgerErr := session.releaseLedger(item)
+	return errors.Join(providerErr, ledgerErr)
+}
+
+func (session *backlogClaimSession) releaseLedger(item providers.WorkItem) error {
 	return withClaimLock(session.lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),

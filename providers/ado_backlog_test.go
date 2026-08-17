@@ -60,6 +60,43 @@ func TestADOListWorkItemsFiltersByTagsInWIQL(t *testing.T) {
 	}
 }
 
+func TestADOClaimFailsWhenWrittenBreadcrumbIsNotVisible(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{"comments": []interface{}{}})
+		case http.MethodPost:
+			writeJSON(t, w, map[string]interface{}{"commentId": 1, "text": "accepted but not persisted"})
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": 1,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.State":        "New",
+				"System.Title":        "Claim candidate",
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ClaimWorkItem(context.Background(), ClaimWorkItemRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		ID:         "42",
+		RunID:      "run-42",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not visible after write") {
+		t.Fatalf("ClaimWorkItem error = %v, want missing-breadcrumb failure", err)
+	}
+}
+
 // TestADOFindPullRequestByBranch pins the exact source-branch match the
 // idempotent OpenPullRequest and issue-close-out linking rely on: a prefix
 // collision ("run-1" vs "run-10") must not resolve the wrong PR.

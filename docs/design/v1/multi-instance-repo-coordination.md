@@ -226,7 +226,10 @@ identity, not on which provider hosts the issue).
   needs no shared infrastructure — but flagging since a shared registry would
   also make MIRC-2's overlap check more reliable than each instance's own
   possibly-stale view of its siblings.)*
-- **OQ-3 — claim-race backoff behavior:** when MIRC-3 detects a lost race after
-  a branch/PR may already be partially created, what's the correct cleanup —
-  delete the branch, close the PR, leave it for a human, or something else?
-  Needs a decision before MIRC-3 is fully scoped, not just "detect and stop."
+- **OQ-3 — claim-race backoff behavior (resolved 2026-08-16):** automatically
+  delete/close artifacts belonging to the losing claimant. MIRC-3 enforces this
+  before artifacts can escape: `backlog-query` confirms provider ownership
+  before committing its result, and a mismatch releases the local lease and
+  returns no-work. Because this is the workflow's first stage, no downstream
+  branch push or PR creation can occur; normal terminal workspace cleanup
+  removes the unpushed run branch.

@@ -575,8 +575,7 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 		return ClaimResult{}, err
 	}
 	if !claimed {
-		// Our own breadcrumb must be visible; treat an empty read as us winning.
-		winner = req.RunID
+		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
 	}
 	if winner != req.RunID {
 		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
@@ -591,6 +590,9 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
 	if err != nil {
 		return ClaimResult{}, err
+	}
+	if !item.HasLabel(label) {
+		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
 	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
 }
