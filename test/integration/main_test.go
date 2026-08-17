@@ -42,7 +42,7 @@ package alpha
 import (
 	"testing"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationTool(t *testing.T) {
@@ -56,7 +56,7 @@ package beta
 import (
 	"testing"
 
-	deps "github.com/goobers/goobers/internal/testdep"
+	deps "github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationTool(t *testing.T) {
@@ -88,7 +88,7 @@ func TestIntegrationDependencyGuard(t *testing.T) {
 import (
 	"os/exec"
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -101,7 +101,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -114,7 +114,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -134,7 +134,7 @@ func TestIntegrationTool(t *testing.T) { t.Log("no external dependency") }`,
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	tool := "sh"
@@ -147,7 +147,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	t.Log("setup")
@@ -160,7 +160,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.RequireEnv(t)
@@ -172,7 +172,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -197,7 +197,7 @@ func TestIntegrationDependencyGuardAllowsRequireEnvOnlyFile(t *testing.T) {
 	source := `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_LIVE_SMOKE")

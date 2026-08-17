@@ -99,14 +99,10 @@ manifests:
 manifests-check: manifests
 	git diff --exit-code -- config/crd/bases
 
-## docs: Regenerate the committed CLI reference (docs/cli), man pages (docs/man),
-## and shell completions (docs/completion) from the command registry, and the feature matrix (docs/feature-matrix.md)
-## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and
-## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
-## from this, so run it after any CLI help or DSL-feature change.
+## docs: Regenerate all committed documentation derived from runtime registries.
 .PHONY: docs
 docs:
-	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate|TestCapabilityMatrixDocUpToDate'
+	$(GO) run ./cmd/goobers __generate-docs docs
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration

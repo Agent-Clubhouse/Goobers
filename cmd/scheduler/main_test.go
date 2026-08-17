@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/scheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -213,7 +214,7 @@ func TestSchedulerADORegistryScrubsTelemetryExporter(t *testing.T) {
 		t.Fatalf("BacklogProviderFor: %v", err)
 	}
 
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	cfg := schedulerTelemetryConfig(config{}, scrubber)
 	cfg.SpanExporter = exporter
 	cfg.Batch = false

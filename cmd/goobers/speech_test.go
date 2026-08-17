@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/speechnotify"
+	speechtest "github.com/goobers/goobers/test/testsupport/speechnotify"
 )
 
 func speechTestInstance(t *testing.T, config speechnotify.Config) string {
@@ -29,7 +30,7 @@ func speechTestInstance(t *testing.T, config speechnotify.Config) string {
 	return root
 }
 
-func installFakeSpeechSink(t *testing.T, fake *speechnotify.FakeSynthesizer) {
+func installFakeSpeechSink(t *testing.T, fake *speechtest.FakeSynthesizer) {
 	t.Helper()
 	original := newNativeSpeechSink
 	newNativeSpeechSink = func(config speechnotify.Config, recorder speechnotify.Recorder) (*speechnotify.Sink, error) {
@@ -40,7 +41,7 @@ func installFakeSpeechSink(t *testing.T, fake *speechnotify.FakeSynthesizer) {
 
 func TestSpeechPreflightWorksWhileDisabled(t *testing.T) {
 	root := speechTestInstance(t, speechnotify.Config{Language: "en-US", Rate: 205})
-	fake := &speechnotify.FakeSynthesizer{Report: speechnotify.Preflight{
+	fake := &speechtest.FakeSynthesizer{Report: speechnotify.Preflight{
 		Engine:            "fake",
 		Executable:        "in-process",
 		Voice:             "CI",
@@ -74,7 +75,7 @@ func TestSpeechPreflightWorksWhileDisabled(t *testing.T) {
 
 func TestSpeechTestUsesFixedPhraseAndWritesReceipts(t *testing.T) {
 	root := speechTestInstance(t, speechnotify.Config{})
-	fake := &speechnotify.FakeSynthesizer{}
+	fake := &speechtest.FakeSynthesizer{}
 	installFakeSpeechSink(t, fake)
 
 	code, stdout, stderr := runArgs(t, "speech", "test", "--json", root)
@@ -105,7 +106,7 @@ func TestSpeechTestUsesFixedPhraseAndWritesReceipts(t *testing.T) {
 
 func TestSpeechPreflightFailureIsActionable(t *testing.T) {
 	root := speechTestInstance(t, speechnotify.Config{})
-	fake := &speechnotify.FakeSynthesizer{
+	fake := &speechtest.FakeSynthesizer{
 		Report: speechnotify.Preflight{
 			Engine:            "fake",
 			AudioPrerequisite: "an active local audio session",

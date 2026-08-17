@@ -20,9 +20,10 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationPythonServiceGaggleRunsPytestGreen(t *testing.T) {
@@ -145,7 +146,7 @@ func newPythonGaggleRunner(t *testing.T, manager *worktree.Manager, fixtureRepo,
 			if injectorErr != nil {
 				return nil, injectorErr
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("fake Python harness session\n"),
 				Act: func(_ context.Context, request harness.RunRequest) error {
 					if gooberName == "python-implementer" {
@@ -154,9 +155,9 @@ func newPythonGaggleRunner(t *testing.T, manager *worktree.Manager, fixtureRepo,
 						}
 						runSkeletonGit(t, request.Workspace, "add", "CHANGELOG.md")
 						runSkeletonGit(t, request.Workspace, "-c", "user.email=impl@test", "-c", "user.name=impl", "commit", "-m", "implement reference change")
-						return harness.WriteCompletion(request.Workspace, request.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
+						return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
 					}
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
 				},
 			}
 			recorder, ok := rec.(harness.SpanRecorder)
