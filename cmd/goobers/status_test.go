@@ -79,9 +79,13 @@ func TestDaemonRestartStatusLine(t *testing.T) {
 			At:     now.Add(-2 * time.Minute),
 			Reason: "process exited unexpectedly",
 			RunIDs: []string{"run-a", "run-b"},
+			Replacements: []readservice.RunReplacement{{
+				ItemID: "3090", FailedRunID: "run-old", ReplacementRunID: "run-new",
+			}},
 		},
 	}, now)
-	want := "Daemon restarted 2m0s ago (process exited unexpectedly); runs resumed/reclaimed: run-a, run-b\n"
+	want := "Daemon restarted 2m0s ago (process exited unexpectedly); runs resumed/reclaimed: run-a, run-b\n" +
+		"Warning: run run-old failed during the daemon restart and was replaced by run-new for item 3090\n"
 	if got != want {
 		t.Fatalf("daemon restart line = %q, want %q", got, want)
 	}

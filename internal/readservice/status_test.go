@@ -73,6 +73,7 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 
 func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
 	startedAt := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
 	eventTime := startedAt.Add(-time.Hour)
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time {
@@ -126,6 +127,24 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
 	}
+	old, oldClock := createFixtureRun(
+		t, layout, machine, "run-failed", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	oldClock.now = startedAt.Add(2 * time.Second)
+	if err := old.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _ := createFixtureRun(
+		t, layout, machine, "run-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
 	service, err := NewLocal(LocalSources{
 		Layout:      layout,
 		Definitions: testDefinitions(),
@@ -149,6 +168,12 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 	}
 	if len(got.RunIDs) != 1 || got.RunIDs[0] != "run-resumed" {
 		t.Fatalf("recovered run IDs = %v, want [run-resumed]", got.RunIDs)
+	}
+	if len(got.Replacements) != 1 ||
+		got.Replacements[0].ItemID != "3090" ||
+		got.Replacements[0].FailedRunID != "run-failed" ||
+		got.Replacements[0].ReplacementRunID != "run-replacement" {
+		t.Fatalf("replacements = %+v", got.Replacements)
 	}
 }
 

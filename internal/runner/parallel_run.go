@@ -592,7 +592,7 @@ func (r *Runner) runParallelBranch(
 					ctx, branchJournal, in, ex, task, branch.id,
 					branchContextPointers(basePointers, result.pointers),
 					result.lastResult, result.completed, nil, startAttempt, firstClass,
-					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra,
+					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra, -1,
 				)
 				startAttempt = 1
 				firstClass = ""

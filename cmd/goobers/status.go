@@ -217,10 +217,21 @@ func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) 
 	if len(restart.RunIDs) > 0 {
 		runs = strings.Join(restart.RunIDs, ", ")
 	}
-	return fmt.Sprintf(
+	var text strings.Builder
+	fmt.Fprintf(&text,
 		"Daemon restarted %s (%s); runs resumed/reclaimed: %s\n",
 		formatLastActivity(now, restart.At), restart.Reason, runs,
 	)
+	for _, replacement := range restart.Replacements {
+		fmt.Fprintf(
+			&text,
+			"Warning: run %s failed during the daemon restart and was replaced by %s for item %s\n",
+			replacement.FailedRunID,
+			replacement.ReplacementRunID,
+			replacement.ItemID,
+		)
+	}
+	return text.String()
 }
 
 type statusFleetSummary struct {

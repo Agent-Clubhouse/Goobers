@@ -580,13 +580,15 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 				attempt:              attempt,
 				class:                startedAttemptClass(segment, startState, attempt),
 				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
+				policyAttempts:       policyAttemptsBefore(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
-				stage:    startState,
-				attempt:  attempt,
-				class:    startedAttemptClass(segment, startState, attempt),
-				recorded: true,
+				stage:          startState,
+				attempt:        attempt,
+				class:          startedAttemptClass(segment, startState, attempt),
+				recorded:       true,
+				policyAttempts: policyAttemptsBefore(segment, startState, attempt),
 			}
 		} else if rerun == nil && !resumedGateTransition && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
@@ -1628,6 +1630,20 @@ func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, a
 		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
 	}
 	return false
+}
+
+func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var attempts int32
+	for _, event := range events {
+		if event.Type != journal.EventStageStarted ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.AttemptClass == journal.AttemptInfra {
+			continue
+		}
+		attempts++
+	}
+	return attempts
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

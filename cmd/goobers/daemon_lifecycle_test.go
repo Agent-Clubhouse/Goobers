@@ -19,11 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// newStuckRun hand-constructs a run left non-terminal (task-checkpointed, no
-// run.finished event) for the given workflow — the same "prior crash or
-// unclean shutdown" fixture shape TestUpResumesInterruptedRun uses, factored
-// out for the #135 tests that build their own Scheduler/runner directly
-// rather than going through a full runUpContext.
+// newStuckRun hand-constructs a run interrupted during deterministic dispatch:
+// the task is checkpointed and started, but has no matching stage.finished.
 func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	t.Helper()
 	set, report, err := instance.LoadConfigDir(l.ConfigDir())
@@ -58,6 +55,11 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	}
 	jr.SetMachineState("local-ci")
 	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := jr.Close(); err != nil {
