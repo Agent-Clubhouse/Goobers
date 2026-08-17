@@ -356,6 +356,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
+		{name: "debug", desc: "Explain candidate eligibility and exclusions"},
 		{name: "release", desc: "Release this run's claim leases early"},
 		{name: "read-only", desc: "Query without mutating provider state"},
 		{name: "reconcile", desc: "Reconcile claim state"},

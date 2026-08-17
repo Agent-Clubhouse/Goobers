@@ -213,6 +213,7 @@ complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_sub
 complete -c goobers -n '__fish_seen_subcommand_from journal; and __fish_seen_subcommand_from redact' -l secret-file -r -d 'Read the leaked secret bytes from this file'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-health' -l feedback -d 'Include backlog feedback'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l claim -d 'Claim the first eligible item'
+complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l debug -d 'Explain candidate eligibility and exclusions'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l release -d 'Release this run\'s claim leases early'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l read-only -d 'Query without mutating provider state'
 complete -c goobers -n '__fish_seen_subcommand_from backlog-query' -l reconcile -d 'Reconcile claim state'

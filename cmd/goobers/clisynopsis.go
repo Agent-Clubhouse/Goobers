@@ -66,7 +66,7 @@ var synopsisByID = map[string]string{
 	"backlog-dedupe":         "  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)\n",
 	"backlog-assignment":     "  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)\n",
 	"backlog-health":         "  goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)\n",
-	"backlog-query":          "  goobers backlog-query [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)\n",
+	"backlog-query":          "  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)\n",
 	"select-source":          "  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)\n",
 	"validate-plan":          "  goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)\n",
 	"reconcile-branches":     "  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]\n                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)\n",
