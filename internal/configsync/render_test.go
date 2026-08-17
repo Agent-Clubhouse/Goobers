@@ -1,6 +1,7 @@
 package configsync
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +23,11 @@ func TestWriteManifests(t *testing.T) {
 	if len(written) != 2 {
 		t.Fatalf("wrote %d files, want 2", len(written))
 	}
+	if info, err := os.Lstat(out); err != nil {
+		t.Fatalf("inspect authoritative output: %v", err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("authoritative output mode = %v, want symbolic link", info.Mode())
+	}
 
 	// Each rendered file round-trips to a valid CR with the stamped namespace.
 	data, err := os.ReadFile(filepath.Join(out, "gaggle-web.yaml"))
@@ -34,6 +40,78 @@ func TestWriteManifests(t *testing.T) {
 	}
 	if g.Namespace != DefaultNamespace || g.Kind != "Gaggle" {
 		t.Errorf("rendered CR not stamped: ns=%q kind=%q", g.Namespace, g.Kind)
+	}
+	if _, err := os.Stat(filepath.Join(out, generationMetadata)); err != nil {
+		t.Errorf("generation metadata is not authoritative: %v", err)
+	}
+}
+
+func TestWriteManifests_InterruptedPublicationKeepsPreviousGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		hooks publicationHooks
+	}{
+		{
+			name: "before generation write",
+			hooks: publicationHooks{
+				beforeGenerationWrite: func() error { return errInjectedInterruption },
+			},
+		},
+		{
+			name: "during generation write",
+			hooks: publicationHooks{
+				duringGenerationWrite: func() error { return errInjectedInterruption },
+			},
+		},
+		{
+			name: "after generation publication",
+			hooks: publicationHooks{
+				afterGenerationPublish: func() error { return errInjectedInterruption },
+			},
+		},
+		{
+			name: "after publication metadata sync",
+			hooks: publicationHooks{
+				beforeAuthoritativeSwap: func() error { return errInjectedInterruption },
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "rendered")
+			previous := &RenderSet{
+				Namespace: DefaultNamespace,
+				Objects:   []client.Object{managedGaggle("previous")},
+			}
+			if _, err := previous.WriteManifests(out); err != nil {
+				t.Fatalf("write previous generation: %v", err)
+			}
+			previousTarget, err := os.Readlink(out)
+			if err != nil {
+				t.Fatalf("read previous generation pointer: %v", err)
+			}
+
+			next := &RenderSet{
+				Namespace: DefaultNamespace,
+				Objects:   []client.Object{managedGaggle("next"), managedGaggle("other")},
+			}
+			if _, err := next.writeManifests(out, tc.hooks); !errors.Is(err, errInjectedInterruption) {
+				t.Fatalf("interrupted render error = %v, want injected interruption", err)
+			}
+
+			currentTarget, err := os.Readlink(out)
+			if err != nil {
+				t.Fatalf("read current generation pointer: %v", err)
+			}
+			if currentTarget != previousTarget {
+				t.Fatalf("current generation = %q, want previous %q", currentTarget, previousTarget)
+			}
+			if _, err := os.Stat(filepath.Join(out, "gaggle-previous.yaml")); err != nil {
+				t.Fatalf("previous generation is not authoritative: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(out, "gaggle-next.yaml")); !os.IsNotExist(err) {
+				t.Fatalf("partial next generation exposed, stat error = %v", err)
+			}
+		})
 	}
 }
 
@@ -78,3 +156,5 @@ func TestSortObjects_DeterministicKindOrder(t *testing.T) {
 		}
 	}
 }
+
+var errInjectedInterruption = errors.New("injected interruption")
