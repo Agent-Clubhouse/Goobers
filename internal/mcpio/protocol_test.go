@@ -52,7 +52,7 @@ func TestServeFullSession(t *testing.T) {
 	srv, ws := newTestServer(t)
 
 	var in bytes.Buffer
-	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{}))
+	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{"protocolVersion": "2025-06-18"}))
 	in.WriteString(rpcLine(t, -1, "notifications/initialized", nil))
 	in.WriteString(rpcLine(t, 2, "tools/list", map[string]interface{}{}))
 	in.WriteString(rpcLine(t, 3, "tools/call", map[string]interface{}{
@@ -138,6 +138,74 @@ func TestServeFullSession(t *testing.T) {
 		if !strings.Contains(string(runInfoResult), want) {
 			t.Fatalf("get_run_info missing %q: %s", want, runInfoResult)
 		}
+	}
+}
+
+func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		params      interface{}
+		wantVersion string
+		wantError   string
+	}{
+		{
+			name:        "current",
+			params:      map[string]interface{}{"protocolVersion": "2025-06-18"},
+			wantVersion: "2025-06-18",
+		},
+		{
+			name:        "older supported",
+			params:      map[string]interface{}{"protocolVersion": "2024-11-05"},
+			wantVersion: "2024-11-05",
+		},
+		{
+			name:      "newer unsupported",
+			params:    map[string]interface{}{"protocolVersion": "2025-11-25"},
+			wantError: `unsupported protocolVersion "2025-11-25"; supported versions: 2025-06-18, 2024-11-05`,
+		},
+		{
+			name:      "missing",
+			params:    map[string]interface{}{},
+			wantError: "initialize requires protocolVersion",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			var out bytes.Buffer
+			if err := srv.Serve(
+				strings.NewReader(rpcLine(t, 1, "initialize", tt.params)),
+				&out,
+				&bytes.Buffer{},
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			var response rpcResponse
+			if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantError != "" {
+				if response.Error == nil {
+					t.Fatalf("expected protocol error, got result %#v", response.Result)
+				}
+				if response.Error.Code != -32602 || response.Error.Message != tt.wantError {
+					t.Fatalf("error = %+v, want code -32602 and message %q", response.Error, tt.wantError)
+				}
+				return
+			}
+			if response.Error != nil {
+				t.Fatalf("unexpected protocol error: %+v", response.Error)
+			}
+			result, ok := response.Result.(map[string]interface{})
+			if !ok {
+				t.Fatalf("result type = %T, want map", response.Result)
+			}
+			if got := result["protocolVersion"]; got != tt.wantVersion {
+				t.Fatalf("protocolVersion = %v, want %q", got, tt.wantVersion)
+			}
+		})
 	}
 }
 

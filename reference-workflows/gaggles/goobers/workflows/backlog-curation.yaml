@@ -78,7 +78,7 @@ spec:
         readyLabel: "goobers:ready"
         resultFile: "backlog-health.json"
       capabilities:
-        - github:issues:write
+        - github:issues:read
       expectedOutputs:
         - backlog-health
       next: query-backlog
@@ -166,7 +166,7 @@ spec:
         resultFile: "dedupe-candidates.json"
         maxCandidates: "20"
       capabilities:
-        - github:issues:write
+        - github:issues:read
       expectedOutputs:
         - dedupe-candidates
       next: curate

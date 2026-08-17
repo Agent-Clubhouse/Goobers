@@ -1,7 +1,9 @@
 package vnext
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,6 +101,10 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
 	},
+}
+
+var readOnlyCommandArguments = map[string]string{
+	"respond-to-findings": "check",
 }
 
 var commandArgumentPolicyActionInputs = map[string]map[string]string{
@@ -258,6 +264,12 @@ func policyCommand(task apiv1.Task) string {
 
 func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
+	if task.Run != nil {
+		readOnlyArgument := readOnlyCommandArguments[command]
+		if readOnlyArgument != "" && booleanCommandArgument(task.Run.Command[2:], readOnlyArgument) {
+			return nil
+		}
+	}
 	actions := append([]string(nil), commandPolicyActions[command]...)
 	argumentActions := commandArgumentPolicyActions[command]
 	if task.Run == nil || len(argumentActions) == 0 {
@@ -310,6 +322,13 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		actions = append(actions, "close-issue")
 	}
 	return actions
+}
+
+func booleanCommandArgument(args []string, name string) bool {
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	enabled := flags.Bool(name, false, "")
+	return flags.Parse(args) == nil && *enabled
 }
 
 func isCurationBacklogClaim(task apiv1.Task) bool {
