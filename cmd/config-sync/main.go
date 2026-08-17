@@ -50,7 +50,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	// Exclude the render output directory from the load so a config repo that
 	// holds its own rendered/ output (the ArgoCD-watched layout) stays idempotent
 	// across renders. Harmless when --out is outside the config root.
-	set, report, err := loader.Load(*configDir, *outDir)
+	set, report, err := loader.Load(*configDir, *outDir, configsync.ManifestGenerationDir(*outDir))
 	if errors.Is(err, configsync.ErrInvalidConfig) {
 		_, _ = fmt.Fprintf(stderr, "config-sync: invalid config (%d objects, %d files):\n", report.Objects, report.Files)
 		for _, iss := range report.Issues {
