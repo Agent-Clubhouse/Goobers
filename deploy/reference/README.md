@@ -19,6 +19,31 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy | §2, §4, §5 |
 
+## Hand-managed node-pool contract
+
+The reference deployment assumes that the cluster operator creates and manages its node
+pools. It relies on pool properties, not particular VM sizes, node counts, purchase
+models, or scaling limits:
+
+| Pool | Required node properties | Workload placement |
+|---|---|---|
+| Linux (required) | Linux kubelet OS and the standard `kubernetes.io/os=linux` label | Normal Goobers workloads, including the operator, worker, API, and Temporal components, select `kubernetes.io/os: linux`. No Goobers-specific taint or toleration is required. |
+| Windows (optional) | Windows kubelet OS, the standard `kubernetes.io/os=windows` label, and the operator-applied `kubernetes.io/os=windows:NoSchedule` taint | Windows stage workloads select `kubernetes.io/os: windows` and tolerate the matching `NoSchedule` taint. Do not add this toleration to Linux workloads. |
+
+AKS supplies the OS label but does **not** automatically taint Windows pools. Apply the
+taint when creating a Windows pool, and preserve it when replacing or adding nodes:
+
+```sh
+kubectl taint node <windows-node> kubernetes.io/os=windows:NoSchedule
+```
+
+Karpenter and AKS Node Auto Provisioning (NAP) are deliberately deferred. The current
+worker Deployment does not create one unschedulable pod per stage, and Goobers has no
+pod-level scaling signal for an autoprovisioner to observe. Revisit autoprovisioning
+after a pod-level scaler or pod-per-stage execution model exists. Until then, operators
+choose and manage capacity for both pools according to their own workloads; this
+reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
+
 ## Conventions
 
 - **`CHANGE-ME`** marks every value the customer must replace (registry, hosts, CIDRs,
@@ -173,8 +198,8 @@ and set the matching `runner.harnessCommand` in `instance.yaml`. Which harness t
 install is deliberately yours: `harnessCommand` is a map keyed by harness name.
 
 Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
-pull on a fresh node. Scale a Windows pool to zero when idle, but expect that pull
-on the first run after it scales up.
+pull on a fresh node. If your operator-selected capacity policy scales the Windows
+pool to zero, expect that pull on the first run after it scales up.
 
 ### Timezones
 
