@@ -300,6 +300,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"trace": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
+		{name: "summary", desc: "Show run metadata and review verdicts"},
+		{name: "verdicts", desc: "Show review verdict content"},
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
 		{name: "transcript", takesArg: true, desc: "Show recorded transcript data for one stage"},
 	},
@@ -308,6 +310,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"escalations show": {
 		{name: "json", desc: "Emit JSON"},
+		{name: "include-verdict", desc: "Include review verdict content"},
 	},
 	"telemetry stats": {
 		{name: "json", desc: "Emit JSON"},
