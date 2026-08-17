@@ -89,6 +89,7 @@ describe("runs history page", () => {
       finishedAt: "2026-07-18T00:00:20Z",
       durationMillis: 20_000,
       lastActivityAt: "2026-07-18T00:00:20Z",
+      stale: false,
       lastSeq: 2,
       repassCount: 0,
       retryCount: 0,
@@ -125,6 +126,20 @@ describe("runs history page", () => {
     expect(await screen.findByText("No runs recorded")).toBeInTheDocument();
     expect(screen.getByText("goobers run <workflow> <instance>")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+  });
+
+  it("distinguishes a stale unmonitored run from a live running run", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Expected a running run fixture.");
+    }
+    running.stale = true;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("link", { name: `Open run ${running.id}` });
+    expect(within(row).getByText("Stale / unmonitored")).toBeInTheDocument();
+    expect(within(row).queryByText("Running")).not.toBeInTheDocument();
   });
 
   it("distinguishes filters that exclude existing runs and offers recovery", async () => {

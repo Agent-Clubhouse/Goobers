@@ -1,6 +1,6 @@
 # Design: Sandboxing + per-goober credential injection (isolation rung 2) — V1 epic #35
 
-> Status: **Draft for review** · Area prefix: `SEC` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `SEC` · Milestone: **V1**
 > Requirements: [`docs/requirements/security.md`](../../requirements/security.md)
 > (SEC-044/045, SEC-Q6) · Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §9
 >

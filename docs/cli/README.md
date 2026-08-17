@@ -2518,7 +2518,7 @@ on-main builds the configured branch. Config is never changed.
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v1.2.3
+$ goobers self-update --policy manual --target v0.1.0
 ~~~
 
 ## `goobers service`

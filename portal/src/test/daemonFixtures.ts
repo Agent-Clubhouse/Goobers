@@ -135,6 +135,7 @@ function run(
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
     lastActivityAt: finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
+    stale: false,
     lastSeq,
     repassCount,
     retryCount: 0,

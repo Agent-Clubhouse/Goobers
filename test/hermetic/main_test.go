@@ -111,7 +111,7 @@ func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
 	}{
 		{goos: "linux", tools: []string{"as", "ld", "node", "npm"}},
 		{goos: "darwin", tools: []string{"node", "npm"}},
-		{goos: "windows", tools: []string{"node", "npm.cmd"}},
+		{goos: "windows", tools: []string{"icacls", "icacls.exe", "node", "npm.cmd", "powershell.exe", "sh"}},
 	} {
 		t.Run(tt.goos, func(t *testing.T) {
 			required := make(map[string]bool)
@@ -137,7 +137,8 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 		"CC=ambient-cc",
 		"GOOBERS_OTLP_ENDPOINT=http://127.0.0.1:4317",
 		"GOOBERS_OTLP_INSECURE=true",
-	}, "/isolated/tools", "hermetic-cc")
+		"GOROOT=/ambient/goroot",
+	}, "/isolated/tools", "hermetic-cc", "/isolated/goroot")
 
 	values := environmentMap(got)
 	for _, name := range []string{"GOOBERS_OTLP_ENDPOINT", "GOOBERS_OTLP_INSECURE"} {
@@ -154,6 +155,7 @@ func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) 
 		"GONOSUMDB":   "none",
 		"GOPRIVATE":   "",
 		"GOPROXY":     "off",
+		"GOROOT":      "/isolated/goroot",
 		"GOSUMDB":     "off",
 		"GOTOOLCHAIN": "local",
 		"GOVCS":       "*:off",
@@ -221,6 +223,37 @@ func TestReportViolationsDirectsAuthorToIntegrationTier(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("diagnostic %q does not contain %q", output.String(), want)
 		}
+	}
+}
+
+func TestPopulateToolPathLinksSharedDestinationOnce(t *testing.T) {
+	// Two allowlist names can normalise to a single executable — on Windows
+	// executableName maps both "icacls" and "icacls.exe" to icacls.exe. Linking
+	// the second one used to fail with "The file exists", taking every Windows
+	// behavioral shard red. Same-named entries reproduce that collision on any
+	// GOOS.
+	sourceDir := t.TempDir()
+	source := filepath.Join(sourceDir, executableName("icacls"))
+	writeFixture(t, source, "icacls")
+
+	destination := t.TempDir()
+	if err := populateToolPath(destination, []resolvedTool{
+		{name: "icacls", path: source},
+		{name: "icacls", path: source},
+	}); err != nil {
+		t.Fatalf("populateToolPath with a shared destination: %v", err)
+	}
+
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != executableName("icacls") {
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("tool PATH entries = %q, want exactly [%q]", names, executableName("icacls"))
 	}
 }
 

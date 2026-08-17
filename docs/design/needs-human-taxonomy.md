@@ -1,6 +1,6 @@
 # Design: needs-human label taxonomy — decision vs. status
 
-> Status: **Implemented** (2026-08-03)
+> Status: **implemented** (2026-08-03)
 > Area prefix: none (hygiene)
 > Related: #2028, #1696, #1974, #2064's state-of-repo review
 > Touches: `providers/model.go`, `cmd/goobers/runnerwiring.go`,

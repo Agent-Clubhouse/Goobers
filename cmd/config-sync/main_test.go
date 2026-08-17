@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsync"
 )
 
@@ -129,6 +130,23 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 				t.Fatalf("output exposed API warning provenance:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestConfigSyncCLIStringSuppressesDeprecatedDSLVersionProvenance(t *testing.T) {
+	issue := validate.Issue{
+		Code:     validate.WarningDeprecatedDSLVersion,
+		Severity: validate.Warning,
+		File:     "gaggles/acme-web/workflows/implementation.yaml",
+		Kind:     "Workflow",
+		Name:     "implementation",
+		Gaggle:   "acme-web",
+		Message:  `dslVersion "1.4" is deprecated`,
+	}
+
+	const want = `WARNING DVL020 Workflow/implementation: dslVersion "1.4" is deprecated`
+	if got := configSyncCLIString(issue); got != want {
+		t.Fatalf("configSyncCLIString() = %q, want %q", got, want)
 	}
 }
 

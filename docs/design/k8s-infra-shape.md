@@ -1,6 +1,6 @@
 # Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster
 
-**Status:** Approved for backlog planning (PO directive, 2026-07-16). Documentation-first:
+**Status:** approved — for backlog planning (PO directive, 2026-07-16). Documentation-first:
 this doc (plus reference manifests filed as backlog issues) is the deliverable.
 **Provisioning code (Bicep/Terraform/cloud accounts) is explicitly out of scope** — the
 customer brings a cluster they procure and manage. The existing `infra/` Bicep tree remains

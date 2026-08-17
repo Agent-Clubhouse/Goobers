@@ -1,5 +1,7 @@
 # Overnight hardening campaign — 2026-07-16
 
+> Status: **historical — completed campaign record**
+
 Design record for the first long-running autonomous self-improvement test. This
 doc is the map for the ~35 items approved for the queue on 2026-07-16: the
 invariant families they enforce, the dependency edges between them, and the

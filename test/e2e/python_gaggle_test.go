@@ -15,7 +15,7 @@ const pythonGaggleDir = "../../config-examples/gaggles/python-service"
 func TestPythonServiceGaggleFailsToScheduleWithoutPythonCapability(t *testing.T) {
 	gaggle := loadYAML[apiv1.Gaggle](t, filepath.Join(pythonGaggleDir, "gaggle.yaml"))
 	wf := loadYAML[apiv1.Workflow](t, filepath.Join(pythonGaggleDir, "workflows", "python-implementation.yaml"))
-	want := []string{"python@3.12"}
+	want := []string{"os=linux", "python@3.12"}
 	if got := instance.WorkflowRequiredCapabilities(gaggle, wf); !reflect.DeepEqual(got, want) {
 		t.Fatalf("required capabilities = %v, want %v", got, want)
 	}
@@ -26,7 +26,7 @@ func TestPythonServiceGaggleFailsToScheduleWithoutPythonCapability(t *testing.T)
 		t.Fatalf("runner without python@3.12 must fail to schedule with a diagnostic naming it, got %v", err)
 	}
 	if err := instance.CheckCapabilityRequirements(want, set); err != nil {
-		t.Fatalf("runner claiming python@3.12 must schedule: %v", err)
+		t.Fatalf("runner claiming Linux and python@3.12 must schedule: %v", err)
 	}
 }
 

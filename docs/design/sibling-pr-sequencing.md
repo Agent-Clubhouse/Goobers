@@ -1,6 +1,6 @@
 # Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human
 
-> Status: **Draft for review** · Area: `PRL` / `RUN` (merge-review + pr-remediation)
+> Status: **draft — for review** · Area: `PRL` / `RUN` (merge-review + pr-remediation)
 > Origin: `weekend_12` deep-dive (`~/source/Goobers-Review/weekend_12/findings/010`,
 > `findings/011`) — every human-escalated PR that round was a PR the daemon
 > *created but could not drain itself*, and the single biggest bucket was

@@ -192,7 +192,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
         </span>
       </span>
-      <StatusBadge status={run.phase} />
+      <StatusBadge stale={run.stale} status={run.phase} />
       <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
       <span>
         <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>

@@ -33,20 +33,19 @@ publication.
 
 ```sh
 mkdir -p .github/release-notes
-$EDITOR .github/release-notes/v1.2.3.md
-git add .github/release-notes/v1.2.3.md
-git commit -m "docs: curate v1.2.3 release notes"
-git tag v1.2.3
-git push origin v1.2.3
+$EDITOR .github/release-notes/vMAJOR.MINOR.PATCH.md
+git add .github/release-notes/vMAJOR.MINOR.PATCH.md
+git commit -m "docs: curate vMAJOR.MINOR.PATCH release notes"
+git tag vMAJOR.MINOR.PATCH
+git push origin vMAJOR.MINOR.PATCH
 ```
 
 ## Install a pinned release
 
-On Linux or macOS, choose an exact stable release tag and run its attached
-installer. Replace `v1.2.3` with the release you intend to adopt:
+On Linux or macOS, run the installer attached to the current `v0.1.0` release:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v0.1.0
 /bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
   -- "$VERSION"
 ```
@@ -103,7 +102,7 @@ go run ./release -previous-features previous/feature-registry.json \
 go run ./release -previous-features previous/feature-registry.json \
   -previous-support-matrix previous/dsl-support-matrix.json -targets windows/amd64
 go run ./release -previous-features previous/feature-registry.json \
-  -previous-support-matrix previous/dsl-support-matrix.json -version v1.2.3 -output dist
+  -previous-support-matrix previous/dsl-support-matrix.json -version vMAJOR.MINOR.PATCH -output dist
 ```
 
 Build metadata (`version`/`commit`/`date`) is injected via the same
@@ -310,13 +309,13 @@ bucket. The intended shape, driven by the artifact names above:
 
 ```json
 {
-  "version": "1.2.3",
+  "version": "0.1.0",
   "description": "Goobers agent-workforce daemon and CLI.",
   "homepage": "https://github.com/Agent-Clubhouse/Goobers",
   "license": "See repository",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Agent-Clubhouse/Goobers/releases/download/v1.2.3/goobers_v1.2.3_windows_amd64.zip",
+      "url": "https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/goobers_v0.1.0_windows_amd64.zip",
       "hash": "<sha256 from SHA256SUMS>"
     }
   },

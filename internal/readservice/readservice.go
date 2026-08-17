@@ -81,8 +81,7 @@ type LocalSources struct {
 	Validation  *validate.Report
 	Telemetry   *rollup.DB
 	// ReadModel is the portal run read model (read.db). Optional: when absent,
-	// every list takes the existing journal-derived paths, which is the rollback
-	// posture §6.6 requires — no journal is touched at any step.
+	// offline readers and rollback mode use the journal-derived paths.
 	// A Reader, deliberately not a *readmodel.Store. §3.1's separation is
 	// enforced by the type: the read service holds a handle with no write,
 	// backfill, or repair method on it, so a read path that tries to project
@@ -162,10 +161,8 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 		ready:     ready,
 		now:       now,
 		// §6.6 step 3: the cutover defaults ON now that the projector and the
-		// repair sweep keep the store continuously current. A request the read
-		// model cannot serve still falls through to the journal path rather than
-		// being refused, so turning this on can only make answers faster, never
-		// remove one.
+		// repair sweep keep the store continuously current. The read model owns
+		// every list while enabled, including closed-set refusals.
 		readModelReads: sources.ReadModel != nil,
 	}
 	local.definitions.Store(snapshot)
@@ -181,9 +178,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 //
 // interval <= 0 uses the default. Repeated calls reuse the sampler already
 // owned by the service. The returned stop function is idempotent and must be
-// called on shutdown; it waits for an in-flight walk, which at 1x is several
-// seconds.
-func (s *Local) StartActiveRunSampler(interval time.Duration) func() {
+// called on shutdown. It cancels an in-flight walk and returns an error if a
+// lower-level filesystem operation does not return within five seconds.
+func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	sampler := newActiveRunSampler(s.sources.Layout, interval, s.now)
 	if !s.activeSampler.CompareAndSwap(nil, sampler) {
 		sampler = s.activeSampler.Load()

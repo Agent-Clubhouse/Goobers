@@ -144,6 +144,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
 					}
 					assertStaticStageContracts(t, source, def)
+					assertWindowsDeterministicCompatibility(t, source, def)
 					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview))
 					if err != nil {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
@@ -197,6 +198,152 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func assertWindowsDeterministicCompatibility(t *testing.T, source string, def workflow.Definition) {
+	t.Helper()
+	for _, problem := range windowsDeterministicCompatibilityProblems(def) {
+		t.Errorf("%s: workflow %q %s", source, def.Name, problem)
+	}
+}
+
+func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+			continue
+		}
+		if hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
+			continue
+		}
+		switch {
+		case isPOSIXOnlyScript(task.Run.Script):
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q uses a POSIX inline script without an incompatible os capability",
+				task.Name,
+			))
+		case isWindowsIncompatibleCommand(task.Run.Command):
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q invokes a Windows-incompatible command without an incompatible os capability",
+				task.Name,
+			))
+		}
+	}
+	return problems
+}
+
+var posixOnlyScriptSyntax = regexp.MustCompile(
+	`(?m)(?:^|\n)[ \t]*(?:#![^\n]*\bsh\b|set[ \t]+-[a-zA-Z]*[eu][a-zA-Z]*\b|case\b|esac\b|printf\b|export\b|trap\b|test\b)|\$\{[a-zA-Z_][a-zA-Z0-9_]*[^}]*\}|\$\(`,
+)
+
+func isPOSIXOnlyScript(script string) bool {
+	return posixOnlyScriptSyntax.MatchString(script)
+}
+
+func isWindowsIncompatibleCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	switch strings.ToLower(filepath.Base(command[0])) {
+	case "sh", "bash", "dash", "zsh", "python3":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasWindowsIncompatibleOSCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		goos, ok := strings.CutPrefix(capability, "os=")
+		if ok && goos != "" && goos != "windows" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPOSIXCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPython3Command(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "python-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"python3", "-m", "pytest"}},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsWindowsInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "windows-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "@echo off\r\necho done"},
+			RequiredCapabilities: []string{"os=windows"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want Windows-native script accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOS(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "darwin-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+			RequiredCapabilities: []string{"os=darwin"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOSCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "linux-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+			RequiredCapabilities: []string{"os=linux"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
 	}
 }
 

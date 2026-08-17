@@ -1,5 +1,7 @@
 # Notification output boundary
 
+> Status: **implemented** (#2569)
+
 Notification decisions are rendered before dispatch and cross the runner boundary
 as `goobers.dev/notification/request/v1`. The request carries stable notification,
 incident, and event IDs; severity and transition; exact title, body, and optional

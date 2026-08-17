@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 // TestActiveSamplerNeverWalksOnTheReadPath is the property #1741 exists for, and
@@ -56,13 +57,13 @@ func TestActiveSamplerServesFromMemoryWithAge(t *testing.T) {
 func TestActiveSamplerDoesNotOverlapWalks(t *testing.T) {
 	sampler := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Millisecond, time.Now)
 	sampler.Start()
-	t.Cleanup(sampler.Stop)
+	t.Cleanup(func() { _ = sampler.Stop() })
 
 	// Hold the sampling lock as an in-flight walk would, then confirm refresh
 	// returns immediately instead of blocking on it.
 	sampler.sampling.Lock()
 	done := make(chan struct{})
-	go func() { sampler.refresh(); close(done) }()
+	go func() { sampler.refresh(context.Background()); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -90,8 +91,12 @@ func TestActiveSamplerLifecycleIsIdempotent(t *testing.T) {
 
 	sampler.Start()
 	sampler.Start()
-	sampler.Stop()
-	sampler.Stop()
+	if err := sampler.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := sampler.Stop(); err != nil {
+		t.Fatalf("repeated Stop: %v", err)
+	}
 	sampler.Start()
 
 	select {
@@ -101,8 +106,12 @@ func TestActiveSamplerLifecycleIsIdempotent(t *testing.T) {
 	}
 
 	stoppedBeforeStart := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
-	stoppedBeforeStart.Stop()
-	stoppedBeforeStart.Stop()
+	if err := stoppedBeforeStart.Stop(); err != nil {
+		t.Fatalf("Stop before Start: %v", err)
+	}
+	if err := stoppedBeforeStart.Stop(); err != nil {
+		t.Fatalf("repeated Stop before Start: %v", err)
+	}
 	stoppedBeforeStart.Start()
 	select {
 	case <-stoppedBeforeStart.done:
@@ -123,7 +132,7 @@ func TestActiveSamplerConcurrentLifecycle(t *testing.T) {
 		}()
 		go func() {
 			defer calls.Done()
-			sampler.Stop()
+			_ = sampler.Stop()
 		}()
 	}
 	calls.Wait()
@@ -145,7 +154,7 @@ func TestLocalReusesActiveRunSampler(t *testing.T) {
 	}
 
 	const callers = 50
-	stops := make(chan func(), callers)
+	stops := make(chan func() error, callers)
 	samplers := make(chan *activeRunSampler, callers)
 	var starts sync.WaitGroup
 	for range callers {
@@ -172,8 +181,61 @@ func TestLocalReusesActiveRunSampler(t *testing.T) {
 		shutdown.Add(1)
 		go func() {
 			defer shutdown.Done()
-			stop()
+			if err := stop(); err != nil {
+				t.Errorf("stop reused sampler: %v", err)
+			}
 		}()
 	}
 	shutdown.Wait()
+}
+
+func TestActiveSamplerStopCancelsInFlightWalk(t *testing.T) {
+	sampler := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	sampler.walk = func(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+		close(started)
+		<-ctx.Done()
+		close(returned)
+		return nil, ctx.Err()
+	}
+
+	sampler.Start()
+	<-started
+	if err := sampler.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-returned:
+	default:
+		t.Fatal("Stop returned before the canceled walk exited")
+	}
+}
+
+func TestActiveSamplerStopTimesOutOnWedgedOperation(t *testing.T) {
+	sampler := newActiveRunSampler(instance.NewLayout(t.TempDir()), time.Hour, time.Now)
+	sampler.stopTimeout = 20 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sampler.walk = func(context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+		close(started)
+		<-release
+		return nil, nil
+	}
+
+	sampler.Start()
+	<-started
+	if err := sampler.Stop(); !errors.Is(err, ErrActiveSamplerStopTimeout) {
+		t.Fatalf("Stop error = %v, want ErrActiveSamplerStopTimeout", err)
+	}
+
+	close(release)
+	select {
+	case <-sampler.done:
+	case <-time.After(time.Second):
+		t.Fatal("sampler worker did not exit after the wedged operation returned")
+	}
+	if err := sampler.Stop(); err != nil {
+		t.Fatalf("Stop after worker exit: %v", err)
+	}
 }

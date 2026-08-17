@@ -160,7 +160,7 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md missing installed onboarding command %q:\n%s", want, readme)
 		}
 	}
-	for _, stale := range []string{"curl -fsSL", "install.sh", "$HOME/.local/bin/goobers", "bin/goobers init"} {
+	for _, stale := range []string{"curl -fsSL", "install.sh", "$HOME/.local/bin", "bin/goobers init"} {
 		if strings.Contains(string(readme), stale) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}

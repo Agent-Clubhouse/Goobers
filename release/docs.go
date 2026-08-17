@@ -15,6 +15,16 @@ import (
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
+	readmeSourceReleaseInstall = "## Install\n\n" +
+		"Install the current `v0.1.0` release on Linux or macOS:\n\n" +
+		"```sh\n" +
+		"/bin/sh -c \"$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)\" \\\n" +
+		"  -- v0.1.0\n" +
+		"```\n\n" +
+		"The installer verifies the downloaded archive against the release checksum and\n" +
+		"places `goobers` in `$HOME/.local/bin`. See\n" +
+		"[Release installation and verification](docs/guides/releases.md) for\n" +
+		"prerequisites, install-directory overrides, and the Windows path.\n\n"
 	readmeSourceInstall = "Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered\n" +
 		"first-run path: a credential-free local demo, a disposable GitHub-backed run,\n" +
 		"and then a regular instance using the\n" +
@@ -71,6 +81,20 @@ const (
 		"after materializing the instance below (see\n" +
 		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
 		"for a full claude-code gaggle reference).\n\n" +
+		"### Check prerequisites\n\n" +
+		"The sample's CI command requires Node.js 20 or newer and npm. Confirm both are\n" +
+		"available on the same `PATH` Goobers will use before materializing the sample:\n\n" +
+		"```sh\n" +
+		"node --version\n" +
+		"npm --version\n" +
+		"```\n\n" +
+		"The first command must report `v20.0.0` or newer, and both commands must\n" +
+		"succeed. At run start, Goobers preflights the configured `npm` CI executable\n" +
+		"before any workflow stage executes. If npm is missing, the run fails before it\n" +
+		"claims or changes an issue with a `ciCommand executable \"npm\" not found` error;\n" +
+		"install Node.js 20+ and npm, then run the command again. The preflight checks\n" +
+		"that npm exists, not the Node.js major version, so do not skip the literal\n" +
+		"version checks above.\n\n" +
 		"### Materialize the sample and the instance\n\n" +
 		"Copy the paired sample into a separate throwaway directory, then scaffold the\n" +
 		"instance that will operate on it:\n\n" +
@@ -304,6 +328,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		{
 			path: "README.md",
 			sections: []onboardingSectionRewrite{
+				{
+					source:    readmeSourceReleaseInstall,
+					installed: "",
+				},
 				{
 					source: readmeSourceInstall,
 					installed: fmt.Sprintf(

@@ -511,7 +511,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	phaseFilter := fs.String("phase", "", "filter by comma-separated run phases")
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	gaggleFilter := fs.String("gaggle", "", "filter by gaggle name")
-	limit := fs.Int("limit", 0, "maximum number of runs to show (default: all)")
+	limit := fs.Int("limit", 50, "maximum number of runs to show (default: 50; 0 for all)")
 	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
 	// line — all daemon/process runtime state, not part of `runs list`'s
 	// plain, scriptable run table.
@@ -528,6 +528,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	limitSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "limit" {
+			limitSet = true
+		}
+	})
 	if *limit < 0 {
 		pf(stderr, "error: --limit must be non-negative\n")
 		return 2
@@ -540,7 +546,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || *limit != 0 || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -732,7 +738,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		fleetSummary = &summary
 	}
-	runs = selectStatusRuns(allRuns, options)
+	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		if supportsWatch {
@@ -764,10 +770,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	pf(stdout, "%s", statusText)
 	renderStatus(stdout, runs, now)
+	renderOlderRunsHint(stdout, olderRuns)
 	return 0
 }
 
-func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
+func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, int) {
 	filtered := make([]runSummary, 0, len(runs))
 	for _, run := range runs {
 		if options.workflow != "" && run.Workflow != options.workflow {
@@ -790,9 +797,9 @@ func selectStatusRuns(runs []runSummary, options statusOptions) []runSummary {
 		return filtered[i].StartedAt.After(filtered[j].StartedAt)
 	})
 	if options.limit > 0 && len(filtered) > options.limit {
-		filtered = filtered[:options.limit]
+		return filtered[:options.limit], len(filtered) - options.limit
 	}
-	return filtered
+	return filtered, 0
 }
 
 func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
@@ -806,6 +813,12 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n",
 			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339),
 			formatLastActivity(now, r.LastActivityAt))
+	}
+}
+
+func renderOlderRunsHint(stdout io.Writer, olderRuns int) {
+	if olderRuns > 0 {
+		pf(stdout, "%d older runs; use --limit 0 for all\n", olderRuns)
 	}
 }
 
@@ -849,7 +862,9 @@ func watchStatus(
 		if err != nil {
 			return err
 		}
-		renderStatusWatchFrame(stdout, statusText, selectStatusRuns(allRuns, options), changedStatusRuns(previous, current), now)
+		runs, olderRuns := selectStatusRuns(allRuns, options)
+		renderStatusWatchFrame(stdout, statusText, runs, changedStatusRuns(previous, current), now)
+		renderOlderRunsHint(stdout, olderRuns)
 		previous = current
 
 		select {

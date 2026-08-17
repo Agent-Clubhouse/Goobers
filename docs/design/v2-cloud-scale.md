@@ -1,6 +1,6 @@
 # V2 — Cloud & Large Team
 
-**Status:** Approved for backlog planning (PO directive, 2026-07-16). Items filed to milestone
+**Status:** approved — for backlog planning (PO directive, 2026-07-16). Items filed to milestone
 "V2 — cloud scale" remain **future investments**: backlog-only, not `goobers:approved`, not
 eligible for automated implementation until the PO promotes them.
 

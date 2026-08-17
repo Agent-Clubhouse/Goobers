@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -157,24 +158,27 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	ID               string           `json:"id"`
-	Workflow         string           `json:"workflow"`
-	WorkflowVersion  int              `json:"workflowVersion"`
-	WorkflowDigest   string           `json:"workflowDigest,omitempty"`
-	Gaggle           string           `json:"gaggle"`
-	Trigger          journal.Trigger  `json:"trigger"`
-	Phase            journal.RunPhase `json:"phase"`
-	Terminal         bool             `json:"terminal"`
-	CurrentStage     string           `json:"currentStage,omitempty"`
-	StartedAt        time.Time        `json:"startedAt"`
-	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
-	DurationMillis   int64            `json:"durationMillis"`
-	LastActivityAt   time.Time        `json:"lastActivityAt"`
-	LastSeq          uint64           `json:"lastSeq"`
-	RepassCount      int              `json:"repassCount"`
-	RetryCount       int              `json:"retryCount"`
-	PolicyRetryCount int              `json:"policyRetryCount"`
-	InfraRetryCount  int              `json:"infraRetryCount"`
+	ID              string           `json:"id"`
+	Workflow        string           `json:"workflow"`
+	WorkflowVersion int              `json:"workflowVersion"`
+	WorkflowDigest  string           `json:"workflowDigest,omitempty"`
+	Gaggle          string           `json:"gaggle"`
+	Trigger         journal.Trigger  `json:"trigger"`
+	Phase           journal.RunPhase `json:"phase"`
+	Terminal        bool             `json:"terminal"`
+	CurrentStage    string           `json:"currentStage,omitempty"`
+	StartedAt       time.Time        `json:"startedAt"`
+	FinishedAt      *time.Time       `json:"finishedAt,omitempty"`
+	DurationMillis  int64            `json:"durationMillis"`
+	LastActivityAt  time.Time        `json:"lastActivityAt"`
+	// Stale is true only for a running run when both its last activity and the
+	// daemon scheduler heartbeat are older than runner.livenessTimeout.
+	Stale            bool   `json:"stale"`
+	LastSeq          uint64 `json:"lastSeq"`
+	RepassCount      int    `json:"repassCount"`
+	RetryCount       int    `json:"retryCount"`
+	PolicyRetryCount int    `json:"policyRetryCount"`
+	InfraRetryCount  int    `json:"infraRetryCount"`
 	// NoWork is true for a completed run that touched exactly one stage and
 	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
 	// schedule tick that found nothing to do, as opposed to a genuine
@@ -436,17 +440,17 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			options.Cursor != "" {
 			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
 		}
-		var (
-			result RunList
-			err    error
-		)
 		// The read-model aggregate answers the whole page — outcomes AND activity
 		// — in one indexed query with zero journal opens (#1891). It replaces the
 		// window function, the backwards terminal walk, and the separate activity
 		// call below, so it returns directly rather than falling through to them.
-		if s.readModelAggregateEligible() {
+		if s.readModelReads {
 			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
 		}
+		var (
+			result RunList
+			err    error
+		)
 		if s.sources.Telemetry != nil {
 			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
 		} else {
@@ -502,12 +506,10 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 		cursor = &decoded
 	}
 
-	// The read-model path answers with ZERO journal opens (§6.6 step 3). It is
-	// tried first when eligible; anything it cannot serve — an unsupported filter
-	// combination, LatestPerWorkflow, or a store that is not attached — falls to
-	// the existing paths rather than being refused, because the cutover must not
-	// remove an answer the portal can get today.
-	if s.readModelEligible(options) {
+	// An enabled read model owns every daemon list request. Unsupported filter
+	// combinations are refused by its closed set rather than falling through to
+	// a journal scan.
+	if s.readModelReads {
 		return s.listRunsFromReadModel(ctx, options, cursor, limit)
 	}
 	// The activity axis is read-model only, and unserved is a REFUSAL rather
@@ -2752,6 +2754,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if err != nil {
 		return RunList{}, err
 	}
+	if err := s.annotateRunStaleness(out.Runs); err != nil {
+		return RunList{}, err
+	}
 	return annotated[RunList](ctx, s, out), nil
 }
 
@@ -2765,7 +2770,50 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
+	if out.Phase == journal.PhaseRunning && s.sources.SchedulerHeartbeat != nil {
+		lastTickAt, err := s.sources.SchedulerHeartbeat()
+		if err != nil {
+			return RunDetail{}, fmt.Errorf("read scheduler heartbeat: %w", err)
+		}
+		out.Stale = runIsStale(out.RunSummary, s.now().UTC(), lastTickAt, s.sources.LivenessTimeout)
+	}
 	return annotated[RunDetail](ctx, s, out), nil
+}
+
+func (s *Local) annotateRunStaleness(runs []RunSummary) error {
+	if s.sources.SchedulerHeartbeat == nil {
+		return nil
+	}
+	hasRunning := false
+	for i := range runs {
+		if runs[i].Phase == journal.PhaseRunning {
+			hasRunning = true
+			break
+		}
+	}
+	if !hasRunning {
+		return nil
+	}
+	lastTickAt, err := s.sources.SchedulerHeartbeat()
+	if err != nil {
+		return fmt.Errorf("read scheduler heartbeat: %w", err)
+	}
+	observedAt := s.now().UTC()
+	for i := range runs {
+		runs[i].Stale = runIsStale(runs[i], observedAt, lastTickAt, s.sources.LivenessTimeout)
+	}
+	return nil
+}
+
+func runIsStale(run RunSummary, observedAt, lastTickAt time.Time, timeout time.Duration) bool {
+	if run.Phase != journal.PhaseRunning || timeout <= 0 ||
+		daemonstate.Evaluate(observedAt, lastTickAt, timeout).Healthy {
+		return false
+	}
+	if run.LastActivityAt.IsZero() {
+		return true
+	}
+	return observedAt.Sub(run.LastActivityAt) > timeout
 }
 
 // RunEvents returns the read response with its freshness envelope attached.

@@ -1,6 +1,6 @@
 # Design: Dashboard co-branding and support hooks
 
-> Status: **Approved for implementation**
+> Status: **approved — for implementation**
 > Area prefix: `CBR`
 > Milestone: **V1 — arbitrary repos / teams / hardening**
 > Related: [`docs/design/dashboard.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)

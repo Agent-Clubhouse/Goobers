@@ -1,4 +1,4 @@
-// Command flakewatch scans GitHub checks and Actions job logs for flake-shaped failures.
+// Command flakewatch scans GitHub checks and Actions job logs for test failures.
 package main
 
 import (
@@ -30,7 +30,6 @@ const (
 var (
 	testNamePattern = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
 	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
-	flakeShape      = regexp.MustCompile(`(?i)(WARNING: DATA RACE|test timed out|timed out waiting|deadline exceeded|lock contention|deadlock|concurrent map|order[- ]dependent|eventually condition)`)
 	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	ledgerPackage   = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
 	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
@@ -331,15 +330,13 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				result.KnownDispatched++
 				continue
 			}
-			if flakeShape.MatchString(candidate.FailureText) {
-				if index, found := novelIndex[candidate.Fingerprint]; found {
-					result.Novel[index].Occurrences++
-					result.Novel[index].LastSeenRun = candidate.LastSeenRun
-					result.Novel[index].LastSeenAt = candidate.LastSeenAt
-				} else {
-					novelIndex[candidate.Fingerprint] = len(result.Novel)
-					result.Novel = append(result.Novel, candidate)
-				}
+			if index, found := novelIndex[candidate.Fingerprint]; found {
+				result.Novel[index].Occurrences++
+				result.Novel[index].LastSeenRun = candidate.LastSeenRun
+				result.Novel[index].LastSeenAt = candidate.LastSeenAt
+			} else {
+				novelIndex[candidate.Fingerprint] = len(result.Novel)
+				result.Novel = append(result.Novel, candidate)
 			}
 		}
 	}

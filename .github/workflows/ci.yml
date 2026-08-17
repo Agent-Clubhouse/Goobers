@@ -10,7 +10,7 @@ name: CI
 #   checks   fmt · tidy · no-phone-home · vet · command builds · config validation · portal
 #   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
-#   shipped  shipped-workflow contract suite
+#   shipped  shipped-workflow contract suite on Linux, macOS, and Windows
 #
 # plus deadcode, and the dedicated deploy-reference, conformance, windows-smoke,
 # integration, vulnerability-scan, sandbox, and linux-validation jobs. Coverage
@@ -24,8 +24,10 @@ name: CI
 # behaviour while dropping the ~3-5x race instrumentation cost — there is no
 # darwin-tagged concurrent code for a second -race platform to cover.
 #
-# Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633). The
-# platform slices, the Windows gate, the vulnerability scan, and the journal
+# Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
+# shipped-workflow contract suite. The broad Windows behavioural tier is NOT
+# here: enabling it surfaced 670 failures across 19 packages, tracked separately.
+# The platform slices, the Windows gates, the vulnerability scan, and the journal
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
 #
@@ -404,9 +406,8 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
 
-  # Shipped-workflow contract suite. Linux runs it with -race; macOS runs the
-  # same behavioural suite without -race. Replaces both the old in-gate
-  # shipped-workflows step and the separate non-race shipped-workflows job.
+  # Shipped-workflow contract suite. Linux runs it with -race; macOS and Windows
+  # run the same behavioural suite without -race.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
     strategy:
@@ -415,8 +416,13 @@ jobs:
         include:
           - os: ubuntu-latest
             race: "1"
+            timeout: "20m"
           - os: macos-latest
             race: "0"
+            timeout: "20m"
+          - os: windows-latest
+            race: "0"
+            timeout: "40m"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -446,6 +452,7 @@ jobs:
       - name: Shipped-workflow contracts
         env:
           GOOBERS_CI_RACE: ${{ matrix.race }}
+          GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}
         run: go run ./test/ci group shipped
 
   integration:
@@ -669,11 +676,13 @@ jobs:
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
 
-      # Named rather than the whole package: the Windows-only regression guard
-      # verifies that legacy migrations create an NTFS junction without
-      # requiring the symlink privilege (#2862).
-      - name: Windows instance runtime alias
-        run: go test ./internal/instance -run '^TestCreateLegacyRuntimeAliasCreatesJunction$'
+      # The whole package, not one named test. #3064 added this step scoped to
+      # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
+      # four migration tests that actually exercise alias *resolution* stayed
+      # unrun on Windows — the same "green because it never executes" gap #3064
+      # set out to close (#2862, and the junction-resolution fix in this change).
+      - name: Windows instance runtime
+        run: go test ./internal/instance
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
