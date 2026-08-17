@@ -85,7 +85,7 @@ func TestDemotionStillHolds(t *testing.T) {
 	})
 }
 
-func TestWithoutDemoted(t *testing.T) {
+func TestWithoutElectionIneligible(t *testing.T) {
 	tests := []struct {
 		name     string
 		blockers []int
@@ -99,12 +99,12 @@ func TestWithoutDemoted(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := withoutDemoted(tt.blockers, tt.demoted)
+			got := withoutElectionIneligible(tt.blockers, tt.demoted)
 			if len(got) == 0 && len(tt.want) == 0 {
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("withoutDemoted(%v, %v) = %v, want %v", tt.blockers, tt.demoted, got, tt.want)
+				t.Fatalf("withoutElectionIneligible(%v, %v) = %v, want %v", tt.blockers, tt.demoted, got, tt.want)
 			}
 		})
 	}

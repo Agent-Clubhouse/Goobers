@@ -276,13 +276,11 @@ func overlapOnlyBlockingPRs(finding apiv1.Finding, overlappingSiblings []int) ([
 // the election policy this way keeps predecessor-order and election-order
 // identical for every policy (fifo: lower first; newest: higher first)
 // without re-encoding the ordering per policy.
-func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc, demoted map[int]bool) []int {
+func predecessorBlockers(thisPR int, blockers []int, policy electionPolicyFunc, ineligible map[int]bool) []int {
 	var out []int
-	// #950: a demoted predecessor no longer blocks its successors — dropping it
-	// here is what lets a parked sibling unpark and be re-selected while the
-	// stuck lander is worked separately. Empty demoted set in steady state, so
-	// this is identical to the pre-#950 behavior on the common path.
-	for _, b := range withoutDemoted(blockers, demoted) {
+	// An ineligible predecessor no longer blocks its successors, allowing the
+	// cluster to drain while the parked PR is handled separately.
+	for _, b := range withoutElectionIneligible(blockers, ineligible) {
 		if b == thisPR {
 			continue
 		}
@@ -523,6 +521,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			demoted = nil
 		}
 	}
+	var electionExcluded map[int]bool
+	if githubSelected {
+		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+		if ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
+		}
+		electionExcluded = unionPRSets(demoted, ineligible)
+	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
 	if err != nil {
@@ -682,7 +688,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// GitHub's native merge queue must never be a second, uncoordinated
 	// merge authority that crowns a cluster member on its own. See
 	// resolveElectionOutcome.
-	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, electionExcluded, clusterPolicy, resolvedPolicyName); rationale != "" {
 		posted.Elected = elected
 		posted.Rationale = rationale
 		if elected {
@@ -763,7 +769,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// Uses the same cluster-resolved policy as the crown above (#1028/#1029),
 		// so predecessor-order and election-order stay identical.
 		state := blockedOnSiblingState{
-			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), clusterPolicy, demoted),
+			Blockers:   predecessorBlockers(selectedNumber, unionBlockingPRs(effective.Findings), clusterPolicy, electionExcluded),
 			Reason:     posted.Rationale,
 			HeadSHA:    posted.HeadSHA,
 			BaseSHA:    posted.BaseSHA,
@@ -1098,14 +1104,14 @@ func isMergeReviewStatusComment(body string) bool {
 // ordinary parked needs-changes member (unrelated to this PR — the existing
 // blocked-on-sibling routing already handles it via effective.Findings/
 // verdictLabel without touching Decision/Rationale here).
-func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, findings []apiv1.Finding, rationale string, overlappingSiblings []int, demoted map[int]bool, policy electionPolicyFunc, policyName string) (elected bool, newRationale string) {
+func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, findings []apiv1.Finding, rationale string, overlappingSiblings []int, ineligible map[int]bool, policy electionPolicyFunc, policyName string) (elected bool, newRationale string) {
 	if len(overlappingSiblings) == 0 {
 		return false, ""
 	}
 	if decision != apiv1.VerdictPass && decision != apiv1.VerdictNeedsChanges {
 		return false, ""
 	}
-	if electionDecision(findings, selectedNumber, policy, demoted) {
+	if electionDecision(findings, selectedNumber, policy, ineligible) {
 		return true, electedLanderPassRationale(selectedNumber, apiv1.Verdict{Findings: findings, Rationale: rationale}, policyName)
 	}
 	if decision == apiv1.VerdictPass {

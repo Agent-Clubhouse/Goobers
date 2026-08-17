@@ -103,20 +103,16 @@ func resolveElectionPolicy(name string) (electionPolicyFunc, string) {
 // the configured policy. Any verdict carrying a real defect (a substantive/
 // conflict/rebase-needed finding above `info` severity) is never electable; an
 // `info` finding is a nit and does not withhold landing authority (#1726).
-func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, demoted map[int]bool) bool {
-	// #950: a demoted lander (one that repeatedly could not merge at an
-	// unchanged head) is never crowned — that is exactly the re-election that
-	// deadlocks the cluster. And a demoted PR is dropped from the blocker set so
-	// the next-lowest non-demoted member wins instead, draining the cluster
-	// around the stuck one. demoted is empty in steady state (no PR carries
-	// goobers:merge-demoted), so this is a no-op on the common path.
-	if demoted[selectedNumber] {
+func electionDecision(findings []apiv1.Finding, selectedNumber int, policy electionPolicyFunc, ineligible map[int]bool) bool {
+	// A PR that cannot currently land is never crowned and is removed from the
+	// blocker set so the next eligible member can drain the cluster around it.
+	if ineligible[selectedNumber] {
 		return false
 	}
 	if !electableUnderOrdering(findings) {
 		return false
 	}
-	return policy(selectedNumber, withoutDemoted(unionBlockingPRs(findings), demoted))
+	return policy(selectedNumber, withoutElectionIneligible(unionBlockingPRs(findings), ineligible))
 }
 
 // electionClusterBlockers combines reviewer-named blockers with the
@@ -140,7 +136,7 @@ func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.F
 		return ""
 	}
 	clusterBlockers := electionClusterBlockers(findings, overlappingSiblings)
-	if !policy(selectedNumber, withoutDemoted(clusterBlockers, demoted)) {
+	if !policy(selectedNumber, withoutElectionIneligible(clusterBlockers, demoted)) {
 		return ""
 	}
 	siblings := make([]string, 0, len(clusterBlockers))
@@ -342,14 +338,19 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
 	}
+	ineligible, ierr := electionIneligibleSet(ctx, provider, repo, prs)
+	if ierr != nil {
+		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	}
+	electionExcluded := unionPRSets(demoted, ineligible)
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
 		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)
 		return writeResult(false)
 	}
 
-	if !electionDecision(effectiveFindings, selectedNumber, policy, demoted) {
-		pf(stdout, "PR #%d: not the elected lander under policy %q (demoted, a real defect, or a lower non-demoted sibling wins) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
+	if !electionDecision(effectiveFindings, selectedNumber, policy, electionExcluded) {
+		pf(stdout, "PR #%d: not the elected lander under policy %q (ineligible, a real defect, or a higher-ranked eligible sibling wins) — routing to apply-verdict\n", selectedNumber, resolvedPolicy)
 		return writeResult(false)
 	}
 

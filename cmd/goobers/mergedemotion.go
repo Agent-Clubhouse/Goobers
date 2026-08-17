@@ -31,6 +31,8 @@ import (
 // about unblocking its siblings, not abandoning it.
 const mergeDemotedLabel = "goobers:merge-demoted"
 
+const needsHumanLabel = "goobers:needs-human"
+
 // mergeDemotionState is the durable per-PR record the record-merge-refusal
 // stage posts and the election read-sites consult — the merge-side analog of
 // remediationState (remediationcheckpoint.go) and blockedOnSiblingState
@@ -147,20 +149,48 @@ func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo pr
 	return out, nil
 }
 
-// withoutDemoted removes any demoted PR from a blocker list. Both election
-// read-sites (elect-lander's electionDecision and apply-verdict's
-// predecessorBlockers/electedLanderPass) apply it identically so the two stages
-// never disagree about which sibling a PR must wait behind (#950): a demoted
-// predecessor no longer outranks its successors, so the next-lowest
-// non-demoted member wins the election and the cluster drains around the stuck
-// one.
-func withoutDemoted(blockers []int, demoted map[int]bool) []int {
-	if len(demoted) == 0 {
+// electionIneligibleSet returns PRs that cannot currently participate in a
+// lander election. Escalations are snapshot-validated so a stale label does not
+// suppress a PR whose head or base has moved; needs-human is intentionally
+// human-cleared.
+func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
+	out := map[int]bool{}
+	for _, pr := range prs {
+		if hasAnyLabel(pr.Labels, []string{needsHumanLabel}) {
+			out[pr.Number] = true
+			continue
+		}
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, err
+		}
+		if blocked {
+			out[pr.Number] = true
+		}
+	}
+	return out, nil
+}
+
+func unionPRSets(sets ...map[int]bool) map[int]bool {
+	out := map[int]bool{}
+	for _, set := range sets {
+		for number := range set {
+			out[number] = true
+		}
+	}
+	return out
+}
+
+// withoutElectionIneligible removes PRs that cannot currently land from a
+// blocker list. Both election read-sites apply it identically so they never
+// disagree about which sibling a PR must wait behind.
+func withoutElectionIneligible(blockers []int, ineligible map[int]bool) []int {
+	if len(ineligible) == 0 {
 		return blockers
 	}
 	out := make([]int, 0, len(blockers))
 	for _, b := range blockers {
-		if demoted[b] {
+		if ineligible[b] {
 			continue
 		}
 		out = append(out, b)
