@@ -31,6 +31,25 @@ func TestAcmeClaudeAdvisoryVerdictRoutesBothModes(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var selector, publisher apiv1.Task
+	for _, task := range definition.Spec.Tasks {
+		switch task.Name {
+		case "pr-select":
+			selector = task
+		case "apply-verdict":
+			publisher = task
+		}
+	}
+	if !containsString(selector.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("pr-select does not declare advisoryMode as an expected output")
+	}
+	if got := publisher.InputsFrom["advisoryMode"]; got != "advisoryMode" {
+		t.Fatalf("apply-verdict advisoryMode input source = %q, want advisoryMode", got)
+	}
+	if !containsString(publisher.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("apply-verdict does not declare advisoryMode as an expected output")
+	}
+
 	var configured apiv1.Gate
 	for _, candidate := range definition.Spec.Gates {
 		if candidate.Name == "advisory-verdict" {
@@ -67,6 +86,15 @@ func TestAcmeClaudeAdvisoryVerdictRoutesBothModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStatusEqualsDefaultsToSuccess(t *testing.T) {
