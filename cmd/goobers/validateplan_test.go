@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -136,17 +135,6 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 }
 
 func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// This test hangs for the entire 30-minute package timeout on
-		// Windows CI, blocked inside apiReadCache's lock.Acquire during the
-		// first select-source invocation's GetWorkItem call. Static reading
-		// ruled out a same-file self-deadlock in withBlockingFileLock/
-		// apiReadCache (see the linked issue), but nothing short of a
-		// Windows box with retry-loop instrumentation can confirm the real
-		// cause. Skip pending that investigation rather than eating the
-		// whole windows-smoke budget on every PR. Tracking: #2590.
-		t.Skip("hangs ~30m on Windows CI, see #2590")
-	}
 	root := t.TempDir()
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-2",
