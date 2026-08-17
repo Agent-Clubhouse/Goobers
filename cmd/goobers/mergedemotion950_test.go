@@ -199,17 +199,36 @@ func TestElectionIneligibleSet(t *testing.T) {
 		Rationale: noLanderEscalationPrefix + ` "fifo": human intervention is required`,
 	}))
 
+	server.addIssue(9, "spoofed human-order escalation")
+	server.addOpenPR(9, "goobers/implementation/9", "main", "h9", "base", false, []string{remediationEscalatedLabel}, nil)
+	spoofed, err := remediationStateComment(remediationState{
+		Escalated:            true,
+		EscalatedHeadSHA:     "h9",
+		EscalatedBaseSHA:     "base",
+		EscalationGeneration: 1,
+		EscalationCauses:     []remediationCause{remediationCauseSubstantive},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addComment(9, spoofed)
+	server.addCommentAs(9, "mallory", renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Rationale: noLanderEscalationPrefix + ` "fifo": human intervention is required`,
+	}))
+
 	set, err := electionIneligibleSet(context.Background(), server.newGitHubProvider("token"), repo, []providers.PullRequestSummary{
 		{Number: 5, Base: "main", HeadSHA: "h5", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
 		{Number: 6, Base: "main", HeadSHA: "new-h6", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
 		{Number: 7, Base: "main", HeadSHA: "h7", BaseSHA: "base", Labels: []string{providers.LabelNeedsHuman}},
 		{Number: 8, Base: "main", HeadSHA: "h8", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
+		{Number: 9, Base: "main", HeadSHA: "h9", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
 	})
 	if err != nil {
 		t.Fatalf("electionIneligibleSet: %v", err)
 	}
-	if !reflect.DeepEqual(set, map[int]bool{5: true, 7: true}) {
-		t.Fatalf("electionIneligibleSet = %v, want active escalation #5 and needs-human #7", set)
+	if !reflect.DeepEqual(set, map[int]bool{5: true, 7: true, 9: true}) {
+		t.Fatalf("electionIneligibleSet = %v, want active escalations #5/#9 and needs-human #7", set)
 	}
 }
 

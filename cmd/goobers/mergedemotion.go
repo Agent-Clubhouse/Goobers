@@ -155,6 +155,7 @@ func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo pr
 // cluster's landing order rather than asking the runner to drain around one PR.
 func electionIneligibleSet(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
+	var verdictAuthor string
 	for _, pr := range prs {
 		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
 			out[pr.Number] = true
@@ -174,7 +175,13 @@ func electionIneligibleSet(ctx context.Context, provider *providers.GitHubProvid
 		if err != nil {
 			return nil, err
 		}
-		if hasNoLanderEscalation(comments) {
+		if verdictAuthor == "" {
+			verdictAuthor, err = provider.AuthenticatedLogin(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if hasNoLanderEscalation(comments, verdictAuthor) {
 			continue
 		}
 		out[pr.Number] = true
@@ -182,8 +189,11 @@ func electionIneligibleSet(ctx context.Context, provider *providers.GitHubProvid
 	return out, nil
 }
 
-func hasNoLanderEscalation(comments []providers.Comment) bool {
+func hasNoLanderEscalation(comments []providers.Comment, verdictAuthor string) bool {
 	for i := len(comments) - 1; i >= 0; i-- {
+		if !isTrustedMergeReviewStatusComment(comments[i].Author, comments[i].Body, verdictAuthor) {
+			continue
+		}
 		verdict, ok := parseVerdictComment(comments[i].Body)
 		if ok {
 			return verdict.Decision == "fail" && strings.HasPrefix(verdict.Rationale, noLanderEscalationPrefix)
