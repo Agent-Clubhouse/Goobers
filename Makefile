@@ -47,7 +47,7 @@ COVERAGE_THRESHOLD ?= 70
 GO_TEST_TIMEOUT ?= 30m
 STRESS_OUTPUT_DIR   ?= stress-results
 STRESS_SEED         ?= 0
-BENCH_WORKCOPY_ARGS ?= -preset medium
+BENCH_WORKCOPY_ARGS ?= -preset small
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
@@ -330,7 +330,7 @@ verify-fast:
 ci: deadcode
 	$(GO) run ./test/ci
 
-## bench-workcopy: Benchmark working-copy provisioning on a synthetic fixture (dev tool, not part of ci).
+## bench-workcopy: Run the small working-copy provisioning benchmark locally (dev tool, not part of ci).
 # Emits JSON timings (see test/benchworkcopy's doc comment for the schema and
 # how to crank the fixture to a true multi-GB repo). Override the fixture with
 # e.g. `make bench-workcopy BENCH_WORKCOPY_ARGS="-preset large"`.

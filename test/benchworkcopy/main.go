@@ -26,6 +26,7 @@
 // JSON output schema ("goobers.bench-workcopy/v2", one object per run):
 //
 //	schema         string  schema identifier, bumped on incompatible change
+//	elapsedMs      int     total harness wall time
 //	goos, goarch   string  host platform
 //	gitVersion     string  `git version` output
 //	partialClone   bool    mirrors provisioned with blobless partial clone (#646)
@@ -97,6 +98,7 @@ type fixtureReport struct {
 
 type report struct {
 	Schema                    string         `json:"schema"`
+	ElapsedMs                 int64          `json:"elapsedMs"`
 	GOOS                      string         `json:"goos"`
 	GOARCH                    string         `json:"goarch"`
 	GitVersion                string         `json:"gitVersion"`
@@ -226,6 +228,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if *sparse != "" {
 		sparseCones = strings.Split(*sparse, ",")
 	}
+	started := time.Now()
 	rep, err := benchmark(context.Background(), benchOptions{
 		spec:            spec,
 		preset:          *preset,
@@ -245,6 +248,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "benchworkcopy: %v\n", err)
 		return 1
 	}
+	rep.ElapsedMs = time.Since(started).Milliseconds()
 
 	encoded, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
