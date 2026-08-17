@@ -499,8 +499,10 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	persistResweepState := resweep.persist
 
 	if !claim {
+		reportBacklogEligibility(env, scan.eligible, nil, verifiedSkips)
 		return runPlainBacklogQuery(env, scan)
 	}
+	reportBacklogEligibility(env, eligible, readOnlyResweep, verifiedSkips)
 	return runClaimBacklogQuery(ctx, env, backlogClaimOptions{
 		eligible:               eligible,
 		readOnlyResweep:        readOnlyResweep,
@@ -1139,10 +1141,21 @@ func appendBlockedResweepCandidates(
 	}
 	filtered := items[:0]
 	for _, item := range items {
-		if !item.HasLabel(opts.trustLabel) ||
-			!item.HasLabel(blockedOnSiblingLabel) ||
-			item.HasLabel(providers.LabelNeedsHuman) ||
-			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+		env.debugf("candidate %s reached eligibility evaluation (blocked re-sweep)", item.ID)
+		if !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if !item.HasLabel(blockedOnSiblingLabel) {
+			env.debugf("excluded %s: missing required label %q", item.ID, blockedOnSiblingLabel)
+			continue
+		}
+		if item.HasLabel(providers.LabelNeedsHuman) {
+			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
@@ -1154,6 +1167,9 @@ func appendBlockedResweepCandidates(
 		return nil, 1
 	}
 	if len(items) > opts.policy.maxItems {
+		for _, item := range items[opts.policy.maxItems:] {
+			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+		}
 		items = items[:opts.policy.maxItems]
 	}
 	budget := opts.maxItems - len(result.eligible)
@@ -1161,17 +1177,25 @@ func appendBlockedResweepCandidates(
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
 		if err != nil {
 			pf(env.stderr, "warning: dependency recheck item %s: %v\n", item.ID, err)
+			env.debugf("excluded %s: native issue dependency check unavailable: %v", item.ID, err)
 			continue
 		}
 		if len(blockers) == 0 {
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
+			env.debugf("excluded %s: dependency recheck has no named native blocker", item.ID)
 			continue
 		}
-		if blockersActionable(blockers) && budget > 0 {
-			result.eligible = append(result.eligible, item)
-			result.modeByID[item.ID] = "dependency-recheck"
-			budget--
+		if !blockersActionable(blockers) {
+			env.debugf("excluded %s: %s", item.ID, openBlockersExclusionReason(blockers))
+			continue
 		}
+		if budget == 0 {
+			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+			continue
+		}
+		result.eligible = append(result.eligible, item)
+		result.modeByID[item.ID] = "dependency-recheck"
+		budget--
 	}
 	result.state.BlockedCursor = nextCursor.Cursor
 	return items, 0
@@ -1184,6 +1208,20 @@ func blockersActionable(blockers []providers.WorkItem) bool {
 		}
 	}
 	return true
+}
+
+func openBlockersExclusionReason(blockers []providers.WorkItem) string {
+	var ids []string
+	for _, blocker := range blockers {
+		if blocker.State != "" && strings.EqualFold(blocker.State, "open") && !blocker.HasLabel(providers.LabelNeedsHuman) {
+			ids = append(ids, blocker.ID)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "dependency recheck still has an actionable open blocker"
+	}
+	return fmt.Sprintf("dependency recheck still has actionable open blocker(s): %s", strings.Join(ids, ","))
 }
 
 func appendReadyResweepCandidates(
@@ -1208,10 +1246,21 @@ func appendReadyResweepCandidates(
 	}
 	filtered := items[:0]
 	for _, item := range items {
-		if !item.HasLabel(opts.trustLabel) ||
-			!item.HasLabel(opts.policy.readyLabel) ||
-			item.HasLabel(providers.LabelNeedsHuman) ||
-			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+		env.debugf("candidate %s reached eligibility evaluation (ready re-sweep)", item.ID)
+		if !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if !item.HasLabel(opts.policy.readyLabel) {
+			env.debugf("excluded %s: missing required label %q", item.ID, opts.policy.readyLabel)
+			continue
+		}
+		if item.HasLabel(providers.LabelNeedsHuman) {
+			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		matched, matchErr := opts.fieldFilter.Matches(item.Fields)
@@ -1219,10 +1268,12 @@ func appendReadyResweepCandidates(
 			pf(env.stderr, "error: evaluate fieldPredicate for re-sweep item %s: %v\n", item.ID, matchErr)
 			return nil, nextCursor, 1
 		}
-		if matched {
-			item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
-			filtered = append(filtered, item)
+		if !matched {
+			env.debugf("excluded %s: field predicate not matched", item.ID)
+			continue
 		}
+		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
+		filtered = append(filtered, item)
 	}
 	items = filtered
 	if err := sortBacklogResweepCandidates(items, opts.selectionPriority, opts.fieldOrder, result.state.LastSweptAt); err != nil {
@@ -1231,6 +1282,9 @@ func appendReadyResweepCandidates(
 	}
 	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible))
 	if len(items) > budget {
+		for _, item := range items[budget:] {
+			env.debugf("excluded %s: ready re-sweep selection capacity exhausted", item.ID)
+		}
 		items = items[:budget]
 	}
 	for _, item := range items {
@@ -1243,6 +1297,31 @@ func appendReadyResweepCandidates(
 		}
 	}
 	return items, nextCursor, 0
+}
+
+func reportBacklogEligibility(
+	env backlogQueryEnv,
+	eligible, readOnly []providers.WorkItem,
+	skipped map[string]blockedEligibilitySkip,
+) {
+	if !env.debug {
+		return
+	}
+	eligibleCount := 0
+	for _, item := range eligible {
+		if _, blocked := skipped[item.ID]; blocked {
+			continue
+		}
+		env.debugf("eligible %s", item.ID)
+		eligibleCount++
+	}
+	for _, item := range readOnly {
+		env.debugf("eligible %s (read-only re-sweep)", item.ID)
+		eligibleCount++
+	}
+	if eligibleCount == 0 {
+		env.debugf("eligible set empty")
+	}
 }
 
 func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int {
@@ -1485,20 +1564,6 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	if err := sortEligibleByFields(result.eligible, opts.selectionPriority, opts.fieldOrder); err != nil {
 		pf(env.stderr, "error: apply fieldOrder: %v\n", err)
 		return result, 1
-	}
-	if env.debug {
-		skipped := result.verifiedSkips
-		eligibleCount := 0
-		for _, item := range result.eligible {
-			if _, blocked := skipped[item.ID]; blocked {
-				continue
-			}
-			env.debugf("eligible %s", item.ID)
-			eligibleCount++
-		}
-		if eligibleCount == 0 {
-			env.debugf("eligible set empty")
-		}
 	}
 	return result, 0
 }
