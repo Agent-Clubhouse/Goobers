@@ -844,7 +844,7 @@ func TestBuildAgenticExecutorIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapterRegistry := harness.NewRegistry()
-	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harness.FakeAdapter{}); err != nil {
+	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
 		t.Fatal(err)
 	}
 	scrubber := journal.NewRegistryScrubber()
