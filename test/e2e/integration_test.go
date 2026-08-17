@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/providers"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 // TestWalkingSkeletonWiredPath drives a single backlog item through the REAL
@@ -39,7 +40,7 @@ func TestWalkingSkeletonWiredPath(t *testing.T) {
 	gaggle := loaded.Gaggles[0]
 	workflow := loaded.Workflows[0]
 
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	tel, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "e2e-wired",
 		SpanExporter: exporter,

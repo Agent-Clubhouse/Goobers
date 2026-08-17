@@ -47,6 +47,8 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
@@ -331,7 +333,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 		_ = listener.Close()
 	})
 
-	journalExporter := telemetry.NewMemoryExporter()
+	journalExporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: journalExporter,
@@ -715,9 +717,9 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	var runRequest harness.RunRequest
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			runRequest = req
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status: apiv1.ResultSuccess,
 			})
 		}}
@@ -842,7 +844,7 @@ func TestBuildAgenticExecutorIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapterRegistry := harness.NewRegistry()
-	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harness.FakeAdapter{}); err != nil {
+	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
 		t.Fatal(err)
 	}
 	scrubber := journal.NewRegistryScrubber()

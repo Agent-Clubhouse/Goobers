@@ -23,7 +23,6 @@ type violation struct {
 
 type exception struct {
 	Path   string
-	Line   int
 	Value  string
 	Reason string
 }
@@ -31,41 +30,38 @@ type exception struct {
 var exceptions = []exception{
 	// Config scaffolding and command/stage registries define these names rather
 	// than branching stage behavior on them.
-	{Path: "internal/instance/guided.go", Line: 28, Value: "implementation", Reason: "guided-init workflow definition"},
-	{Path: "internal/instance/guided.go", Line: 30, Value: "backlog-curation", Reason: "guided-init workflow definition"},
-	{Path: "internal/instance/guided.go", Line: 32, Value: "work-nomination", Reason: "guided-init workflow definition"},
-	{Path: "internal/instance/instance.go", Line: 26, Value: "docs-updater", Reason: "canonical scaffold directory name"},
-	{Path: "internal/providerstage/manifest.go", Line: 180, Value: "post-merge", Reason: "stage command registry key"},
-	{Path: "cmd/goobers/clisynopsis.go", Line: 32, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 271, Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Line: 272, Value: "self-update", Reason: "CLI command registry lookup"},
-	{Path: "cmd/goobers/selfupdate.go", Line: 27, Value: "self-update", Reason: "CLI flag-set name"},
-	{Path: "cmd/goobers/selfupdate.go", Line: 34, Value: "self-update", Reason: "CLI help lookup"},
-	{Path: "cmd/goobers/completionmodel.go", Line: 175, Value: "self-update", Reason: "CLI completion flag-spec registry key"},
-	{Path: "cmd/goobers/tutorprpolicy.go", Line: 76, Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
+	{Path: "internal/instance/guided.go", Value: "implementation", Reason: "guided-init workflow definition"},
+	{Path: "internal/instance/guided.go", Value: "backlog-curation", Reason: "guided-init workflow definition"},
+	{Path: "internal/instance/guided.go", Value: "work-nomination", Reason: "guided-init workflow definition"},
+	{Path: "internal/instance/instance.go", Value: "docs-updater", Reason: "canonical scaffold directory name"},
+	{Path: "cmd/goobers/clisynopsis.go", Value: "self-update", Reason: "CLI command registry key"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key and lookup"},
+	{Path: "cmd/goobers/selfupdate.go", Value: "self-update", Reason: "CLI flag-set name and help lookup"},
+	{Path: "cmd/goobers/completionmodel.go", Value: "self-update", Reason: "CLI completion flag-spec registry key"},
+	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.
-	{Path: "internal/telemetry/rollup/aggregates.go", Line: 419, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/curation.go", Line: 172, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 540, Value: "backlog-curation", Reason: "#2494"},
-	{Path: "internal/telemetry/rollup/ingest.go", Line: 551, Value: "implementation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/aggregates.go", Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/curation.go", Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/ingest.go", Value: "implementation", Reason: "#2494"},
 
 	// These are canonical stage-owned status labels, not config-facing routing
 	// labels. Configurable approval/readiness labels must come from stage inputs.
-	{Path: "cmd/goobers/applyverdict.go", Line: 28, Value: "goobers:blocked-on-sibling", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/applyverdict.go", Line: 64, Value: "goobers:merge-ready", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/applyverdict.go", Line: 66, Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/applyverdict.go", Line: 71, Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/mergedemotion.go", Line: 32, Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
-	{Path: "cmd/goobers/postmerge.go", Line: 69, Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/prselect.go", Line: 33, Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
-	{Path: "cmd/goobers/prselect.go", Line: 34, Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
-	{Path: "cmd/goobers/remediationcheckpoint.go", Line: 25, Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
-	{Path: "cmd/goobers/runabortlabel.go", Line: 32, Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
-	{Path: "cmd/goobers/scopedrift.go", Line: 17, Value: "goobers:scope-drift", Reason: "canonical scope-review label"},
-	{Path: "cmd/goobers/scopegate1313.go", Line: 13, Value: "goobers:scope-gate", Reason: "canonical scope-review label"},
-	{Path: "cmd/goobers/scopegate1313.go", Line: 20, Value: "goobers:scope-gate-ack", Reason: "canonical scope-review label"},
+	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:blocked-on-sibling", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-ready", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/mergedemotion.go", Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
+	{Path: "cmd/goobers/postmerge.go", Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/prselect.go", Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
+	{Path: "cmd/goobers/prselect.go", Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
+	{Path: "cmd/goobers/remediationcheckpoint.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/runabortlabel.go", Value: "goobers:run-aborted", Reason: "canonical run lifecycle label"},
+	{Path: "cmd/goobers/scopedrift.go", Value: "goobers:scope-drift", Reason: "canonical scope-review label"},
+	{Path: "cmd/goobers/scopegate1313.go", Value: "goobers:scope-gate", Reason: "canonical scope-review label"},
+	{Path: "cmd/goobers/scopegate1313.go", Value: "goobers:scope-gate-ack", Reason: "canonical scope-review label"},
 }
 
 var excludedPaths = map[string]string{
@@ -88,14 +84,15 @@ func main() {
 }
 
 func checkRepository(root string) ([]violation, error) {
+	return checkRepositoryWithExceptions(root, exceptions)
+}
+
+func checkRepositoryWithExceptions(root string, configured []exception) ([]violation, error) {
 	workflowNames, err := loadWorkflowNames(filepath.Join(root, "reference-workflows", "gaggles", "goobers", "workflows"))
 	if err != nil {
 		return nil, err
 	}
-	allowed := make(map[string]exception, len(exceptions))
-	for _, current := range exceptions {
-		allowed[exceptionKey(current.Path, current.Line, current.Value)] = current
-	}
+	allowed := newExceptionSet(configured)
 
 	var violations []violation
 	for _, directory := range []string{"cmd/goobers", "internal"} {
@@ -125,6 +122,7 @@ func checkRepository(root string) ([]violation, error) {
 			return nil, err
 		}
 	}
+	violations = append(violations, allowed.staleViolations()...)
 	sort.Slice(violations, func(i, j int) bool {
 		if violations[i].Path == violations[j].Path {
 			return violations[i].Line < violations[j].Line
@@ -132,6 +130,47 @@ func checkRepository(root string) ([]violation, error) {
 		return violations[i].Path < violations[j].Path
 	})
 	return violations, nil
+}
+
+type exceptionSet struct {
+	configured []exception
+	byLiteral  map[string]bool
+	matched    map[string]bool
+}
+
+func newExceptionSet(configured []exception) *exceptionSet {
+	set := &exceptionSet{
+		configured: configured,
+		byLiteral:  make(map[string]bool, len(configured)),
+		matched:    make(map[string]bool, len(configured)),
+	}
+	for _, current := range configured {
+		set.byLiteral[exceptionKey(current.Path, current.Value)] = true
+	}
+	return set
+}
+
+func (s *exceptionSet) allow(path, value string) bool {
+	key := exceptionKey(path, value)
+	if s.byLiteral[key] {
+		s.matched[key] = true
+		return true
+	}
+	return false
+}
+
+func (s *exceptionSet) staleViolations() []violation {
+	var violations []violation
+	for _, current := range s.configured {
+		if s.matched[exceptionKey(current.Path, current.Value)] {
+			continue
+		}
+		violations = append(violations, violation{
+			Path:    current.Path,
+			Message: fmt.Sprintf("stale exception for literal %q (%s)", current.Value, current.Reason),
+		})
+	}
+	return violations
 }
 
 func loadWorkflowNames(directory string) (map[string]bool, error) {
@@ -164,7 +203,7 @@ func loadWorkflowNames(directory string) (map[string]bool, error) {
 	return names, nil
 }
 
-func checkGoFile(path, relative string, workflowNames map[string]bool, allowed map[string]exception) ([]violation, error) {
+func checkGoFile(path, relative string, workflowNames map[string]bool, allowed *exceptionSet) ([]violation, error) {
 	if _, excluded := excludedPaths[relative]; excluded {
 		return nil, nil
 	}
@@ -188,10 +227,10 @@ func checkGoFile(path, relative string, workflowNames map[string]bool, allowed m
 		if !isWorkflow && !isLabel {
 			return true
 		}
-		line := files.Position(literal.Pos()).Line
-		if _, ok := allowed[exceptionKey(relative, line, value)]; ok {
+		if allowed.allow(relative, value) {
 			return true
 		}
+		line := files.Position(literal.Pos()).Line
 		alternative := "use a config-sourced workflow role marker"
 		if isLabel {
 			alternative = "use the stage's label input or a providers label constant sourced through config"
@@ -233,6 +272,6 @@ func isGoobersLabel(value string) bool {
 	return true
 }
 
-func exceptionKey(path string, line int, value string) string {
-	return fmt.Sprintf("%s:%d:%s", path, line, value)
+func exceptionKey(path, value string) string {
+	return path + "\x00" + value
 }

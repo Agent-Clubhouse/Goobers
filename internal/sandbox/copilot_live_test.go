@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationNativeSandboxCopilotLive(t *testing.T) {

@@ -21,6 +21,49 @@ type memoryRecorder struct {
 	err      error
 }
 
+type FakeSynthesizer struct {
+	Report       Preflight
+	PreflightErr error
+	Err          error
+
+	mu         sync.Mutex
+	utterances []string
+}
+
+func (*FakeSynthesizer) Name() string { return "fake" }
+
+func (f *FakeSynthesizer) Preflight(context.Context, Config) (Preflight, error) {
+	report := f.Report
+	if report.Engine == "" {
+		report = Preflight{
+			Engine:            "fake",
+			Executable:        "in-process",
+			Voice:             "fake",
+			Language:          "und",
+			Rate:              DefaultRate,
+			AudioPrerequisite: "none",
+			AudioAvailable:    true,
+		}
+	}
+	return report, f.PreflightErr
+}
+
+func (f *FakeSynthesizer) Synthesize(ctx context.Context, _ Config, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.utterances = append(f.utterances, text)
+	f.mu.Unlock()
+	return f.Err
+}
+
+func (f *FakeSynthesizer) Utterances() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.utterances...)
+}
+
 func (r *memoryRecorder) Record(_ context.Context, receipt Receipt) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
