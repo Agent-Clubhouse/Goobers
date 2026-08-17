@@ -76,32 +76,43 @@ describe("runs history pagination under live events", () => {
   // under the polling fallback that is every 5 seconds, making the page
   // unusable on a busy instance at exactly the moment someone is watching it.
   it("keeps paged-in rows when a live run event arrives", async () => {
-    const client = new PushableClient(
-      largeJournalFixtures({ completed: 68, running: 0, failed: 0, escalated: 0, aborted: 0 }),
-    );
+    const fixtures = largeJournalFixtures({
+      completed: 68,
+      running: 0,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const client = new PushableClient(fixtures);
     const user = userEvent.setup();
     render(<App client={client} />);
 
     const history = await screen.findByRole("region", { name: "Run history" });
-    expect(within(history).getAllByRole("link")).toHaveLength(50);
+    expect(history.querySelectorAll("a")).toHaveLength(50);
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
-    await screen.findByRole("region", { name: "Run history" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(
-      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-    ).toHaveLength(68);
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
+    const retainedRun = fixtures.runs.runs.at(-1);
+    if (!retainedRun) {
+      throw new Error("Expected a paged-in run fixture.");
+    }
 
     // A live event lands. Before the fix this truncated the list back to 50 and
     // lost the scroll position.
-    await act(async () => {
+    fixtures.runs.runs.push({
+      ...fixtures.runs.runs[0],
+      id: "01JZLIVE000001",
+      startedAt: "2026-12-31T23:59:59Z",
+      lastActivityAt: "2026-12-31T23:59:59Z",
+    });
+    act(() => {
       client.push(runEvent("session:live-1"));
-      await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(69));
     expect(
-      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-    ).toHaveLength(68);
+      screen.getByRole("link", { name: `Open run ${retainedRun.id}` }),
+    ).toBeInTheDocument();
   });
 
   it("updates every invalidated row outside the refreshed head page", async () => {
