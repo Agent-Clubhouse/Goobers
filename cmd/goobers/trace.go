@@ -590,6 +590,24 @@ func formatEvent(ev journal.Event) string {
 			"%s actor=%s target=%s from=%s workflowVersion=%d workflowDigest=%s",
 			prefix, ev.Actor, ev.Target, ev.Status, ev.WorkflowVersion, ev.WorkflowDigest,
 		)
+	case journal.EventRunnerAnnotation:
+		kind, _ := ev.Runner["kind"].(string)
+		action, _ := ev.Runner["action"].(string)
+		reason, _ := ev.Runner["reason"].(string)
+		s := prefix
+		if kind != "" {
+			s += " kind=" + kind
+		}
+		if action != "" {
+			s += " action=" + action
+		}
+		if reason != "" {
+			s += " reason=" + reason
+		}
+		if stage, _ := ev.Runner["stage"].(string); stage != "" {
+			s += " stage=" + stage
+		}
+		return s
 	case journal.EventRunStarted, journal.EventRunFinished:
 		if ev.Status != "" {
 			return fmt.Sprintf("%s status=%s", prefix, ev.Status)

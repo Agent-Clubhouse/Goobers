@@ -174,6 +174,14 @@ const (
 	AttemptHuman AttemptClass = "human"
 )
 
+const (
+	RunnerAnnotationRunRecovery     = "run.recovery"
+	RunnerAnnotationTriggerRecovery = "trigger.recovery"
+	RecoveryActionResumed           = "resumed"
+	RecoveryActionRetried           = "retried"
+	RecoveryActionNewClaim          = "new_claim"
+)
+
 // Event is the versioned journal envelope: one JSON object per line in
 // events.jsonl. It is deliberately flat and omitempty-heavy so `cat`/`jq`/`grep`
 // are first-class debugging tools (§4).

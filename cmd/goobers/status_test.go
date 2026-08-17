@@ -72,6 +72,21 @@ func writeStatusInitCompleted(t *testing.T, root string, at time.Time) {
 	}
 }
 
+func TestDaemonRestartStatusLine(t *testing.T) {
+	now := time.Date(2026, 8, 17, 20, 2, 0, 0, time.UTC)
+	got := daemonRestartStatusLine(readservice.SchedulerStatus{
+		DaemonRestart: &readservice.DaemonRestartStatus{
+			At:     now.Add(-2 * time.Minute),
+			Reason: "process exited unexpectedly",
+			RunIDs: []string{"run-a", "run-b"},
+		},
+	}, now)
+	want := "Daemon restarted 2m0s ago (process exited unexpectedly); runs resumed/reclaimed: run-a, run-b\n"
+	if got != want {
+		t.Fatalf("daemon restart line = %q, want %q", got, want)
+	}
+}
+
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
 // printing the misleading "no runs found" at exit 0 — indistinguishable from

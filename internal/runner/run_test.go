@@ -3857,6 +3857,72 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+		}},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "agentic-recovery", Version: 1, Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-agentic-recovery"
+	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
+	goober := &capturingSuccessGoober{}
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef:        apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		RecoveryReason: "daemon_restart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted || len(goober.invocations) != 1 {
+		t.Fatalf("result = %+v, agent invocations = %d", result, len(goober.invocations))
+	}
+	events := readRunEvents(t, runsDir, runID)
+	var recovery, interrupted bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery &&
+			event.Runner["action"] == journal.RecoveryActionRetried &&
+			event.Runner["stage"] == "implement" &&
+			event.Runner["attemptClass"] == string(journal.AttemptInfra) {
+			recovery = true
+		}
+		if event.Type == journal.EventStageFinished &&
+			event.Stage == "implement" &&
+			event.Attempt == 1 &&
+			event.Error != nil &&
+			event.Error.Code == interruptedAttemptErrorCode {
+			interrupted = true
+		}
+	}
+	if !recovery || !interrupted {
+		t.Fatalf("events = %+v, want recovery annotation and preserved interruption failure", events)
+	}
+}
+
 // TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget proves a crash
 // during a task's LAST allowed attempt does not grant it a bonus attempt —
 // Resume must fail closed, not silently extend the retry budget.

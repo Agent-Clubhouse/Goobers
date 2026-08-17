@@ -24,6 +24,18 @@ type StatusReader interface {
 // local status adapters.
 type SchedulerStatus struct {
 	ProviderQuotaResumeAt *time.Time
+	DaemonRestart         *DaemonRestartStatus
+}
+
+// DaemonRestartStatus correlates the latest daemon lifetime with runs selected
+// for automatic recovery during that startup.
+type DaemonRestartStatus struct {
+	At      time.Time `json:"at"`
+	Reason  string    `json:"reason"`
+	PID     int       `json:"pid,omitempty"`
+	Version string    `json:"version,omitempty"`
+	Root    string    `json:"root,omitempty"`
+	RunIDs  []string  `json:"runIds"`
 }
 
 // ListStatusRuns returns every readable run in display order. Individual
@@ -115,19 +127,57 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		return SchedulerStatus{}, err
 	}
 	var resetAt *time.Time
+	var restart *DaemonRestartStatus
+	var sawDaemonStart bool
+	var dirtyReason string
 	for _, event := range events {
 		if err := ctx.Err(); err != nil {
 			return SchedulerStatus{}, err
 		}
-		if event.Type != journal.EventTickSkipped {
-			continue
-		}
-		if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
-			candidate = candidate.UTC()
-			resetAt = &candidate
+		switch event.Type {
+		case journal.EventTickSkipped:
+			if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
+				candidate = candidate.UTC()
+				resetAt = &candidate
+			}
+		case journal.EventDaemonDirtyRestart:
+			dirtyReason = event.Reason
+		case journal.EventDaemonStarted:
+			if sawDaemonStart || dirtyReason != "" {
+				reason := "clean restart"
+				if dirtyReason != "" {
+					reason = dirtyReason
+				}
+				restart = &DaemonRestartStatus{
+					At:      event.Time,
+					Reason:  reason,
+					PID:     runnerInt(event.Runner, "pid"),
+					Version: runnerString(event.Runner, "version"),
+					Root:    runnerString(event.Runner, "instanceRoot"),
+				}
+			}
+			sawDaemonStart = true
+			dirtyReason = ""
+		case journal.EventRunnerAnnotation:
+			if restart != nil &&
+				runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
+				event.RunID != "" &&
+				!containsString(restart.RunIDs, event.RunID) {
+				restart.RunIDs = append(restart.RunIDs, event.RunID)
+			}
 		}
 	}
-	return SchedulerStatus{ProviderQuotaResumeAt: resetAt}, nil
+	return SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}, nil
+}
+
+func runnerString(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func runnerInt(values map[string]any, key string) int {
+	value, _ := values[key].(float64)
+	return int(value)
 }
 
 func parseProviderQuotaResumeTime(reason string) (time.Time, bool) {

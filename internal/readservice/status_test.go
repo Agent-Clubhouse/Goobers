@@ -71,6 +71,87 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 }
 
+func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	startedAt := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	eventTime := startedAt.Add(-time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time {
+		return eventTime
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(-time.Second)
+	if err := log.Append(journal.Event{
+		Type:   journal.EventDaemonDirtyRestart,
+		Reason: "process exited unexpectedly",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt
+	if err := log.Append(journal.Event{
+		Type: journal.EventDaemonStarted,
+		Runner: map[string]any{
+			"pid":          42,
+			"version":      "v1.2.3",
+			"instanceRoot": "/srv/goobers",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(time.Second)
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-resumed",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"action": journal.RecoveryActionResumed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-new",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationTriggerRecovery,
+			"action": journal.RecoveryActionNewClaim,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := status.DaemonRestart
+	if got == nil ||
+		!got.At.Equal(startedAt) ||
+		got.Reason != "process exited unexpectedly" ||
+		got.PID != 42 ||
+		got.Version != "v1.2.3" ||
+		got.Root != "/srv/goobers" {
+		t.Fatalf("DaemonRestart = %+v", got)
+	}
+	if len(got.RunIDs) != 1 || got.RunIDs[0] != "run-resumed" {
+		t.Fatalf("recovered run IDs = %v, want [run-resumed]", got.RunIDs)
+	}
+}
+
 func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)

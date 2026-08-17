@@ -194,6 +194,36 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if finished.Gaggle != "example" || finished.Workflow != "default-implement" {
 		t.Fatalf("instance-log workflow identity = %q/%q, want example/default-implement", finished.Gaggle, finished.Workflow)
 	}
+	var instanceRecovery bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.RunID == "stuck-2" &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery &&
+			event.Runner["action"] == journal.RecoveryActionResumed {
+			instanceRecovery = true
+		}
+	}
+	if !instanceRecovery {
+		t.Fatalf("instance events = %+v, want run.recovery annotation", events)
+	}
+	runReader, err := journal.OpenRead(filepath.Join(l.RunsDir(), "stuck-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEvents, err := runReader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runRecovery bool
+	for _, event := range runEvents {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery {
+			runRecovery = true
+		}
+	}
+	if !runRecovery {
+		t.Fatalf("run events = %+v, want run.recovery annotation", runEvents)
+	}
 }
 
 // TestResumePastOrphanedWorktreeAtSameKey is issue #136's core fix

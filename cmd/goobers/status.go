@@ -201,10 +201,26 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Warnings      []validate.CodedWarning        `json:"warnings"`
-	TimeToFirstPR *telemetry.TimeToFirstPRMetric `json:"timeToFirstPR,omitempty"`
-	Summary       *statusFleetSummary            `json:"summary,omitempty"`
-	Runs          []statusJSONSummary            `json:"runs"`
+	Warnings      []validate.CodedWarning          `json:"warnings"`
+	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
+	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
+	Summary       *statusFleetSummary              `json:"summary,omitempty"`
+	Runs          []statusJSONSummary              `json:"runs"`
+}
+
+func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
+	restart := status.DaemonRestart
+	if restart == nil {
+		return ""
+	}
+	runs := "none"
+	if len(restart.RunIDs) > 0 {
+		runs = strings.Join(restart.RunIDs, ", ")
+	}
+	return fmt.Sprintf(
+		"Daemon restarted %s (%s); runs resumed/reclaimed: %s\n",
+		formatLastActivity(now, restart.At), restart.Reason, runs,
+	)
 }
 
 type statusFleetSummary struct {
@@ -681,6 +697,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		renderStatusFleetSummary(&text, summary, now)
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
+			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
 		}
 		counts, err := prLabelCounts.Load(ctx, cfg)
@@ -724,15 +741,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
+		var daemonRestart *readservice.DaemonRestartStatus
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
 			if err == nil {
 				timeToFirstPR = &metric
 			}
+			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
+				daemonRestart = status.DaemonRestart
+			}
 		}
 		output := statusJSONOutput{
 			Warnings:      warnings,
 			TimeToFirstPR: timeToFirstPR,
+			DaemonRestart: daemonRestart,
 			Summary:       fleetSummary,
 			Runs:          statusJSONSummaries(runs),
 		}
