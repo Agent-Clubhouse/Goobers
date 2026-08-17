@@ -575,6 +575,7 @@ spec:
         - selectedNumber
         - published
         - head
+        - localHead
       next: respond-to-findings
 
     # PRR-7 / design doc D3: publish the account only after the branch moved,

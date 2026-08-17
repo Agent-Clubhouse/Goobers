@@ -60,7 +60,7 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	brief, rawResponses, published, err := readReviewThreadResolutionInputs(root, runID)
+	brief, rawResponses, publishedHead, published, err := readReviewThreadResolutionInputs(root, runID)
 	if err != nil {
 		pf(stderr, "error: read review-thread resolution inputs: %v\n", err)
 		return 1
@@ -108,10 +108,15 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: published PR #%s has no head SHA\n", brief.SelectedNumber)
 		return 1
 	}
+	if current.HeadSHA != publishedHead {
+		pf(stderr, "error: PR #%s head moved from published SHA %s to %s before review threads could be reconciled\n",
+			brief.SelectedNumber, publishedHead, current.HeadSHA)
+		return 1
+	}
 
 	for _, response := range responses {
 		thread := threads[response.ThreadID]
-		body := renderReviewThreadReply(runID, current.HeadSHA, response)
+		body := renderReviewThreadReply(runID, publishedHead, response)
 		snapshot, err := provider.ListPullRequestReviewThreads(ctx, repo, brief.SelectedNumber)
 		if err != nil {
 			return failProviderStage(stderr, "read review threads before reply", err, resolveReviewThreadsResultFile)
@@ -158,15 +163,15 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "verify published pull request head", err, resolveReviewThreadsResultFile)
 	}
-	if verifiedHead.HeadSHA != current.HeadSHA {
+	if verifiedHead.HeadSHA != publishedHead {
 		pf(stderr, "error: PR #%s head moved from published SHA %s to %s while review threads were reconciled\n",
-			brief.SelectedNumber, current.HeadSHA, verifiedHead.HeadSHA)
+			brief.SelectedNumber, publishedHead, verifiedHead.HeadSHA)
 		return 1
 	}
 	unresolved := countLiveUnresolvedReviewThreads(final)
 	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), map[string]interface{}{
 		"selectedNumber":                  brief.SelectedNumber,
-		"publishedHeadSha":                current.HeadSHA,
+		"publishedHeadSha":                publishedHead,
 		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
 	}); err != nil {
 		pf(stderr, "error: write review-thread resolution result: %v\n", err)
@@ -176,26 +181,26 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrief, string, bool, error) {
+func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrief, string, string, bool, error) {
 	brief, err := readLatestRemediationBrief(root, runID)
 	if err != nil {
-		return apiv1.RemediationBrief{}, "", false, err
+		return apiv1.RemediationBrief{}, "", "", false, err
 	}
 	runDir, err := runDirFor(layoutFor(root), runID)
 	if err != nil {
-		return apiv1.RemediationBrief{}, "", false, err
+		return apiv1.RemediationBrief{}, "", "", false, err
 	}
 	rd, err := journal.OpenRead(runDir)
 	if err != nil {
-		return apiv1.RemediationBrief{}, "", false, err
+		return apiv1.RemediationBrief{}, "", "", false, err
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.RemediationBrief{}, "", false, err
+		return apiv1.RemediationBrief{}, "", "", false, err
 	}
 	var raw string
 	var implementFound, pushFound bool
-	var publishedValue string
+	var publishedValue, publishedHead string
 	for _, event := range events {
 		if event.Type == journal.EventStageFinished && event.Stage == "implement" {
 			implementFound = true
@@ -204,15 +209,19 @@ func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrie
 		if event.Type == journal.EventStageFinished && event.Stage == "push-remediated" {
 			pushFound = true
 			publishedValue, _ = event.Outputs[pushRemediatedPublishedOutput].(string)
+			publishedHead, _ = event.Outputs[pushRemediatedLocalHeadOutput].(string)
 		}
 	}
 	if !implementFound {
-		return apiv1.RemediationBrief{}, "", false, fmt.Errorf("no implement stage result found")
+		return apiv1.RemediationBrief{}, "", "", false, fmt.Errorf("no implement stage result found")
 	}
 	if !pushFound || (publishedValue != "true" && publishedValue != "false") {
-		return apiv1.RemediationBrief{}, "", false, fmt.Errorf("push-remediated produced no valid published output")
+		return apiv1.RemediationBrief{}, "", "", false, fmt.Errorf("push-remediated produced no valid published output")
 	}
-	return brief, raw, publishedValue == "true", nil
+	if publishedValue == "true" && strings.TrimSpace(publishedHead) == "" {
+		return apiv1.RemediationBrief{}, "", "", false, fmt.Errorf("push-remediated produced no published local head SHA")
+	}
+	return brief, raw, publishedHead, publishedValue == "true", nil
 }
 
 func gatheredLiveReviewThreads(section *apiv1.RemediationReviewThreads) (map[string]gatheredReviewThread, error) {

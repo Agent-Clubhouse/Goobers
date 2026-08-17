@@ -323,12 +323,12 @@ func TestPushRemediatedPublishesAndClearsLabel(t *testing.T) {
 		t.Errorf("stdout = %q, want a mention of PR #77", stdout)
 	}
 	pushResult := readCheckpointResult(t, filepath.Join(wtPath, pushRemediatedResultName))
-	if pushResult["published"] != "true" || pushResult["selectedNumber"] != "77" {
-		t.Errorf("push result = %v, want published=true for PR 77", pushResult)
+	local := strings.TrimSpace(runGitOutputT(t, wtPath, "rev-parse", "HEAD"))
+	if pushResult["published"] != "true" || pushResult["selectedNumber"] != "77" || pushResult["localHead"] != local {
+		t.Errorf("push result = %v, want published=true for PR 77 at %s", pushResult, local)
 	}
 
 	// The remote branch really moved to the local rework.
-	local := strings.TrimSpace(runGitOutputT(t, wtPath, "rev-parse", "HEAD"))
 	pushed := strings.TrimSpace(runGitOutputT(t, wtPath, "ls-remote", "origin", "refs/heads/"+remediationPRBranch))
 	pushedSHA, _, _ := strings.Cut(pushed, "\t")
 	if pushedSHA != local {
@@ -411,12 +411,25 @@ func TestPushRemediatedResultRecordsSkippedPublication(t *testing.T) {
 	resultFile := filepath.Join(t.TempDir(), pushRemediatedResultName)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
 	var stderr strings.Builder
-	if code := writePushRemediatedResult(77, false, "", &stderr); code != 0 {
+	if code := writePushRemediatedResult(77, false, "", "", &stderr); code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
 	result := readCheckpointResult(t, resultFile)
 	if result["published"] != "false" || result["selectedNumber"] != "77" {
 		t.Errorf("push result = %v, want published=false for PR 77", result)
+	}
+}
+
+func TestPushRemediatedResultRecordsPublishedCommit(t *testing.T) {
+	resultFile := filepath.Join(t.TempDir(), pushRemediatedResultName)
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	var stderr strings.Builder
+	if code := writePushRemediatedResult(77, true, "work", "published-sha", &stderr); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	result := readCheckpointResult(t, resultFile)
+	if result["localHead"] != "published-sha" {
+		t.Errorf("push result = %v, want persisted published commit", result)
 	}
 }
 

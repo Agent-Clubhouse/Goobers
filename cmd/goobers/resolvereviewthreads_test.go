@@ -39,7 +39,10 @@ func seedReviewThreadResolutionRun(t *testing.T, root, runID, responses string) 
 	}
 	for _, event := range []journal.Event{
 		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess), Outputs: map[string]any{threadResponsesOutput: responses}},
-		{Type: journal.EventStageFinished, Stage: "push-remediated", Attempt: 1, Status: string(apiv1.ResultSuccess), Outputs: map[string]any{pushRemediatedPublishedOutput: "true"}},
+		{Type: journal.EventStageFinished, Stage: "push-remediated", Attempt: 1, Status: string(apiv1.ResultSuccess), Outputs: map[string]any{
+			pushRemediatedPublishedOutput: "true",
+			pushRemediatedLocalHeadOutput: "published-sha",
+		}},
 	} {
 		if err := run.Append(event); err != nil {
 			t.Fatal(err)
@@ -258,5 +261,46 @@ func TestResolveReviewThreadsDoesNotResolveWhenReplyFails(t *testing.T) {
 	}
 	if resolveAttempted {
 		t.Fatal("resolution was attempted despite reply failure")
+	}
+}
+
+func TestResolveReviewThreadsRefusesWhenPublishedHeadMoved(t *testing.T) {
+	const runID = "head-moved"
+	root := initDemo(t)
+	seedReviewThreadResolutionRun(t, root, runID, `[
+		{"threadId":"PRRT_addressed","disposition":"addressed","detail":"fixed"},
+		{"threadId":"PRRT_obsolete","disposition":"obsolete","detail":"removed"},
+		{"threadId":"PRRT_blocked","disposition":"blocked","detail":"waiting"}
+	]`)
+	reviewThreadsAccessed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/pulls/77" {
+			_, _ = w.Write([]byte(`{"number":77,"state":"open","head":{"ref":"work","sha":"advanced-sha"},"base":{"ref":"main","sha":"base-sha"}}`))
+			return
+		}
+		reviewThreadsAccessed = true
+		t.Fatalf("request made after head drift: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	previousProvider := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		provider := providers.NewGitHubProvider(token, opts...)
+		provider.BaseURL = server.URL
+		return provider
+	}
+	t.Cleanup(func() { newGitHubProvider = previousProvider })
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
+	t.Chdir(t.TempDir())
+
+	if code, _, stderr := runArgs(t, "resolve-review-threads", root); code == 0 {
+		t.Fatalf("resolve-review-threads succeeded after head drift; stderr=%q", stderr)
+	}
+	if reviewThreadsAccessed {
+		t.Fatal("review threads were accessed after head drift")
 	}
 }
