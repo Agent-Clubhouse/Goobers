@@ -25,6 +25,7 @@ type publicationHooks struct {
 	duringGenerationWrite   func() error
 	afterGenerationPublish  func() error
 	beforeAuthoritativeSwap func() error
+	syncAuthoritativeSwitch func(string) error
 }
 
 // ManifestGenerationDir returns the sibling directory that stores immutable
@@ -122,7 +123,11 @@ func (rs *RenderSet) writeManifests(outDir string, hooks publicationHooks) ([]st
 	if err != nil {
 		return nil, err
 	}
-	if err := durability.SyncDir(parent); err != nil {
+	syncAuthoritativeSwitch := durability.SyncDir
+	if hooks.syncAuthoritativeSwitch != nil {
+		syncAuthoritativeSwitch = hooks.syncAuthoritativeSwitch
+	}
+	if err := syncAuthoritativeSwitch(parent); err != nil {
 		rollbackErr := rollback()
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("sync authoritative manifest switch: %w (rollback failed: %v)", err, rollbackErr)
@@ -220,7 +225,7 @@ func switchManifestOutput(pointer, outDir, generations, generationName string) (
 		if !filepath.IsAbs(oldTarget) {
 			oldTarget = filepath.Join(filepath.Dir(outDir), oldTarget)
 		}
-		rollbackTarget, err := filepath.Rel(generations, oldTarget)
+		rollbackTarget, err := filepath.Rel(filepath.Dir(outDir), oldTarget)
 		if err != nil {
 			return nil, fmt.Errorf("resolve manifest publication rollback target: %w", err)
 		}

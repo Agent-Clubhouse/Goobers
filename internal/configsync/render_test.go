@@ -75,6 +75,12 @@ func TestWriteManifests_InterruptedPublicationKeepsPreviousGeneration(t *testing
 				beforeAuthoritativeSwap: func() error { return errInjectedInterruption },
 			},
 		},
+		{
+			name: "during authoritative switch sync",
+			hooks: publicationHooks{
+				syncAuthoritativeSwitch: func(string) error { return errInjectedInterruption },
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "rendered")
