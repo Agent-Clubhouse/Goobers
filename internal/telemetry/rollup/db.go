@@ -38,6 +38,9 @@ type DB struct {
 	readerMu     sync.RWMutex
 	readerClosed bool
 	schedulerMu  sync.Mutex
+	// schedulerIngestTimeout bounds derived telemetry work on daemon paths whose
+	// callers intentionally have no deadline.
+	schedulerIngestTimeout time.Duration
 	// path is retained so the reader pool can be reopened after Compact.
 	path string
 }
@@ -129,7 +132,11 @@ func Open(path string) (*DB, error) {
 	// between our own writers and what keeps the #1128 first-open race
 	// single-threaded through the WAL switch and migrations.
 	sqlDB.SetMaxOpenConns(1)
-	db := &DB{sql: sqlDB, path: path}
+	db := &DB{
+		sql:                    sqlDB,
+		schedulerIngestTimeout: defaultSchedulerIngestTimeout,
+		path:                   path,
+	}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err

@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -199,20 +200,46 @@ func TestSchedulerRetentionSerializesCursorResetWithIngest(t *testing.T) {
 	}()
 	select {
 	case err := <-ingestDone:
-		t.Fatalf("ingest completed during scheduler compaction: %v", err)
+		if !errors.Is(err, errSchedulerIngestInProgress) {
+			t.Fatalf("concurrent ingest error = %v, want already in progress", err)
+		}
 	case <-time.After(50 * time.Millisecond):
+		t.Fatal("concurrent ingest queued behind scheduler compaction")
 	}
 
 	close(releaseCompact)
 	if err := <-retentionDone; err != nil {
 		t.Fatalf("MaintainSchedulerRetention: %v", err)
 	}
-	if err := <-ingestDone; err != nil {
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("post-compaction ingest: %v", err)
 	}
 	_, lastSeq, _ := schedulerCursorRow(t, db)
 	if lastSeq != 8 {
 		t.Fatalf("lastSeq after serialized compaction = %d, want 8", lastSeq)
+	}
+}
+
+func TestIngestSchedulerLogDeadlineLeavesCursorRetryable(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+
+	db.schedulerIngestTimeout = 0
+	err := db.IngestSchedulerLog(context.Background(), schedulerDir)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("IngestSchedulerLog error = %v, want context deadline exceeded", err)
+	}
+
+	db.schedulerIngestTimeout = defaultSchedulerIngestTimeout
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("retry after deadline: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != len(firstFive()) {
+		t.Fatalf("retry ingested %d events, want %d", len(got), len(firstFive()))
 	}
 }
 
