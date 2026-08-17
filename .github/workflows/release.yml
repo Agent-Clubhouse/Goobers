@@ -264,7 +264,7 @@ jobs:
       # one Apple Developer ID for both. No separate Windows identity or
       # Azure resource is needed.
       - name: Sign goobers.exe
-        uses: azure/trusted-signing-action@v1
+        uses: azure/trusted-signing-action@v2
         with:
           endpoint: https://wus2.codesigning.azure.net/
           trusted-signing-account-name: Clubhouse-Win-Signing
