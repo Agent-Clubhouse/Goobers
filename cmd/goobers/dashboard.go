@@ -351,10 +351,12 @@ func dashboardHostIsLoopback(host string) bool {
 	return instance.IsLoopbackListenAddress(net.JoinHostPort(host, "0"))
 }
 
+var listenDashboardTCP = net.Listen
+
 func listenDashboard(host string, port dashboardPort) (net.Listener, error) {
 	for number := port.number; number <= 65535; number++ {
 		address := net.JoinHostPort(host, strconv.Itoa(number))
-		listener, err := net.Listen("tcp", address)
+		listener, err := listenDashboardTCP("tcp", address)
 		if err == nil {
 			return listener, nil
 		}
