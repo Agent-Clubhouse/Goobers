@@ -134,7 +134,7 @@ func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdo
 		if result.SelectedNumber == "" {
 			pln(stdout, "no work: this run holds no PR claim")
 		} else {
-			pf(stdout, "no work: claimed PR #%s is no longer open; claim released\n", result.SelectedNumber)
+			pf(stdout, "no work: this run's claimed PR #%s is no longer open; claim released\n", result.SelectedNumber)
 		}
 		return 0
 	}
