@@ -48,6 +48,82 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 	}
 }
 
+func TestDSLMatrixAgainstNextReleases(t *testing.T) {
+	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
+	firstTag, latestTag := supportReleaseTagRange(t, root)
+	var latest releaseVersion
+	if latestTag != "" {
+		var err error
+		latest, err = parseSupportReleaseVersion(latestTag, false)
+		if err != nil {
+			t.Fatalf("parse latest release tag %s: %v", latestTag, err)
+		}
+	}
+	var firstRelease releaseVersion
+	if firstTag != "" {
+		var err error
+		firstRelease, err = parseSupportReleaseVersion(firstTag, false)
+		if err != nil {
+			t.Fatalf("parse first release tag %s: %v", firstTag, err)
+		}
+	}
+	nextPatch := latest
+	nextPatch.patch++
+	nextMinor := releaseVersion{major: latest.major, minor: latest.minor + 1}
+
+	for _, candidate := range []releaseVersion{nextPatch, nextMinor} {
+		t.Run(candidate.String(), func(t *testing.T) {
+			releaseAnchor := firstRelease
+			if firstTag == "" {
+				releaseAnchor = candidate
+			}
+			if err := validateSupportMatrixAfterTag(GetDSL(), candidate, releaseAnchor); err != nil {
+				t.Fatalf("compiled-in DSL support matrix would fail after cutting %s: %v", candidate.String(), err)
+			}
+		})
+	}
+}
+
+func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.0": {
+			Level:            LevelDeprecated,
+			UnsupportedAfter: "v1.3.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v1.1.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+	firstRelease := releaseVersion{major: 1, minor: 1}
+	nextRelease := releaseVersion{major: 1, minor: 2}
+
+	err := validateSupportMatrixAfterTag(matrix, nextRelease, firstRelease)
+	if err == nil || !strings.Contains(err.Error(), "fewer than 3 minor releases") {
+		t.Fatalf("off-by-one support deadline error = %v, want three-minor support-window failure", err)
+	}
+}
+
+func validateSupportMatrixAfterTag(
+	matrix SupportMatrix,
+	release releaseVersion,
+	firstRelease releaseVersion,
+) error {
+	developmentReleases := make(map[string]releaseVersion)
+	for _, version := range matrix.Versions() {
+		if len(version.History) > 0 && version.History[0].SinceVersion == initialSupportVersion {
+			developmentReleases[version.Version] = firstRelease
+		}
+	}
+	return validateSupportMatrixEvolution(matrix, matrix, release.String(), developmentReleases)
+}
+
 func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	root := t.TempDir()
 	writeSupportFile(t, filepath.Join(root, "go.mod"), "module github.com/goobers/goobers\n\ngo 1.26\n")
