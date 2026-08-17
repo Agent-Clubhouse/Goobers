@@ -9,7 +9,7 @@
   "properties": {
     "version": {
       "description": "Run-directory schema version, or -1 while a migration transaction is in progress.",
-      "enum": [-1, 1]
+      "enum": [1, -1]
     },
     "minimumBinary": {
       "description": "Earliest Goobers binary known to support the target schema version.",

@@ -261,10 +261,11 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 					return fmt.Errorf("telemetry retention: staged run %s is not terminal", runID)
 				}
 				identity, identityErr := reader.Identity()
-				if identityErr != nil {
+				if identityErr == nil {
+					runID = identity.RunID
+				} else if !errors.Is(identityErr, fs.ErrNotExist) {
 					return fmt.Errorf("telemetry retention: read staged run %s identity: %w", runID, identityErr)
 				}
-				runID = identity.RunID
 			} else if !errors.Is(openErr, fs.ErrNotExist) {
 				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
 			}
