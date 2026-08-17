@@ -433,16 +433,16 @@ func init() {
 		).withHelp("inspect and force-release claim leases", claimsHelp),
 		coreCommand("trace", apicontract.ActionReadOnlyNavigation, runTrace).
 			withSynopsis(synopsisByID["trace"]).
-			withHelp("show a run's journal events, follow a live run, or show transcripts", traceHelp).
-			withExamples("goobers trace <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+			withHelp("show a run's journal events or review verdicts, follow a live run, or show transcripts", traceHelp).
+			withExamples("goobers trace <run-id>", "goobers trace --summary <run-id>", "goobers trace --verdicts <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
 		coreCommandWithSubcommands(
 			"escalations",
 			apicontract.ActionReadOnlyNavigation,
 			runEscalations,
 			subcommand("escalations show", "show", apicontract.ActionReadOnlyNavigation, runEscalationShow).
 				withSynopsis(synopsisByID["escalations show"]).
-				withHelp("show escalation cause + per-stage artifact timeline", escalationsShowHelp).
-				withExamples("goobers escalations show <run-id>"),
+				withHelp("show escalation cause, verdict, and per-stage artifact timeline", escalationsShowHelp).
+				withExamples("goobers escalations show <run-id>", "goobers escalations show --include-verdict <run-id>"),
 		).
 			withSynopsis(synopsisByID["escalations"]).
 			withHelp("list escalated runs newest first", escalationsHelp).
