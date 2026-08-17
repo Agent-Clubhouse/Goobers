@@ -104,24 +104,58 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	}
 }
 
-func TestAcquireAPIReadCacheLockTimesOutDuringFileOpen(t *testing.T) {
+func TestAcquireAPIReadCacheLockDeduplicatesBlockedFileOpen(t *testing.T) {
 	blocked := make(chan struct{})
 	started := make(chan struct{})
+	var calls atomic.Int32
 	acquire := func(string) (*lock.Handle, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(2)
+
+	begin := time.Now()
+	for range 3 {
+		handle, err := manager.acquire("blocked.lock", 20*time.Millisecond, acquire)
+		if handle != nil || err == nil {
+			t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
+		}
+	}
+	if elapsed := time.Since(begin); elapsed > time.Second {
+		t.Fatalf("blocked file opens returned after %s, want bounded fallback", elapsed)
+	}
+	<-started
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want one deduplicated attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAcquireAPIReadCacheLockCapsBlockedFileOpens(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		calls.Add(1)
 		close(started)
 		<-blocked
 		return nil, os.ErrClosed
 	}
+	manager := newAPIReadCacheLockManager(1)
 
-	begin := time.Now()
-	handle, err := acquireAPIReadCacheLock("blocked.lock", 20*time.Millisecond, acquire)
-	if handle != nil || err == nil {
-		t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
-	}
-	if elapsed := time.Since(begin); elapsed > time.Second {
-		t.Fatalf("blocked file open returned after %s, want bounded fallback", elapsed)
+	if _, err := manager.acquire("first.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("first blocked acquisition returned no error")
 	}
 	<-started
+	if _, err := manager.acquire("second.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("acquisition beyond capacity returned no error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want capacity-limited single attempt", got)
+	}
 	close(blocked)
 }
 

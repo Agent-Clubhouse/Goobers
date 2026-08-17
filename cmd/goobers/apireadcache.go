@@ -57,10 +57,13 @@ const (
 	apiReadCacheMaxBytes   = 16 << 20
 	// apiReadHTTPTimeout mirrors providers' own default provider HTTP timeout;
 	// the wrapper's inner client keeps the same round-trip budget.
-	apiReadHTTPTimeout             = 60 * time.Second
-	apiReadCacheLockAcquireTimeout = time.Second
-	apiReadCacheLockRetryInterval  = 10 * time.Millisecond
+	apiReadHTTPTimeout              = 60 * time.Second
+	apiReadCacheLockAcquireTimeout  = time.Second
+	apiReadCacheLockRetryInterval   = 10 * time.Millisecond
+	apiReadCacheMaxLockAcquisitions = 4
 )
+
+var apiReadCacheLocks = newAPIReadCacheLockManager(apiReadCacheMaxLockAcquisitions)
 
 // apiReadCacheEntry is one (token-scope, URL)'s cached conditional-GET result.
 type apiReadCacheEntry struct {
@@ -398,16 +401,64 @@ type apiReadCacheLockResult struct {
 	err    error
 }
 
+type apiReadCacheLockAttempt struct {
+	done chan struct{}
+
+	mu        sync.Mutex
+	result    apiReadCacheLockResult
+	completed bool
+	abandoned bool
+}
+
+// apiReadCacheLockManager deduplicates blocked opens by path and caps blocked
+// OS calls across distinct cache keys so a daemon cannot leak resources without
+// bound when CreateFile never returns.
+type apiReadCacheLockManager struct {
+	mu       sync.Mutex
+	inFlight map[string]*apiReadCacheLockAttempt
+	slots    chan struct{}
+}
+
+func newAPIReadCacheLockManager(limit int) *apiReadCacheLockManager {
+	return &apiReadCacheLockManager{
+		inFlight: make(map[string]*apiReadCacheLockAttempt),
+		slots:    make(chan struct{}, limit),
+	}
+}
+
 // acquireAPIReadCacheLock bounds the file open that precedes LockFileEx and can
 // otherwise block indefinitely inside CreateFile on Windows.
 func acquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	return apiReadCacheLocks.acquire(lockPath, timeout, acquire)
+}
+
+func (m *apiReadCacheLockManager) acquire(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
 		}
-		handle, err := tryAcquireAPIReadCacheLock(lockPath, remaining, acquire)
+		attempt, owner, err := m.start(lockPath, acquire)
+		if err != nil {
+			return nil, err
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-attempt.done:
+			timer.Stop()
+			if !owner {
+				continue
+			}
+		case <-timer.C:
+			if owner {
+				attempt.abandon()
+			}
+			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
+		}
+
+		handle, err := attempt.acquired()
 		if !errors.Is(err, lock.ErrHeld) {
 			return handle, err
 		}
@@ -420,27 +471,58 @@ func acquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire fun
 	}
 }
 
-func tryAcquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
-	result := make(chan apiReadCacheLockResult)
-	abandoned := make(chan struct{})
+func (m *apiReadCacheLockManager) start(lockPath string, acquire func(string) (*lock.Handle, error)) (*apiReadCacheLockAttempt, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if attempt := m.inFlight[lockPath]; attempt != nil {
+		return attempt, false, nil
+	}
+	select {
+	case m.slots <- struct{}{}:
+	default:
+		return nil, false, fmt.Errorf("api read cache lock %q: acquisition capacity exhausted", lockPath)
+	}
+
+	attempt := &apiReadCacheLockAttempt{done: make(chan struct{})}
+	m.inFlight[lockPath] = attempt
 	go func() {
 		handle, err := acquire(lockPath)
-		select {
-		case result <- apiReadCacheLockResult{handle: handle, err: err}:
-		case <-abandoned:
+		attempt.mu.Lock()
+		attempt.completed = true
+		if attempt.abandoned {
 			_ = handle.Release()
+		} else {
+			attempt.result = apiReadCacheLockResult{handle: handle, err: err}
 		}
-	}()
+		attempt.mu.Unlock()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case acquired := <-result:
-		return acquired.handle, acquired.err
-	case <-timer.C:
-		close(abandoned)
-		return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
+		m.mu.Lock()
+		delete(m.inFlight, lockPath)
+		<-m.slots
+		m.mu.Unlock()
+		close(attempt.done)
+	}()
+	return attempt, true, nil
+}
+
+func (a *apiReadCacheLockAttempt) abandon() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.abandoned = true
+	if a.completed {
+		_ = a.result.handle.Release()
+		a.result.handle = nil
 	}
+}
+
+func (a *apiReadCacheLockAttempt) acquired() (*lock.Handle, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.result.handle, a.result.err
+}
+
+func tryAcquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	return apiReadCacheLocks.acquire(lockPath, timeout, acquire)
 }
 
 // withAPIReadCacheLock fails open on contention or a blocked file open. The
