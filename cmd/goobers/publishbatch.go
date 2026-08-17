@@ -24,9 +24,11 @@ const publishBatchHelp = "Usage: goobers publish-batch [path]\n\n" +
 	"Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.\n"
 
 type publishBatchResult struct {
-	ParentID   string   `json:"parentId"`
-	PlanDigest string   `json:"planDigest"`
-	ChildIDs   []string `json:"childIds"`
+	ParentID            string   `json:"parentId"`
+	PlanDigest          string   `json:"planDigest"`
+	ChildIDs            []string `json:"childIds"`
+	PublicationConflict bool     `json:"publicationConflict"`
+	ConflictReason      string   `json:"conflictReason,omitempty"`
 }
 
 type publishBatchProvider interface {
@@ -49,12 +51,12 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
-	plan, err := readValidatePlanInput[decomposition.Plan](providerInput("planFile", "plan.json"))
+	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
 		pf(stderr, "error: read plan: %v\n", err)
 		return 1
 	}
-	validation, err := readValidatePlanInput[validatePlanResult](providerInput("validationFile", "plan-validation.json"))
+	validation, err := readDecompositionInput[validatePlanResult](root, providerInput("validationFile", "plan-validation.json"), "plan-validation.json", "validate-plan", "/result")
 	if err != nil {
 		pf(stderr, "error: read plan validation: %v\n", err)
 		return 1
@@ -117,6 +119,25 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		RunID: runID,
 	}).Publish(ctx, plan)
 	if err != nil {
+		if decomposition.IsPublicationConflict(err) {
+			resultFile := providerInput("resultFile", "published-batch.json")
+			data, marshalErr := json.Marshal(publishBatchResult{
+				ParentID:            plan.Parent.ID,
+				PlanDigest:          planDigest,
+				PublicationConflict: true,
+				ConflictReason:      err.Error(),
+			})
+			if marshalErr != nil {
+				pf(stderr, "error: marshal publication conflict result: %v\n", marshalErr)
+				return 1
+			}
+			if writeErr := os.WriteFile(resultFile, data, 0o644); writeErr != nil {
+				pf(stderr, "error: write %s: %v\n", resultFile, writeErr)
+				return 1
+			}
+			pf(stdout, "decomposition batch for parent %s has a publication conflict: %s\n", plan.Parent.ID, err)
+			return 0
+		}
 		return failProviderStage(stderr, "publish decomposition batch", err, "published-batch.json")
 	}
 

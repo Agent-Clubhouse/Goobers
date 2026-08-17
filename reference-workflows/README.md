@@ -24,14 +24,15 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **10 goobers and 10 workflows**.
-<!-- reference-inventory: goobers=10 workflows=10 -->
+The shipped tree loads **11 goobers and 11 workflows**.
+<!-- reference-inventory: goobers=11 workflows=11 -->
 
 | Goober role | Purpose |
 |---|---|
 | `analyst` | Diagnoses Tutor signals from telemetry and journals. |
 | `config-author` | Drafts Tutor changes inside the confined config roots. |
 | `curator` | Deduplicates, tags, scopes, and roadmaps approved issues. |
+| `decomposer` | Designs read-only, validated delivery slices for oversized work. |
 | `docs` | Updates documentation from a scoped signal. |
 | `implementer` | Implements claimed issues and PR remediation in a worktree. |
 | `nominator` | Files evidence-backed backlog items. |
@@ -43,6 +44,7 @@ The shipped tree loads **10 goobers and 10 workflows**.
 | Workflow | Purpose |
 |---|---|
 | `backlog-curation` | Curates maintainer-approved backlog items. |
+| `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
 | `implementation` | Implements a ready issue and opens a PR. |
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
@@ -184,7 +186,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 10 goober(s), 10 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
@@ -240,6 +242,9 @@ After the canonical quickstart has created and validated a regular instance:
   issues carrying `goobers:nominated` + an evidence footer. Filed issues are
   **not** pre-approved — a maintainer reviews and applies `goobers:approved`
   before curation will touch them.
+- **Decomposition** (04:53 local, once daily, or on direct invocation): selects
+  the same oldest eligible escalation, designs and validates bounded single-PR
+  slices, and publishes them only after deterministic validation.
 - **PR lifecycle:** `merge-review` reviews and may land eligible managed PRs;
   `pr-remediation` rebases or fixes PRs that need work.
 - **Maintenance:** `docs-updater` handles documentation signals,
