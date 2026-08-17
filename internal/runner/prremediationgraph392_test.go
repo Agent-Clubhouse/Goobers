@@ -156,6 +156,9 @@ func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.Invocat
 	_, stage, _ := strings.Cut(env.TaskID, ":")
 	v.mu.Lock()
 	*v.visited = append(*v.visited, stage)
+	if v.visitCounts == nil {
+		v.visitCounts = make(map[string]int)
+	}
 	visit := v.visitCounts[stage]
 	v.visitCounts[stage]++
 	statuses := v.statusByVisit[stage]
