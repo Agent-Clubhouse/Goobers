@@ -49,12 +49,12 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pathArg = fs.Arg(0)
 	}
 	root := providerStageRoot(pathArg)
-	plan, err := readValidatePlanInput[decomposition.Plan](providerInput("planFile", "plan.json"))
+	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
 		pf(stderr, "error: read plan: %v\n", err)
 		return 1
 	}
-	validation, err := readValidatePlanInput[validatePlanResult](providerInput("validationFile", "plan-validation.json"))
+	validation, err := readDecompositionInput[validatePlanResult](root, providerInput("validationFile", "plan-validation.json"), "plan-validation.json", "validate-plan", "/result")
 	if err != nil {
 		pf(stderr, "error: read plan validation: %v\n", err)
 		return 1

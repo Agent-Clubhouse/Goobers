@@ -8,10 +8,27 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestDecompositionStageArtifactSelectsLatestSuccessfulStageResult(t *testing.T) {
+	oldRef := journal.Ref{Path: "artifacts/old", Digest: "sha256:old"}
+	newRef := journal.Ref{Path: "artifacts/new", Digest: "sha256:new"}
+	events := []journal.Event{
+		{Type: journal.EventArtifactRecorded, Name: "run:select-source/result", Ref: &oldRef},
+		{Type: journal.EventStageFinished, Stage: "select-source", Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{oldRef}},
+		{Type: journal.EventArtifactRecorded, Name: "run:select-source/result", Ref: &newRef},
+		{Type: journal.EventStageFinished, Stage: "select-source", Status: string(apiv1.ResultFailure), Artifacts: []journal.Ref{newRef}},
+	}
+
+	got, ok := decompositionStageArtifact(events, "select-source", "/result")
+	if !ok || got.Digest != oldRef.Digest {
+		t.Fatalf("artifact = %+v, %v; want latest successful ref %+v", got, ok, oldRef)
+	}
+}
 
 func (s *fakeGitHubServer) setIssueTitle(number int, title string) {
 	s.mu.Lock()
@@ -69,6 +86,7 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(419, "A very large issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()
@@ -142,6 +160,7 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(420, "A very large issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()
@@ -195,6 +214,7 @@ func TestValidatePlanRejectsUnsupportedSchemaVersionCLI(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(421, "Some issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()

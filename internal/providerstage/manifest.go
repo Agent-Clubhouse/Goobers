@@ -106,7 +106,7 @@ var commands = map[string]Command{
 	"validate-plan": {
 		ResultFile: "plan-validation.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
+			required(capability.GitHubIssuesRead, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
 		},
 	},
 	"elect-lander": {

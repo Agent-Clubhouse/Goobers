@@ -2,12 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
@@ -50,12 +54,12 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 	}
 	root := providerStageRoot(pathArg)
 
-	plan, err := readValidatePlanInput[decomposition.Plan](providerInput("planFile", "plan.json"))
+	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
 		pf(stderr, "error: read plan: %v\n", err)
 		return 1
 	}
-	selection, err := readValidatePlanInput[decomposition.Selection](providerInput("selectionFile", "selection.json"))
+	selection, err := readDecompositionInput[decomposition.Selection](root, providerInput("selectionFile", "selection.json"), "selection.json", "select-source", "/result")
 	if err != nil {
 		pf(stderr, "error: read selection: %v\n", err)
 		return 1
@@ -67,7 +71,7 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	issueProvider, err := newProviderForStage(root, repo, false, withStageProviderCache())
+	issueProvider, err := newProviderForStage(root, repo, true, withStageProviderCache())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -130,4 +134,60 @@ func readValidatePlanInput[T any](path string) (T, error) {
 		return value, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return value, nil
+}
+
+func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffix string) (T, error) {
+	value, err := readValidatePlanInput[T](path)
+	if err == nil || path != defaultPath || !errors.Is(err, os.ErrNotExist) {
+		return value, err
+	}
+	runID := os.Getenv("GOOBERS_RUN_ID")
+	if runID == "" {
+		return value, err
+	}
+	runDir, runErr := runDirFor(layoutFor(root), runID)
+	if runErr != nil {
+		return value, err
+	}
+	reader, runErr := journal.OpenRead(runDir)
+	if runErr != nil {
+		return value, fmt.Errorf("open run journal for %s input: %w", stage, runErr)
+	}
+	events, runErr := reader.Events()
+	if runErr != nil {
+		return value, fmt.Errorf("read run journal for %s input: %w", stage, runErr)
+	}
+	ref, ok := decompositionStageArtifact(events, stage, artifactSuffix)
+	if !ok {
+		return value, err
+	}
+	data, runErr := reader.ArtifactBytes(ref)
+	if runErr != nil {
+		return value, fmt.Errorf("read %s artifact: %w", stage, runErr)
+	}
+	if runErr := json.Unmarshal(data, &value); runErr != nil {
+		return value, fmt.Errorf("parse %s artifact: %w", stage, runErr)
+	}
+	return value, nil
+}
+
+func decompositionStageArtifact(events []journal.Event, stage, nameSuffix string) (journal.Ref, bool) {
+	artifacts := make(map[string]journal.Ref)
+	for _, event := range events {
+		if event.Type == journal.EventArtifactRecorded && event.Ref != nil && strings.HasSuffix(event.Name, nameSuffix) {
+			artifacts[event.Ref.Digest] = *event.Ref
+		}
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventStageFinished || event.Stage != stage || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		for _, ref := range event.Artifacts {
+			if artifact, ok := artifacts[ref.Digest]; ok {
+				return artifact, true
+			}
+		}
+	}
+	return journal.Ref{}, false
 }
