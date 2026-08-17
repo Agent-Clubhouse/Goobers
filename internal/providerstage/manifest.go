@@ -3,6 +3,7 @@
 package providerstage
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -297,6 +298,16 @@ var commands = map[string]Command{
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
 		},
 	},
+}
+
+// Commands returns every command declared by the provider-stage manifest.
+func Commands() []string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Lookup returns the manifest entry for command.
