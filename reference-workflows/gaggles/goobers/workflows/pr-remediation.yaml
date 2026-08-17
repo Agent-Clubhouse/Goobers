@@ -115,7 +115,6 @@ spec:
         minSeverity: "info"
       capabilities:
         - github:pr:write
-        - github:issues:write
         - repo:push
       expectedOutputs:
         - selectedNumber
@@ -409,7 +408,7 @@ spec:
         resultFile: "remediation-brief.json"
       capabilities:
         - github:pr:write
-        - github:issues:write
+        - github:issues:read
       next: guard-before-implement
 
     # Agentic rework in a worktree provisioned on the PR's own branch (see
@@ -492,10 +491,6 @@ spec:
         workspace: scratch
       inputs:
         resultFile: "finding-response-validation.json"
-      capabilities:
-        - github:issues:write
-      policyActions:
-        - respond-to-findings
       next: finding-responses-gate
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on

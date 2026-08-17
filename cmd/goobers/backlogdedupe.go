@@ -197,7 +197,7 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 }
 
 func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, false, withStageProviderCache())
+	return newProviderForStage(root, repo, true, withStageProviderCache())
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -68,7 +69,7 @@ func TestGatherIssueContextAddsResolvableClosingIssuesAndPreservesBrief(t *testi
 	original := issueContextBrief()
 	seedRemediationBriefRun(t, root, runID, original)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
-	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -109,7 +110,7 @@ func TestGatherIssueContextWithUnresolvableClosingIssueEmitsEmptySection(t *test
 
 	seedRemediationBriefRun(t, root, runID, issueContextBrief())
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
-	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -135,7 +136,7 @@ func TestGatherIssueContextWithUnresolvableClosingIssueEmitsEmptySection(t *test
 
 // TestGatherIssueContextUsesIssuesCredentialForIssueReads pins the capability
 // split: PR listing authenticates with github:pr:write and originating-issue
-// reads with github:issues:write, which per-capability credential overrides may
+// reads with github:issues:read, which per-capability credential overrides may
 // back with different tokens. The PR is served by a server that does not know
 // the issue, and the issue only by a second server reachable with the issues
 // token; if GetWorkItem authenticated with the PR credential (the prior bug) it
@@ -165,8 +166,11 @@ func TestGatherIssueContextUsesIssuesCredentialForIssueReads(t *testing.T) {
 	seedRemediationBriefRun(t, root, runID, issueContextBrief())
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", prToken)
-	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", issuesToken)
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", issuesToken)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	dir := t.TempDir()
 	t.Chdir(dir)
 
