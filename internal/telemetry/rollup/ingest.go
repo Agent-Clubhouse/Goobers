@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -56,6 +57,9 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 	if err := insertEvents(ctx, tx, runID, events); err != nil {
 		return err
 	}
+	if err := insertCICheckFailures(ctx, tx, runDir, runID, events); err != nil {
+		return err
+	}
 	if err := insertBacklogProjections(tx, runDir, identity, events); err != nil {
 		return err
 	}
@@ -74,7 +78,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -379,6 +383,55 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			formatTime(a.startedAt), formatTime(a.finishedAt), durationMillis(a.startedAt, a.finishedAt),
 			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON, k.branch); err != nil {
 			return fmt.Errorf("rollup: insert stage_attempt %s traversal %d: %w", k.stage, k.traversal, err)
+		}
+	}
+	return nil
+}
+
+type ciChecksArtifact struct {
+	Checks []struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	} `json:"checks"`
+}
+
+func insertCICheckFailures(ctx context.Context, tx *sql.Tx, runDir, runID string, events []journalEvent) error {
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Outputs["ciStatus"] != "failing" {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, ref := range ev.Artifacts {
+			if ref.MediaType != "application/json" {
+				continue
+			}
+			data, readErr := reader.ArtifactBytes(journal.Ref{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType,
+			})
+			if readErr != nil {
+				return fmt.Errorf("rollup: read CI checks artifact for run %s: %w", runID, readErr)
+			}
+			var artifact ciChecksArtifact
+			if json.Unmarshal(data, &artifact) != nil || artifact.Checks == nil {
+				continue
+			}
+			for _, check := range artifact.Checks {
+				name := strings.TrimSpace(check.Name)
+				if check.State != "failing" || name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO ci_check_failures (run_id, seq, stage, check_name, artifact_digest, occurred_at)
+					VALUES (?, ?, ?, ?, ?, ?)`,
+					runID, ev.Seq, ev.Stage, name, ref.Digest, formatTime(ev.Time)); err != nil {
+					return fmt.Errorf("rollup: insert CI check failure %q for run %s: %w", name, runID, err)
+				}
+			}
 		}
 	}
 	return nil

@@ -2,12 +2,15 @@ package rollup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // seedDeployRun writes a run with a "build" stage that always succeeds and
@@ -50,6 +53,41 @@ func seedGateRun(t *testing.T, runsDir, runID, workflow, verdict string, escalat
 			`"type":"gate.evaluated","gate":"review","verdict":"%s","target":"x","runner":{"repassAttempt":1,"escalated":%t}`,
 			verdict, escalated)),
 		eventLine(3, startedAt.Add(2*time.Second), `"type":"run.finished","status":"completed"`),
+	}
+
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+func seedCICheckFailureRun(t *testing.T, runsDir, runID, checkName string, startedAt time.Time) {
+	t.Helper()
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(
+		minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: implementation",
+	))
+	artifact, err := json.Marshal(map[string]any{"checks": []map[string]string{{
+		"name": checkName, "state": "failing", "summary": "TestResume timed out",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := journal.Digest(artifact)
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
+	artifactPath := filepath.Join("artifacts", "sha256", hexDigest[:2], hexDigest[2:])
+	mustMkdirAll(t, filepath.Join(dir, filepath.Dir(artifactPath)))
+	mustWriteFile(t, filepath.Join(dir, artifactPath), string(artifact))
+	refs, err := json.Marshal([]map[string]any{{
+		"path": artifactPath, "digest": digest, "size": len(artifact), "mediaType": "application/json",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		eventLine(1, startedAt, `"type":"run.started"`),
+		eventLine(2, startedAt.Add(time.Second), `"type":"stage.started","stage":"ci-poll","attempt":1`),
+		eventLine(3, startedAt.Add(2*time.Second),
+			`"type":"stage.finished","stage":"ci-poll","attempt":1,"status":"success","outputs":{"ciStatus":"failing"},"artifacts":`+string(refs)),
+		eventLine(4, startedAt.Add(3*time.Second), `"type":"run.finished","status":"completed"`),
 	}
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
 }
@@ -145,6 +183,7 @@ func TestDetectErrorSignatureThreshold(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		seedStatsRun(t, runsDir, fmt.Sprintf("%032d", i), "implement", "failed", base.Add(time.Duration(i)*time.Hour), true, "provider.rate_limit")
 	}
+
 	// A different code occurs only twice — must not be flagged.
 	for i := 5; i < 7; i++ {
 		seedStatsRun(t, runsDir, fmt.Sprintf("%032d", i), "implement", "failed", base.Add(time.Duration(i)*time.Hour), true, "harness.crash")
@@ -177,6 +216,40 @@ func TestDetectErrorSignatureThreshold(t *testing.T) {
 	}
 	if crash != nil {
 		t.Fatalf("harness.crash flagged at count=2, want no finding below threshold 5: %+v", crash)
+	}
+}
+
+func TestDetectCICheckFailureRequiresDistinctRecurringRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 1), "unit-tests", base)
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 2), "unit-tests", base.Add(time.Hour))
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 3), "lint", base.Add(2*time.Hour))
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	thresholds := DefaultThresholds()
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: thresholds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recurring *Finding
+	for i := range findings {
+		if findings[i].Kind == FindingCICheckFailure {
+			if findings[i].Subject == "lint" {
+				t.Fatalf("single-run CI failure was classified as recurring: %+v", findings[i])
+			}
+			if findings[i].Subject == "unit-tests" {
+				recurring = &findings[i]
+			}
+		}
+	}
+	if recurring == nil {
+		t.Fatalf("recurring unit-tests failure not found: %+v", findings)
+	}
+	if recurring.Metrics["distinctRuns"] != 2 || len(recurring.FlaggedRuns) != 2 {
+		t.Fatalf("recurring CI finding = %+v, want two distinct evidence runs", recurring)
 	}
 }
 
