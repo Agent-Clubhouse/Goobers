@@ -214,6 +214,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
+		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"getting-started": {
 		{name: "port", takesArg: true, desc: "Server port, or auto"},
