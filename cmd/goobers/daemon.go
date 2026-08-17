@@ -1027,9 +1027,22 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture, providerQuota,
-	)
+	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               l,
+		Config:               cfg,
+		Goobers:              goobers,
+		InstructionsByGoober: instructions,
+		Telemetry:            tel,
+		SharedRegistry:       sharedReg,
+		WorktreeManager:      manager,
+		BranchNamespaces:     branchNamespaces,
+		GaggleProject:        gaggleProject,
+		AdditionalRepos:      additionalRepos,
+		HarnessInfo:          harnessInfo,
+		CredentialStores:     stores,
+		SandboxPosture:       sandboxPosture,
+		ProviderQuota:        providerQuota,
+	})
 	if err != nil {
 		return nil, nil, err
 	}

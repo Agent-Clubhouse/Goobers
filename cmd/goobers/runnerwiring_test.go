@@ -749,22 +749,14 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 
 	layout := instance.NewLayout(t.TempDir())
-	runnerCfg, _, err := buildRunnerConfig(
-		layout,
-		&instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
-		resolvedGoobers,
-		map[string]string{"coder": "instructions"},
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	runnerCfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               layout,
+		Config:               &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
+		Goobers:              resolvedGoobers,
+		InstructionsByGoober: map[string]string{"coder": "instructions"},
+		SharedRegistry:       journal.NewRegistryScrubber(),
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -801,22 +793,14 @@ func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 		}},
 	}
 	scrubber := journal.NewRegistryScrubber()
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()),
-		&instance.Config{},
-		map[string]apiv1.GooberSpec{gooberName: spec},
-		map[string]string{gooberName: "instructions"},
-		nil,
-		scrubber,
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               instance.NewLayout(t.TempDir()),
+		Config:               &instance.Config{},
+		Goobers:              map[string]apiv1.GooberSpec{gooberName: spec},
+		InstructionsByGoober: map[string]string{gooberName: "instructions"},
+		SharedRegistry:       scrubber,
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -827,6 +811,38 @@ func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 	}
 	if goober == nil {
 		t.Fatal("NewAgentic returned a nil goober for a valid claude-code mcpServers declaration")
+	}
+}
+
+func TestBuildDeterministicExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          "goobers",
+		ArtifactRecorder: runnerWiringArtifactRecorder{},
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildDeterministicExecutor returned nil")
+	}
+}
+
+func TestBuildAgenticExecutorIndependentlyRejectsUnknownGoober(t *testing.T) {
+	_, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName: "missing",
+		Goobers:    map[string]apiv1.GooberSpec{},
+	})
+	if err == nil || !strings.Contains(err.Error(), `goober "missing" not found`) {
+		t.Fatalf("buildAgenticExecutor error = %v, want unknown-goober error", err)
 	}
 }
 
@@ -848,22 +864,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
 		},
 	}}}
-	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -912,27 +919,18 @@ func TestBuildRunnerConfigGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
 		Owner:    "acme",
 		Name:     "web",
 	}
-	_, manager, err := buildRunnerConfig(
-		instance.NewLayout(".").ForGaggle("builders"),
-		&instance.Config{Repos: []instance.RepoRef{{
+	_, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout: instance.NewLayout(".").ForGaggle("builders"),
+		Config: &instance.Config{Repos: []instance.RepoRef{{
 			Provider: "github",
 			Owner:    "acme",
 			Name:     "web",
 			Token:    instance.TokenRef{Env: "GOOBERS_TEST_GITHUB_TOKEN"},
 		}}},
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -962,22 +960,13 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		Name:      "monolith",
 		LargeRepo: true,
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -1030,22 +1019,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) 
 			Pinned: true,
 		},
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -1723,22 +1703,16 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 	}
 	build := func(manager *worktree.Manager) *worktree.Manager {
 		t.Helper()
-		_, manager, err := buildRunnerConfig(
-			layout,
-			&instance.Config{Repos: []instance.RepoRef{repo}},
-			map[string]apiv1.GooberSpec{},
-			map[string]string{},
-			nil,
-			journal.NewRegistryScrubber(),
-			manager,
-			nil,
-			apiv1.RepoRef{},
-			nil,
-			harnessPreflightInfo{},
-			nil,
-			instance.SandboxDisabled,
-			nil,
-		)
+		_, manager, err := buildRunnerConfig(runnerCompositionInput{
+			Layout:               layout,
+			Config:               &instance.Config{Repos: []instance.RepoRef{repo}},
+			Goobers:              map[string]apiv1.GooberSpec{},
+			InstructionsByGoober: map[string]string{},
+			SharedRegistry:       journal.NewRegistryScrubber(),
+			WorktreeManager:      manager,
+			HarnessInfo:          harnessPreflightInfo{},
+			SandboxPosture:       instance.SandboxDisabled,
+		})
 		if err != nil {
 			t.Fatalf("buildRunnerConfig: %v", err)
 		}
