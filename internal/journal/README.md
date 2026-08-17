@@ -12,6 +12,7 @@ Authoritative spec: `docs/ARCHITECTURE.md` §4 (the journal) and §3.3
 
 ```
 runs/<run-id>/
+  schema.json    # directory schema version and earliest compatible binary
   run.yaml       # pinned identity: workflow name+version+digest, gaggle, trigger, input refs
   state.json     # current machine state; atomically replaced checkpoint (derived)
   events.jsonl   # append-only event journal; every event carries a monotonic seq
@@ -119,14 +120,16 @@ The one sanctioned edit to the append-only journal is remediation of a miss:
 scrubbed copy, removes the leaked bytes, and appends a `redaction` event
 recording the old→new digests.
 
-## Forward compatibility (seeds #33)
+## Schema compatibility
 
-A reader tolerates events written by a newer schema version: unknown fields and
-unknown event types parse into the shared envelope without error.
-`Event.KnownSchema()` reports whether the current build owns the event's schema
-version, so a reader can decide whether to trust type-specific fields. Minimal
-policy for V0: **read leniently, write strictly** (writers always emit the
-current version; the schema validates that exact shape).
+`schema.json` is the inspectable run-directory schema authority. `OpenRead`
+migrates the legacy pre-manifest layout after creating a quiescent `.bak` copy
+under the runs root's sibling `.journal-backups/` directory.
+The `schema` fields in `run.yaml`, `state.json`, and each event remain their
+payload-envelope versions. A directory or payload version newer than this build
+fails closed with the found and supported versions plus the required binary.
+See [`docs/guides/schema-migrations.md`](../../docs/guides/schema-migrations.md)
+for the compatibility, backup, and rollback policy.
 
 ## The instance journal (`scheduler/events.jsonl`)
 

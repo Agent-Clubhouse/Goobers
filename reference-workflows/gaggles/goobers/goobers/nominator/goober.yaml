@@ -35,3 +35,4 @@ spec:
   workflows:
     - work-nomination
     - quality-sprint
+    - test-suite-quality

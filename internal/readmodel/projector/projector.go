@@ -486,7 +486,7 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 		if errors.Is(err, os.ErrNotExist) {
 			return Projection{}, false, nil
 		}
-		return Projection{}, false, fmt.Errorf("projector: open journal for %s: %w", runID, err)
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {

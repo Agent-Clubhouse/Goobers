@@ -124,6 +124,7 @@ Every run — local or cloud — produces:
 
 ```
 gaggles/<gaggle>/runs/<run-id>/
+  schema.json       # journal schema version + minimum compatible binary
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,
@@ -437,9 +438,9 @@ and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop: the `reference-workflows/` reference config
-now defines **nine** workflows: backlog curation, docs updater, implementation,
-merge review, PR remediation, quality sprint, self update, Tutor, and work
-nomination. Together they provide the canonical patterns for curating and
+now defines **ten** workflows: backlog curation, docs updater, implementation,
+merge review, PR remediation, quality sprint, self update, test-suite quality,
+Tutor, and work nomination. Together they provide the canonical patterns for curating and
 implementing work, reviewing, remediating, and **merging PRs autonomously**, and
 maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in

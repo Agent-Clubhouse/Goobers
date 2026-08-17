@@ -39,6 +39,7 @@ The shipped tree loads **10 goobers and 10 workflows**.
 | `quality-lead` | Collates the quality sprint's parallel findings. |
 | `quality-researcher` | Audits one quality lens without write authority. |
 | `reviewer` | Produces independent implementation and PR-lifecycle verdicts. |
+| `test-quality-analyst` | Classifies recurring test failures and drafts bounded fix or quarantine findings. |
 
 | Workflow | Purpose |
 |---|---|
@@ -50,6 +51,7 @@ The shipped tree loads **10 goobers and 10 workflows**.
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
 | `quality-sprint` | Runs parallel quality audits and nominates findings. |
 | `self-update` | Stages an operator-requested Goobers binary update. |
+| `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
 | `tutor` | Diagnoses run evidence and proposes confined config changes. |
 | `work-nomination` | Nominates repository work from telemetry and repo signals. |
 
@@ -246,9 +248,11 @@ After the canonical quickstart has created and validated a regular instance:
 - **PR lifecycle:** `merge-review` reviews and may land eligible managed PRs;
   `pr-remediation` rebases or fixes PRs that need work.
 - **Maintenance:** `docs-updater` handles documentation signals,
-  `quality-sprint` nominates findings from parallel audits, `tutor` proposes
-  confined config improvements, and `self-update` stages requested binary
-  updates. Their trigger and budget details live in their workflow YAML.
+  `quality-sprint` nominates findings from parallel audits,
+  `test-suite-quality` nominates recurring flaky-test fixes or bounded
+  quarantines, `tutor` proposes confined config improvements, and
+  `self-update` stages requested binary updates. Their trigger and budget
+  details live in their workflow YAML.
 
 ## Observing a run
 
