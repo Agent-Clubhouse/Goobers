@@ -207,17 +207,20 @@ type OperatorRunSummary struct {
 	PotentialBlockers  []string             `json:"potentialBlockers"`
 }
 
+// OperatorIssue identifies the claimed work item displayed in status.
 type OperatorIssue struct {
 	Number string `json:"number"`
 	Title  string `json:"title,omitempty"`
 }
 
+// OperatorClaim describes the local lease and provider marker relationship.
 type OperatorClaim struct {
 	LeaseStatus    string     `json:"leaseStatus"`
 	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
 	ProviderMarker string     `json:"providerMarker"`
 }
 
+// OperatorReview summarizes the latest review verdict driving a repass.
 type OperatorReview struct {
 	Verdict   string `json:"verdict"`
 	Rationale string `json:"rationale,omitempty"`
