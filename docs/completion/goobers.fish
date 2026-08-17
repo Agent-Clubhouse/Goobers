@@ -108,7 +108,7 @@ complete -c goobers -n '__fish_seen_subcommand_from up' -l skip-preflight -d 'St
 complete -c goobers -n '__fish_seen_subcommand_from up' -l watch-config -d 'Experimental: hot-reload config edits'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l drain-timeout -r -d 'Force shutdown after this graceful-drain duration'
 complete -c goobers -n '__fish_seen_subcommand_from up' -l cleanup-spans-only-runs -d 'Delete reported legacy spans-only run directories at startup'
-complete -c goobers -n '__fish_seen_subcommand_from up' -l disable-read-model-reads -d 'Read-model rollback: force journal-derived list paths for this run'
+complete -c goobers -n '__fish_seen_subcommand_from up' -l disable-read-model-reads -d 'Read-model rollback: force authoritative journal scans for this run'
 complete -c goobers -n '__fish_seen_subcommand_from self-update' -l policy -r -a 'manual on-release on-main' -d 'Update policy'
 complete -c goobers -n '__fish_seen_subcommand_from self-update' -l branch -r -d 'Branch tracked by on-main'
 complete -c goobers -n '__fish_seen_subcommand_from self-update' -l target -r -d 'Manual release tag'

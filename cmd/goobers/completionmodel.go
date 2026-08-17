@@ -155,7 +155,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
-		{name: "disable-read-model-reads", desc: "Read-model rollback: force journal-derived list paths for this run"},
+		{name: "disable-read-model-reads", desc: "Read-model rollback: force authoritative journal scans for this run"},
 	},
 	"fix": {
 		{name: "to", takesArg: true, desc: "Target DSL version"},
