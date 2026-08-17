@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -431,6 +433,63 @@ func insertCICheckFailures(ctx context.Context, tx *sql.Tx, runDir, runID string
 					runID, ev.Seq, ev.Stage, name, ref.Digest, formatTime(ev.Time)); err != nil {
 					return fmt.Errorf("rollup: insert CI check failure %q for run %s: %w", name, runID, err)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT run_id FROM runs`)
+	if err != nil {
+		return fmt.Errorf("query existing runs: %w", err)
+	}
+	runIDs := make(map[string]bool)
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan existing run: %w", err)
+		}
+		runIDs[runID] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate existing runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close existing runs: %w", err)
+	}
+	if len(runIDs) == 0 {
+		return nil
+	}
+
+	runsRoots := []string{filepath.Join(instanceRoot, "runs")}
+	gaggles, err := os.ReadDir(filepath.Join(instanceRoot, "gaggles"))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read gaggle roots: %w", err)
+	}
+	for _, gaggle := range gaggles {
+		if gaggle.IsDir() {
+			runsRoots = append(runsRoots, filepath.Join(instanceRoot, "gaggles", gaggle.Name(), "runs"))
+		}
+	}
+	for _, runsRoot := range runsRoots {
+		dirs, err := runDirs(runsRoot)
+		if err != nil {
+			return err
+		}
+		for _, runDir := range dirs {
+			runID := filepath.Base(runDir)
+			if !runIDs[runID] {
+				continue
+			}
+			events, err := readEvents(runDir)
+			if err != nil {
+				return err
+			}
+			if err := insertCICheckFailures(ctx, tx, runDir, runID, events); err != nil {
+				return err
 			}
 		}
 	}

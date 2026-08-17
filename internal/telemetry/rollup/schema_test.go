@@ -3,11 +3,13 @@ package rollup
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // migrationPrefixDigest hashes an ordered slice of migration statements so a
@@ -69,6 +71,60 @@ func TestMigrateOnceRefusesANewerSchema(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "newer than this build") {
 		t.Errorf("error = %v; want a clear newer-schema refusal", err)
 	}
+}
+
+func TestCICheckFailureMigrationBackfillsExistingRunJournals(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "gaggles", "example", "runs")
+	seedCICheckFailureRun(t, runsDir, strings.Repeat("a", 32), "unit-tests", fixtureStart)
+	seedCICheckFailureRun(t, runsDir, strings.Repeat("b", 32), "unit-tests", fixtureStart.Add(time.Hour))
+
+	path := filepath.Join(tmp, "telemetry.db")
+	legacy, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create legacy schema metadata: %v", err)
+	}
+	for i := 0; i < 18; i++ {
+		if _, err := legacy.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", i+1, err)
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO schema_meta (version) VALUES (18)`); err != nil {
+		t.Fatalf("set legacy schema version: %v", err)
+	}
+	for i, runID := range []string{strings.Repeat("a", 32), strings.Repeat("b", 32)} {
+		if _, err := legacy.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
+			VALUES (?, 'implementation', 1, 'example', ?)`,
+			runID, fixtureStart.Add(time.Duration(i)*time.Hour).Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("insert legacy run %s: %v", runID, err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade Open: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	findings, err := upgraded.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect after upgrade: %v", err)
+	}
+	for _, finding := range findings {
+		if finding.Kind == FindingCICheckFailure && finding.Subject == "unit-tests" {
+			if finding.Metrics["distinctRuns"] != 2 {
+				t.Fatalf("distinct runs = %v, want 2", finding.Metrics["distinctRuns"])
+			}
+			return
+		}
+	}
+	t.Fatalf("backfilled recurring CI failure not found: %+v", findings)
 }
 
 // TestIngestRefusesUnknownRunSchema pins #2054 on the ingest side: a run.yaml
