@@ -1569,6 +1569,7 @@ func summarizeRunForStage(
 	}
 	var lastHeartbeat time.Time
 	providerClaimRecorded := false
+	claimedIssueFound := false
 	seenStages := make(map[string]struct{})
 	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
@@ -1615,11 +1616,18 @@ func summarizeRunForStage(
 				currentStage = ""
 			}
 			lastStageStatus[event.Stage] = event.Status
-			if title, ok := event.Outputs["title"].(string); ok && title != "" {
+			if !claimedIssueFound {
+				id, idOK := event.Outputs["id"].(string)
+				title, titleOK := event.Outputs["title"].(string)
+				if !idOK || !titleOK || id == "" || title == "" {
+					break
+				}
 				if operator.Issue == nil {
 					operator.Issue = &OperatorIssue{}
 				}
+				operator.Issue.Number = id
 				operator.Issue.Title = title
+				claimedIssueFound = true
 			}
 		case journal.EventGateStarted:
 			currentStage = event.Gate
@@ -1659,7 +1667,9 @@ func summarizeRunForStage(
 				if operator.Issue == nil {
 					operator.Issue = &OperatorIssue{}
 				}
-				operator.Issue.Number = event.ExternalRef.ID
+				if !claimedIssueFound {
+					operator.Issue.Number = event.ExternalRef.ID
+				}
 				operation, _ := event.Runner["operation"].(string)
 				providerClaimRecorded = providerClaimRecorded || operation == "claim"
 			case "pr":

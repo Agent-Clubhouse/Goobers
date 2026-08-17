@@ -848,13 +848,14 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 }
 
 func truncateStatusCell(value string, width int) string {
-	if len(value) <= width {
+	runes := []rune(value)
+	if len(runes) <= width {
 		return value
 	}
 	if width <= 3 {
-		return value[:width]
+		return string(runes[:width])
 	}
-	return value[:width-3] + "..."
+	return string(runes[:width-3]) + "..."
 }
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {

@@ -26,7 +26,15 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	clock.now = startedAt.Add(time.Minute)
 	if err := run.Append(journal.Event{
 		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
-		Outputs: map[string]any{"title": "Operator status cannot answer run progress"},
+		Outputs: map[string]any{
+			"id": "3088", "title": "Operator status cannot answer run progress",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "open-pr", Status: "success",
+		Outputs: map[string]any{"id": "4001", "title": "PR title must not replace issue title"},
 	}); err != nil {
 		t.Fatal(err)
 	}

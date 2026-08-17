@@ -280,7 +280,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	row.TriggerKind = string(identity.Trigger.Kind)
 	row.TriggerRef = identity.Trigger.Ref
 	row.StartedAt = identity.StartedAt
-	if identity.Trigger.Kind == journal.TriggerItem {
+	if identity.Trigger.Kind == journal.TriggerItem && row.Operator.IssueTitle == "" {
 		row.Operator.IssueNumber = identity.Trigger.Ref
 	}
 
@@ -397,8 +397,13 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
-			if title, ok := event.Outputs["title"].(string); ok && title != "" {
-				row.Operator.IssueTitle = title
+			if row.Operator.IssueTitle == "" {
+				id, idOK := event.Outputs["id"].(string)
+				title, titleOK := event.Outputs["title"].(string)
+				if idOK && titleOK && id != "" && title != "" {
+					row.Operator.IssueNumber = id
+					row.Operator.IssueTitle = title
+				}
 			}
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
@@ -428,7 +433,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			switch event.ExternalRef.Kind {
 			case "issue":
-				row.Operator.IssueNumber = event.ExternalRef.ID
+				if row.Operator.IssueTitle == "" {
+					row.Operator.IssueNumber = event.ExternalRef.ID
+				}
 				operation, _ := event.Runner["operation"].(string)
 				row.Operator.ProviderClaimRecorded =
 					row.Operator.ProviderClaimRecorded || operation == "claim"

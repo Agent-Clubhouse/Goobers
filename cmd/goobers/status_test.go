@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -801,6 +802,29 @@ func TestRenderStatusAnswersLivenessAndPRTrajectory(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status = %q, want %q", stdout.String(), want)
 		}
+	}
+}
+
+func TestTruncateStatusCellPreservesUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "no truncation", value: "修正ログイン", width: 6, want: "修正ログイン"},
+		{name: "ellipsis", value: "修正ログイン", width: 5, want: "修正..."},
+		{name: "narrow", value: "修正ログイン", width: 2, want: "修正"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateStatusCell(tc.value, tc.width)
+			if got != tc.want {
+				t.Fatalf("truncateStatusCell(%q, %d) = %q, want %q", tc.value, tc.width, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateStatusCell(%q, %d) returned invalid UTF-8", tc.value, tc.width)
+			}
+		})
 	}
 }
 

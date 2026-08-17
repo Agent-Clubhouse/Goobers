@@ -145,6 +145,39 @@ func TestProjectionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
+	identity := testIdentity()
+	identity.Trigger = journal.Trigger{Kind: journal.TriggerItem, Ref: "trigger-item"}
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "prepare", "success"
+			e.Outputs = map[string]any{"title": "Preparation title"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "query-backlog", "success"
+			e.Outputs = map[string]any{"id": "3088", "title": "Claimed issue title"}
+		}),
+		ev(3, 3*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "open-pr", "success"
+			e.Outputs = map[string]any{"id": "4001", "title": "Pull request title"}
+		}),
+		ev(4, 4*time.Second, journal.EventRefTouched, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Kind: "issue", ID: "other-issue"}
+		}),
+	}
+
+	whole := ProjectRun(identity, Projection{}, events)
+	if got := whole.Run.Operator; got.IssueNumber != "3088" || got.IssueTitle != "Claimed issue title" {
+		t.Fatalf("operator issue = #%s %q, want #3088 claimed issue title", got.IssueNumber, got.IssueTitle)
+	}
+
+	first := ProjectRun(identity, Projection{}, events[:2])
+	incremental := ProjectRun(identity, first, events[2:])
+	if !reflect.DeepEqual(incremental.Run.Operator, whole.Run.Operator) {
+		t.Fatalf("incremental operator = %+v, whole = %+v", incremental.Run.Operator, whole.Run.Operator)
+	}
+}
+
 // TestProjectionMatchesTheRunContract checks the projected values against what
 // the read contract says a run summary means.
 func TestProjectionMatchesTheRunContract(t *testing.T) {
