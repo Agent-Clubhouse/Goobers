@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -300,43 +299,25 @@ func TestAppendObserverReceivesEveryDurableSequence(t *testing.T) {
 	}
 }
 
-// TestForwardCompat: a reader tolerates events written by a newer schema
-// version — unknown envelope version, unknown event type, and extra fields all
-// parse without error, seeding the V1 upgrade story (#33).
-func TestForwardCompat(t *testing.T) {
+func TestFutureEventSchemaFailsClosed(t *testing.T) {
 	run, root := newRun(t)
 	_ = run.Close()
 
-	// Hand-append a "future" event with an unknown schema, unknown type, and an
-	// extra field the current build has never seen.
-	future := map[string]any{
-		"schema":      "goobers.dev/journal/event/v2",
-		"seq":         99,
-		"type":        "quantum.entangled",
-		"branch":      0,
-		"time":        "2027-01-01T00:00:00Z",
-		"newField":    "value the reader has never seen",
-		"nestedThing": map[string]any{"a": 1},
-	}
-	line, _ := json.Marshal(future)
 	path := filepath.Join(root, testIdentity().RunID, fileEvents)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _ = f.Write(append(line, '\n'))
+	_, _ = f.WriteString(`{"schema":"goobers.dev/journal/event/v2","seq":99,"type":"quantum.entangled","branch":0,"time":"2027-01-01T00:00:00Z"}` + "\n")
 	_ = f.Close()
 
-	rd, _ := OpenRead(filepath.Join(root, testIdentity().RunID))
-	events, err := rd.Events()
-	if err != nil {
-		t.Fatalf("reader rejected future event: %v", err)
+	_, err = OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err == nil {
+		t.Fatal("OpenRead accepted a newer event schema")
 	}
-	last := events[len(events)-1]
-	if last.Seq != 99 || last.Type != "quantum.entangled" {
-		t.Errorf("future event not parsed: %+v", last)
-	}
-	if last.KnownSchema() {
-		t.Errorf("future schema should be reported as unknown")
+	for _, want := range []string{"event schema", "event/v2", "event/v1", "minimum binary"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("OpenRead error %q does not contain %q", err, want)
+		}
 	}
 }

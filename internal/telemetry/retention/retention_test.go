@@ -3,10 +3,12 @@ package retention
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +168,112 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 		metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(firstPROpenAt) {
 		t.Fatalf("TimeToFirstPR after prune = %#v", metric)
 	}
+}
+
+func TestPruneRejectsSchemaOnlyFutureJournal(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	stagedRun := createRetentionRun(t, layout, "staged-run", now.Add(-48*time.Hour), "terminal")
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), stagedRun); err != nil {
+		t.Fatal(err)
+	}
+	staged := stagedRunDir(stagedRun)
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(stagedRun, staged); err != nil {
+		t.Fatal(err)
+	}
+
+	futureDir := filepath.Join(layout.RunsDir(), "future")
+	if err := os.MkdirAll(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Prune(
+		layout,
+		db,
+		Policy{Window: 24 * time.Hour, MaxRuns: 500},
+		Options{Now: now},
+	)
+	if err == nil {
+		t.Fatal("Prune skipped a schema-only future journal")
+	}
+	for _, want := range []string{"version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Prune error %q does not contain %q", err, want)
+		}
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("Prune removed staged journal before rejecting future schema: %v", err)
+	}
+	assertRollupRunIDs(t, db, "staged-run")
+}
+
+func TestPrunePreflightsAllStagedJournalSchemas(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	runDir := createRetentionRun(t, layout, "a-staged", now.Add(-48*time.Hour), "terminal")
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+	staged := stagedRunDir(runDir)
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(runDir, staged); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(filepath.Dir(staged), "z-future")
+	if err := os.MkdirAll(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Prune(
+		layout,
+		db,
+		Policy{Window: 24 * time.Hour, MaxRuns: 500},
+		Options{Now: now},
+	)
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("Prune error = %v, want unsupported staged schema", err)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("Prune removed earlier staged journal during preflight: %v", err)
+	}
+	assertRollupRunIDs(t, db, "a-staged")
 }
 
 func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {

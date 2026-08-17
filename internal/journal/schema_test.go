@@ -130,6 +130,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 	if err := v.ValidateJSON("journal-run.schema.json", jb); err != nil {
 		t.Errorf("run.yaml fails schema: %v\n%s", err, jb)
 	}
+
+	// schema.json validates against the directory metadata schema.
+	sb, err := os.ReadFile(filepath.Join(dir, fileSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.ValidateJSON("journal-schema.schema.json", sb); err != nil {
+		t.Errorf("schema.json fails schema: %v\n%s", err, sb)
+	}
 }
 
 // TestSchemaRejectsMalformedEvent guards that the schema actually constrains —
@@ -195,14 +204,10 @@ func TestIdentityRefusesUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := OpenRead(dir)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	if _, err := reader.Identity(); err == nil {
-		t.Fatal("Identity() accepted an unknown schema version instead of refusing it")
-	} else if !strings.Contains(err.Error(), "unknown schema") {
-		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	if _, err := OpenRead(dir); err == nil {
+		t.Fatal("OpenRead accepted an unknown run schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}
 }
 
@@ -229,14 +234,10 @@ func TestStateRefusesUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reader, err := OpenRead(dir)
-	if err != nil {
-		t.Fatalf("OpenRead: %v", err)
-	}
-	if _, err := reader.State(); err == nil {
-		t.Fatal("State() accepted an unknown schema version instead of refusing it")
-	} else if !strings.Contains(err.Error(), "unknown schema") {
-		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	if _, err := OpenRead(dir); err == nil {
+		t.Fatal("OpenRead accepted an unknown state schema version instead of refusing it")
+	} else if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}
 }
 

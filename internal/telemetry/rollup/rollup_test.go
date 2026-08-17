@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -509,6 +510,62 @@ func TestRebuildIsReproducible(t *testing.T) {
 	}
 }
 
+func TestRebuildRejectsSchemaOnlyFutureJournal(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	validDir := writeMinimalFixtureRun(t, runsDir, fixtureRunID, fixtureStart)
+	dbPath := filepath.Join(tmp, "telemetry.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.IngestRun(context.Background(), validDir); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDB(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	futureDir := filepath.Join(runsDir, "future")
+	if err := os.MkdirAll(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = Rebuild(
+		context.Background(),
+		dbPath,
+		runsDir,
+		filepath.Join(tmp, "scheduler"),
+	)
+	if err == nil {
+		t.Fatal("Rebuild skipped a schema-only future journal")
+	}
+	for _, want := range []string{"version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Rebuild error %q does not contain %q", err, want)
+		}
+	}
+	preserved, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open preserved rollup: %v", err)
+	}
+	defer func() { _ = preserved.Close() }()
+	if after := snapshotDB(t, preserved); after != before {
+		t.Fatalf("Rebuild mutated the existing rollup before rejecting future schema:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 // snapshotDB renders every table's query results (across both fixture runs)
 // as deterministic, ordered JSON — the basis for the byte-identical
 // comparison. Queries are already ordered by stable keys (see query.go).
@@ -695,6 +752,69 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 	}
 	if version != len(migrations) {
 		t.Fatalf("schema_meta.version = %d, want %d", version, len(migrations))
+	}
+}
+
+func TestOpenRejectsUnsupportedSchemaVersions(t *testing.T) {
+	tests := []struct {
+		name    string
+		version int
+		want    []string
+	}{
+		{
+			name:    "negative",
+			version: -1,
+			want:    []string{"schema version -1 is invalid", "supported versions are 0 through", "restore telemetry.db from backup"},
+		},
+		{
+			name:    "newer",
+			version: len(migrations) + 1,
+			want:    []string{"is newer than supported version", "upgrade Goobers", "telemetry schema version"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "telemetry.db")
+			fixture, err := sql.Open("sqlite", path+dsnParams)
+			if err != nil {
+				t.Fatalf("open schema fixture: %v", err)
+			}
+			if _, err := fixture.Exec(`
+				CREATE TABLE schema_meta (version INTEGER NOT NULL);
+				INSERT INTO schema_meta (version) VALUES (?)`, tt.version); err != nil {
+				_ = fixture.Close()
+				t.Fatalf("write schema fixture: %v", err)
+			}
+			if err := fixture.Close(); err != nil {
+				t.Fatalf("close schema fixture: %v", err)
+			}
+
+			db, err := Open(path)
+			if db != nil {
+				_ = db.Close()
+			}
+			if err == nil {
+				t.Fatalf("Open accepted unsupported schema version %d", tt.version)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Open error %q does not contain %q", err, want)
+				}
+			}
+
+			fixture, err = sql.Open("sqlite", path+dsnParams)
+			if err != nil {
+				t.Fatalf("reopen schema fixture: %v", err)
+			}
+			defer func() { _ = fixture.Close() }()
+			var got int
+			if err := fixture.QueryRow(`SELECT version FROM schema_meta`).Scan(&got); err != nil {
+				t.Fatalf("read rejected schema fixture: %v", err)
+			}
+			if got != tt.version {
+				t.Fatalf("schema version after rejected Open = %d, want %d", got, tt.version)
+			}
+		})
 	}
 }
 

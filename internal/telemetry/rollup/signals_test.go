@@ -352,6 +352,29 @@ func TestRebuildIngestsSchedulerLog(t *testing.T) {
 	}
 }
 
+func TestIngestSchedulerLogRejectsUnsupportedEventSchema(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	future := strings.Replace(instanceEventLine(1, "future.event", `"reason":"future"`), eventSchema, "goobers.dev/journal/event/v2", 1)
+	if err := writeInstanceEvents(t, schedulerDir, []string{future}); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err == nil {
+		t.Fatal("IngestSchedulerLog accepted an unsupported event schema")
+	} else if !strings.Contains(err.Error(), "event/v2") || !strings.Contains(err.Error(), eventSchema) {
+		t.Fatalf("IngestSchedulerLog error = %q, want found and supported schemas", err)
+	}
+	events, err := db.SchedulerEvents(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("schema refusal left %d scheduler rows behind", len(events))
+	}
+}
+
 // instanceEventLine builds one raw scheduler/events.jsonl line.
 func instanceEventLine(seq int, typ, extraFields string) string {
 	ts := fixtureStart.Add(time.Duration(seq) * time.Second).UTC().Format(time.RFC3339Nano)

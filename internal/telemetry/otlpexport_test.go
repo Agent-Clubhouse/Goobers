@@ -105,10 +105,8 @@ func TestExportJournalOTLPRejectsInvalidJournalData(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runsDir := t.TempDir()
+			writeTestRunMarker(t, runsDir, "fixture-run")
 			path := filepath.Join(runsDir, "fixture-run", spansDirName, otlpFileName)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
 			if test.contents != nil {
 				if err := os.WriteFile(path, []byte(*test.contents), 0o600); err != nil {
 					t.Fatal(err)
@@ -126,6 +124,33 @@ func TestExportJournalOTLPRejectsInvalidJournalData(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestExportJournalOTLPRejectsFutureJournalSchema(t *testing.T) {
+	since := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC)
+	const runID = "44444444444444444444444444444444"
+	runsDir := t.TempDir()
+	writeTestRunMarker(t, runsDir, runID)
+	if err := NewJournalSpanExporter(runsDir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{
+		exportFixtureSpan(t, runID, "0000000000000001", "selected", since),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFutureJournalSchema(t, filepath.Join(runsDir, runID))
+
+	var out bytes.Buffer
+	err := ExportJournalOTLP([]string{runsDir}, since, time.Time{}, &out)
+	if err == nil {
+		t.Fatal("OTLP export accepted a future journal schema")
+	}
+	for _, want := range []string{"version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("OTLP export error %q does not contain %q", err, want)
+		}
+	}
+	if out.Len() != 0 {
+		t.Fatalf("OTLP export wrote %d bytes before rejecting future schema", out.Len())
 	}
 }
 

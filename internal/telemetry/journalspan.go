@@ -105,6 +105,7 @@ func (e *JournalSpanExporter) Shutdown(context.Context) error { return nil }
 
 func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOnlySpan) error {
 	runsDir := e.runsDir
+	admitted := false
 	if e.perGaggleRoot != "" {
 		gaggle, err := spanGaggle(spans)
 		if err != nil {
@@ -112,22 +113,23 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 		}
 		runsDir = filepath.Join(e.perGaggleRoot, "gaggles", gaggle, "runs")
 		legacyRunsDir := filepath.Join(e.perGaggleRoot, "runs")
-		if info, err := os.Stat(filepath.Join(legacyRunsDir, traceID, "run.yaml")); err == nil && info.Mode().IsRegular() {
+		legacyRunDir := filepath.Join(legacyRunsDir, traceID)
+		if admitted, err = admitRunJournal(legacyRunDir, traceID); err != nil {
+			return err
+		} else if admitted {
 			runsDir = legacyRunsDir
-		} else if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("telemetry: inspect retained journal for run %s: %w", traceID, err)
 		}
 	}
 	runDir := filepath.Join(runsDir, traceID)
-	info, err := os.Stat(filepath.Join(runDir, "run.yaml"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("telemetry: inspect journal for run %s: %w", traceID, err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("telemetry: run %s journal identity is not a regular file", traceID)
+	if !admitted {
+		var err error
+		admitted, err = admitRunJournal(runDir, traceID)
+		if err != nil {
+			return err
+		}
+		if !admitted {
+			return nil
+		}
 	}
 	dir := filepath.Join(runDir, spansDirName)
 	otlpRecord, err := e.marshalOTLP(spans)
@@ -149,6 +151,16 @@ func (e *JournalSpanExporter) writeGroup(traceID string, spans []sdktrace.ReadOn
 		return err
 	}
 	return nil
+}
+
+func admitRunJournal(runDir, runID string) (bool, error) {
+	if _, err := journal.OpenRead(runDir); err != nil {
+		if errors.Is(err, journal.ErrNotRunDirectory) {
+			return false, nil
+		}
+		return false, fmt.Errorf("telemetry: open journal for run %s: %w", runID, err)
+	}
+	return true, nil
 }
 
 func (e *JournalSpanExporter) writeSpans(dir, owner string, spans []sdktrace.ReadOnlySpan) error {

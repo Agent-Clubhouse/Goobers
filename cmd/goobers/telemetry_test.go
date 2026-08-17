@@ -588,11 +588,20 @@ func TestTelemetryExportClassifiesStagingWriteFailureAsOutputError(t *testing.T)
 func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t *testing.T) {
 	root := initDemo(t)
 	runsDir := instance.NewLayout(root).RunsDir()
-	validPath := filepath.Join(runsDir, "a-valid", "spans", "otlp.jsonl")
-	corruptPath := filepath.Join(runsDir, "b-corrupt", "spans", "otlp.jsonl")
-	if err := os.MkdirAll(filepath.Dir(validPath), 0o755); err != nil {
-		t.Fatal(err)
+	createRun := func(runID string) string {
+		t.Helper()
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "fixture", WorkflowVersion: 1, Gaggle: "example",
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(runsDir, runID, "spans", "otlp.jsonl")
 	}
+	validPath := createRun("a-valid")
 	valid := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"11111111111111111111111111111111","spanId":"2222222222222222","name":"valid","startTimeUnixNano":"1784656800000000000","endTimeUnixNano":"1784656801000000000"}]}]}]}` + "\n"
 	if err := os.WriteFile(validPath, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
@@ -603,9 +612,7 @@ func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	corruptPath := createRun("b-corrupt")
 	if err := os.WriteFile(corruptPath, []byte("{\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

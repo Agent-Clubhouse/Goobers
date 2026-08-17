@@ -1259,7 +1259,10 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			dir := filepath.Join(runsDir, e.Name())
 			rd, err := journal.OpenRead(dir)
 			if err != nil {
-				continue // not a run directory
+				if errors.Is(err, journal.ErrNotRunDirectory) {
+					continue
+				}
+				return resumed, warned, fmt.Errorf("open run journal %q: %w", e.Name(), err)
 			}
 			id, err := rd.Identity()
 			if err != nil {

@@ -1,14 +1,47 @@
 package retention
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
+
+func TestPruneOrphansRejectsSchemaOnlyFutureJournal(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	futureDir := filepath.Join(layout.RunsDir(), "future")
+	if err := os.MkdirAll(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setTreeModTime(t, futureDir, now.Add(-48*time.Hour))
+
+	_, err = PruneOrphans(layout, OrphanOptions{
+		Now: now, MinAge: MinimumOrphanAge, Delete: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("PruneOrphans error = %v, want unsupported schema", err)
+	}
+	if _, err := os.Stat(futureDir); err != nil {
+		t.Fatalf("PruneOrphans removed schema-only future journal: %v", err)
+	}
+}
 
 func TestPruneOrphansReportsThenDeletesOnlyOldMissingJournals(t *testing.T) {
 	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)

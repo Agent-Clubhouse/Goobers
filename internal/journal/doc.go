@@ -6,6 +6,7 @@
 // Layout, per run:
 //
 //	runs/<run-id>/
+//	  schema.json    # directory schema version and minimum writer version
 //	  run.yaml       # pinned identity: workflow name+version, gaggle, trigger, input refs
 //	  state.json     # current machine state; atomically replaced checkpoint (derived)
 //	  events.jsonl   # append-only event journal; every event carries a monotonic seq
@@ -17,6 +18,9 @@
 // the tail of events.jsonl and detects/repairs a torn final write. The same
 // on-disk shape is the projection target for the tier-3 Temporal runner, so this
 // package is the single definition of the format both runners emit (§3.3).
+// OpenRead owns forward migration of legacy journals. It first writes a sibling
+// .bak copy beside the runs root, then advances schema.json only after a
+// migration succeeds; unsupported newer versions fail closed.
 //
 // Two rules are load-bearing and enforced here:
 //

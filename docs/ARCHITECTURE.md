@@ -124,6 +124,7 @@ Every run — local or cloud — produces:
 
 ```
 gaggles/<gaggle>/runs/<run-id>/
+  schema.json       # journal schema version + minimum compatible binary
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,

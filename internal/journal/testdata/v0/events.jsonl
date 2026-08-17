@@ -1,0 +1,2 @@
+{"schema":"goobers.dev/journal/event/v1","seq":1,"type":"run.started","branch":0,"time":"2026-01-01T00:00:00Z","status":"running"}
+{"schema":"goobers.dev/journal/event/v1","seq":2,"type":"run.finished","branch":0,"time":"2026-01-01T00:00:01Z","status":"completed"}

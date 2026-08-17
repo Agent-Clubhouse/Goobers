@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -36,7 +37,22 @@ func Rebuild(ctx context.Context, dbPath, runsDir, schedulerDir string) error {
 // context.Background() at each statement inside the loop, which compiled and ran
 // but left the whole rebuild uncancellable.
 func RebuildAll(ctx context.Context, dbPath string, runsDirs []string, schedulerDir string) error {
+	maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runsDirs)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = maintenanceLocks.Release() }()
+
 	firstSuccess := existingTimeToFirstPR(ctx, dbPath)
+	runDirectories, err := rebuildRunDirs(runsDirs)
+	if err != nil {
+		return err
+	}
+	for _, dir := range runDirectories {
+		if _, err := journal.OpenRead(dir); err != nil {
+			return fmt.Errorf("rollup: admit %s: %w", dir, err)
+		}
+	}
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
@@ -56,23 +72,29 @@ func RebuildAll(ctx context.Context, dbPath string, runsDirs []string, scheduler
 	); err != nil {
 		return err
 	}
-	roots := append([]string(nil), runsDirs...)
-	sort.Strings(roots)
-	for _, runsDir := range roots {
-		dirs, err := runDirs(runsDir)
-		if err != nil {
-			return err
-		}
-		for _, dir := range dirs {
-			if err := db.IngestRun(ctx, dir); err != nil {
-				return fmt.Errorf("rollup: ingest %s: %w", dir, err)
-			}
+	for _, dir := range runDirectories {
+		if err := db.IngestRun(ctx, dir); err != nil {
+			return fmt.Errorf("rollup: ingest %s: %w", dir, err)
 		}
 	}
 	if err := db.IngestSchedulerLog(ctx, schedulerDir); err != nil {
 		return fmt.Errorf("rollup: ingest scheduler log %s: %w", schedulerDir, err)
 	}
 	return nil
+}
+
+func rebuildRunDirs(runsDirs []string) ([]string, error) {
+	roots := append([]string(nil), runsDirs...)
+	sort.Strings(roots)
+	var directories []string
+	for _, runsDir := range roots {
+		dirs, err := runDirs(runsDir)
+		if err != nil {
+			return nil, err
+		}
+		directories = append(directories, dirs...)
+	}
+	return directories, nil
 }
 
 // existingTimeToFirstPR is best-effort so an unreadable projection cannot
@@ -104,9 +126,9 @@ func timeOrZero(value *time.Time) time.Time {
 	return *value
 }
 
-// runDirs lists the immediate subdirectories of runsDir that look like a run
-// (contain run.yaml), sorted by name for deterministic processing order. A
-// missing runsDir is not an error — it means no runs exist yet.
+// runDirs lists the immediate subdirectories of runsDir that contain either a
+// current schema marker or the legacy run marker, sorted by name for
+// deterministic processing order. A missing runsDir is not an error.
 func runDirs(runsDir string) ([]string, error) {
 	entries, err := os.ReadDir(runsDir)
 	if os.IsNotExist(err) {
@@ -121,7 +143,7 @@ func runDirs(runsDir string) ([]string, error) {
 			continue
 		}
 		dir := filepath.Join(runsDir, e.Name())
-		if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
+		if !journal.Recorded(dir) {
 			continue
 		}
 		dirs = append(dirs, dir)
