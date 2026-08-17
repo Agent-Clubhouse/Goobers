@@ -557,6 +557,77 @@ func TestPrepareDashboardAPIWaitsForConcurrentlyStartingDaemon(t *testing.T) {
 	}
 }
 
+func TestPrepareDashboardAPIWaitsForLockReacquisitionDuringStartup(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockReleased := make(chan struct{})
+	var releaseOnce sync.Once
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		releaseOnce.Do(func() {
+			release()
+			close(lockReleased)
+		})
+		_ = json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+			Healthy:       true,
+		})
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		api dashboardAPI
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 2*time.Second)
+		done <- result{api: api, err: err}
+	}()
+	select {
+	case <-lockReleased:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard did not probe the first daemon")
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("dashboard selected a mode after the daemon lock disappeared: mode=%q err=%v", result.api.mode, result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	releaseAgain, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseAgain()
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.api.mode != dashboardModeDaemon {
+			t.Fatalf("mode = %q, want daemon", result.api.mode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dashboard did not attach after daemon lock reacquisition")
+	}
+}
+
 func TestPrepareDashboardAPIWaitForDaemonTimesOut(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
