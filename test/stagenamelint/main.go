@@ -46,7 +46,7 @@ var exceptions = []exception{
 
 	// Existing telemetry projections still infer roles from shipped names.
 	// #2494 tracks replacing these with a config-sourced workflow role marker.
-	{Path: "internal/telemetry/rollup/aggregates.go", Line: 418, Value: "backlog-curation", Reason: "#2494"},
+	{Path: "internal/telemetry/rollup/aggregates.go", Line: 419, Value: "backlog-curation", Reason: "#2494"},
 	{Path: "internal/telemetry/rollup/curation.go", Line: 172, Value: "backlog-curation", Reason: "#2494"},
 	{Path: "internal/telemetry/rollup/ingest.go", Line: 539, Value: "backlog-curation", Reason: "#2494"},
 	{Path: "internal/telemetry/rollup/ingest.go", Line: 550, Value: "implementation", Reason: "#2494"},
