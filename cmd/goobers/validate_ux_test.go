@@ -704,6 +704,38 @@ func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
 	}
 }
 
+func TestValidateWarnsOnUnpartitionedGaggleWithSibling(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		`  isolation:
+    namespace: gaggle-example
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		"spec.requireLabels is empty",
+		`no label partition from declared sibling "Billing team"`,
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestValidateNoWarningOnDisjointSiblingLabels(t *testing.T) {
 	root := initDeterministicDemo(t)
 	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
