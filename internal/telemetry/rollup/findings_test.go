@@ -60,6 +60,11 @@ func seedGateRun(t *testing.T, runsDir, runID, workflow, verdict string, escalat
 
 func seedCICheckFailureRun(t *testing.T, runsDir, runID, checkName string, startedAt time.Time) {
 	t.Helper()
+	seedCICheckFailurePollsRun(t, runsDir, runID, checkName, 1, startedAt)
+}
+
+func seedCICheckFailurePollsRun(t *testing.T, runsDir, runID, checkName string, polls int, startedAt time.Time) {
+	t.Helper()
 	dir := filepath.Join(runsDir, runID)
 	mustMkdirAll(t, dir)
 	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(
@@ -82,13 +87,19 @@ func seedCICheckFailureRun(t *testing.T, runsDir, runID, checkName string, start
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := []string{
-		eventLine(1, startedAt, `"type":"run.started"`),
-		eventLine(2, startedAt.Add(time.Second), `"type":"stage.started","stage":"ci-poll","attempt":1`),
-		eventLine(3, startedAt.Add(2*time.Second),
-			`"type":"stage.finished","stage":"ci-poll","attempt":1,"status":"success","outputs":{"ciStatus":"failing"},"artifacts":`+string(refs)),
-		eventLine(4, startedAt.Add(3*time.Second), `"type":"run.finished","status":"completed"`),
+	lines := []string{eventLine(1, startedAt, `"type":"run.started"`)}
+	seq := 2
+	for attempt := 1; attempt <= polls; attempt++ {
+		lines = append(lines,
+			eventLine(seq, startedAt.Add(time.Duration(seq-1)*time.Second),
+				fmt.Sprintf(`"type":"stage.started","stage":"ci-poll","attempt":%d`, attempt)),
+			eventLine(seq+1, startedAt.Add(time.Duration(seq)*time.Second),
+				fmt.Sprintf(`"type":"stage.finished","stage":"ci-poll","attempt":%d,"status":"success","outputs":{"ciStatus":"failing"},"artifacts":%s`, attempt, refs)),
+		)
+		seq += 2
 	}
+	lines = append(lines, eventLine(seq, startedAt.Add(time.Duration(seq-1)*time.Second),
+		`"type":"run.finished","status":"completed"`))
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
 }
 
@@ -251,6 +262,35 @@ func TestDetectCICheckFailureRequiresDistinctRecurringRuns(t *testing.T) {
 	if recurring.Metrics["distinctRuns"] != 2 || len(recurring.FlaggedRuns) != 2 {
 		t.Fatalf("recurring CI finding = %+v, want two distinct evidence runs", recurring)
 	}
+}
+
+func TestDetectCICheckFailureEvidenceUsesDistinctRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	olderRun := strings.Repeat("a", 32)
+	newerRun := strings.Repeat("b", 32)
+	seedCICheckFailureRun(t, runsDir, olderRun, "unit-tests", fixtureStart)
+	seedCICheckFailurePollsRun(t, runsDir, newerRun, "unit-tests", 3, fixtureStart.Add(time.Hour))
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	thresholds := DefaultThresholds()
+	thresholds.MaxFlaggedRuns = 2
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: thresholds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.Kind != FindingCICheckFailure || finding.Subject != "unit-tests" {
+			continue
+		}
+		want := []JournalPointer{{RunID: newerRun}, {RunID: olderRun}}
+		if !reflect.DeepEqual(finding.FlaggedRuns, want) {
+			t.Fatalf("FlaggedRuns = %+v, want distinct runs %+v", finding.FlaggedRuns, want)
+		}
+		return
+	}
+	t.Fatalf("recurring unit-tests failure not found: %+v", findings)
 }
 
 func TestDetectGateNeverFails(t *testing.T) {

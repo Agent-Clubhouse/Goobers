@@ -361,10 +361,12 @@ func (db *DB) ciCheckFailureRuns(req StatsRequest, checkName string, limit int) 
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	query := fmt.Sprintf(`
-		SELECT DISTINCT c.run_id, c.occurred_at FROM ci_check_failures c
+		SELECT c.run_id, MAX(c.occurred_at) AS latest_occurred_at
+		FROM ci_check_failures c
 		JOIN runs r ON r.run_id = c.run_id
 		WHERE %s
-		ORDER BY c.occurred_at DESC, c.run_id DESC
+		GROUP BY c.run_id
+		ORDER BY latest_occurred_at DESC, c.run_id DESC
 		LIMIT ?`, clause)
 	args = append(append([]any{}, args...), checkName, limit)
 	return queryRunIDs(context.Background(), db, query, args)
