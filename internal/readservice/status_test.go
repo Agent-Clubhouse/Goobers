@@ -160,13 +160,16 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 
 func TestOperatorTrajectory(t *testing.T) {
 	for stage, want := range map[string]string{
-		"implementation":  "implementing",
-		"reviewer":        "review",
-		"local-ci":        "local CI",
-		"push-branch":     "push",
-		"open-pr":         "open PR",
-		"ci-poll":         "CI poll",
-		"issue-close-out": "close-out",
+		"query-backlog":            "implementing",
+		"gather-implement-context": "implementing",
+		"implementation":           "implementing",
+		"custom-active-stage":      "implementing",
+		"reviewer":                 "review",
+		"local-ci":                 "local CI",
+		"push-branch":              "push",
+		"open-pr":                  "open PR",
+		"ci-poll":                  "CI poll",
+		"issue-close-out":          "close-out",
 	} {
 		if got := operatorTrajectory(stage, journal.PhaseRunning); got != want {
 			t.Errorf("operatorTrajectory(%q) = %q, want %q", stage, got, want)
@@ -177,32 +180,50 @@ func TestOperatorTrajectory(t *testing.T) {
 	}
 }
 
-func TestDecorateOperatorClaimsLooksUpOnlyRunningActiveClaims(t *testing.T) {
+func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	ledgerNow := now.Add(-2 * time.Hour)
 	ledger, err := localscheduler.OpenClaimLedger(
 		filepath.Join(layout.SchedulerDir(), "claims.json"),
-		localscheduler.WithLedgerClock(func() time.Time { return now }),
+		localscheduler.WithLedgerClock(func() time.Time { return ledgerNow }),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ok, _, err := ledger.ClaimScoped(
-		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "1"},
-		"active", "implementation", time.Hour,
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "2"},
+		"expired", "implementation", time.Hour,
 	)
 	if err != nil || !ok {
 		t.Fatalf("claim = %v, %v", ok, err)
 	}
+	ledgerNow = now
+	activeKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "1"}
+	ok, _, err = ledger.ClaimScoped(activeKey, "active", "implementation", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("active claim = %v, %v", ok, err)
+	}
+	releasedKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "3"}
+	ok, _, err = ledger.ClaimScoped(releasedKey, "released", "implementation", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("released claim = %v, %v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(releasedKey, "released"); err != nil {
+		t.Fatal(err)
+	}
 	lookups := 0
 	service := &Local{sources: LocalSources{
 		Layout: layout,
-		WorkItemLookup: func(context.Context, string, string) (providers.WorkItem, error) {
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
 			lookups++
-			return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+			if itemID == "1" {
+				return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+			}
+			return providers.WorkItem{}, nil
 		},
 	}}
 	runs := []RunSummary{
@@ -214,9 +235,23 @@ func TestDecorateOperatorClaimsLooksUpOnlyRunningActiveClaims(t *testing.T) {
 			},
 		},
 		{
-			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseCompleted,
+			ID: "expired", Gaggle: "goobers", Phase: journal.PhaseRunning,
 			Operator: OperatorRunSummary{
 				Issue: &OperatorIssue{Number: "2"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "released", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "3"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseCompleted,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "4"},
 				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
 			},
 		},
@@ -224,8 +259,20 @@ func TestDecorateOperatorClaimsLooksUpOnlyRunningActiveClaims(t *testing.T) {
 	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
 		t.Fatal(err)
 	}
-	if lookups != 1 {
-		t.Fatalf("provider lookups = %d, want only the running active claim", lookups)
+	if lookups != 3 {
+		t.Fatalf("provider lookups = %d, want every running claim", lookups)
+	}
+	if got := runs[0].Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "verified" {
+		t.Fatalf("active claim = %+v", got)
+	}
+	if got := runs[1].Operator.Claim; got.LeaseStatus != "expired" || got.ProviderMarker != "not-present" {
+		t.Fatalf("expired claim = %+v", got)
+	}
+	if got := runs[2].Operator.Claim; got.LeaseStatus != "released" || got.ProviderMarker != "not-present" {
+		t.Fatalf("released claim = %+v", got)
+	}
+	if got := runs[3].Operator.Claim.ProviderMarker; got != "recorded" {
+		t.Fatalf("historical provider marker = %q, want recorded history", got)
 	}
 }
 

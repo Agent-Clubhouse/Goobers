@@ -1806,7 +1806,7 @@ func operatorTrajectory(stage string, phase journal.RunPhase) string {
 	case strings.Contains(stage, "implement"):
 		return "implementing"
 	default:
-		return "parked"
+		return "implementing"
 	}
 }
 

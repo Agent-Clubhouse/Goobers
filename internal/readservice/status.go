@@ -73,10 +73,10 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 		case len(history) > 0:
 			runs[i].Operator.Claim.LeaseStatus = "released"
 		}
-		markerPresent := runs[i].Operator.Claim.ProviderMarker == "recorded"
+		markerVerified := false
+		markerPresent := false
 		if s.sources.WorkItemLookup != nil &&
 			runs[i].Phase == journal.PhaseRunning &&
-			runs[i].Operator.Claim.LeaseStatus == "active" &&
 			runs[i].Operator.Issue != nil &&
 			runs[i].Operator.Issue.Number != "" {
 			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
@@ -88,12 +88,13 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 				)
 				continue
 			}
+			markerVerified = true
 			markerPresent = item.HasLabel(providers.LabelClaimed)
 			if runs[i].Operator.Issue.Title == "" {
 				runs[i].Operator.Issue.Title = item.Title
 			}
 		}
-		if runs[i].Phase == journal.PhaseRunning &&
+		if markerVerified &&
 			runs[i].Operator.Claim.LeaseStatus != "active" &&
 			markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "drift"
@@ -101,15 +102,19 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 				runs[i].Operator.PotentialBlockers,
 				"provider claim marker exists without an active lease",
 			)
-		} else if runs[i].Operator.Claim.LeaseStatus == "active" && !markerPresent {
+		} else if markerVerified &&
+			runs[i].Operator.Claim.LeaseStatus == "active" &&
+			!markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "drift"
 			runs[i].Operator.PotentialBlockers = append(
 				runs[i].Operator.PotentialBlockers,
-				"active claim lease has no recorded provider marker",
+				"active claim lease has no provider marker",
 			)
-		} else if runs[i].Operator.Claim.LeaseStatus == "active" && markerPresent {
+		} else if markerVerified &&
+			runs[i].Operator.Claim.LeaseStatus == "active" &&
+			markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "verified"
-		} else if !markerPresent {
+		} else if markerVerified && !markerPresent {
 			runs[i].Operator.Claim.ProviderMarker = "not-present"
 		}
 	}
