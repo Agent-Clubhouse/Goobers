@@ -421,7 +421,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// DisableReadModelReads previously had no caller anywhere, so the
 		// documented "a flag flip, never a deploy" rollback did not exist in
 		// practice. read.db itself is untouched — this only forces every list
-		// request back onto the journal-derived paths for this run.
+		// request back onto authoritative journal scans for this run.
 		reads.DisableReadModelReads()
 	}
 	// Move the active-run count off the request path (#1741). Six read routes

@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 // TestDisableReadModelReadsForcesJournalPath is #2036's rollback test: before
@@ -28,6 +29,52 @@ func TestDisableReadModelReadsForcesJournalPath(t *testing.T) {
 	service.DisableReadModelReads()
 	if service.readModelReads {
 		t.Fatal("read-model reads remain enabled after DisableReadModelReads")
+	}
+	if service.ReadMode() != ReadModeAuthoritative {
+		t.Fatalf("read mode = %s, want authoritative", service.ReadMode())
+	}
+}
+
+func TestDisableReadModelReadsListsJournalsWhenRollupIsEmptyAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-before-restart", machine.Def.Name, machine.Def.Spec.Gaggle,
+		fixedTime, journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	telemetry, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = telemetry.Close() })
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		Telemetry:   telemetry,
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.DisableReadModelReads()
+
+	for _, options := range []RunListOptions{{Limit: 50}, {LatestPerWorkflow: true}} {
+		page, err := service.ListRuns(ctx, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].ID != "run-before-restart" {
+			t.Fatalf("rollback list with options %+v = %+v, want run-before-restart", options, page.Runs)
+		}
 	}
 }
 
