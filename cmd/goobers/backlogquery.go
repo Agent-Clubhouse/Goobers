@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -1541,6 +1542,10 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
 		result.eligible = append(result.eligible, item)
 	}
+	result.eligible, err = filterDecompositionEligibility(ctx, env.issueProvider, env.backlogRepo, result.eligible)
+	if err != nil {
+		return result, failProviderStage(env.stderr, "verify decomposition publication barrier", err, "claimed-item.json")
+	}
 	if opts.openIssues != nil {
 		backstopped := result.eligible[:0]
 		for _, item := range result.eligible {
@@ -1697,10 +1702,15 @@ func runReadOnlyBacklogQuery(
 		}
 		eligible = append(eligible, item)
 	}
+	eligible, err = filterDecompositionEligibility(ctx, env.issueProvider, env.backlogRepo, eligible)
+	if err != nil {
+		return failProviderStage(env.stderr, "verify decomposition publication barrier", err, "claimed-item.json")
+	}
 	if err := sortEligibleByFields(eligible, opts.selectionPriority, opts.fieldOrder); err != nil {
 		pf(env.stderr, "error: apply fieldOrder: %v\n", err)
 		return 1
 	}
+
 	if len(eligible) == 0 {
 		env.debugf("eligible set empty")
 		pln(env.stdout, "no eligible items")
@@ -1711,6 +1721,37 @@ func runReadOnlyBacklogQuery(
 		pf(env.stdout, "%s\t%s\n", item.ID, item.Title)
 	}
 	return 0
+}
+
+func filterDecompositionEligibility(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	items []providers.WorkItem,
+) ([]providers.WorkItem, error) {
+	filtered := items[:0]
+	for _, item := range items {
+		parentID, digest, _, marked, conflict := decomposition.ChildBatchIdentity(item.Body)
+		if !marked {
+			filtered = append(filtered, item)
+			continue
+		}
+		if conflict {
+			continue
+		}
+		if _, err := provider.GetWorkItem(ctx, repo, parentID); err != nil {
+			return nil, fmt.Errorf("get decomposition parent %s for child %s: %w", parentID, item.ID, err)
+		}
+		comments, err := provider.ListComments(ctx, repo, parentID)
+		if err != nil {
+			return nil, fmt.Errorf("list decomposition parent %s comments for child %s: %w", parentID, item.ID, err)
+		}
+		published, recordConflict := decomposition.PublishedRecordIncludes(comments, parentID, digest, item.ID)
+		if published && !recordConflict {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 // backlogIssueProvider is the provider surface backlog-query's provider-neutral

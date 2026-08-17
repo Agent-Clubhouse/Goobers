@@ -90,6 +90,12 @@ var commands = map[string]Command{
 		},
 		claimMutationFlags: []string{"claim", "reconcile", "release"},
 	},
+	"publish-batch": {
+		ResultFile: "published-batch.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
+		},
+	},
 	"select-source": {
 		ResultFile:         "selection.json",
 		mutatesClaimLedger: true,
