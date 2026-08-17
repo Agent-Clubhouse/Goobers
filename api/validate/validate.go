@@ -171,6 +171,7 @@ const (
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorRunControls              WarningCode = "WF016"
 	errorPathSimulation           WarningCode = "WF017"
+	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -1810,6 +1811,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckWorkflowAdmission(def, ix.gooberSpecs()) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
 	// runtime — a stage promising outputs it has no channel to emit, or
@@ -1850,6 +1852,52 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+func (ix *index) checkCapabilityRuntimeSupport(r *Report, w apiv1.Workflow, file string) {
+	gaggle, ok := ix.gaggles[w.Spec.Gaggle]
+	if !ok || len(gaggle.Spec.AdditionalRepos) == 0 {
+		return
+	}
+	for _, task := range w.Spec.Tasks {
+		if !hasCapability(task.Capabilities, capability.ContentsRead) || effectiveTaskWorkspace(task) != apiv1.WorkspaceScratch {
+			continue
+		}
+		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
+			"task %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
+			task.Name, capability.ContentsRead, w.Spec.Gaggle)
+	}
+	for _, gate := range w.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.Agentic.Workspace != apiv1.WorkspaceScratch {
+			continue
+		}
+		goober, ok := ix.goobers[gate.Agentic.Goober]
+		if !ok || !hasCapability(goober.Spec.Capabilities, capability.ContentsRead) {
+			continue
+		}
+		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
+			"gate %q reviewer goober %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
+			gate.Name, gate.Agentic.Goober, capability.ContentsRead, w.Spec.Gaggle)
+	}
+}
+
+func hasCapability(declared []string, wanted capability.Capability) bool {
+	for _, value := range declared {
+		if value == string(wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveTaskWorkspace(task apiv1.Task) apiv1.WorkspaceMode {
+	if task.Run != nil && task.Run.Workspace != "" {
+		return task.Run.Workspace
+	}
+	if task.Workspace != "" {
+		return task.Workspace
+	}
+	return apiv1.WorkspaceRepo
 }
 
 func (ix *index) acknowledgesManualOnly(w apiv1.Workflow, warning string) bool {

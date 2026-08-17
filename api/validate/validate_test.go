@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 
@@ -1179,6 +1180,166 @@ func TestReadOnlyReferenceReposValidateCleanly(t *testing.T) {
 	}
 	if report.HasErrors() {
 		t.Fatalf("expected config-additional-repos to validate cleanly, got:\n%s", joinIssues(report))
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
+	tests := []struct {
+		name            string
+		additionalRepos []apiv1.RepoRef
+		task            apiv1.Task
+		wantError       bool
+	}{
+		{
+			name:            "deterministic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "agentic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskAgentic, Goal: "Read reference.", Goober: "reader",
+				Workspace: apiv1.WorkspaceScratch, Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "deterministic repo supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name: "scratch without additional repos supported",
+			task: apiv1.Task{
+				Name: "read-provider", Type: apiv1.TaskDeterministic, Goal: "Read provider.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-provider"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name:            "scratch without contents read supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "compute", Type: apiv1.TaskDeterministic, Goal: "Compute.",
+				Run: &apiv1.DeterministicRun{Command: []string{"compute"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{AdditionalRepos: tc.additionalRepos}}
+			ix.goobers["reader"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-reader"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `task "read-reference" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
+	if got, want := errorCapabilityRuntimeSupport, WarningCode("WF019"); got != want {
+		t.Fatalf("errorCapabilityRuntimeSupport = %q, want stable code %q", got, want)
+	}
+	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
+		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		wantError bool
+	}{
+		{name: "scratch rejected", workspace: apiv1.WorkspaceScratch, wantError: true},
+		{name: "repo supported", workspace: apiv1.WorkspaceRepo},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+				AdditionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			}}
+			ix.goobers["reviewer"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Start:  "prepare",
+					Tasks: []apiv1.Task{{
+						Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "Prepare.",
+						Run: &apiv1.DeterministicRun{Command: []string{"prepare"}}, Next: "review",
+					}},
+					Gates: []apiv1.Gate{{
+						Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+						Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Workspace: tc.workspace},
+						Branches: map[string]string{"pass": "", "fail": wf.TargetAbort},
+					}},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `gate "review" reviewer goober "reviewer" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
 	}
 }
 
