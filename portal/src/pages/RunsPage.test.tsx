@@ -38,6 +38,7 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    listRuns.mockClear();
     listRuns.mockImplementation(() => new Promise(() => {}));
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
@@ -45,6 +46,7 @@ describe("runs history page", () => {
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
     const revisitedHistory = screen.getByRole("region", { name: "Run history" });
     expect(revisitedHistory.querySelectorAll("a")).toHaveLength(68);
+    expect(listRuns).not.toHaveBeenCalled();
   });
 
   it("maps filter chips onto server-side phase requests", async () => {
