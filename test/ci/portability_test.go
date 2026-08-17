@@ -243,6 +243,10 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		"checks", "lint", "darwin-build", "unit", "unit-macos", "shipped",
 		"deadcode", "windows-smoke", "vulnerability-scan", "conformance",
 		"integration", "sandbox", "linux-validation",
+		// #3152 added these four jobs meaning them to be required, but left them
+		// out of the aggregate — the only context the branch ruleset requires —
+		// so they ran on every PR and blocked nothing (#3206).
+		"unit-gate", "e2e", "envtest", "coverage",
 	} {
 		if !strings.Contains(needsLine, gate) {
 			t.Errorf("required CI aggregate must depend on %q so it fails when that gate fails", gate)

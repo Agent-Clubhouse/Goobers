@@ -887,13 +887,19 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
+    # unit-gate, e2e, envtest, and coverage joined in #3206. #3152 added those
+    # four jobs intending to make them required, but never added them here — and
+    # this aggregate is the only context the branch ruleset requires, so all four
+    # could go red while `make ci` reported success and the merge proceeded. That
+    # is the same "runs on every PR, enforces nothing" gap #2019 closed below.
+    #
     # integration, sandbox, and linux-validation joined this list in #2019:
     # all three ran on every PR already (full runner cost) but a red result
     # never blocked merge (zero enforcement) until now — the worst of both
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, unit-gate, e2e, envtest, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -912,6 +918,10 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
           LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
+          UNIT_GATE_RESULT: ${{ needs.unit-gate.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          ENVTEST_RESULT: ${{ needs.envtest.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
         run: |
           fail=0
           check() {
@@ -934,6 +944,10 @@ jobs:
           check "declared-dependency integration"    "$INTEGRATION_RESULT"
           check "sandbox confinement"                "$SANDBOX_RESULT"
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
+          check "unit gate (make ci)"                "$UNIT_GATE_RESULT"
+          check "end-to-end gate"                    "$E2E_RESULT"
+          check "envtest integration gate"           "$ENVTEST_RESULT"
+          check "coverage threshold"                 "$COVERAGE_RESULT"
           exit "$fail"
 
   sandbox:
