@@ -8,12 +8,14 @@ import (
 // On-disk names within a run directory (ARCHITECTURE.md §4). Centralized so the
 // writer, reader, and content-address helpers agree on one layout.
 const (
-	fileRunYAML   = "run.yaml"
-	fileState     = "state.json"
-	fileEvents    = "events.jsonl"
-	fileStateTemp = "state.json.tmp"
-	fileLock      = ".lock"
-	filePruning   = ".telemetry-pruning"
+	fileRunYAML    = "run.yaml"
+	fileState      = "state.json"
+	fileEvents     = "events.jsonl"
+	fileSchema     = "schema.json"
+	fileStateTemp  = "state.json.tmp"
+	fileLock       = ".lock"
+	fileSchemaLock = ".schema.lock"
+	filePruning    = ".telemetry-pruning"
 
 	// fileEventsPointer names the instance journal's generation pointer (see
 	// instancegen.go). Run journals have no pointer — a run's events.jsonl
@@ -31,21 +33,27 @@ const (
 	dirOutbox = "outbox"
 )
 
-// Recorded reports whether dir holds a run journal's identity file, and so can
-// be read or ingested at all. A run directory without one is not a journal: the
-// span exporter creates spans/ before run.yaml is published, and a run that
-// never publishes leaves the directory behind permanently. Such directories
-// accumulate in the thousands on a long-lived instance, so callers use this as a
-// cheap stat-only precondition to skip work — notably lock acquisition — that
-// could only fail on them.
+// CurrentSchemaVersion is the run-directory schema version written by this
+// build. It is separate from the event/run/state envelope versions so the
+// directory can evolve without rewriting append-only history.
+const CurrentSchemaVersion = 1
+
+// Recorded reports whether dir holds either the current schema marker or the
+// legacy identity marker, and so must be admitted or rejected as a journal.
+// Directories with neither marker are unpublished residue; callers use this as
+// a cheap stat-only precondition to skip work on them.
 func Recorded(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, fileRunYAML))
-	return err == nil && info.Mode().IsRegular()
+	for _, name := range []string{fileSchema, fileRunYAML} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 // Schema identifiers. Each is a versioned URI; the leading path is stable and the
-// trailing vN bumps on a breaking change. Readers use the version to apply
-// forward-compat policy (see reader.go).
+// trailing vN bumps on a breaking change.
 const (
 	// EventSchema is the schema id stamped on every event envelope.
 	EventSchema = "goobers.dev/journal/event/v1"

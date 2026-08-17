@@ -206,6 +206,7 @@ func TestInstanceLogRecoversTornTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenInstanceLog: %v", err)
 	}
+
 	if err := log.Append(Event{Type: EventTriggerFired, Workflow: "nominate"}); err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +237,26 @@ func TestInstanceLogRecoversTornTail(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != EventRepaired {
 		t.Fatalf("expected exactly one repaired event, got %+v", events)
+	}
+}
+
+func TestInstanceLogAppendRejectsUnsupportedEventSchema(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := OpenInstanceLog(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+
+	path := filepath.Join(dir, fileEvents)
+	future := `{"schema":"goobers.dev/journal/event/v2","seq":1,"time":"2026-07-13T05:00:00Z","type":"future.event"}` + "\n"
+	if err := os.WriteFile(path, []byte(future), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(Event{Type: EventTriggerFired}); err == nil {
+		t.Fatal("Append accepted an unsupported event schema")
+	} else if !strings.Contains(err.Error(), "event/v2") || !strings.Contains(err.Error(), "event/v1") {
+		t.Fatalf("Append error = %q, want found and supported schemas", err)
 	}
 }
 

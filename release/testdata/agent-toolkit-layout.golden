@@ -17,6 +17,7 @@ payload/.goobers/agent-toolkit/api/schemas/instance.schema.json
 payload/.goobers/agent-toolkit/api/schemas/invocation.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-event.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-run.schema.json
+payload/.goobers/agent-toolkit/api/schemas/journal-schema.schema.json
 payload/.goobers/agent-toolkit/api/schemas/manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/mission-control-verdict-v1alpha1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/notification-receipt.schema.json

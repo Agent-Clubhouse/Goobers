@@ -373,24 +373,32 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	var schemaMetaExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'schema_meta'
+		)`).Scan(&schemaMetaExists); err != nil {
+		return fmt.Errorf("rollup: inspect schema_meta: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("rollup: create schema_meta: %w", err)
 	}
-	version, err := schemaVersionTx(ctx, tx)
+	version, err := schemaVersionTx(ctx, tx, schemaMetaExists)
 	if err != nil {
 		return err
 	}
+	if version < 0 {
+		return fmt.Errorf(
+			"rollup: schema version %d is invalid; supported versions are 0 through %d; restore telemetry.db from backup",
+			version, len(migrations),
+		)
+	}
 	if version > len(migrations) {
-		// A store written by a newer binary — e.g. a version rollback, or the
-		// mixed-version window the self-update supervisor makes routine.
-		// Refusing is right: the loop below would simply never run (version
-		// already >= len(migrations)), so Open would otherwise succeed against
-		// a schema this build does not understand, and the next IngestRun
-		// would silently delete-then-insert into it with the stamped version
-		// left at the newer value forever. Matches internal/readmodel's
-		// existing guard (#2049).
-		return fmt.Errorf("rollup: store schema version %d is newer than this build supports (%d)",
-			version, len(migrations))
+		return fmt.Errorf(
+			"rollup: schema version %d is newer than supported version %d; upgrade Goobers to a binary that supports telemetry schema version %d",
+			version, len(migrations), version,
+		)
 	}
 	for i := version; i < len(migrations); i++ {
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
@@ -424,14 +432,21 @@ func isSQLiteBusy(err error) bool {
 // schemaVersionTx reads the recorded schema version within the migration
 // transaction (so the read shares the write lock migrateOnce already holds — no
 // separate autocommit read that could race a concurrent first-opener).
-func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
-	if err == sql.ErrNoRows {
+func schemaVersionTx(ctx context.Context, tx *sql.Tx, schemaMetaExisted bool) (int, error) {
+	var count, version int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MIN(version), 0)
+		FROM schema_meta`).Scan(&count, &version); err != nil {
+		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	}
+	if count == 0 && !schemaMetaExisted {
 		return 0, nil
 	}
-	if err != nil {
-		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	if count != 1 {
+		return 0, fmt.Errorf(
+			"rollup: schema_meta must contain exactly one version row, found %d; restore telemetry.db from backup",
+			count,
+		)
 	}
 	return version, nil
 }

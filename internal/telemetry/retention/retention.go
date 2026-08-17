@@ -60,16 +60,26 @@ func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) (
 		return nil, err
 	}
 	if !opts.DryRun {
-		if db == nil {
-			return nil, fmt.Errorf("telemetry retention rollup is required")
-		}
-		if err := finishInterruptedPrunes(runRoots, db); err != nil {
+		maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
+		if err != nil {
 			return nil, err
 		}
+		defer func() { _ = maintenanceLocks.Release() }()
 	}
 	runs, err := discoverRuns(runRoots)
 	if err != nil {
 		return nil, err
+	}
+	if !opts.DryRun {
+		if db == nil {
+			return nil, fmt.Errorf("telemetry retention rollup is required")
+		}
+		if err := preflightInterruptedPrunes(runRoots); err != nil {
+			return nil, err
+		}
+		if err := finishInterruptedPrunes(runRoots, db); err != nil {
+			return nil, err
+		}
 	}
 	candidates := selectCandidates(runs, policy, opts.Now)
 	if opts.DryRun {
@@ -105,12 +115,10 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 				continue
 			}
 			dir := filepath.Join(root, entry.Name())
-			if _, err := os.Stat(filepath.Join(dir, "run.yaml")); errors.Is(err, fs.ErrNotExist) {
-				continue
-			} else if err != nil {
-				return nil, fmt.Errorf("telemetry retention: inspect %s: %w", dir, err)
-			}
 			reader, err := journal.OpenRead(dir)
+			if errors.Is(err, journal.ErrNotRunDirectory) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -253,10 +261,11 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 					return fmt.Errorf("telemetry retention: staged run %s is not terminal", runID)
 				}
 				identity, identityErr := reader.Identity()
-				if identityErr != nil {
+				if identityErr == nil {
+					runID = identity.RunID
+				} else if !errors.Is(identityErr, fs.ErrNotExist) {
 					return fmt.Errorf("telemetry retention: read staged run %s identity: %w", runID, identityErr)
 				}
-				runID = identity.RunID
 			} else if !errors.Is(openErr, fs.ErrNotExist) {
 				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
 			}
@@ -265,6 +274,31 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 			}
 			if err := os.RemoveAll(dir); err != nil {
 				return fmt.Errorf("telemetry retention: finish journal prune for run %s: %w", runID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func preflightInterruptedPrunes(runRoots []string) error {
+	for _, root := range runRoots {
+		stagedRoot := stagingRoot(root)
+		entries, err := os.ReadDir(stagedRoot)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("telemetry retention: read %s for interrupted prune preflight: %w", stagedRoot, err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dir := filepath.Join(stagedRoot, entry.Name())
+			if _, err := journal.OpenRead(dir); err != nil &&
+				!errors.Is(err, journal.ErrNotRunDirectory) &&
+				!errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("telemetry retention: preflight staged run %s: %w", entry.Name(), err)
 			}
 		}
 	}

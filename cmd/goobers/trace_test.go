@@ -1173,7 +1173,7 @@ func TestTracePrefixIgnoresCorruptUnrelatedRun(t *testing.T) {
 	}
 }
 
-func TestTracePreservesUnknownEventSchemas(t *testing.T) {
+func TestTraceRejectsUnknownEventSchemas(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
 	const runID = "future-events"
@@ -1193,20 +1193,20 @@ func TestTracePreservesUnknownEventSchemas(t *testing.T) {
 	}
 
 	code, stdout, stderr := runArgs(t, "trace", "--json", runID, root)
-	if code != 0 {
-		t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
+	if code != 2 {
+		t.Fatalf("trace --json: code = %d, want 2; stderr = %q", code, stderr)
 	}
-	var got traceJSONResult
-	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
-		t.Fatalf("trace --json produced invalid JSON: %v\n%s", err, stdout)
+	if stdout != "" {
+		t.Fatalf("trace --json stdout = %q, want empty", stdout)
 	}
-	if len(got.Events) != 2 ||
-		got.Events[1].KnownSchema == nil ||
-		*got.Events[1].KnownSchema ||
-		got.Events[1].Seq != 2 ||
-		got.Events[1].Branch != 4 ||
-		!strings.Contains(string(got.Events[1].Raw), `"answer":42`) {
-		t.Fatalf("future event = %+v", got.Events)
+	for _, want := range []string{
+		`event schema "goobers.dev/journal/event/v99" is unsupported`,
+		`supported "goobers.dev/journal/event/v1"`,
+		"minimum binary is a Goobers build supporting goobers.dev/journal/event/v99",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("trace --json stderr %q does not contain %q", stderr, want)
+		}
 	}
 }
 

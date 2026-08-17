@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/journal-schema.schema.json",
+  "title": "JournalSchema",
+  "description": "schema.json — inspectable run-directory schema metadata used to admit or migrate a persisted journal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "minimumBinary"],
+  "properties": {
+    "version": {
+      "description": "Run-directory schema version, or -1 while a migration transaction is in progress.",
+      "enum": [1, -1]
+    },
+    "minimumBinary": {
+      "description": "Earliest Goobers binary known to support the target schema version.",
+      "type": "string",
+      "minLength": 1
+    },
+    "migration": {
+      "description": "Crash-recovery marker for an in-progress forward migration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "description": "Persisted schema version being migrated.",
+          "const": 0
+        },
+        "to": {
+          "description": "Target schema version for the migration.",
+          "const": 1
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "version": {
+          "description": "Stable current run-directory schema version.",
+          "const": 1
+        }
+      },
+      "not": {
+        "required": ["migration"]
+      }
+    },
+    {
+      "required": ["migration"],
+      "properties": {
+        "version": {
+          "description": "Sentinel indicating that migration recovery is required before admission.",
+          "const": -1
+        }
+      }
+    }
+  ]
+}

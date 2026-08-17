@@ -709,8 +709,10 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
 				return phase, nil
 			}
-		} else {
+		} else if errors.Is(err, journal.ErrNotRunDirectory) {
 			progress.heartbeat(time.Now())
+		} else {
+			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
 		select {
@@ -728,6 +730,8 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
 				}
 				return phase, nil
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):

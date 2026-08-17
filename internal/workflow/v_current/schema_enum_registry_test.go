@@ -195,6 +195,7 @@ var constBackedEnums = []enumRule{
 // anything. Each value is the reason it is not const-backed.
 var notConstBackedEnums = map[string]string{
 	"explain.schema.json\x00properties/stability/enum":                                              "lifecycle values are drawn from two sources with no shared Go type: only \"ga\" has a const (untyped schemas.StabilityGA), and preview/deprecated/removed come from the DSL feature registry; internal/authoring.Explanation.Stability is a plain string",
+	"journal-schema.schema.json\x00properties/version/enum":                                         "structural domain combining the stable schema version with the in-progress migration sentinel",
 	"workflow.schema.json\x00$defs/task/properties/onTimeout/enum":                                  "backing consts TaskOnTimeoutFail/Salvage are untyped string constants — no named enum type to bind",
 	"workflow.schema.json\x00$defs/gate/properties/human/properties/onTimeout/enum":                 "human-gate timeout actions are schema-only string literals; no Go const source",
 	"workflow.schema.json\x00$defs/task/properties/run/properties/network/enum":                     "single 'none' sentinel; not a Go enum",
