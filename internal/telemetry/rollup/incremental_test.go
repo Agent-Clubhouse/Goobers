@@ -243,6 +243,34 @@ func TestIngestSchedulerLogDeadlineLeavesCursorRetryable(t *testing.T) {
 	}
 }
 
+func TestRebuildSchedulerLogUsesCallerDeadline(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+	db.schedulerIngestTimeout = 0
+
+	if err := db.rebuildSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("rebuildSchedulerLog: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != len(firstFive()) {
+		t.Fatalf("rebuild ingested %d events, want %d", len(got), len(firstFive()))
+	}
+}
+
+func TestCheckpointBusyRetryHonorsContext(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := execWithBusyRetry(ctx, db.sql, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("execWithBusyRetry error = %v, want context canceled", err)
+	}
+}
+
 // TestIngestSchedulerLogUpgradesFromFullReplay simulates a DB previously
 // populated by the old delete-then-insert path (rows present, no cursor row):
 // the first incremental ingest seeds its watermark from the stored MAX(seq) and

@@ -109,7 +109,7 @@ func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rollup: commit delete for run %s: %w", runID, err)
 	}
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 
@@ -891,6 +891,12 @@ func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error
 	return db.ingestSchedulerLog(ctx, schedulerDir)
 }
 
+func (db *DB) rebuildSchedulerLog(ctx context.Context, schedulerDir string) error {
+	db.schedulerMu.Lock()
+	defer db.schedulerMu.Unlock()
+	return db.ingestSchedulerLog(ctx, schedulerDir)
+}
+
 func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error {
 	cursor, err := readSchedulerCursor(ctx, db.sql)
 	if err != nil {
@@ -1002,7 +1008,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// can legitimately hold the checkpoint back — that's a maintenance
 	// delay, not a correctness problem, so its failure must never surface
 	// as an ingest failure.
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 
