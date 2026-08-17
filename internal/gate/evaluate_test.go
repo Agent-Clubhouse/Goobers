@@ -209,8 +209,8 @@ func TestFullRepassFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate #3: %v", err)
 	}
-	if r3.Target != "implement" || r3.Attempt != 1 || r3.Escalated {
-		t.Fatalf("r3 = %+v, want target=implement attempt=1 escalated=false", r3)
+	if r3.Target != "implement" || r3.Attempt != 2 || r3.Escalated {
+		t.Fatalf("r3 = %+v, want target=implement attempt=2 escalated=false", r3)
 	}
 	if r3.Verdict == nil || r3.Verdict.Summary != "please fix X" {
 		t.Fatalf("r3.Verdict = %+v, want the reviewer's verdict attached", r3.Verdict)
@@ -233,7 +233,7 @@ func TestFullRepassFixture(t *testing.T) {
 	wantGates := []string{"autogate", "autogate", "reviewgate", "reviewgate"}
 	wantVerdicts := []string{OutcomeFail, OutcomePass, string(apiv1.VerdictNeedsChanges), string(apiv1.VerdictPass)}
 	wantTargets := []string{"implement", "reviewgate", "implement", wf.TerminalComplete}
-	wantAttempts := []int{1, 0, 1, 0}
+	wantAttempts := []int{1, 0, 2, 0}
 	for i, ev := range events {
 		if ev.Gate != wantGates[i] || ev.Verdict != wantVerdicts[i] || ev.Target != wantTargets[i] {
 			t.Fatalf("event[%d] = %+v, want gate=%s verdict=%s target=%s", i, ev, wantGates[i], wantVerdicts[i], wantTargets[i])
@@ -706,6 +706,52 @@ func TestEvaluatorDoesNotEscalateOnDifferentDiff(t *testing.T) {
 	}
 }
 
+func TestEvaluatorBoundsRepassTargetAcrossDistinctGates(t *testing.T) {
+	review := apiv1.Gate{
+		Name: "review", Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: "local-ci", OutcomeFail: "implement"},
+	}
+	localGate := apiv1.Gate{
+		Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: wf.TerminalComplete, OutcomeFail: "implement"},
+	}
+	ev := &Evaluator{MaxRepasses: 2, Journal: newTestJournal(t)}
+
+	steps := []struct {
+		gate    apiv1.Gate
+		outcome string
+		want    int
+	}{
+		{review, OutcomePass, 0},
+		{localGate, OutcomeFail, 1},
+		{review, OutcomeFail, 2},
+		{review, OutcomePass, 0},
+		{localGate, OutcomeFail, 3},
+	}
+	var result Result
+	for _, step := range steps {
+		var err error
+		result, err = ev.EvaluateKnownOutcome(step.gate, step.outcome)
+		if err != nil {
+			t.Fatalf("EvaluateKnownOutcome(%s, %s): %v", step.gate.Name, step.outcome, err)
+		}
+		if result.Attempt != step.want {
+			t.Fatalf("EvaluateKnownOutcome(%s, %s) attempt = %d, want %d", step.gate.Name, step.outcome, result.Attempt, step.want)
+		}
+	}
+	if !result.Escalated || result.Target != wf.TargetEscalate {
+		t.Fatalf("final result = %+v, want repass-budget escalation", result)
+	}
+	if result.DuplicateDiff {
+		t.Fatal("final result used duplicate-diff guard, want repass-budget escalation")
+	}
+	if got := ev.RepassAttempts["implement"]; got != 3 {
+		t.Fatalf("RepassAttempts[implement] = %d, want 3", got)
+	}
+}
+
 // TestEvaluatorHonorsSeededRepassCount is #89's gate-side acceptance test: a
 // caller resuming an interrupted run (internal/runner.Resume) constructs a
 // fresh Evaluator with Attempts pre-seeded from the run's last-known
@@ -725,7 +771,10 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	// twice (budget 2) — seeded exactly as internal/runner.Resume would,
 	// reconstructing from the run's last gate.evaluated event rather than
 	// starting fresh.
-	ev := &Evaluator{Automated: auto, MaxRepasses: 2, Journal: run, Attempts: map[string]int{"autogate": 2}}
+	ev := &Evaluator{
+		Automated: auto, MaxRepasses: 2, Journal: run,
+		Attempts: map[string]int{"autogate": 2}, RepassAttempts: map[string]int{"implement": 2},
+	}
 
 	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
 	subject := apiv1.ResultEnvelope{Status: apiv1.ResultFailure}
@@ -743,6 +792,9 @@ func TestEvaluatorHonorsSeededRepassCount(t *testing.T) {
 	}
 	if got := ev.Attempts["autogate"]; got != 3 {
 		t.Fatalf("ev.Attempts[autogate] = %d, want 3 (live, inspectable for the next checkpoint)", got)
+	}
+	if got := ev.RepassAttempts["implement"]; got != 3 {
+		t.Fatalf("ev.RepassAttempts[implement] = %d, want 3", got)
 	}
 
 	// A fresh, unseeded Evaluator against the identical sequence must NOT

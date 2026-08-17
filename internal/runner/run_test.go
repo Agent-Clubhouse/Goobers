@@ -4236,6 +4236,26 @@ func TestGateDiffSeedReconstructsFromJournal(t *testing.T) {
 	}
 }
 
+func TestTargetRepassSeedRestoresCrossGateBudget(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "implement"}},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: gate.OutcomePass, Target: "local-ci",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 2.0, "gateAttempt": 1.0, "repassTarget": "implement"}},
+	}
+
+	seed := targetRepassSeed(events)
+	if got := seed["implement"]; got != 2 {
+		t.Fatalf("targetRepassSeed(events)[implement] = %d, want 2", got)
+	}
+	gates := gateRepassSeed(events)
+	if gates["review"] != 0 || gates["local-gate"] != 1 {
+		t.Fatalf("gateRepassSeed(events) = %+v, want review=0 local-gate=1", gates)
+	}
+}
+
 // TestGateDiffSeedNilForNoGateEvents proves the nil-safe zero value a fresh
 // run needs: a journal with no gate.evaluated events at all (or none
 // carrying a diffDigest) yields a nil map, matching Evaluator.LastDiffDigest's

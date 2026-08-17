@@ -869,6 +869,7 @@ type walkState struct {
 	branchRecorded       bool
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
+	repassAttempts       map[string]int
 	gateDiffDigests      map[string]string
 }
 
@@ -1007,11 +1008,11 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // counters are run-scoped state), so a fresh one is built per walk. Start
 // always begins with an empty walkState at the machine's declared start state;
 // Resume (resume.go) reconstructs that state from the journal, optionally with a
-// resumeContext for an interrupted task attempt, gateAttempts seeded from
-// each gate's last gate.started/gate.evaluated event so a resumed run's repass
-// budget continues rather than resetting (#89/#263), gateDiffDigests likewise
-// seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
-// too (#316), and context reconstructed from the journal (#107/#108).
+// resumeContext for an interrupted task attempt, gateAttempts and
+// repassAttempts seeded from gate events so interrupted evaluation recovery and
+// target-stage budgets continue rather than resetting (#89/#1973),
+// gateDiffDigests likewise seeded so non-convergence detection continues
+// (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
 	ws.gateEval = &gate.Evaluator{
@@ -1019,6 +1020,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		Journal:        ws.jr,
 		MaxRepasses:    int(ws.in.RunControls.MaxRepasses),
 		Attempts:       ws.gateAttempts,
+		RepassAttempts: ws.repassAttempts,
 		LastDiffDigest: ws.gateDiffDigests,
 	}
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {

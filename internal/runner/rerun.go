@@ -186,7 +186,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-		ws.gateAttempts, ws.gateDiffDigests = gateAttempts, gateDiffDigests
+		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
 		ws.rerun = rerun
 
 		ctx, span := r.startRunSpan(ctx, startIn)

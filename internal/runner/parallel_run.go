@@ -475,6 +475,7 @@ func (r *Runner) runParallelBranch(
 		Journal:        branchJournal,
 		MaxRepasses:    int(in.RunControls.MaxRepasses),
 		Attempts:       gateRepassSeed(history),
+		RepassAttempts: targetRepassSeed(history),
 		LastDiffDigest: gateDiffSeed(history),
 	}
 	state := branch.machine
