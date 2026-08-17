@@ -93,8 +93,8 @@ runConditions:
 # routinely runs longer, rather than stamping `timeoutSeconds` onto every stage
 # in every workflow. A stage's own `timeoutSeconds` always wins; this only moves
 # the floor.
-# runner:
-#   capabilities: [dotnet@8]
+runner:
+  capabilities: [os=linux]
 #   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
 #   defaultStageTimeout: 25m
 # Optional external secret stores (#683). A store declares WHERE a secret

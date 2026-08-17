@@ -223,8 +223,8 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 
 	// The required aggregate must fail if any merge-gate slice fails. `make ci`
 	// is fanned across parallel jobs (checks/lint/unit/shipped) plus the macOS
-	// behavioral unit run and dead-code analysis; those, the Windows gate, the
-	// vulnerability scan, journal conformance, and (#2019) the
+	// and Windows behavioral unit runs and dead-code analysis; those, the
+	// Windows runtime gate, vulnerability scan, journal conformance, and (#2019) the
 	// integration/sandbox/linux-validation jobs must all be depended on — all
 	// three ran on every PR already at full runner cost but enforced nothing
 	// until #2019 added them here. (The aggregate keeps its ruleset-pinned
@@ -247,6 +247,28 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		if !strings.Contains(needsLine, gate) {
 			t.Errorf("required CI aggregate must depend on %q so it fails when that gate fails", gate)
 		}
+	}
+}
+
+func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	// The broad Windows behavioural tier is deliberately absent: enabling it
+	// surfaced 670 failing tests across 19 packages, tracked separately. The
+	// shipped-workflow contracts do run on Windows and are required.
+	shipped := workflowJob(workflow, "shipped")
+	if !strings.Contains(shipped, "os: windows-latest") {
+		t.Error("shipped-workflow contract matrix must include Windows")
+	}
+	if !strings.Contains(shipped, `timeout: "40m"`) ||
+		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") {
+		t.Error("Windows shipped-workflow contracts must receive sufficient timeout headroom")
 	}
 }
 
