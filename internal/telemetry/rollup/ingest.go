@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -108,7 +109,7 @@ func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rollup: commit delete for run %s: %w", runID, err)
 	}
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 
@@ -773,13 +774,13 @@ type schedulerCursor struct {
 // left, so the first incremental pass re-reads the journal head once but writes
 // nothing for events already stored (ON CONFLICT makes each a no-op), then
 // records the cursor so every later pass reads only the new tail.
-func readSchedulerCursor(sqlDB *sql.DB) (schedulerCursor, error) {
+func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, error) {
 	var c schedulerCursor
-	err := sqlDB.QueryRow(`SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
+	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
 		Scan(&c.byteOffset, &c.lastSeq)
 	if err == sql.ErrNoRows {
 		var seed uint64
-		if err := sqlDB.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
 			return schedulerCursor{}, fmt.Errorf("rollup: seed scheduler cursor: %w", err)
 		}
 		return schedulerCursor{byteOffset: 0, lastSeq: seed}, nil
@@ -834,9 +835,9 @@ type spansCursor struct {
 // same as every prior cycle did, and then never again: the per-span
 // delete-then-insert this fix keeps is idempotent, so replaying already-stored
 // spans on that one pass is harmless, just the last full-cost cycle.
-func readSpansCursor(sqlDB *sql.DB) (spansCursor, error) {
+func readSpansCursor(ctx context.Context, sqlDB *sql.DB) (spansCursor, error) {
 	var c spansCursor
-	err := sqlDB.QueryRow(`SELECT byte_offset FROM spans_ingest_cursor WHERE id = 1`).Scan(&c.byteOffset)
+	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset FROM spans_ingest_cursor WHERE id = 1`).Scan(&c.byteOffset)
 	if err == sql.ErrNoRows {
 		return spansCursor{}, nil
 	}
@@ -857,6 +858,10 @@ func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
 	return nil
 }
 
+const defaultSchedulerIngestTimeout = 5 * time.Second
+
+var errSchedulerIngestInProgress = errors.New("rollup: scheduler ingest already in progress")
+
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
 // scheduler decisions, starvation and error signals) and its rolling scheduler
 // spans. Both halves are incremental: a per-tick call reads only the journal
@@ -873,13 +878,27 @@ func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
 // wins, since replaying the exact same recorded span converges to the same
 // row either way).
 func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error {
+	ctx, cancel := context.WithTimeout(ctx, db.schedulerIngestTimeout)
+	defer cancel()
+
+	// Scheduler telemetry is derived and retryable. Do not queue daemon ticks,
+	// config applies, or shutdown behind an ingest already doing slow SQLite
+	// cleanup; the active transaction is independently bounded above.
+	if !db.schedulerMu.TryLock() {
+		return errSchedulerIngestInProgress
+	}
+	defer db.schedulerMu.Unlock()
+	return db.ingestSchedulerLog(ctx, schedulerDir)
+}
+
+func (db *DB) rebuildSchedulerLog(ctx context.Context, schedulerDir string) error {
 	db.schedulerMu.Lock()
 	defer db.schedulerMu.Unlock()
 	return db.ingestSchedulerLog(ctx, schedulerDir)
 }
 
 func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error {
-	cursor, err := readSchedulerCursor(db.sql)
+	cursor, err := readSchedulerCursor(ctx, db.sql)
 	if err != nil {
 		return err
 	}
@@ -887,7 +906,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	spanCursor, err := readSpansCursor(db.sql)
+	spanCursor, err := readSpansCursor(ctx, db.sql)
 	if err != nil {
 		return err
 	}
@@ -989,7 +1008,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// can legitimately hold the checkpoint back — that's a maintenance
 	// delay, not a correctness problem, so its failure must never surface
 	// as an ingest failure.
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 

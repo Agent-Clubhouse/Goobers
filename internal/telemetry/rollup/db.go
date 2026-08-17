@@ -38,6 +38,9 @@ type DB struct {
 	readerMu     sync.RWMutex
 	readerClosed bool
 	schedulerMu  sync.Mutex
+	// schedulerIngestTimeout bounds derived telemetry work on daemon paths whose
+	// callers intentionally have no deadline.
+	schedulerIngestTimeout time.Duration
 	// path is retained so the reader pool can be reopened after Compact.
 	path string
 }
@@ -129,7 +132,11 @@ func Open(path string) (*DB, error) {
 	// between our own writers and what keeps the #1128 first-open race
 	// single-threaded through the WAL switch and migrations.
 	sqlDB.SetMaxOpenConns(1)
-	db := &DB{sql: sqlDB, path: path}
+	db := &DB{
+		sql:                    sqlDB,
+		schedulerIngestTimeout: defaultSchedulerIngestTimeout,
+		path:                   path,
+	}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -300,8 +307,8 @@ func (db *DB) PruneSchedulerBefore(ctx context.Context, cutoff time.Time) (int, 
 // (e.g. a concurrent reader transaction from another process legitimately
 // held it back) — checkpointing is a maintenance step, not a correctness
 // requirement, since WAL mode already serves correct reads without it.
-func checkpointWAL(sqlDB *sql.DB) {
-	_ = execWithBusyRetry(sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
+func checkpointWAL(ctx context.Context, sqlDB *sql.DB) {
+	_ = execWithBusyRetry(ctx, sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
 }
 
 // migrate runs the entire first-open setup — creating schema_meta, reading the
@@ -345,13 +352,19 @@ const busyRetryMaxAttempts = 12
 // SBUSY/LOCKED with a short linear backoff. Used by checkpointWAL, whose
 // PRAGMA wal_checkpoint can lose the write lock to a concurrent process's
 // reader/writer and must not fail the caller over it.
-func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
+func execWithBusyRetry(ctx context.Context, sqlDB *sql.DB, query string, args ...any) error {
 	var err error
 	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if _, err = sqlDB.Exec(query, args...); err == nil || !isSQLiteBusy(err) {
+		if _, err = sqlDB.ExecContext(ctx, query, args...); err == nil || !isSQLiteBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return err
 }

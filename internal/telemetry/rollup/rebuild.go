@@ -77,7 +77,7 @@ func RebuildAll(ctx context.Context, dbPath string, runsDirs []string, scheduler
 			return fmt.Errorf("rollup: ingest %s: %w", dir, err)
 		}
 	}
-	if err := db.IngestSchedulerLog(ctx, schedulerDir); err != nil {
+	if err := db.rebuildSchedulerLog(ctx, schedulerDir); err != nil {
 		return fmt.Errorf("rollup: ingest scheduler log %s: %w", schedulerDir, err)
 	}
 	return nil
