@@ -136,18 +136,6 @@ github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-wo
 github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # Object-cache lock-timeout test seam (#2905), used only from objectcachelock_test.go — mirrors internal/journal.SetLockTimeoutForTest.
 
 # Quarantined, reserved, and extension seams required by the architecture.
-github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # DEC-3 shared target lease implementation ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.MarkerConflictError.Error # DEC-3 conflict surface ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.CreateChild # DEC-3 idempotent child primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and concurrent-create tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AppendMarkerComment # DEC-3 idempotent record primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and conflict tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AttachChild # DEC-3 hierarchy primitive ships ahead of its DEC-4 publisher caller and is exercised by hierarchy and revision-guard tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.validate # DEC-3 primitive validation helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.guardedItem # DEC-3 revision-guard helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findChild # DEC-3 exact child-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findComment # DEC-3 exact comment-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markedBody # DEC-3 stable marker renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markerKeyLine # DEC-3 exact marker-key renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.containsLine # DEC-3 exact marker matcher is reachable through the reserved DEC-4 entrypoints (#2245).
 # Notification output boundary (#1451) ships ahead of its mission-control
 # workflow caller (#1450); each entry is exercised by notification package tests.
 github.com/goobers/goobers/internal/notification.NewJournalRecorder # Durable notification journal adapter reserved for the mission-control workflow caller (#1450).
