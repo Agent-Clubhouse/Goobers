@@ -187,11 +187,12 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 }
 
 type restartRun struct {
-	id         string
-	itemID     string
-	startedAt  time.Time
-	failedAt   time.Time
-	isReplaced bool
+	id                   string
+	itemID               string
+	startedAt            time.Time
+	failedAt             time.Time
+	interruptedByRestart bool
+	isReplaced           bool
 }
 
 func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) ([]RunReplacement, error) {
@@ -216,15 +217,36 @@ func (s *Local) restartReplacements(ctx context.Context, restartedAt time.Time) 
 			itemID:    run.identity.Trigger.Ref,
 			startedAt: run.identity.StartedAt,
 		}
+		var daemonRecovery, interruptionPending bool
 		for _, record := range run.records {
 			event := record.Event
+			if event.Type == journal.EventRunnerAnnotation &&
+				runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
+				runnerString(event.Runner, "reason") == "daemon_restart" &&
+				!event.Time.Before(restartedAt) {
+				daemonRecovery = true
+			}
+			if event.Type == journal.EventStageFinished {
+				interrupted, _ := event.Runner["interruptedAttempt"].(bool)
+				if interrupted && event.Error != nil && event.Error.Code == "interrupted" {
+					interruptionPending = daemonRecovery
+				} else {
+					interruptionPending = false
+				}
+			}
+			if event.Type == journal.EventStageStarted && interruptionPending {
+				interruptionPending = false
+			}
 			if event.Type == journal.EventRunFinished &&
 				event.Status == string(journal.PhaseFailed) &&
 				!event.Time.Before(restartedAt) {
 				candidate.failedAt = event.Time
+				candidate.interruptedByRestart = interruptionPending
 			}
 		}
-		if !candidate.failedAt.IsZero() && candidate.startedAt.Before(restartedAt) {
+		if !candidate.failedAt.IsZero() &&
+			candidate.startedAt.Before(restartedAt) &&
+			candidate.interruptedByRestart {
 			failed = append(failed, candidate)
 		}
 		if !candidate.startedAt.Before(restartedAt) {

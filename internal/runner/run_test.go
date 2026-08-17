@@ -4037,6 +4037,74 @@ func TestRunnerResumeRetriesWhenFinalPolicyAttemptWasInterrupted(t *testing.T) {
 	}
 }
 
+func TestRunnerResumePreservesInterruptedInfrastructureRetry(t *testing.T) {
+	machine := retryFixtureMachine(t, 1)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-crash-during-infrastructure-retry"
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("implement")
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{
+			Type: journal.EventError, Stage: "implement", Attempt: 1,
+			Error:  &journal.ErrorDetail{Code: "executor_error"},
+			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	det := &infrastructureFlakyDeterministic{
+		failUntil: 1,
+		cause:     errors.New("temporary provider outage"),
+	}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Resume succeeded after the preserved infrastructure slot also failed")
+	}
+	if result.Phase != journal.PhaseFailed || det.calls != 1 {
+		t.Fatalf("result = %+v, executor calls = %d; want one preserved infrastructure dispatch and no extra retry", result, det.calls)
+	}
+	events := readRunEvents(t, runsDir, runID)
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" && event.Attempt == 3 {
+			if event.AttemptClass != journal.AttemptInfra {
+				t.Fatalf("replacement attempt = %+v, want infrastructure class", event)
+			}
+			return
+		}
+	}
+	t.Fatalf("events = %+v, want replacement attempt 3", events)
+}
+
 func TestRunnerResumeRecordsDeferredBranchBeforeInfrastructureReplacement(t *testing.T) {
 	const runID = "run-scheduled-crash-exhausted"
 	machine := fixtureMachine(t)

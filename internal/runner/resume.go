@@ -576,19 +576,21 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:                startState,
-				attempt:              attempt,
-				class:                startedAttemptClass(segment, startState, attempt),
-				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
-				policyAttempts:       policyAttemptsBefore(segment, startState, attempt),
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra:   infraFailedAttemptCommittedWork(segment, startState, attempt),
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
-				stage:          startState,
-				attempt:        attempt,
-				class:          startedAttemptClass(segment, startState, attempt),
-				recorded:       true,
-				policyAttempts: policyAttemptsBefore(segment, startState, attempt),
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				recorded:               true,
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if rerun == nil && !resumedGateTransition && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
@@ -1644,6 +1646,20 @@ func policyAttemptsBefore(events []journal.Event, stageName string, interruptedA
 		attempts++
 	}
 	return attempts
+}
+
+func infrastructureFailuresBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var failures int32
+	for _, event := range events {
+		if event.Type != journal.EventError ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.Runner[retryFailureClassKey] != string(journal.AttemptInfra) {
+			continue
+		}
+		failures++
+	}
+	return failures
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

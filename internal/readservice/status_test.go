@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -132,6 +133,26 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
 	)
 	oldClock.now = startedAt.Add(2 * time.Second)
+	if err := old.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": "daemon_restart",
+			"action": journal.RecoveryActionRetried,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "interrupted"},
+		Runner:  map[string]any{"interruptedAttempt": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := old.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +164,46 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
 	)
 	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuine, genuineClock := createFixtureRun(
+		t, layout, machine, "run-genuine-failure", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	genuineClock.now = startedAt.Add(2 * time.Second)
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventRunnerAnnotation,
+			Runner: map[string]any{
+				"kind": journal.RunnerAnnotationRunRecovery, "reason": "daemon_restart",
+				"action": journal.RecoveryActionRetried,
+			},
+		},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+			Status: string(apiv1.ResultFailure), Error: &journal.ErrorDetail{Code: "interrupted"},
+			Runner: map[string]any{"interruptedAttempt": true},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra,
+			Status: string(apiv1.ResultFailure),
+			Error:  &journal.ErrorDetail{Code: "external_telemetry_schema_mismatch"},
+		},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
+	} {
+		if err := genuine.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := genuine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuineReplacement, _ := createFixtureRun(
+		t, layout, machine, "run-genuine-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	if err := genuineReplacement.Close(); err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewLocal(LocalSources{
