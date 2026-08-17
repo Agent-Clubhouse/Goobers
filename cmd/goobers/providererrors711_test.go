@@ -304,9 +304,14 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 				t.Setenv("GOOBERS_INPUT_CURATION", "true")
 				t.Setenv("GOOBERS_INPUT_MAXITEMS", "2")
 			},
-			match: func(r *http.Request) bool {
-				return r.Method == http.MethodGet && r.URL.Path == issueCollection+"/7/comments"
-			},
+			match: func() func(*http.Request) bool {
+				var calls atomic.Int32
+				return func(r *http.Request) bool {
+					return r.Method == http.MethodGet &&
+						r.URL.Path == issueCollection+"/7/comments" &&
+						calls.Add(1) == 3
+				}
+			}(),
 		},
 		{
 			name:       "read-only re-sweep staleness",
