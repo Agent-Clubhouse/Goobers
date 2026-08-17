@@ -4238,6 +4238,7 @@ func TestGateDiffSeedReconstructsFromJournal(t *testing.T) {
 
 func TestTargetRepassSeedRestoresCrossGateBudget(t *testing.T) {
 	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
 		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: gate.OutcomeFail, Target: "implement",
 			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "implement"}},
 		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: gate.OutcomePass, Target: "local-ci",
@@ -4253,6 +4254,9 @@ func TestTargetRepassSeedRestoresCrossGateBudget(t *testing.T) {
 	gates := gateRepassSeed(events)
 	if gates["review"] != 0 || gates["local-gate"] != 1 {
 		t.Fatalf("gateRepassSeed(events) = %+v, want review=0 local-gate=1", gates)
+	}
+	if !stageVisitSeed(events)["implement"] {
+		t.Fatal("stageVisitSeed(events)[implement] = false, want restored stage re-entry detection")
 	}
 }
 

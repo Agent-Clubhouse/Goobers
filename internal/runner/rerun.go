@@ -175,6 +175,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws := newWalkState(jr, startIn, registrar, in.Stage)
 		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
 		ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+		ws.visitedStages = stageVisitSeed(seedEvents)
 		ws.parallel = activeParallel
 		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
 		if activeParallel != nil {

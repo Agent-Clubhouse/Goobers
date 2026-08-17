@@ -429,12 +429,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	ws := &walkState{
-		jr:        jr,
-		reg:       registrar,
-		pointers:  reconstructPointers(pointerEvents, in.Machine),
-		completed: reconstructStageOutputs(seedEvents, in.Machine),
-		parallel:  activeParallel,
-		fanIn:     pendingFanIn(seedEvents, in.Machine),
+		jr:            jr,
+		reg:           registrar,
+		pointers:      reconstructPointers(pointerEvents, in.Machine),
+		completed:     reconstructStageOutputs(seedEvents, in.Machine),
+		visitedStages: stageVisitSeed(seedEvents),
+		parallel:      activeParallel,
+		fanIn:         pendingFanIn(seedEvents, in.Machine),
 	}
 	if activeParallel != nil {
 		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
@@ -1500,6 +1501,16 @@ func targetRepassSeed(events []journal.Event) map[string]int {
 		}
 		if int(n) > seed[target] {
 			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func stageVisitSeed(events []journal.Event) map[string]bool {
+	seed := make(map[string]bool)
+	for _, e := range events {
+		if e.Type == journal.EventStageFinished && e.Stage != "" {
+			seed[e.Stage] = true
 		}
 	}
 	return seed

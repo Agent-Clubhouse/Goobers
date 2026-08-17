@@ -32,9 +32,13 @@ type gateResult struct {
 	// Outcome, unless the repass budget was exhausted, in which case it is
 	// the optional escalate control branch or wf.TargetEscalate.
 	Target string
-	// Attempt is this gate's consecutive non-pass evaluation count (0 on a
-	// pass, which resets the budget).
+	// Attempt is the target stage's cumulative re-entry count, or 0 when this
+	// branch does not re-enter a completed stage.
 	Attempt int
+	// GateAttempt is this gate's consecutive non-pass evaluation count.
+	GateAttempt int
+	// RepassTarget is the configured branch target charged by Attempt.
+	RepassTarget string
 	// Escalated is true when Target was overridden by the repass budget.
 	Escalated bool
 }
@@ -51,29 +55,39 @@ func maxRepassesFor(in RunInput) int {
 	return gate.DefaultMaxRepasses
 }
 
-// resolveGateOutcome resolves an evaluator outcome to the branch taken,
-// enforcing the bounded repass budget: a "pass" resets the gate's
-// consecutive non-pass count; any other outcome increments it, and exceeding
-// maxRepasses escalates through the gate's escalate control branch (or
-// wf.TargetEscalate when it has none) instead of following the gate's own
-// branch — never a silent loop onward. Ports gate.Evaluator's trackRepass +
-// escalation override.
-func resolveGateOutcome(g apiv1.Gate, outcome string, attempts map[string]int, maxRepasses int) (gateResult, error) {
+// resolveGateOutcome resolves an evaluator outcome to the branch taken and
+// charges every branch that re-enters an already-completed stage to that
+// target's shared budget. Ports gate.Evaluator's trackRepass and escalation
+// override.
+func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, gateAttempts, repassAttempts map[string]int, maxRepasses int) (gateResult, error) {
 	target, ok := wf.BranchTarget(g, outcome)
 	if !ok {
 		return gateResult{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 	if outcome == gate.OutcomePass {
-		attempts[g.Name] = 0
-		return gateResult{Gate: g.Name, Outcome: outcome, Target: target}, nil
+		gateAttempts[g.Name] = 0
+	} else {
+		gateAttempts[g.Name]++
 	}
-	attempts[g.Name]++
-	attempt := attempts[g.Name]
+	gateAttempt := gateAttempts[g.Name]
+	if !reentry {
+		return gateResult{Gate: g.Name, Outcome: outcome, Target: target, GateAttempt: gateAttempt}, nil
+	}
+	repassAttempts[target]++
+	attempt := repassAttempts[target]
 	escalated := attempt > runcontrol.MaxRepassesForGate(g, maxRepasses)
 	if escalated {
 		target = escalationTarget(g)
 	}
-	return gateResult{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated}, nil
+	return gateResult{
+		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
+		GateAttempt: gateAttempt, RepassTarget: wfTarget(g, outcome), Escalated: escalated,
+	}, nil
+}
+
+func wfTarget(g apiv1.Gate, outcome string) string {
+	target, _ := wf.BranchTarget(g, outcome)
+	return target
 }
 
 // escalationTarget mirrors internal/gate's escalationTarget: forced

@@ -141,10 +141,16 @@ type Evaluator struct {
 	Attempts map[string]int
 
 	// RepassAttempts holds cumulative repasses keyed by configured branch
-	// target. Unlike Attempts, a pass at one gate does not reset another gate's
-	// budget for re-entering the same stage. A resuming caller reconstructs it
-	// from repassTarget and repassAttempt annotations.
+	// target. Unlike Attempts, the verdict does not affect this count: every
+	// branch back to an already-completed stage consumes its shared budget. A
+	// resuming caller reconstructs it from repassTarget and repassAttempt
+	// annotations.
 	RepassAttempts map[string]int
+
+	// IsReentry reports whether a configured branch target is a stage that has
+	// already completed in this run. Nil preserves the historical assumption
+	// that non-pass branches are repasses for direct Evaluator callers.
+	IsReentry func(target string) bool
 
 	// LastDiffDigest holds each agentic gate's most recently evaluated diff
 	// digest, keyed by gate name (issue #316: an implementer stuck in a
@@ -455,20 +461,27 @@ func escalationTarget(g apiv1.Gate) string {
 	return wf.TargetEscalate
 }
 
-// trackRepass charges non-pass branches to their target stage. The per-gate
-// counter remains for interrupted-evaluation recovery, but budget enforcement
-// uses the target counter so distinct gates cannot grant each other fresh
-// repass budgets.
+// trackRepass charges branches that re-enter an already-completed target stage.
+// The per-gate counter remains for interrupted-evaluation recovery, but budget
+// enforcement uses the target counter so distinct gates and outcomes cannot
+// grant each other fresh repass budgets.
 func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, gateAttempt int, repassTarget string, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
 	if outcome == OutcomePass {
 		e.Attempts[g.Name] = 0
-		return 0, 0, "", false
+	} else {
+		e.Attempts[g.Name]++
+		gateAttempt = e.Attempts[g.Name]
 	}
-	e.Attempts[g.Name]++
-	gateAttempt = e.Attempts[g.Name]
+	reentry := outcome != OutcomePass
+	if e.IsReentry != nil {
+		reentry = e.IsReentry(target)
+	}
+	if !reentry {
+		return 0, gateAttempt, "", false
+	}
 	if e.RepassAttempts == nil {
 		e.RepassAttempts = make(map[string]int)
 	}

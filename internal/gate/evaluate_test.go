@@ -752,6 +752,29 @@ func TestEvaluatorBoundsRepassTargetAcrossDistinctGates(t *testing.T) {
 	}
 }
 
+func TestEvaluatorChargesPassBranchWhenItReentersStage(t *testing.T) {
+	g := apiv1.Gate{
+		Name: "review", Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches:  map[string]string{OutcomePass: "implement", OutcomeFail: wf.TargetAbort},
+	}
+	ev := &Evaluator{
+		MaxRepasses:    1,
+		Attempts:       map[string]int{"review": 1},
+		RepassAttempts: map[string]int{"implement": 1},
+		IsReentry:      func(target string) bool { return target == "implement" },
+	}
+
+	result, err := ev.EvaluateKnownOutcome(g, OutcomePass)
+	if err != nil {
+		t.Fatalf("EvaluateKnownOutcome: %v", err)
+	}
+	if !result.Escalated || result.Attempt != 2 || result.GateAttempt != 0 ||
+		result.RepassTarget != "implement" || result.Target != wf.TargetEscalate {
+		t.Fatalf("result = %+v, want pass-driven target-stage escalation with reset gate attempt", result)
+	}
+}
+
 // TestEvaluatorHonorsSeededRepassCount is #89's gate-side acceptance test: a
 // caller resuming an interrupted run (internal/runner.Resume) constructs a
 // fresh Evaluator with Attempts pre-seeded from the run's last-known

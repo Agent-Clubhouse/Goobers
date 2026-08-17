@@ -418,8 +418,12 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
 		Runner: map[string]any{
 			"repassAttempt": gr.Attempt,
+			"gateAttempt":   gr.GateAttempt,
 			"escalated":     gr.Escalated,
 		},
+	}
+	if gr.RepassTarget != "" {
+		ev.Runner["repassTarget"] = gr.RepassTarget
 	}
 	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {

@@ -247,7 +247,7 @@ type Config struct {
 	// evaluator=automated gate. gate.NewAutomatedEvaluator() (the default
 	// check registry) is a ready-made implementation.
 	Automated invoke.Automated
-	// MaxRepasses bounds gate repass loops before escalating
+	// MaxRepasses bounds cumulative target-stage re-entries before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
 	// Deprecated: use StartInput.RunControls for per-run policy.
 	MaxRepasses int
@@ -871,15 +871,17 @@ type walkState struct {
 	gateAttempts         map[string]int
 	repassAttempts       map[string]int
 	gateDiffDigests      map[string]string
+	visitedStages        map[string]bool
 }
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
 	return &walkState{
-		jr:        jr,
-		in:        in,
-		reg:       reg,
-		state:     state,
-		completed: stageOutputs{},
+		jr:            jr,
+		in:            in,
+		reg:           reg,
+		state:         state,
+		completed:     stageOutputs{},
+		visitedStages: map[string]bool{},
 	}
 }
 
@@ -1021,6 +1023,9 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 		MaxRepasses:    int(ws.in.RunControls.MaxRepasses),
 		Attempts:       ws.gateAttempts,
 		RepassAttempts: ws.repassAttempts,
+		IsReentry: func(target string) bool {
+			return ws.visitedStages[target]
+		},
 		LastDiffDigest: ws.gateDiffDigests,
 	}
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
@@ -1503,6 +1508,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	} else {
 		ws.completed.record(t.Name, outputs, result.Integrity)
 	}
+	ws.visitedStages[t.Name] = true
 	if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
 		if branch := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(ws.in.Gaggle)); branch != "" {
 			ws.workspaceBranch = branch
