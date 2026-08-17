@@ -61,7 +61,7 @@ func providerDispatchFixture(t *testing.T, kind providers.ProviderKind) (string,
 		configured.BaseURL = "https://gitea.example.test"
 		configured.Token = instance.TokenRef{Env: "GITEA_DISPATCH_TOKEN"}
 		t.Setenv("GITEA_DISPATCH_TOKEN", "configured-gitea-token")
-		t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "gitea-issues-token")
+		t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "gitea-issues-token")
 		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "gitea-pr-token")
 	default:
 		t.Fatalf("unsupported fixture provider %q", kind)
@@ -261,7 +261,7 @@ func TestBacklogDedupeScansOpenBacklogAndBoundsArtifact(t *testing.T) {
 		t.Fatalf("claim fixture item: ok=%v err=%v", ok, err)
 	}
 
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	t.Setenv("GOOBERS_INPUT_MAXCANDIDATES", "1")
 	workDir := t.TempDir()

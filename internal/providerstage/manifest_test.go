@@ -135,6 +135,27 @@ func TestRequiredCapabilities(t *testing.T) {
 			command: "publish-batch",
 			want:    []capability.Capability{capability.GitHubIssuesWrite},
 		},
+		{
+			name:    "backlog health snapshot",
+			command: "backlog-health",
+			want:    []capability.Capability{capability.GitHubIssuesRead},
+		},
+		{
+			name:    "backlog health feedback",
+			command: "backlog-health",
+			args:    []string{"--feedback"},
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
+		{
+			name:    "finding response validation",
+			command: "respond-to-findings",
+			args:    []string{"--check"},
+		},
+		{
+			name:    "finding response publication",
+			command: "respond-to-findings",
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
 	}
 
 	for _, test := range tests {

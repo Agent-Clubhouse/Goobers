@@ -100,6 +100,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		health.Run == nil || len(health.Run.Command) != 2 || health.Run.Command[1] != "backlog-health" {
 		t.Errorf("sample-ready-pool = %+v, want deterministic goobers backlog-health task", health)
 	}
+	if len(health.Capabilities) != 1 || health.Capabilities[0] != "github:issues:read" {
+		t.Errorf("sample-ready-pool capabilities = %v, want [github:issues:read]", health.Capabilities)
+	}
 	query, ok := m.Task("query-backlog")
 	if !ok {
 		t.Fatal("query-backlog task not found")
@@ -120,6 +123,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 	if dedupe.Inputs["maxCandidates"] != "20" || dedupe.Inputs["resultFile"] != "dedupe-candidates.json" {
 		t.Errorf("surface-duplicates inputs = %v, want bounded candidate artifact", dedupe.Inputs)
+	}
+	if len(dedupe.Capabilities) != 1 || dedupe.Capabilities[0] != "github:issues:read" {
+		t.Errorf("surface-duplicates capabilities = %v, want [github:issues:read]", dedupe.Capabilities)
 	}
 	if query.Inputs["staleAfterDays"] != "90" {
 		t.Errorf("query-backlog staleAfterDays = %q, want 90", query.Inputs["staleAfterDays"])
@@ -188,7 +194,8 @@ func TestBacklogCurationCompiles(t *testing.T) {
 
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
-	const wantDigest = "sha256:ec0ecc4ddbb155c4368647e7e517cb78b4ade51e57a6f88455234b53365eccf3"
+	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
+	const wantDigest = "sha256:2cef3d2bdd74216f571783769d430f2dc252fd4f8f64f012204782b8626f6484"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
