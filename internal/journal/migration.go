@@ -88,7 +88,7 @@ func ensureJournalSchemaWithOperations(
 	}
 	defer releaseRunLock(writerLock)
 
-	info, exists, err = readSchemaInfo(dir)
+	info, _, err = readSchemaInfo(dir)
 	if err != nil {
 		return SchemaInfo{}, err
 	}
@@ -340,7 +340,7 @@ func rollbackMigration(
 ) error {
 	info, exists, err := readSchemaInfo(dir)
 	if err != nil {
-		return fmt.Errorf("%w; inspect rollback schema authority: %v", migrationErr, err)
+		return fmt.Errorf("%w; inspect rollback schema authority: %w", migrationErr, err)
 	}
 	if exists &&
 		info.Version == CurrentSchemaVersion &&
@@ -359,7 +359,7 @@ func rollbackMigration(
 		)
 	}
 	if err := restoreBackup(dir, sourceVersion); err != nil {
-		return fmt.Errorf("%w; rollback failed: %v", migrationErr, err)
+		return fmt.Errorf("%w; rollback failed: %w", migrationErr, err)
 	}
 	return migrationErr
 }

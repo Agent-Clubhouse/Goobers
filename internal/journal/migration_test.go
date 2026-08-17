@@ -553,8 +553,7 @@ func TestInterruptedRollbackKeepsMigrationMarkerAuthoritative(t *testing.T) {
 			})
 		},
 	)
-	if !errors.Is(err, migrationErr) ||
-		!strings.Contains(err.Error(), restoreErr.Error()) {
+	if !errors.Is(err, migrationErr) || !errors.Is(err, restoreErr) {
 		t.Fatalf("migration error = %v, want migration and rollback failures", err)
 	}
 	info, exists, err := readSchemaInfo(dir)
