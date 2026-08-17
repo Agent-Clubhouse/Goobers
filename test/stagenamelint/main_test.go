@@ -63,6 +63,28 @@ const name = "renamed-workflow"
 	}
 }
 
+func TestExceptionAllowsRepeatedLiteralsWithoutDependingOnCount(t *testing.T) {
+	root := fixtureRepository(t)
+	const path = "cmd/goobers/stage.go"
+	configured := []exception{{
+		Path: path, Value: "renamed-workflow", Reason: "fixture registry and lookup",
+	}}
+
+	for _, contents := range []string{
+		"package main\nconst registry = \"renamed-workflow\"\nconst lookup = \"renamed-workflow\"\n",
+		"package main\nconst registry = \"renamed-workflow\"\n",
+	} {
+		writeFixture(t, root, path, contents)
+		violations, err := checkRepositoryWithExceptions(root, configured)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(violations) != 0 {
+			t.Fatalf("violations = %+v, want none for %q", violations, contents)
+		}
+	}
+}
+
 func TestCheckRepositoryRejectsStaleException(t *testing.T) {
 	root := fixtureRepository(t)
 	const path = "cmd/goobers/stage.go"

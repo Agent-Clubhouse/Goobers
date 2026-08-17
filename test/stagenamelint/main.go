@@ -35,10 +35,8 @@ var exceptions = []exception{
 	{Path: "internal/instance/guided.go", Value: "work-nomination", Reason: "guided-init workflow definition"},
 	{Path: "internal/instance/instance.go", Value: "docs-updater", Reason: "canonical scaffold directory name"},
 	{Path: "cmd/goobers/clisynopsis.go", Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key"},
-	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry lookup"},
-	{Path: "cmd/goobers/selfupdate.go", Value: "self-update", Reason: "CLI flag-set name"},
-	{Path: "cmd/goobers/selfupdate.go", Value: "self-update", Reason: "CLI help lookup"},
+	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key and lookup"},
+	{Path: "cmd/goobers/selfupdate.go", Value: "self-update", Reason: "CLI flag-set name and help lookup"},
 	{Path: "cmd/goobers/completionmodel.go", Value: "self-update", Reason: "CLI completion flag-spec registry key"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 
@@ -136,37 +134,35 @@ func checkRepositoryWithExceptions(root string, configured []exception) ([]viola
 
 type exceptionSet struct {
 	configured []exception
-	byLiteral  map[string][]int
-	matched    []bool
+	byLiteral  map[string]bool
+	matched    map[string]bool
 }
 
 func newExceptionSet(configured []exception) *exceptionSet {
 	set := &exceptionSet{
 		configured: configured,
-		byLiteral:  make(map[string][]int, len(configured)),
-		matched:    make([]bool, len(configured)),
+		byLiteral:  make(map[string]bool, len(configured)),
+		matched:    make(map[string]bool, len(configured)),
 	}
-	for i, current := range configured {
-		key := exceptionKey(current.Path, current.Value)
-		set.byLiteral[key] = append(set.byLiteral[key], i)
+	for _, current := range configured {
+		set.byLiteral[exceptionKey(current.Path, current.Value)] = true
 	}
 	return set
 }
 
 func (s *exceptionSet) allow(path, value string) bool {
-	for _, index := range s.byLiteral[exceptionKey(path, value)] {
-		if !s.matched[index] {
-			s.matched[index] = true
-			return true
-		}
+	key := exceptionKey(path, value)
+	if s.byLiteral[key] {
+		s.matched[key] = true
+		return true
 	}
 	return false
 }
 
 func (s *exceptionSet) staleViolations() []violation {
 	var violations []violation
-	for i, current := range s.configured {
-		if s.matched[i] {
+	for _, current := range s.configured {
+		if s.matched[exceptionKey(current.Path, current.Value)] {
 			continue
 		}
 		violations = append(violations, violation{
