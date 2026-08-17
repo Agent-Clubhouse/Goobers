@@ -134,6 +134,7 @@ complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Da
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l listen -r -d 'Bind address as host:port; non-loopback requires api.auth'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
+complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l wait-for-daemon -d 'Wait up to 30s for a concurrently starting daemon'
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l port -r -d 'Server port, or auto'
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l workdir -r -d 'Directory holding the tutorial sample and instance'
