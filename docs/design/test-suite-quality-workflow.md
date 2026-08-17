@@ -1,8 +1,10 @@
-# Decision: `quality-sprint` owns scheduled repository quality review
+# Decision: dedicated workflows own repository and test-suite quality
 
-> **Status:** implemented — by #1568 (2026-07-30).
+> **Status:** implemented — repository review by #1568 (2026-07-30);
+> recurring-flake analysis by #1489.
 >
-> **Canonical workflow:** [`quality-sprint`](../../reference-workflows/gaggles/goobers/workflows/quality-sprint.yaml)
+> **Canonical workflows:** [`quality-sprint`](../../reference-workflows/gaggles/goobers/workflows/quality-sprint.yaml)
+> and [`test-suite-quality`](../../reference-workflows/gaggles/goobers/workflows/test-suite-quality.yaml)
 >
 > **Related:** #507 (original test-suite-quality decision), #506 / PR #1037
 > (per-check CI evidence), [`ARCHITECTURE.md` §5 and §8](../ARCHITECTURE.md),
@@ -11,11 +13,12 @@
 
 ## Decision
 
-The shipped canonical producer workflow is named **`quality-sprint`**. It runs
-a scheduled, evidence-based review of a target repository across six quality
-lenses. Test coverage is one lens; the workflow is not a test-suite-specific
-telemetry analyzer and there is no shipped workflow named
-`test-suite-quality`.
+The shipped `quality-sprint` producer runs a scheduled, evidence-based review
+of a target repository across six quality lenses. The separate canonical
+`test-suite-quality` workflow owns longitudinal test telemetry. Its first
+shipped slice detects recurring flaky tests and produces bounded fix or
+quarantine recommendations; coverage trends and persistent slow-test tracking
+remain assigned to #1490.
 
 The workflow reports and nominates findings. It does not edit product code,
 tests, gates, quarantine configuration, or instance configuration.
@@ -72,7 +75,8 @@ standard envelope, journal, digest, and redaction boundaries in
 
 | Workflow | Owns | Explicitly does not own |
 |---|---|---|
-| `quality-sprint` | Scheduled repository review through six fixed lenses, within-run deduplication, and nomination of warranted backlog work | Product changes, test quarantine, quality-gate changes, maintainer approval, or instance configuration |
+| `quality-sprint` | Scheduled repository review through six fixed lenses, within-run deduplication, and nomination of warranted backlog work | Longitudinal test telemetry, product changes, test quarantine, quality-gate changes, maintainer approval, or instance configuration |
+| `test-suite-quality` | Recurring test-failure analysis and bounded fix or quarantine recommendations | Enacting quarantine, automatic retries, product-code changes, coverage/slow-test tracking before #1490, or instance configuration |
 | `work-nomination` | General target-product signal mining and nomination from its own gathered signals | Running or duplicating `quality-sprint`'s six-lens review |
 | `tutor` | Proposals to improve gaggle configuration, workflows, gates, skills, and goober instructions | Product-code or product test-suite quality campaigns |
 
@@ -80,23 +84,16 @@ The same boundary applies when Goobers is its own target: a flaky Go test is a
 product finding that a quality lens may nominate, while a misconfigured
 workflow validation stage is a process/configuration concern for the Tutor.
 
-## Aspirational test-suite telemetry design
+## Test-suite telemetry implementation
 
-The original decision proposed a narrower workflow named
-`test-suite-quality`. That proposal would consume immutable check-, test-, and
-coverage-level telemetry; compare like-for-like observations over time; apply
-configured sample counts and thresholds; and emit versioned, typed findings
-such as `flake-candidate`, `coverage-trend`, and `persistent-slow-test`.
+`test-suite-quality` queries a seven-day window for CI checks that failed in at
+least two distinct runs. Its read-only analyst resolves the bounded journal
+pointers and durable `ci-checks.json` evidence, requires a stable test and
+suite/package identity, and suppresses single failures, unrelated assertions,
+and likely regressions. Confirmed findings carry distinct run IDs and either a
+scoped fix or an issue-backed quarantine proposal with an owner and expiry.
+The nominator then performs backlog deduplication and opens only warranted
+issues; neither stage edits tests or weakens CI.
 
-None of that is current `quality-sprint` behavior. In particular, the shipped
-workflow has no telemetry-query input, longitudinal or cross-run trend
-tracking, deterministic quality thresholds, severity taxonomy, typed
-`test-suite-quality-findings` artifact, or automatic quarantine action. It
-also nominates through its own terminal stage rather than publishing a
-findings signal for a separate `work-nomination` run.
-
-Those capabilities remain aspirational. If adopted, they require a separate
-design and implementation that defines how a specialized telemetry analyzer
-composes with, extends, or replaces part of `quality-sprint`; the old
-`test-suite-quality` name and data flow must not be read as shipped aliases or
-current runtime behavior.
+This is intentionally the #1489 flake slice. Typed coverage comparisons and
+persistent slow-test budgets remain unimplemented pending #1490.

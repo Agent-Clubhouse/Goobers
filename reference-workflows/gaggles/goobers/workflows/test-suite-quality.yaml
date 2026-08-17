@@ -1,0 +1,61 @@
+# The flake-analysis slice of the canonical test-suite-quality workflow.
+# Coverage trends and persistent slow tests remain separately tracked by #1490.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: test-suite-quality
+spec:
+  gaggle: goobers
+  displayName: Test suite quality
+  triggers:
+    - type: schedule
+      schedule: "13 6 * * 2"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+    maxRunsPerDay: 1
+  start: gather-recurring-failures
+  tasks:
+    - name: gather-recurring-failures
+      type: deterministic
+      goal: Select recurring failed CI checks with bounded journal evidence for test-level analysis.
+      run:
+        command: ["goobers", "telemetry-query", "--window", "168h", "--aggregate", "ci-check-failure", "--threshold", "min-ci-check-failure-runs=2", "--format", "candidate-findings"]
+      inputs:
+        resultFile: "recurring-failures.json"
+      capabilities:
+        - telemetry:read
+      expectedOutputs:
+        - candidate-findings
+      next: classify-flakes
+
+    - name: classify-flakes
+      type: agentic
+      goober: test-quality-analyst
+      goal: Classify recurring test failures from their journal evidence and propose a bounded fix or quarantine.
+      workspace: repo-readonly
+      inputs:
+        artifactFile: test-suite-quality-findings.md
+      capabilities:
+        - telemetry:read
+        - journal:read
+        - agent:model
+      expectedOutputs:
+        - findingsRef
+      next: nominate
+
+    - name: nominate
+      type: agentic
+      goober: nominator
+      goal: Deduplicate and open evidence-backed fix or quarantine proposals for confirmed recurring flaky tests.
+      capabilities:
+        - telemetry:read
+        - github:issues:write
+        - agent:model
+      policyActions:
+        - comment-on-issue
+        - create-issue
+        - label-issue
+      inputsFrom:
+        candidateFindings: "findingsRef"
