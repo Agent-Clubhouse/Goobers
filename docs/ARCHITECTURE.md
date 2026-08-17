@@ -399,7 +399,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Seam | Tiers 1–2 (local) | Tier 3 (cloud drop-in) |
 |---|---|---|
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
-| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
+| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
 | Config delivery | Startup-loaded local `config/`; opt-in `--watch-config` for direct edits; or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |

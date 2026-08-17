@@ -2015,8 +2015,9 @@ polling and let in-flight activities finish within --drain-timeout.
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
 workspace provisioning (git worktrees + scratch dirs under --work-root) are
-wired; agentic and deterministic executor seams arrive with the runtime
-wiring slice, and stages needing them fail closed with a clear error.
+wired. With --instance, the worker also wires the same agentic and
+deterministic executors as the local runner; without it, stages needing
+those executors fail closed with a clear error.
 
 Flags:
   --instance <dir>           instance root; wires the real agentic and

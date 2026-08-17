@@ -61,7 +61,6 @@ ENV HOME=/home/nonroot
 USER 65532:65532
 WORKDIR /instance
 ENTRYPOINT ["goobers"]
-# Daemon by default. Override args for worker-style invocation (task-queue
-# workers once v2-cloud-scale A1.6 lands), or set the container command to
-# ["goobers-operator"] for the operator Deployment.
+# Daemon by default. Override args to host a Temporal task-queue worker, or set
+# the container command to ["goobers-operator"] for the operator Deployment.
 CMD ["up"]

@@ -73,26 +73,17 @@ token, not a new contract surface.
   needing an architecture qualifier), that is a follow-up issue filed against
   `RequiredCapabilities`'s existing free-form vocabulary, not a reason to add a field now.
 
-### 2.2 Mixed-platform pipelines: declared, not yet routable
+### 2.2 Mixed-platform pipelines: routed per stage in Temporal
 
-A workflow can declare stage A with no platform requirement and stage B with
-`os=windows`, but it is **not** currently routed across Linux and Windows runners.
-`WorkflowRequiredCapabilities` flattens those declarations into one run-level union. The
-local scheduler therefore admits the entire workflow only to a runner that claims
-`os=windows`, and that runner executes both stages. A single run spanning two operating
-systems is not expressible today.
+The Temporal engine routes each stage from its own `Task.RequiredCapabilities`. An
+unlabeled stage (or one labeled `os=linux`) inherits the workflow task queue; a stage
+labeled `os=windows` is dispatched to `<workflow-queue>-windows`. The workflow itself
+stays on its original queue, so one run can span Linux and Windows workers without a
+multi-queue workflow starter.
 
-Mixed-platform pipelines remain a target of this design, but their implementation is
-deferred until the customer trigger in §6. They require all of the following rather than
-arriving for free with the existing declaration field:
-
-1. Per-stage capability resolution that combines the gaggle requirements with the
-   current stage's `Task.RequiredCapabilities`, instead of flattening every stage into a
-   run-level union.
-2. A multi-queue Temporal starter and dispatch path that selects the platform queue for
-   each stage.
-3. A finite schedule-to-start bound that turns an unroutable stage into the locked
-   fail-fast diagnostic instead of leaving it queued indefinitely.
+Every stage dispatch also has a finite schedule-to-start timeout. If no worker polls the
+selected platform queue, the activity fails within that bound and names the queue instead
+of waiting indefinitely. The local scheduler remains run-granular as described in §2.3.
 
 ### 2.3 Interim (local) scheduler mapping
 
