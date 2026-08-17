@@ -217,6 +217,32 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Raced item", "goobers:approved")
+	server.addComment(7, "goobers-claim: run=other-instance-run\n\nClaimed by another instance.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "losing-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("claim race: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "claim race lost for item 7 to run other-instance-run") {
+		t.Fatalf("stderr = %q, want detected-race warning", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("losing run retained ledger claim: %+v", entry)
+	}
+}
+
 func TestBacklogQuerySkipsMalformedReadyItemAndClaimsNext(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
