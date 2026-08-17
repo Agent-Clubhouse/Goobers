@@ -441,8 +441,18 @@ func toolNames(tools []resolvedTool) map[string]struct{} {
 }
 
 func populateToolPath(directory string, tools []resolvedTool) error {
+	// Distinct allowlist names can normalise to one executable: on Windows
+	// executableName maps both "icacls" and "icacls.exe" to icacls.exe. The
+	// allowlist needs both spellings so the audit matches either literal
+	// argv[0], but the binary must only be linked once — linkTool fails with
+	// "The file exists" on the second attempt.
+	linked := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
 		destination := filepath.Join(directory, executableName(tool.name))
+		if _, done := linked[destination]; done {
+			continue
+		}
+		linked[destination] = struct{}{}
 		if err := linkTool(tool.path, destination); err != nil {
 			return fmt.Errorf("link %s: %w", tool.name, err)
 		}

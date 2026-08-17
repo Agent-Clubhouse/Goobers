@@ -224,6 +224,37 @@ func TestReportViolationsDirectsAuthorToIntegrationTier(t *testing.T) {
 	}
 }
 
+func TestPopulateToolPathLinksSharedDestinationOnce(t *testing.T) {
+	// Two allowlist names can normalise to a single executable — on Windows
+	// executableName maps both "icacls" and "icacls.exe" to icacls.exe. Linking
+	// the second one used to fail with "The file exists", taking every Windows
+	// behavioral shard red. Same-named entries reproduce that collision on any
+	// GOOS.
+	sourceDir := t.TempDir()
+	source := filepath.Join(sourceDir, executableName("icacls"))
+	writeFixture(t, source, "icacls")
+
+	destination := t.TempDir()
+	if err := populateToolPath(destination, []resolvedTool{
+		{name: "icacls", path: source},
+		{name: "icacls", path: source},
+	}); err != nil {
+		t.Fatalf("populateToolPath with a shared destination: %v", err)
+	}
+
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != executableName("icacls") {
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("tool PATH entries = %q, want exactly [%q]", names, executableName("icacls"))
+	}
+}
+
 func TestPopulateToolPathContainsOnlyResolvedTools(t *testing.T) {
 	sourceDir := t.TempDir()
 	first := filepath.Join(sourceDir, executableName("go"))
