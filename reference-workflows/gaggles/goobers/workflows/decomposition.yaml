@@ -1,0 +1,208 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: decomposition
+spec:
+  gaggle: goobers
+  displayName: Decomposition
+  # A direct `goobers run decomposition` enters this same selector. The
+  # schedule trigger controls autonomous firing; manual and schedule triggers
+  # cannot be combined in the current schema.
+  triggers:
+    - type: schedule
+      schedule: "53 4 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  runControls:
+    maxRepasses: 1
+  start: select-source
+  tasks:
+    - name: select-source
+      type: deterministic
+      goal: Select and claim the oldest eligible decomposition escalation.
+      run:
+        command: ["goobers", "select-source"]
+      inputs:
+        trustLabel: "goobers:approved"
+        resultFile: "selection.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed
+        - noWork
+        - mode
+        - sourceRunId
+        - parent
+        - issueSnapshotDigest
+      next: design-slices
+
+    - name: design-slices
+      type: agentic
+      goober: decomposer
+      goal: >-
+        Design a coherent set of independently reviewable, single-PR slices
+        for the selected parent and write the versioned decomposition plan.
+      inputs:
+        artifactFile: "plan.json"
+      contextFrom:
+        - select-source
+        - validate-plan
+      capabilities:
+        - repo:read
+        - github:issues:read
+        - agent:model
+      next: validate-plan
+
+    - name: validate-plan
+      type: deterministic
+      goal: Validate the plan, its source binding, slice boundaries, dependency graph, labels, and live parent revision.
+      run:
+        command: ["goobers", "validate-plan"]
+      inputs:
+        resultFile: "plan-validation.json"
+      capabilities:
+        - github:issues:read
+      expectedOutputs:
+        - valid
+        - planDigest
+        - errors
+        - conflict
+        - conflictReason
+        - unresolvedDecision
+        - unresolvedDecisionReason
+        - schemaInvalid
+        - repassable
+      next: plan-valid
+
+    - name: publish-slices
+      type: deterministic
+      goal: Publish the complete validated decomposition batch and release the parent claim.
+      run:
+        command: ["goobers", "publish-batch"]
+      inputs:
+        resultFile: "published-batch.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - comment-on-issue
+        - create-issue
+        - edit-issue
+        - label-issue
+      expectedOutputs:
+        - parentId
+        - planDigest
+        - childIds
+        - publicationConflict
+        - conflictReason
+      next: publication-clean
+
+    - name: park-for-human
+      type: deterministic
+      goal: Explain the validation or publication conflict, park the parent for a human decision, and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputsFrom:
+        reason: conflictReason
+      inputs:
+        status: "needs-human"
+        comment: "How should the decomposition proceed after this conflict?"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@escalate"
+
+    - name: park-unresolved-decision
+      type: deterministic
+      goal: Explain the unresolved product decision, park the parent for a human decision, and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputsFrom:
+        reason: unresolvedDecisionReason
+      inputs:
+        status: "needs-human"
+        comment: "Which product decision should the decomposition use?"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@escalate"
+
+    - name: park-repass-exhausted
+      type: deterministic
+      goal: Explain that bounded design repasses were exhausted, park the parent for a human decision, and release its claim.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "needs-human"
+        comment: "The decomposition plan remained inadequately scoped after the bounded design repass was exhausted. What decomposition should replace this plan?"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@escalate"
+
+  gates:
+    - name: schema-supported
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: schemaInvalid
+          equals: "false"
+      branches:
+        pass: parent-unchanged
+        fail: "@abort"
+
+    - name: parent-unchanged
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: conflict
+          equals: "false"
+      branches:
+        pass: decision-resolved
+        fail: park-for-human
+
+    - name: decision-resolved
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: unresolvedDecision
+          equals: "false"
+      branches:
+        pass: publish-slices
+        fail: park-unresolved-decision
+
+    - name: plan-valid
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: repassable
+          equals: "false"
+      maxRepasses: 1
+      branches:
+        pass: schema-supported
+        fail: design-slices
+        escalate: park-repass-exhausted
+
+    - name: publication-clean
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: publicationConflict
+          equals: "false"
+      branches:
+        pass: ""
+        fail: park-for-human
