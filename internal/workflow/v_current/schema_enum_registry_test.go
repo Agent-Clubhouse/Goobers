@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 )
 
@@ -56,6 +57,37 @@ type enumRule struct {
 func goConsts(relPath, typeName string) func(t *testing.T) []string {
 	return func(t *testing.T) []string {
 		return typedStringConsts(t, filepath.Join(moduleRoot(t), filepath.FromSlash(relPath)), typeName)
+	}
+}
+
+func TestEnvelopeIsValidMatchesGoConsts(t *testing.T) {
+	const envelope = "api/v1alpha1/envelope.go"
+	tests := []struct {
+		typeName string
+		isValid  func(string) bool
+	}{
+		{typeName: "FindingClass", isValid: func(value string) bool { return apiv1.FindingClass(value).IsValid() }},
+		{typeName: "ResultStatus", isValid: func(value string) bool { return apiv1.ResultStatus(value).IsValid() }},
+		{typeName: "VerdictDecision", isValid: func(value string) bool { return apiv1.VerdictDecision(value).IsValid() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			declared := typedStringConsts(t, filepath.Join(moduleRoot(t), filepath.FromSlash(envelope)), tt.typeName)
+			declaredSet := make(map[string]bool, len(declared))
+			for _, value := range declared {
+				declaredSet[value] = true
+				if !tt.isValid(value) {
+					t.Errorf("%s(%q).IsValid() = false; add the declared const to IsValid", tt.typeName, value)
+				}
+			}
+
+			for _, value := range []string{"", "__undeclared_" + tt.typeName + "__"} {
+				if !declaredSet[value] && tt.isValid(value) {
+					t.Errorf("%s(%q).IsValid() = true for an undeclared value", tt.typeName, value)
+				}
+			}
+		})
 	}
 }
 
