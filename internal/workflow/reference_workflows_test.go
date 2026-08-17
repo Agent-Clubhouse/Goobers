@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
@@ -174,6 +178,82 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 				if warnings := CheckWarnings(def); len(warnings) != 0 {
 					t.Fatalf("%s warnings = %v, want warning-clean reference config", file, warnings)
 				}
+			}
+		})
+	}
+}
+
+func TestReadOnlyWorkflowTasksDoNotMaterializeIssueWriter(t *testing.T) {
+	root := filepath.Join("..", "..")
+	cases := []struct {
+		path            string
+		task            string
+		command         []string
+		expectedOutputs []string
+	}{
+		{"reference-workflows/gaggles/goobers/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"reference-workflows/gaggles/goobers/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"config-examples/gaggles/acme-web/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"config-examples/gaggles/acme-web/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"config-examples/gaggles/acme-web-claude/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"config-examples/gaggles/acme-web-claude/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "gather-pr-context", []string{"goobers", "gather-pr-context"}, []string{"selectedNumber", "head", "base", "isBehindBase", "hasSubstantiveFindings", "hasFailingCI", "workspaceBranch"}},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "gather-issue-context", []string{"goobers", "gather-issue-context"}, nil},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "validate-finding-responses", []string{"goobers", "respond-to-findings", "--check"}, nil},
+	}
+
+	t.Setenv("GOOBERS_TEST_ISSUE_WRITER", "writer-token-must-not-materialize")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: "issue-writer",
+		Env:  "GOOBERS_TEST_ISSUE_WRITER",
+	}})
+	if err != nil {
+		t.Fatalf("build credential resolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.GitHubIssuesWrite),
+		Ref:        "issue-writer",
+	}}, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("build credential injector: %v", err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.task+"/"+tc.path, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(root, tc.path))
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var workflow apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &workflow); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			var task *apiv1.Task
+			for i := range workflow.Spec.Tasks {
+				if workflow.Spec.Tasks[i].Name == tc.task {
+					task = &workflow.Spec.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				t.Fatal("task not found")
+			}
+			if task.Run == nil || !slices.Equal(task.Run.Command, tc.command) {
+				t.Errorf("command = %v, want %v", task.Run, tc.command)
+			}
+			if !slices.Equal(task.ExpectedOutputs, tc.expectedOutputs) {
+				t.Errorf("expectedOutputs = %v, want %v", task.ExpectedOutputs, tc.expectedOutputs)
+			}
+			if containsString(task.Capabilities, string(capability.GitHubIssuesWrite)) {
+				t.Errorf("capabilities = %v, must not include issue-write authority", task.Capabilities)
+			}
+
+			set, err := injector.Materialize(context.Background(), task.Capabilities)
+			if err != nil {
+				t.Fatalf("materialize task credentials: %v", err)
+			}
+			if _, err := set.Token(context.Background(), string(capability.GitHubIssuesWrite)); !errors.Is(err, credentials.ErrUndeclaredCapability) {
+				t.Errorf("issue writer lookup error = %v, want ErrUndeclaredCapability", err)
 			}
 		})
 	}

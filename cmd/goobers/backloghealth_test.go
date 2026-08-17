@@ -25,7 +25,7 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := newBacklogHealthProvider(root, repo)
+			provider, err := newBacklogHealthProvider(root, repo, false)
 			if err != nil {
 				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
 			}
@@ -191,7 +191,7 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	); err != nil {
 		t.Fatalf("remove ready label: %v", err)
 	}
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "health-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "health-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

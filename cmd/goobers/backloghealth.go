@@ -88,7 +88,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := newBacklogHealthProvider(root, repo)
+	issueProvider, err := newBacklogHealthProvider(root, repo, !*feedback)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -163,8 +163,8 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newBacklogHealthProvider(root string, repo providers.RepositoryRef) (backlogHealthProvider, error) {
-	provider, err := newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
+func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
+	provider, err := newProviderForStage(root, repo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
 	if err != nil {
 		return nil, err
 	}

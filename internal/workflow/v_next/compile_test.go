@@ -1283,6 +1283,19 @@ func TestCompileBacklogHealthFeedbackRequiresUpdateAction(t *testing.T) {
 	}
 }
 
+func TestRespondToFindingsCheckDoesNotPrescribeMutation(t *testing.T) {
+	task := apiv1.Task{
+		Run: &apiv1.DeterministicRun{Command: []string{"goobers", "respond-to-findings", "--check"}},
+	}
+	if got := prescribedCommandPolicyActions(task); len(got) != 0 {
+		t.Fatalf("check policy actions = %v, want none", got)
+	}
+	task.Run.Command = task.Run.Command[:2]
+	if got := prescribedCommandPolicyActions(task); len(got) != 1 || got[0] != "respond-to-findings" {
+		t.Fatalf("write policy actions = %v, want [respond-to-findings]", got)
+	}
+}
+
 func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 	cases := []struct {
 		name       string
