@@ -24,6 +24,14 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"on-main builds the configured branch. Config is never changed.\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
+	return runSelfUpdateWith(args, stdout, stderr, selfupdate.Prepare)
+}
+
+func runSelfUpdateWith(
+	args []string,
+	stdout, stderr io.Writer,
+	prepare func(context.Context, selfupdate.PrepareOptions) (selfupdate.PrepareResult, error),
+) int {
 	fs := newCLIFlagSet("self-update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
@@ -82,7 +90,7 @@ func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: resolve working directory: %v\n", err)
 		return 1
 	}
-	result, err := selfupdate.Prepare(context.Background(), selfupdate.PrepareOptions{
+	result, err := prepare(context.Background(), selfupdate.PrepareOptions{
 		Root:              root,
 		WorkDir:           workDir,
 		Policy:            *policy,
