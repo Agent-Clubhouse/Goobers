@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
-// protocolVersion is the MCP wire version this server speaks. Kept as a
-// literal rather than negotiated — the tools here have no version-
-// sensitive behavior to gate.
-const protocolVersion = "2024-11-05"
+var supportedProtocolVersions = []string{
+	"2025-06-18",
+	"2024-11-05",
+}
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -102,6 +103,10 @@ func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
 	isNotification := len(req.ID) == 0
 	switch req.Method {
 	case "initialize":
+		protocolVersion, rpcErr := negotiateProtocolVersion(req.Params)
+		if rpcErr != nil {
+			return s.reply(req, nil, rpcErr), !isNotification
+		}
 		return s.reply(req, map[string]interface{}{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
@@ -125,6 +130,36 @@ func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
 			return rpcResponse{}, false
 		}
 		return s.reply(req, nil, &rpcError{Code: -32601, Message: "method not found: " + req.Method}), true
+	}
+}
+
+type initializeParams struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
+func negotiateProtocolVersion(raw json.RawMessage) (string, *rpcError) {
+	var params initializeParams
+	if len(raw) == 0 {
+		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return "", &rpcError{Code: -32602, Message: "invalid initialize params: " + err.Error()}
+	}
+	if params.ProtocolVersion == "" {
+		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+	}
+	for _, supported := range supportedProtocolVersions {
+		if params.ProtocolVersion == supported {
+			return supported, nil
+		}
+	}
+	return "", &rpcError{
+		Code: -32602,
+		Message: fmt.Sprintf(
+			"unsupported protocolVersion %q; supported versions: %s",
+			params.ProtocolVersion,
+			strings.Join(supportedProtocolVersions, ", "),
+		),
 	}
 }
 
