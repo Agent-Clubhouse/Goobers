@@ -45,6 +45,12 @@ const exemptions = [
     symbol: "src/test/setup.ts",
     reason: "Vitest bootstrap loaded by vite.config.ts rather than the production import graph.",
   },
+  {
+    type: "files",
+    file: "e2e/fixture-daemon.mjs",
+    symbol: "e2e/fixture-daemon.mjs",
+    reason: "Playwright web-server entry point invoked from playwright.config.ts.",
+  },
 ];
 
 const testOnlyExports = {

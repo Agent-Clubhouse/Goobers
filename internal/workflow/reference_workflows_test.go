@@ -148,7 +148,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	goobers := map[string]apiv1.GooberSpec{}
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead", "test-quality-analyst"} {
 		var g apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -160,7 +160,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -370,7 +370,7 @@ func TestReferenceWorkflowsPolicyActionAuditCoversDeclaredVocabulary(t *testing.
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	actions := map[string]bool{}
 
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead", "test-quality-analyst"} {
 		var goober apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -384,7 +384,7 @@ func TestReferenceWorkflowsPolicyActionAuditCoversDeclaredVocabulary(t *testing.
 		}
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		var workflow apiv1.Workflow
 		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 		if err != nil {
@@ -455,30 +455,77 @@ func TestReferenceWorkflowsRemediationRejectsOmittedPersonaActions(t *testing.T)
 
 func TestReferenceWorkflowsTelemetryQueriesDeclareResultFile(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows")
-	for _, file := range []string{"work-nomination.yaml", "tutor.yaml"} {
-		t.Run(file, func(t *testing.T) {
-			wantResultFile := "telemetry-signals.json"
-			if file == "work-nomination.yaml" {
-				wantResultFile = "candidate-findings.json"
-			}
-			raw, err := os.ReadFile(filepath.Join(root, file))
+	tests := []struct {
+		file, task, resultFile string
+	}{
+		{"work-nomination.yaml", "gather-signals", "candidate-findings.json"},
+		{"tutor.yaml", "gather-signals", "telemetry-signals.json"},
+		{"test-suite-quality.yaml", "gather-recurring-failures", "recurring-failures.json"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(root, tc.file))
 			if err != nil {
-				t.Fatalf("read %s: %v", file, err)
+				t.Fatalf("read %s: %v", tc.file, err)
 			}
 			var w apiv1.Workflow
 			if err := yaml.Unmarshal(raw, &w); err != nil {
-				t.Fatalf("unmarshal %s: %v", file, err)
+				t.Fatalf("unmarshal %s: %v", tc.file, err)
 			}
 			for _, task := range w.Spec.Tasks {
-				if task.Name == "gather-signals" {
-					if got := task.Inputs["resultFile"]; got != wantResultFile {
-						t.Fatalf("gather-signals resultFile = %q, want %s", got, wantResultFile)
+				if task.Name == tc.task {
+					if got := task.Inputs["resultFile"]; got != tc.resultFile {
+						t.Fatalf("%s resultFile = %q, want %s", tc.task, got, tc.resultFile)
 					}
 					return
 				}
 			}
-			t.Fatal("gather-signals task not found")
+			t.Fatalf("%s task not found", tc.task)
 		})
+	}
+}
+
+func TestReferenceTestSuiteQualityUsesRecurringEvidenceBeforeNomination(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "test-suite-quality.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	tasks := make(map[string]apiv1.Task)
+	for _, task := range workflow.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+
+	gather := tasks["gather-recurring-failures"]
+	wantCommand := []string{
+		"goobers", "telemetry-query", "--window", "168h",
+		"--aggregate", "ci-check-failure",
+		"--threshold", "min-ci-check-failure-runs=2",
+		"--format", "candidate-findings",
+	}
+	if gather.Run == nil || !slices.Equal(gather.Run.Command, wantCommand) ||
+		gather.Next != "classify-flakes" ||
+		!containsString(gather.Capabilities, string(capability.TelemetryRead)) {
+		t.Fatalf("gather-recurring-failures = %+v, want bounded recurring-error telemetry query", gather)
+	}
+
+	classify := tasks["classify-flakes"]
+	if classify.Goober != "test-quality-analyst" ||
+		classify.Next != "nominate" ||
+		!containsString(classify.Capabilities, string(capability.JournalRead)) ||
+		containsString(classify.Capabilities, string(capability.GitHubIssuesWrite)) {
+		t.Fatalf("classify-flakes = %+v, want read-only journal-backed analyst", classify)
+	}
+
+	nominate := tasks["nominate"]
+	if nominate.InputsFrom["candidateFindings"] != "findingsRef" ||
+		!containsString(nominate.Capabilities, string(capability.GitHubIssuesWrite)) ||
+		nominate.Next != "" {
+		t.Fatalf("nominate = %+v, want terminal issue-only proposal stage", nominate)
 	}
 }
 

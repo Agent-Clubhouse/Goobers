@@ -611,4 +611,22 @@ CREATE TABLE IF NOT EXISTS spans_ingest_cursor (
 	byte_offset INTEGER NOT NULL
 );
 `,
+
+	// v19 (#1489): terminal ci-poll failures are successful stage observations,
+	// so they never enter run_errors. Index each failed check from the durable
+	// ci-checks.json artifact for recurring test-failure analysis.
+	`
+CREATE TABLE IF NOT EXISTS ci_check_failures (
+	run_id          TEXT NOT NULL,
+	seq             INTEGER NOT NULL,
+	stage           TEXT NOT NULL,
+	check_name      TEXT NOT NULL,
+	artifact_digest TEXT NOT NULL,
+	occurred_at     TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq, check_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ci_check_failures_run ON ci_check_failures(run_id);
+CREATE INDEX IF NOT EXISTS idx_ci_check_failures_name_time ON ci_check_failures(check_name, occurred_at);
+`,
 }

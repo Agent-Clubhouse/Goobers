@@ -404,6 +404,11 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
 			return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
 		}
+		if i+1 == 19 {
+			if err := backfillCICheckFailures(ctx, tx, filepath.Dir(db.path)); err != nil {
+				return fmt.Errorf("rollup: backfill migration %d: %w", i+1, err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
 			return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
 		}
