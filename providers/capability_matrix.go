@@ -32,7 +32,9 @@ func AllCapabilities() []Capability {
 type ProviderSupportLevel string
 
 const (
-	ProviderSupported    ProviderSupportLevel = "supported"
+	// ProviderSupported identifies providers backed by the repository's support evidence.
+	ProviderSupported ProviderSupportLevel = "supported"
+	// ProviderExperimental identifies providers that have not met their promotion criteria.
 	ProviderExperimental ProviderSupportLevel = "experimental"
 )
 
