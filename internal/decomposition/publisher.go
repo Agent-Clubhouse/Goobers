@@ -43,6 +43,19 @@ type Publisher struct {
 	RunID    string
 }
 
+type preacquiredTargetLeaser struct {
+	delegate TargetLeaser
+	repo     providers.RepositoryRef
+	itemID   string
+}
+
+func (l preacquiredTargetLeaser) Acquire(ctx context.Context, repo providers.RepositoryRef, itemID string) (func() error, error) {
+	if repo == l.repo && itemID == l.itemID {
+		return func() error { return nil }, nil
+	}
+	return l.delegate.Acquire(ctx, repo, itemID)
+}
+
 // PublishedBatch is the verified output of a completed publication.
 type PublishedBatch struct {
 	PlanDigest string
@@ -69,6 +82,15 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	if err != nil {
 		return PublishedBatch{}, err
 	}
+	release, err := p.Leaser.Acquire(ctx, p.Repo, plan.Parent.ID)
+	if err != nil {
+		return PublishedBatch{}, fmt.Errorf("acquire publisher target lease: %w", err)
+	}
+	defer func() {
+		if err := release(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("release publisher target lease: %w", err))
+		}
+	}()
 	defer func() {
 		if resultErr == nil || !isPublicationConflict(resultErr) {
 			return
@@ -81,7 +103,10 @@ func (p Publisher) Publish(ctx context.Context, plan Plan) (_ PublishedBatch, re
 	if err != nil {
 		return PublishedBatch{}, err
 	}
-	primitives := Primitives{Provider: p.Provider, Leaser: p.Leaser}
+	primitives := Primitives{
+		Provider: p.Provider,
+		Leaser:   preacquiredTargetLeaser{delegate: p.Leaser, repo: p.Repo, itemID: parent.ID},
+	}
 
 	if published, conflict, err := findBatchRecord(ctx, p.Provider, p.Repo, plan.Parent.ID, PublishedBatchMarkerPrefix, digest); err != nil {
 		return PublishedBatch{}, err

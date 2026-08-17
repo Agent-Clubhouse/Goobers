@@ -22,12 +22,33 @@ type publisherFake struct {
 	nextID       int
 	mutations    int
 	failMutation int
+	called       chan<- struct{}
 }
 
 var _ WorkItemDependencyProvider = (*providers.GitHubProvider)(nil)
 
 type publisherWithoutHierarchy struct {
 	PublisherProvider
+}
+
+type gatedTargetLeaser struct {
+	delegate TargetLeaser
+	gate     <-chan struct{}
+	started  chan<- struct{}
+}
+
+func (l gatedTargetLeaser) Acquire(ctx context.Context, repo providers.RepositoryRef, itemID string) (func() error, error) {
+	select {
+	case l.started <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-l.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return l.delegate.Acquire(ctx, repo, itemID)
 }
 
 func newPublisherFake() *publisherFake {
@@ -43,6 +64,12 @@ func newPublisherFake() *publisherFake {
 }
 
 func (f *publisherFake) GetWorkItem(_ context.Context, _ providers.RepositoryRef, id string) (providers.WorkItem, error) {
+	if f.called != nil {
+		select {
+		case f.called <- struct{}{}:
+		default:
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	item, ok := f.items[id]
@@ -288,6 +315,59 @@ func TestPublisherRecoversAfterEveryProviderMutation(t *testing.T) {
 				t.Fatal("parent remains claimed after publication")
 			}
 		})
+	}
+}
+
+func TestConcurrentPublishersSerializeBeforeProviderAccess(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	fake := newPublisherFake()
+	providerCalled := make(chan struct{}, 1)
+	fake.called = providerCalled
+	gate := make(chan struct{})
+	acquireStarted := make(chan struct{}, 2)
+	leaser := gatedTargetLeaser{
+		delegate: FileTargetLeaser{Directory: t.TempDir()},
+		gate:     gate,
+		started:  acquireStarted,
+	}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := (Publisher{
+				Provider: fake,
+				Leaser:   leaser,
+				Repo:     repo,
+				RunID:    "run-1",
+			}).Publish(context.Background(), testPublisherPlan())
+			results <- err
+		}()
+	}
+
+	providerAccessedBeforeLease := false
+	for range 2 {
+		select {
+		case <-acquireStarted:
+		case <-providerCalled:
+			providerAccessedBeforeLease = true
+			<-acquireStarted
+		}
+	}
+	select {
+	case <-providerCalled:
+		providerAccessedBeforeLease = true
+	default:
+	}
+	close(gate)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Errorf("concurrent Publish: %v", err)
+		}
+	}
+	if providerAccessedBeforeLease {
+		t.Fatal("publisher accessed the provider before acquiring the batch target lease")
+	}
+	if len(fake.items) != 3 || len(fake.children) != 2 {
+		t.Fatalf("items = %d, hierarchy = %v; want one two-child batch", len(fake.items), fake.children)
 	}
 }
 
