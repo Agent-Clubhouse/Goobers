@@ -165,6 +165,41 @@ spec:
 	}
 }
 
+func TestMigratePinOnlyPreservesFlowMappingDelimiters(t *testing.T) {
+	for _, source := range []string{
+		`{dslVersion: 1.4, kind: Workflow, metadata: {name: flow}, spec: {gaggle: golden}}`,
+		`{kind: Workflow, metadata: {name: flow}, spec: {gaggle: golden}, dslVersion: 1.4}`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			want := strings.Replace(source, "dslVersion: 1.4", "dslVersion: 2.0", 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("After = %q, want %q", result.After, want)
+			}
+			if got := decodeWorkflow(t, result.After).DSLVersion; got != "2.0" {
+				t.Fatalf("after dslVersion = %q, want 2.0", got)
+			}
+		})
+	}
+}
+
+func TestMigratePinOnlyRejectsBlockStyleVersion(t *testing.T) {
+	for _, style := range []string{"|-", ">-"} {
+		t.Run(style, func(t *testing.T) {
+			source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, "dslVersion: "+style+"\n  1.4", 1)
+
+			_, err := Migrate([]byte(source), "2.0")
+			if err == nil || !strings.Contains(err.Error(), "block-style dslVersion is not supported") {
+				t.Fatalf("err = %v, want unsupported block-style error", err)
+			}
+		})
+	}
+}
+
 func TestMigrateRefusesAlreadyAtTarget(t *testing.T) {
 	source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
 	_, err := Migrate([]byte(source), "2.0")

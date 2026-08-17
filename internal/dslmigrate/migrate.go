@@ -117,6 +117,9 @@ func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte,
 	if versionNode.Kind != yaml.ScalarNode || versionNode.Line < 1 || versionNode.Column < 1 {
 		return nil, errors.New("dslVersion must be a scalar")
 	}
+	if versionNode.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return nil, errors.New("block-style dslVersion is not supported for source-preserving migration")
+	}
 	start, err := sourceOffset(source, versionNode.Line, versionNode.Column)
 	if err != nil {
 		return nil, err
@@ -219,13 +222,22 @@ func scalarEnd(source []byte, start int, style yaml.Style) (int, error) {
 		return 0, errors.New("unterminated quoted dslVersion")
 	}
 	end := start
-	for end < len(source) && source[end] != ' ' && source[end] != '\t' && source[end] != '\r' && source[end] != '\n' && source[end] != '#' {
+	for end < len(source) && !plainScalarDelimiter(source[end]) {
 		end++
 	}
 	if end == start {
 		return 0, errors.New("empty dslVersion scalar")
 	}
 	return end, nil
+}
+
+func plainScalarDelimiter(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n', '#', ',', ']', '}':
+		return true
+	default:
+		return false
+	}
 }
 
 func documentRoot(doc *yaml.Node) *yaml.Node {
