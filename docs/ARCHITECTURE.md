@@ -269,11 +269,13 @@ Contract rules:
   in `run.yaml` when a run starts, so config reloads cannot retune a run in
   flight. `maxRunDuration` bounds total wall-clock age independently of journal
   activity and is disabled when omitted. An automated or
-  agentic gate may override `maxRepasses` because separate review loops in one
-  definition can legitimately need different budgets. Stall detection does not
-  have a task-level override: task/gate `timeoutSeconds` and retry policies
-  already own per-attempt execution bounds, while the stall watchdog protects
-  the run journal as a whole.
+  agentic gate may override `maxRepasses`. The value bounds cumulative
+  re-entries to a branch's target stage across all gates that route back to
+  that stage; a pass at one gate does not reset that target's live budget.
+  Separate target stages can therefore have independent budgets. Stall
+  detection does not have a task-level override: task/gate `timeoutSeconds`
+  and retry policies already own per-attempt execution bounds, while the stall
+  watchdog protects the run journal as a whole.
 - Retry attempt counts and backoff remain declared on each task or executable
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration

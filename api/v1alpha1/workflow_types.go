@@ -335,7 +335,8 @@ type RetryPolicy struct {
 // RunControls tunes runner-level safety budgets. An omitted field inherits from
 // the next broader scope: workflow, then gaggle, then instance defaults.
 type RunControls struct {
-	// MaxRepasses bounds consecutive non-pass evaluations before escalation.
+	// MaxRepasses bounds how many times gates may route a run back to the same
+	// already-completed stage before escalation, regardless of gate or outcome.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -467,8 +468,9 @@ type Gate struct {
 	// workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
-	// MaxRepasses overrides the inherited workflow repass budget for this gate.
-	// It is valid only for automated and agentic gates.
+	// MaxRepasses overrides the inherited target-stage re-entry budget when this
+	// gate routes to an already-completed stage. It is valid only for automated
+	// and agentic gates.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`

@@ -470,11 +470,16 @@ func (r *Runner) runParallelBranch(
 		},
 	}
 	ex := newExecutors(r.cfg, branchJournal, reg)
+	visitedStages := stageVisitSeed(history)
 	gateEval := &gate.Evaluator{
 		Automated:      r.cfg.Automated,
 		Journal:        branchJournal,
 		MaxRepasses:    int(in.RunControls.MaxRepasses),
 		Attempts:       gateRepassSeed(history),
+		RepassAttempts: targetRepassSeed(history),
+		IsReentry: func(target string) bool {
+			return visitedStages[target]
+		},
 		LastDiffDigest: gateDiffSeed(history),
 	}
 	state := branch.machine
@@ -608,6 +613,7 @@ func (r *Runner) runParallelBranch(
 				}
 			}
 			result.lastStage, result.lastResult = task.Name, stageResult
+			visitedStages[task.Name] = true
 			if stageResult.Status == apiv1.ResultFailure && task.ContinueOnError {
 				result.completed.clear(task.Name)
 			} else {
