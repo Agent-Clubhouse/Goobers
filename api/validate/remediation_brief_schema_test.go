@@ -82,6 +82,7 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 			State: "changes_requested", Body: "Fix the race.", Integrity: apiv1.IntegrityUnapproved,
 		}},
 		InlineComments: []apiv1.RemediationInlineComment{{
+			ID: 1, ThreadID: "PRRT_1",
 			Body: "This write is unsynchronized.", Path: "worker.go", Line: 42,
 			OriginalLine: 40, DiffHunk: "@@ -40,1 +42,1 @@", IsResolved: false, IsOutdated: false,
 			StartLine: 40, OriginalStartLine: 38, StartSide: "RIGHT", Integrity: apiv1.IntegrityUnapproved,

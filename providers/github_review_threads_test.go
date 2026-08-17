@@ -50,7 +50,7 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 					t.Fatalf("first reviewThreads cursor = %v, want nil", request.Variables["after"])
 				}
 				_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
-					{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","startLine":40,"originalStartLine":38,"startDiffSide":"RIGHT","comments":{"nodes":[{"databaseId":101},{"databaseId":102}]}}
+					{"id":"PRRT_live","isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","startLine":40,"originalStartLine":38,"startDiffSide":"RIGHT","comments":{"nodes":[{"databaseId":101},{"databaseId":102}]}}
 				],"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"}}}}}}`))
 				return
 			}
@@ -58,7 +58,7 @@ func TestGitHubListPullRequestReviewThreadsPreservesBodiesAnchorsAndState(t *tes
 				t.Fatalf("second reviewThreads cursor = %v, want cursor-1", request.Variables["after"])
 			}
 			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
-				{"isResolved":true,"isOutdated":true,"path":"legacy.go","line":null,"originalLine":9,"diffSide":"RIGHT","comments":{"nodes":[{"databaseId":201}]}}
+				{"id":"PRRT_old","isResolved":true,"isOutdated":true,"path":"legacy.go","line":null,"originalLine":9,"diffSide":"RIGHT","comments":{"nodes":[{"databaseId":201}]}}
 			],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
@@ -151,12 +151,14 @@ func TestGitHubListPullRequestReviewThreadsSnapshotsCommentsBeforeThreadState(t 
 				_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
 				return
 			}
+
 			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
-				{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"comments":{"nodes":[{"databaseId":101}]}}
+				{"id":"PRRT_101","isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"comments":{"nodes":[{"databaseId":101}]}}
 			],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
+
 	}))
 	defer server.Close()
 
@@ -171,5 +173,56 @@ func TestGitHubListPullRequestReviewThreadsSnapshotsCommentsBeforeThreadState(t 
 	}
 	if len(got.InlineComments) != 1 || got.InlineComments[0].ID != 101 {
 		t.Fatalf("inline comments = %+v, want newly listed comment with thread state", got.InlineComments)
+	}
+}
+
+func TestGitHubReviewThreadMutationsReturnAndVerifyProviderState(t *testing.T) {
+	var sawReply bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/acme/web/pulls/42/comments/101/replies":
+			sawReply = true
+			_, _ = w.Write([]byte(`{"id":102,"body":"fixed","in_reply_to_id":101}`))
+		case r.URL.Path == "/graphql":
+			var request struct {
+				Query     string         `json:"query"`
+				Variables map[string]any `json:"variables"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request.Variables["threadId"] != "PRRT_1" {
+				t.Fatalf("threadId = %v, want PRRT_1", request.Variables["threadId"])
+			}
+			_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":true}}}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	reply, err := provider.ReplyPullRequestReviewThread(context.Background(), PullRequestReviewThreadReply{
+		Repository: RepositoryRef{Owner: "acme", Name: "web"}, PullID: "42", CommentID: 101, Body: "fixed",
+	})
+	if err != nil || reply.ID != 102 || reply.InReplyTo != 101 {
+		t.Fatalf("ReplyPullRequestReviewThread = %+v, %v", reply, err)
+	}
+	if err := provider.ResolvePullRequestReviewThread(context.Background(), RepositoryRef{Owner: "acme", Name: "web"}, "PRRT_1"); err != nil {
+		t.Fatalf("ResolvePullRequestReviewThread: %v", err)
+	}
+	if !sawReply {
+		t.Fatal("reply was not posted")
+	}
+}
+
+func TestGitHubResolveReviewThreadRejectsUnconfirmedResolution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":false}}}}`))
+	}))
+	defer server.Close()
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	err := provider.ResolvePullRequestReviewThread(context.Background(), RepositoryRef{Owner: "acme", Name: "web"}, "PRRT_1")
+	if err == nil || !strings.Contains(err.Error(), "did not confirm") {
+		t.Fatalf("error = %v, want unconfirmed resolution failure", err)
 	}
 }

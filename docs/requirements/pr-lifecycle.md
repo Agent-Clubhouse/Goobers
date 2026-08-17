@@ -504,6 +504,7 @@ therefore have no action row.
 | Release a remediation claim when its PR becomes terminal or the run ends (`release-pr-claim`) | `pr-remediation/guard-before-*`, `release-claim`, `release-escalated-claim` | `github:pr:write` | Covered |
 | Publish a remediated PR branch (`push-pr-branch`) | `pr-remediation/push-remediated` | `repo:push` | Covered |
 | Respond to every original finding (`respond-to-findings`) | `pr-remediation/respond-to-findings` | `github:issues:write` | Covered |
+| Reply to and resolve remediated native review threads (`resolve-review-threads`) | `pr-remediation/resolve-review-threads` | `github:pr:write` | Covered |
 | Escalate a non-converging or rejected remediation (`escalate-pr`) | `pr-remediation/remediation-checkpoint`, `park-escalated` | `github:pr:write` | Covered |
 | Retarget a PR | Not present in the shipped policy/persona/verdict vocabulary | — | Not prescribed |
 

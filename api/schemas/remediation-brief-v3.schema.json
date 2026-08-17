@@ -276,8 +276,18 @@
     "inlineComment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["body", "path", "isResolved", "isOutdated", "integrity"],
+      "required": ["id", "threadId", "body", "path", "isResolved", "isOutdated", "integrity"],
       "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stable provider identifier for this inline comment."
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable provider identifier for the containing review thread."
+        },
         "author": {
           "type": "string",
           "description": "Inline comment author."

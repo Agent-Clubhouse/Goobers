@@ -655,6 +655,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-review-threads"]).
 			withHelp("add native reviews and anchored inline threads to a remediation brief (a workflow stage)", gatherReviewThreadsHelp).
 			withExamples("goobers gather-review-threads"),
+		stageCommand("resolve-review-threads", apicontract.ActionWorkflowExecution, runResolveReviewThreads).
+			withSynopsis(synopsisByID["resolve-review-threads"]).
+			withHelp("reply to and resolve remediated native review threads (a workflow stage)", resolveReviewThreadsHelp).
+			withExamples("goobers resolve-review-threads"),
 		stageCommand("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
