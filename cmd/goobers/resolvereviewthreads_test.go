@@ -182,6 +182,20 @@ func TestValidateThreadResponsesRejectsMissingAndInventedIDs(t *testing.T) {
 	}
 }
 
+func TestGatheredLiveReviewThreadsRequiresStableIDs(t *testing.T) {
+	for _, comment := range []apiv1.RemediationInlineComment{
+		{ID: 1},
+		{ThreadID: "PRRT_1"},
+	} {
+		section := &apiv1.RemediationReviewThreads{
+			InlineComments: []apiv1.RemediationInlineComment{comment},
+		}
+		if _, err := gatheredLiveReviewThreads(section); err == nil {
+			t.Fatalf("gatheredLiveReviewThreads(%+v) succeeded without stable IDs", comment)
+		}
+	}
+}
+
 func TestResolveReviewThreadsDoesNotResolveWhenReplyFails(t *testing.T) {
 	const runID = "reply-fails"
 	root := initDemo(t)

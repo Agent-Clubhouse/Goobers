@@ -276,7 +276,7 @@
     "inlineComment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "threadId", "body", "path", "isResolved", "isOutdated", "integrity"],
+      "required": ["body", "path", "isResolved", "isOutdated", "integrity"],
       "properties": {
         "id": {
           "type": "integer",

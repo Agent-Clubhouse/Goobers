@@ -108,6 +108,24 @@ func TestCompleteRemediationBriefValidates(t *testing.T) {
 	}
 }
 
+func TestRemediationBriefV3InlineCommentIDsRemainOptional(t *testing.T) {
+	brief := minimalRemediationBrief()
+	brief.GatherReviewThreads = &apiv1.RemediationReviewThreads{
+		Reviews: []apiv1.RemediationNativeReview{},
+		InlineComments: []apiv1.RemediationInlineComment{{
+			Body: "Legacy v3 comment.", Path: "worker.go",
+			Integrity: apiv1.IntegrityUnapproved,
+		}},
+	}
+	data, err := json.Marshal(brief)
+	if err != nil {
+		t.Fatalf("marshal remediation brief: %v", err)
+	}
+	if err := newV(t).ValidateJSON(schemas.RemediationBrief, data); err != nil {
+		t.Fatalf("v3 brief without inline comment IDs should remain valid: %v\n%s", err, data)
+	}
+}
+
 func TestRemediationBriefSchemaIsClosedAndVersioned(t *testing.T) {
 	v := newV(t)
 	for name, doc := range map[string]string{
