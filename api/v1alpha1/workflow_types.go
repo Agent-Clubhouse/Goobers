@@ -198,7 +198,8 @@ type Task struct {
 	// ContextFrom limits this task's context pointers to artifacts and verdicts
 	// produced by the named tasks or gates. Empty preserves the historical
 	// behavior of receiving every accumulated pointer.
-	// +kubebuilder:validation:UniqueItems=true
+	// Duplicate entries are rejected by api/validate (CTX001) rather than by a
+	// CRD uniqueness marker, which Kubernetes refuses to install.
 	// +optional
 	ContextFrom []string `json:"contextFrom,omitempty" yaml:"contextFrom,omitempty"`
 	// PolicyActions declares the closed vocabulary of externally mutating
@@ -604,6 +605,7 @@ type WorkflowSpec struct {
 	// +optional
 	Requires *WorkflowRequirements `json:"requires,omitempty" yaml:"requires,omitempty"`
 	// Tasks are the work states of the machine.
+	// +kubebuilder:validation:MaxItems=128
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
 	// Gates are the validation/branching states of the machine.

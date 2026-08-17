@@ -183,6 +183,7 @@ const (
 	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
+	errorContextFromDuplicate     WarningCode = "CTX001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -888,6 +889,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
 	ix.checkLabelPredicates(r)
+	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
 	for name, g := range ix.gaggles {
 		for _, def := range ix.featureDefinitionsForGaggle(name) {
@@ -1171,6 +1173,29 @@ func (ix *index) checkLabelPredicates(r *Report) {
 			); err != nil {
 				r.add(errorLabelPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
 					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+// checkContextFromUniqueness rejects duplicate entries in a task's contextFrom.
+//
+// This lived on the Go type as +kubebuilder:validation:UniqueItems=true until
+// that marker was found to make the generated CRD un-installable: Kubernetes
+// forbids uniqueItems in a structural schema because the runtime complexity is
+// quadratic. The constraint is still worth enforcing, just not there.
+func (ix *index) checkContextFromUniqueness(r *Report) {
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, task := range workflow.Spec.Tasks {
+			seen := make(map[string]struct{}, len(task.ContextFrom))
+			for _, source := range task.ContextFrom {
+				if _, duplicate := seen[source]; duplicate {
+					r.add(errorContextFromDuplicate, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].contextFrom lists %q more than once", i, source)
+					continue
+				}
+				seen[source] = struct{}{}
 			}
 		}
 	}
