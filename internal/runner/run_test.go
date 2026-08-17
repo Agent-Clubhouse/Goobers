@@ -592,9 +592,10 @@ func TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts(t *testing.T) {
 	}
 	urlByName := map[string]string{"site": projRepo, "goobers": goobersRepo, "clubhouse": clubhouseRepo}
 	r, err := New(Config{
-		Automated: gate.NewAutomatedEvaluator(),
-		Worktrees: wtMgr,
-		RunsDir:   filepath.Join(instanceRoot, "runs"),
+		Automated:  gate.NewAutomatedEvaluator(),
+		Worktrees:  wtMgr,
+		RunsDir:    filepath.Join(instanceRoot, "runs"),
+		ScratchDir: filepath.Join(instanceRoot, "scratch"),
 		RepoCloneURL: func(ref apiv1.RepoRef) (string, error) {
 			url, ok := urlByName[ref.Name]
 			if !ok {
@@ -681,6 +682,58 @@ func TestRunnerProvisionsReadOnlyAdditionalRepoCheckouts(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Errorf("a gaggle with no AdditionalRepos provisioned %d checkouts, want 0", len(none))
+	}
+
+	in := StartInput{
+		RunID:   "run-scratch",
+		Gaggle:  "acme-web",
+		Machine: fixtureMachine(t),
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub,
+			Owner:    "example",
+			Name:     "site",
+			Branch:   "main",
+		},
+	}
+	env, scratch, err := r.buildEnvelope(
+		context.Background(), in, "probe", "read references", nil,
+		[]string{"contents:read"}, apiv1.Limits{}, nil,
+		apiv1.WorkspaceScratch, false, "",
+	)
+	if err != nil {
+		t.Fatalf("buildEnvelope (scratch): %v", err)
+	}
+	if scratch.worktree != nil {
+		t.Error("scratch stage unexpectedly received a primary repository checkout")
+	}
+	if len(env.AdditionalWorkspaces) != 2 {
+		t.Fatalf("scratch envelope AdditionalWorkspaces = %d, want 2", len(env.AdditionalWorkspaces))
+	}
+	for _, workspace := range env.AdditionalWorkspaces {
+		want := wantFile[workspace.Name]
+		got, err := os.ReadFile(filepath.Join(workspace.Path, want.file))
+		if err != nil {
+			t.Fatalf("read %s from scratch reference checkout %q: %v", want.file, workspace.Name, err)
+		}
+		if string(got) != want.content {
+			t.Errorf("scratch reference checkout %q %s = %q, want %q", workspace.Name, want.file, got, want.content)
+		}
+	}
+	if err := scratch.Remove(context.Background()); err != nil {
+		t.Errorf("teardown scratch workspace: %v", err)
+	}
+
+	in.RunID = "run-scratch-no-capability"
+	env, scratch, err = r.buildEnvelope(
+		context.Background(), in, "probe", "no reference access", nil,
+		nil, apiv1.Limits{}, nil, apiv1.WorkspaceScratch, false, "",
+	)
+	if err != nil {
+		t.Fatalf("buildEnvelope (scratch without contents:read): %v", err)
+	}
+	defer func() { _ = scratch.Remove(context.Background()) }()
+	if len(env.AdditionalWorkspaces) != 0 {
+		t.Errorf("scratch stage without contents:read received %d reference checkouts", len(env.AdditionalWorkspaces))
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -3967,6 +3969,13 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
+	}
+	if workspaceMode == apiv1.WorkspaceScratch && slices.Contains(capabilities, string(capability.ContentsRead)) {
+		workspace.additional, err = r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			_ = workspace.Remove(ctx)
+			return apiv1.InvocationEnvelope{}, nil, err
+		}
 	}
 
 	inputs := make(map[string]interface{}, len(taskInputs))
