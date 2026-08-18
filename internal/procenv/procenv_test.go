@@ -77,17 +77,19 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 // default that does not exist on the host.
 func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 	vars := map[string]string{
-		"DOTNET_ROOT":           "/usr/share/dotnet",
-		"DOTNET_CLI_HOME":       "/custom/dotnet-home",
-		"NUGET_PACKAGES":        "/custom/nuget",
-		"NUGET_HTTP_CACHE_PATH": "/custom/nuget-http",
-		"VIRTUAL_ENV":           "/custom/venv",
-		"PYTHONPATH":            "/custom/pymods",
-		"PIP_CACHE_DIR":         "/custom/pipcache",
-		"NODE_PATH":             "/custom/node_modules",
-		"npm_config_cache":      "/custom/npm",
-		"CARGO_HOME":            "/custom/cargo",
-		"RUSTUP_HOME":           "/custom/rustup",
+		"DOTNET_ROOT":                      "/usr/share/dotnet",
+		"DOTNET_CLI_HOME":                  "/custom/dotnet-home",
+		"NUGET_PACKAGES":                   "/custom/nuget",
+		"NUGET_HTTP_CACHE_PATH":            "/custom/nuget-http",
+		"VIRTUAL_ENV":                      "/custom/venv",
+		"PYTHONPATH":                       "/custom/pymods",
+		"PIP_CACHE_DIR":                    "/custom/pipcache",
+		"NODE_PATH":                        "/custom/node_modules",
+		"npm_config_cache":                 "/custom/npm",
+		"NPM_CONFIG_REGISTRY":              "https://registry.example.internal",
+		"NPM_CONFIG_REPLACE_REGISTRY_HOST": "always",
+		"CARGO_HOME":                       "/custom/cargo",
+		"RUSTUP_HOME":                      "/custom/rustup",
 	}
 
 	for name, value := range vars {
@@ -97,6 +99,31 @@ func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 	for name, value := range vars {
 		if !contains(env, name+"="+value) {
 			t.Fatalf("toolchain var %s did not pass through BaseEnv(), got %v", name, env)
+		}
+	}
+}
+
+func TestBaseEnvRoutesPublicRegistryLockfileThroughAlternateRegistry(t *testing.T) {
+	const lockfile = `{"packages":{"node_modules/example":{"resolved":"https://registry.npmjs.org/example/-/example-1.0.0.tgz"}}}`
+	t.Setenv("NPM_CONFIG_REGISTRY", "https://registry.example.internal")
+	t.Setenv("NPM_CONFIG_REPLACE_REGISTRY_HOST", "always")
+	t.Setenv("npm_config_//registry.npmjs.org/:_authToken", "must-not-pass")
+
+	if !strings.Contains(lockfile, "https://registry.npmjs.org/") {
+		t.Fatal("test lockfile does not contain a public registry URL")
+	}
+	env := BaseEnv()
+	for _, want := range []string{
+		"NPM_CONFIG_REGISTRY=https://registry.example.internal",
+		"NPM_CONFIG_REPLACE_REGISTRY_HOST=always",
+	} {
+		if !contains(env, want) {
+			t.Fatalf("Node registry routing setting %q did not pass through BaseEnv(): %v", want, env)
+		}
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "npm_config_//registry.npmjs.org/:_authToken=") {
+			t.Fatalf("npm registry credential leaked into BaseEnv(): %v", env)
 		}
 	}
 }
@@ -186,10 +213,11 @@ func TestBaseEnvPassesThroughWindowsRuntimeWithoutSecrets(t *testing.T) {
 // also carry `npm_config_//registry/:_authToken`.
 func TestBaseEnvExpandedAllowlistStillBlocksSecrets(t *testing.T) {
 	blocked := map[string]string{
-		"AWS_SECRET_ACCESS_KEY": "should-not-pass",
-		"NUGET_API_KEY":         "should-not-pass",
-		"DOTNET_SECRET_TOKEN":   "should-not-pass",
-		"npm_config_registry":   "https://secret.example.internal",
+		"AWS_SECRET_ACCESS_KEY":                       "should-not-pass",
+		"NUGET_API_KEY":                               "should-not-pass",
+		"DOTNET_SECRET_TOKEN":                         "should-not-pass",
+		"npm_config_registry":                         "https://secret.example.internal",
+		"npm_config_//registry.npmjs.org/:_authToken": "should-not-pass",
 	}
 	for name, value := range blocked {
 		t.Setenv(name, value)

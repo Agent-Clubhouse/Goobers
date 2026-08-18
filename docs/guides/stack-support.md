@@ -57,6 +57,13 @@ passthrough. This is the escape hatch for a toolchain family with no built-in al
 entries yet, and it still fails closed: a malformed entry is rejected at config-load, not at
 stage-launch.
 
+For first-class Node stages, Goobers preserves `NPM_CONFIG_REGISTRY` and
+`NPM_CONFIG_REPLACE_REGISTRY_HOST`. Set these to route npm installs through an
+operator-configured registry when a `package-lock.json` contains absolute
+`registry.npmjs.org` URLs. Credential-bearing `npm_config_*` variables are not
+preserved as a family; configure npm authentication through the runner's
+credential mechanisms instead.
+
 ## Current tiers
 
 | Stack | Tier | Reference | Status |
