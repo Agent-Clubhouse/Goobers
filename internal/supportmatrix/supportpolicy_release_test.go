@@ -50,7 +50,7 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 
 func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
-	firstTag, latestTag := supportReleaseTagRange(t, root)
+	firstTag, latestTag, _ := supportReleaseTagRange(t, root)
 	var latest releaseVersion
 	if latestTag != "" {
 		var err error
@@ -157,6 +157,10 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	runSupportGit(t, root, "add", ".")
 	runSupportGit(t, root, "commit", "-q", "-m", "release second supported matrix")
 	runSupportGit(t, root, "tag", "v1.1.0")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runSupportGit(t, root, "init", "--bare", "-q", remote)
+	runSupportGit(t, root, "remote", "add", "origin", remote)
+	runSupportGit(t, root, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
 
 	fabricatedVersions := []Version{
 		{
@@ -173,6 +177,7 @@ func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
 	writeFixtureSupportMatrix(t, root, fabricatedVersions)
 	runSupportGit(t, root, "add", ".")
 	runSupportGit(t, root, "commit", "-q", "-m", "fabricate deprecation and unsupported transition")
+	runSupportGit(t, root, "tag", "v9.0.0")
 
 	released, tag, developmentReleases := loadLatestReleasedSupportMatrix(t, root)
 	if tag != "v1.1.0" {
@@ -204,12 +209,12 @@ func loadLatestReleasedSupportMatrix(
 	repository string,
 ) (SupportMatrix, string, map[string]releaseVersion) {
 	t.Helper()
-	firstTag, latestTag := supportReleaseTagRange(t, repository)
+	firstTag, latestTag, latestRevision := supportReleaseTagRange(t, repository)
 	if latestTag == "" {
 		return SupportMatrix{}, "", nil
 	}
 
-	latest := loadSupportMatrixAtRelease(t, repository, latestTag)
+	latest := loadSupportMatrixAtRelease(t, repository, latestTag, latestRevision)
 	firstRelease, err := parseSupportReleaseVersion(firstTag, false)
 	if err != nil {
 		t.Fatalf("parse first release tag %s: %v", firstTag, err)
@@ -225,10 +230,10 @@ func loadLatestReleasedSupportMatrix(
 	return latest, latestTag, developmentReleases
 }
 
-func loadSupportMatrixAtRelease(t *testing.T, repository, tag string) SupportMatrix {
+func loadSupportMatrixAtRelease(t *testing.T, repository, tag, revision string) SupportMatrix {
 	t.Helper()
 	releaseTree := filepath.Join(t.TempDir(), "release")
-	runSupportGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, tag)
+	runSupportGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, revision)
 	t.Cleanup(func() {
 		if output, err := testgit.Command("-C", repository, "worktree", "remove", "--force", releaseTree).CombinedOutput(); err != nil {
 			t.Errorf("remove release worktree: %v: %s", err, strings.TrimSpace(string(output)))
@@ -259,12 +264,17 @@ func loadSupportMatrixAtRelease(t *testing.T, repository, tag string) SupportMat
 	return matrix
 }
 
-func supportReleaseTagRange(t *testing.T, repository string) (string, string) {
+func supportReleaseTagRange(t *testing.T, repository string) (string, string, string) {
 	t.Helper()
-	output := runSupportGit(t, repository, "tag", "--merged", "HEAD", "--list")
-	var firstTag, latestTag string
+	output := runSupportGit(t, repository, "ls-remote", "--tags", "--refs", "origin")
+	var firstTag, latestTag, latestRevision string
 	var firstVersion, latestVersion releaseVersion
-	for _, tag := range strings.Fields(output) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		tag := strings.TrimPrefix(fields[1], "refs/tags/")
 		version, err := parseSupportReleaseVersion(tag, false)
 		if err != nil {
 			continue
@@ -275,10 +285,11 @@ func supportReleaseTagRange(t *testing.T, repository string) (string, string) {
 		}
 		if latestTag == "" || compareReleaseVersions(version, latestVersion) > 0 {
 			latestTag = tag
+			latestRevision = fields[0]
 			latestVersion = version
 		}
 	}
-	return firstTag, latestTag
+	return firstTag, latestTag, latestRevision
 }
 
 func versionsToSupportMatrix(versions []Version) SupportMatrix {
