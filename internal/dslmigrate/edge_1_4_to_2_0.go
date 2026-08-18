@@ -25,6 +25,7 @@ const (
 // bump, and the change is visible in the migration diff for review.
 func applyCurrentToNext(root *yaml.Node) (bool, []string) {
 	var notes []string
+	changed := false
 	spec, _ := mapValue(root, "spec")
 	if spec != nil {
 		gatesByName := map[string]*yaml.Node{}
@@ -39,13 +40,13 @@ func applyCurrentToNext(root *yaml.Node) (bool, []string) {
 			for _, task := range tasks.Content {
 				note, ok := pinCIPollInterval(task, gatesByName)
 				if ok {
+					changed = true
 					notes = append(notes, note)
 				}
 			}
 		}
 	}
-	setScalar(root, "dslVersion", "2.0", "!!str")
-	return true, notes
+	return changed, notes
 }
 
 func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (string, bool) {

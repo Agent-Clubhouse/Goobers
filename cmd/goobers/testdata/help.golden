@@ -31,8 +31,8 @@ Usage:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -81,8 +81,8 @@ Usage:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -133,8 +133,8 @@ Core commands:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -186,8 +186,8 @@ Advanced operator commands:
                                 print current claim leases, optionally only expired leases
   goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
                                 force-release a claim through the live daemon or claims.lock
-  goobers escalations show [--json] <run-id> [path]
-                                show escalation cause + per-stage artifact timeline
+  goobers escalations show [--json] [--include-verdict] <run-id> [path]
+                                show escalation cause, verdict, and per-stage artifact timeline
   goobers telemetry stats|errors|export|prune|prune-orphans|compact [flags] [path]
                                 query, export, prune, or compact run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [path]
@@ -233,6 +233,7 @@ Workflow-stage and connector commands:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -290,6 +291,7 @@ Usage:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -820,15 +822,16 @@ Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
 ### escalations
 Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] <run-id> [path]
+       goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage.
 
 ### escalations show
-Usage: goobers escalations show [--json] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
+Use --include-verdict to include reviewer verdict rationale and findings.
 
 ### examples
 Usage: goobers examples <list|show> [name]
@@ -1460,6 +1463,14 @@ first if one is running; the reset is applied when the scheduler next
 reconstructs its budget window). Default path ".".
 Exit codes: 0 = reset written, 2 = usage/IO error.
 
+### resolve-review-threads
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
+
 ### respond-to-findings
 Usage: goobers respond-to-findings [--check] [path]
 
@@ -1890,11 +1901,12 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
 ### trace
-Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
-or --transcript to select one stage. With --follow, stream a live run's
+or --transcript to select one stage. Use --summary for run metadata and
+review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
 "."). Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
@@ -1935,10 +1947,11 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
 
 These five behavior controls are intentionally flag-only: --watch-config
 selects a process-local development watcher, --diagnostics is temporary

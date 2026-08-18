@@ -148,10 +148,13 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --json --follow --transcripts --transcript"
+            flags+=" --json --follow --summary --verdicts --transcripts --transcript"
             ;;
         escalations)
             flags+=" --json"
+            case "${COMP_WORDS[2]:-}" in
+                show) flags+=" --include-verdict" ;;
+            esac
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in

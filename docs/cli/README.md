@@ -23,7 +23,7 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
+| [`goobers trace`](#goobers-trace) | show a run's journal events or review verdicts, follow a live run, or show transcripts |
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
@@ -59,7 +59,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
-| [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
@@ -145,6 +145,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
+| [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
@@ -1055,7 +1056,7 @@ list escalated runs newest first
 
 ~~~text
 Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] <run-id> [path]
+       goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage.
@@ -1070,18 +1071,20 @@ $ goobers escalations --json
 
 ## `goobers escalations show`
 
-show escalation cause + per-stage artifact timeline
+show escalation cause, verdict, and per-stage artifact timeline
 
 ~~~text
-Usage: goobers escalations show [--json] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
+Use --include-verdict to include reviewer verdict rationale and findings.
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers escalations show <run-id>
+$ goobers escalations show --include-verdict <run-id>
 ~~~
 
 ## `goobers examples`
@@ -2211,6 +2214,25 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 $ goobers reset-rate-limit
 ~~~
 
+## `goobers resolve-review-threads`
+
+reply to and resolve remediated native review threads (a workflow stage)
+
+~~~text
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers resolve-review-threads
+~~~
+
 ## `goobers respond-to-findings`
 
 post a validated per-finding remediation response to the claimed PR (a workflow stage)
@@ -3032,14 +3054,15 @@ $ goobers telemetry-query --window 24h --format candidate-findings
 
 ## `goobers trace`
 
-show a run's journal events, follow a live run, or show transcripts
+show a run's journal events or review verdicts, follow a live run, or show transcripts
 
 ~~~text
-Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
-or --transcript to select one stage. With --follow, stream a live run's
+or --transcript to select one stage. Use --summary for run metadata and
+review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
 "."). Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
@@ -3051,6 +3074,8 @@ error, 130 = interrupted while following.
 
 ~~~console
 $ goobers trace <run-id>
+$ goobers trace --summary <run-id>
+$ goobers trace --verdicts <run-id>
 $ goobers trace --follow <run-id>
 $ goobers trace --transcripts <run-id>
 ~~~
@@ -3093,10 +3118,11 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
 
 These five behavior controls are intentionally flag-only: --watch-config
 selects a process-local development watcher, --diagnostics is temporary

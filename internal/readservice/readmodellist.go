@@ -187,7 +187,7 @@ func readModelDims(options RunListOptions) []readmodel.Dim {
 // to be unambiguous about which path they are exercising.
 func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 
-// DisableReadModelReads forces the journal-derived paths.
+// DisableReadModelReads forces authoritative journal scans.
 //
 // This is the rollback §6.6 requires, and it is deliberately a runtime switch
 // rather than a rebuild: rolling back must be a flag flip or deleting a file,
@@ -195,4 +195,7 @@ func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 // exactly as correct as it was. Reachable via `goobers up
 // --disable-read-model-reads` (cmd/goobers/up.go, #2036) — before that the
 // only caller was this file's own doc comment.
-func (s *Local) DisableReadModelReads() { s.readModelReads = false }
+func (s *Local) DisableReadModelReads() {
+	s.readModelReads = false
+	s.SetReadMode(ReadModeAuthoritative)
+}

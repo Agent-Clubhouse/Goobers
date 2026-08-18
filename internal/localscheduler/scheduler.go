@@ -1715,6 +1715,21 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 	})
 }
 
+// RecordRecoveredTrigger distinguishes a delegated request claimed after a
+// daemon restart from a retry or resume of an existing run.
+func (s *Scheduler) RecordRecoveredTrigger(requestID, workflow, runID string) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: workflow,
+		RunID:    runID,
+		Runner: map[string]any{
+			"kind":      journal.RunnerAnnotationTriggerRecovery,
+			"action":    journal.RecoveryActionNewClaim,
+			"requestId": requestID,
+		},
+	})
+}
+
 // Signal fires every workflow subscribed to the named external signal (WF-014,
 // #342: a type=signal trigger declares Signal: "<name>") — `goobers signal
 // <name>` CLI wiring calls this; authenticated repository webhooks use
