@@ -20,7 +20,7 @@ func AllCapabilities() []Capability {
 		CapRepoClone, CapRepoBranch, CapRepoCommit, CapRepoPush,
 		CapPROpen, CapPRList, CapPRPoll, CapPRClose, CapPRFiles, CapPRCompare,
 		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
-		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll, CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead, CapPRStatusPublish,
 		CapBacklogList, CapBacklogGet, CapBacklogComments, CapBacklogCreate, CapBacklogUpdate, CapBacklogStatus, CapBacklogClaim, CapBacklogBlockers,

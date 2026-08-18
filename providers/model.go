@@ -346,6 +346,7 @@ type PullRequestNativeReview struct {
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
 	ID                int64              `json:"id"`
+	ThreadID          string             `json:"threadId"`
 	Author            string             `json:"author,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
@@ -362,6 +363,14 @@ type PullRequestInlineComment struct {
 	CreatedAt         *time.Time         `json:"createdAt,omitempty"`
 	URL               string             `json:"url,omitempty"`
 	Integrity         apiintegrity.Grade `json:"integrity,omitempty"`
+}
+
+// PullRequestReviewThreadReply requests a reply to one native review thread.
+type PullRequestReviewThreadReply struct {
+	Repository RepositoryRef
+	PullID     string
+	CommentID  int64
+	Body       string
 }
 
 // PullRequestReviewThreads is the review evidence attached to a pull request.

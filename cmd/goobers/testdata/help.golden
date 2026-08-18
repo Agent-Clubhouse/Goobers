@@ -233,6 +233,7 @@ Workflow-stage and connector commands:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -290,6 +291,7 @@ Usage:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -1460,6 +1462,14 @@ Takes effect on the next `goobers up`/`goobers run` (stop the daemon
 first if one is running; the reset is applied when the scheduler next
 reconstructs its budget window). Default path ".".
 Exit codes: 0 = reset written, 2 = usage/IO error.
+
+### resolve-review-threads
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
 
 ### respond-to-findings
 Usage: goobers respond-to-findings [--check] [path]

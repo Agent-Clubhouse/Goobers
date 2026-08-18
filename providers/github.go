@@ -158,7 +158,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRCompare,
 		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
-		CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead,
