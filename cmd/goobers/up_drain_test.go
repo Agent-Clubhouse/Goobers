@@ -37,6 +37,36 @@ func TestDrainDaemonRunsReportsProgressUntilCleanCompletion(t *testing.T) {
 	}
 }
 
+func TestDrainDaemonRunsWaitsForSchedulerToRegisterTrackedRuns(t *testing.T) {
+	var runs sync.WaitGroup
+	runAdded := make(chan struct{})
+	release := make(chan struct{})
+	waitScheduler := func() {
+		runs.Add(1)
+		close(runAdded)
+		go func() {
+			defer runs.Done()
+			<-release
+		}()
+	}
+
+	done := make(chan daemonDrainResult, 1)
+	go func() {
+		done <- drainDaemonRuns(&runs, waitScheduler, newDaemonRunnerRegistry(), 0, nil, &bytes.Buffer{})
+	}()
+
+	<-runAdded
+	select {
+	case <-done:
+		t.Fatal("drain returned before the scheduler-registered run completed")
+	default:
+	}
+	close(release)
+	if result := <-done; result.forced {
+		t.Fatal("clean drain reported forced")
+	}
+}
+
 func TestDrainDaemonRunsTimeoutAndRepeatedSignalShareHardPath(t *testing.T) {
 	for _, tt := range []struct {
 		name    string

@@ -1163,14 +1163,12 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) {
 // construction, so the scheduler holds a map of workflow name -> Starter").
 // It also tracks every dispatched run in wg so the daemon's shutdown drain
 // (runUpContext) waits for scheduler-dispatched runs, not just the startup
-// resume scan's — wg.Add happens inside Start, which localscheduler's own
-// dispatch already calls from its own goroutine, so there is an inherent
-// (and accepted) small race window between that goroutine launching and
-// wg.Add actually running; closing it fully would need a scheduler-side
-// hook this seam doesn't expose. Every dispatch through this Starter — both
-// `goobers up`'s scheduled/manual-via-Trigger fires and `goobers run`'s own
-// sched.Trigger call, now that #134 routes it through the same scheduler —
-// incrementally ingests into rollupDB on completion (issue #127).
+// resume scan's. Shutdown waits for scheduler dispatches before waiting on wg,
+// guaranteeing each asynchronous dispatch has called wg.Add first. Every
+// dispatch through this Starter — both `goobers up`'s scheduled/manual-via-
+// Trigger fires and `goobers run`'s own sched.Trigger call, now that #134
+// routes it through the same scheduler — incrementally ingests into rollupDB
+// on completion (issue #127).
 type trackedStarter struct {
 	r            *runner.Runner
 	machine      *workflow.Machine
