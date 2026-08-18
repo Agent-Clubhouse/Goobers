@@ -782,24 +782,15 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials
 
+      - name: Windows self-update
+        run: go test ./internal/selfupdate
+
       # Both are real Windows faults fixed under #2031 whose only coverage
       # lives in an existing test that no gated selection ran:
       # harness/claude.go let an ambient USERPROFILE override an explicitly
       # set HOME; agentkit/bundle.go trusted the OS's reported executable bit,
       # which neither embed.FS nor NTFS can express, so the embedded and
       # from-disk toolkit builders diverged. Both are cheap, so they run whole.
-      #
-      # ./internal/selfupdate is deliberately NOT here, though it carries a
-      # Windows fault of its own (update.go reading a staging-path collision as
-      # "already gone", because Windows answers ERROR_PATH_NOT_FOUND where
-      # POSIX answers ENOTDIR). #2792 added it, and
-      # TestSupervisorPromotesHealthyCandidate promptly began failing on this
-      # gate. #2800 misread that as a slow runner and raised the package's
-      # Windows wait budget 5s -> 30s; the test then failed at 33s, which
-      # establishes it as a genuine hang rather than contention. Both changes
-      # are reverted: an arbitrary large timeout would only convert a fast red
-      # into a slow one while leaving a required gate flaky. The hang is
-      # tracked in #2824, and this package comes back once it is diagnosed.
       - name: Windows harness and toolkit
         run: go test ./internal/harness ./internal/agentkit
 
