@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -15,6 +17,7 @@ const pullRequestReviewThreadsQuery = `query($owner: String!, $name: String!, $n
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         nodes {
+          id
           isResolved
           isOutdated
           path
@@ -36,6 +39,12 @@ const pullRequestReviewThreadsQuery = `query($owner: String!, $name: String!, $n
         }
       }
     }
+  }
+}`
+
+const resolveReviewThreadMutation = `mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
   }
 }`
 
@@ -67,6 +76,7 @@ type githubInlineReviewComment struct {
 }
 
 type githubReviewThreadState struct {
+	ThreadID          string
 	IsResolved        bool
 	IsOutdated        bool
 	Path              string
@@ -83,6 +93,7 @@ type githubReviewThreadsPage struct {
 		PullRequest *struct {
 			ReviewThreads struct {
 				Nodes []struct {
+					ID                string `json:"id"`
 					IsResolved        bool   `json:"isResolved"`
 					IsOutdated        bool   `json:"isOutdated"`
 					Path              string `json:"path"`
@@ -231,6 +242,7 @@ func pullRequestInlineComments(rawComments []githubInlineReviewComment, states m
 		}
 		comments = append(comments, PullRequestInlineComment{
 			ID:                comment.ID,
+			ThreadID:          state.ThreadID,
 			Author:            comment.User.Login,
 			Body:              comment.Body,
 			Path:              path,
@@ -262,12 +274,14 @@ func (p *GitHubProvider) pullRequestReviewThreadStates(ctx context.Context, repo
 		}, &page); err != nil {
 			return nil, err
 		}
+
 		if page.Repository.PullRequest == nil {
 			return nil, fmt.Errorf("pull request %s/%s#%d not found", repo.Owner, repo.Name, number)
 		}
 		threads := page.Repository.PullRequest.ReviewThreads
 		for _, thread := range threads.Nodes {
 			state := githubReviewThreadState{
+				ThreadID:   thread.ID,
 				IsResolved: thread.IsResolved,
 				IsOutdated: thread.IsOutdated,
 				Path:       thread.Path,
@@ -302,4 +316,58 @@ func (p *GitHubProvider) pullRequestReviewThreadStates(ctx context.Context, repo
 	}
 }
 
+// ReplyPullRequestReviewThread posts one reply to an existing review thread.
+func (p *GitHubProvider) ReplyPullRequestReviewThread(ctx context.Context, req PullRequestReviewThreadReply) (PullRequestInlineComment, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestInlineComment{}, err
+	}
+	number, err := strconv.Atoi(req.PullID)
+	if err != nil || number < 1 || req.CommentID < 1 || strings.TrimSpace(req.Body) == "" {
+		return PullRequestInlineComment{}, fmt.Errorf("pull id, comment id, and reply body are required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "comments", strconv.FormatInt(req.CommentID, 10), "replies")
+	if err != nil {
+		return PullRequestInlineComment{}, err
+	}
+	var created githubInlineReviewComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": req.Body}, &created); err != nil {
+		return PullRequestInlineComment{}, err
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider: ProviderGitHub, Ref: issueRef(req.Repository, req.PullID),
+		URL: created.HTMLURL, Operation: "review-thread-reply",
+		Fields: map[string]FieldDigest{"body": {After: digestString(req.Body)}},
+	})
+	return PullRequestInlineComment{ID: created.ID, Body: created.Body, InReplyTo: created.InReplyTo}, nil
+}
+
+// ResolvePullRequestReviewThread resolves one GraphQL review-thread node.
+func (p *GitHubProvider) ResolvePullRequestReviewThread(ctx context.Context, repo RepositoryRef, threadID string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return fmt.Errorf("review thread id is required")
+	}
+	var result struct {
+		ResolveReviewThread struct {
+			Thread struct {
+				ID         string `json:"id"`
+				IsResolved bool   `json:"isResolved"`
+			} `json:"thread"`
+		} `json:"resolveReviewThread"`
+	}
+	if err := p.graphql(ctx, resolveReviewThreadMutation, map[string]interface{}{"threadId": threadID}, &result); err != nil {
+		return err
+	}
+	if result.ResolveReviewThread.Thread.ID != threadID || !result.ResolveReviewThread.Thread.IsResolved {
+		return fmt.Errorf("github did not confirm review thread %q as resolved", threadID)
+	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider: ProviderGitHub, Ref: issueRef(repo, threadID), Operation: "review-thread-resolve",
+	})
+	return nil
+}
+
 var _ PullRequestReviewThreadProvider = (*GitHubProvider)(nil)
+var _ PullRequestReviewThreadMutator = (*GitHubProvider)(nil)

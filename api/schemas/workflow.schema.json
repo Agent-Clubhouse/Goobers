@@ -331,6 +331,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",

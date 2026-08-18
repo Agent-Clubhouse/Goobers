@@ -54,13 +54,14 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 }
 
 var providerDispatchAllowlist = map[string]string{
-	"elect-lander":         "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"post-merge":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"reconcile-post-merge": "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"record-merge-refusal": "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
-	"reconcile-branches":   "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
-	"set-milestone":        "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
-	"telemetry-query":      "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
+	"elect-lander":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"post-merge":             "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"reconcile-post-merge":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"record-merge-refusal":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"reconcile-branches":     "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",
+	"resolve-review-threads": "Native review-thread replies and resolution are GitHub-only; no equivalent ADO or Gitea capability exists.",
+	"set-milestone":          "Milestones are GitHub-only; the command help explicitly says GitHub milestone and no ADO milestone capability exists.",
+	"telemetry-query":        "Provider access is limited to the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 }
 
 func TestBlessedTierStageDispatchCoverage(t *testing.T) {

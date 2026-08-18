@@ -174,6 +174,7 @@ type remediationWalkOptions struct {
 	validationStatus             apiv1.ResultStatus
 	beforePushStatus             apiv1.ResultStatus
 	guardBeforeImplementStatuses []apiv1.ResultStatus
+	pushPublished                string
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -193,6 +194,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 	}
 	if opts.beforePushStatus == "" {
 		opts.beforePushStatus = apiv1.ResultSuccess
+	}
+	if opts.pushPublished == "" {
+		opts.pushPublished = "true"
 	}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -280,10 +284,13 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":validate-finding-responses": {status: opts.validationStatus},
 		runID + ":local-ci":                   {status: apiv1.ResultSuccess},
 		runID + ":push-remediated": {
-			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": opts.pushPublished},
 		},
 		runID + ":respond-to-findings": {
-			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": opts.pushPublished == "true"},
+		},
+		runID + ":resolve-review-threads": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"unresolvedThreadCount": "0"},
 		},
 		runID + ":release-claim":                  {status: apiv1.ResultSuccess},
 		runID + ":release-escalated-claim":        {status: apiv1.ResultSuccess},
@@ -351,6 +358,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
+
 	want := []string{
 		"update-behind-pr",
 		"gather-pr-context",
@@ -370,6 +378,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"guard-before-push",
 		"push-remediated",
 		"respond-to-findings",
+		"resolve-review-threads",
 		"release-claim",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
@@ -389,6 +398,25 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if !goober.sawCIContext {
 		t.Error("implementer context is missing gather-ci-failures.artifact[0]")
+	}
+}
+
+func TestShippedPRRemediationReleasesClaimWhenPublicationIsSkipped(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-unpublished", goober, remediationWalkOptions{
+		pushPublished: "false",
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	if visited[len(visited)-1] != "release-claim" {
+		t.Fatalf("last stage = %q, want release-claim (visited: %v)", visited[len(visited)-1], visited)
+	}
+	for _, stage := range visited {
+		if stage == "resolve-review-threads" {
+			t.Fatalf("unpublished remediation reached %s (visited: %v)", stage, visited)
+		}
 	}
 }
 

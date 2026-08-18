@@ -244,6 +244,7 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				Integrity:   apiv1.IntegrityUnapproved,
 			}},
 			InlineComments: []apiv1.RemediationInlineComment{{
+				ID: 1, ThreadID: "PRRT_1",
 				Author:            "reviewer",
 				Body:              "This field is missing.",
 				Path:              "api/schemas/verdict.schema.json",
