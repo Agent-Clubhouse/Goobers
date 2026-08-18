@@ -53,6 +53,13 @@ type Result struct {
 	// RepassCause identifies the gate or stage failure that sent the run back
 	// to the subject stage before DuplicateDiff detected no resulting change.
 	RepassCause *RepassCause
+	// Reason is a machine-readable classification of this Result, distinct
+	// from the free-form rationale text elsewhere on Result/Verdict. Set to
+	// ReasonUnchangedRepass when DuplicateDiff fired (issue #3250) so a
+	// caller (the runner's escalation notification, `goobers trace`/status,
+	// and merge-review's automation) can match on a stable code instead of
+	// parsing prose. Empty for every other outcome.
+	Reason string
 	// CacheHit is true when Evaluator.CachedVerdict was set for this
 	// evaluation (issue #523's cross-run verdict cache): the reviewer was
 	// never called, and Verdict is the caller-supplied cached verdict,
@@ -92,7 +99,27 @@ type RepassCause struct {
 	ErrorCode    string `json:"errorCode,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 	Rationale    string `json:"rationale,omitempty"`
+	// Infrastructure is true when Kind is "stage-failure" and the failed
+	// attempt that triggered this repass was itself classified as an
+	// infrastructure/environment failure rather than an ordinary
+	// implementation defect (issue #3250). The runner sets this from the
+	// journaled retry decision — never from an attempt's start class. It lets an UNCHANGED_REPASS
+	// escalation (see ReasonUnchangedRepass) distinguish "the implementer
+	// correctly found nothing to fix after an environmental CI failure"
+	// from "the implementer failed to converge on a genuine defect",
+	// without guessing from error-code heuristics a second time.
+	Infrastructure bool `json:"infrastructure,omitempty"`
 }
+
+// ReasonUnchangedRepass is Result.Reason's value when DuplicateDiff fired:
+// the subject stage's repass produced no commit movement — an effective
+// diff byte-identical to the immediately prior attempt (issue #3250). A
+// stable, matchable code, distinct from RepassCause's free-form prose,
+// intended for callers (the runner's escalation notification, `goobers
+// trace`/status, and any automation classifying terminal outcomes) that
+// need to tell this specific loop-stopping condition apart from an
+// ordinary repass-budget exhaustion or a genuine reviewer/CI fail verdict.
+const ReasonUnchangedRepass = "UNCHANGED_REPASS"
 
 func (c RepassCause) String() string {
 	switch c.Kind {
@@ -104,7 +131,11 @@ func (c RepassCause) String() string {
 		if c.ErrorMessage != "" {
 			detail += ": " + c.ErrorMessage
 		}
-		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q after stage %q failed%s", c.Gate, c.Outcome, c.Stage, detail)
+		classification := "an implementation"
+		if c.Infrastructure {
+			classification = "an infrastructure/environment"
+		}
+		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q after stage %q failed with %s failure%s", c.Gate, c.Outcome, c.Stage, classification, detail)
 	case "reviewer":
 		detail := ""
 		if c.Rationale != "" {
@@ -412,13 +443,15 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	var repassCause *RepassCause
+	var reason string
 	if duplicateDiff {
 		repassCause = e.RepassCause
+		reason = ReasonUnchangedRepass
 	}
 	r := Result{
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
 		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
-		DuplicateDiff: duplicateDiff, RepassCause: repassCause, CacheHit: cacheHit, Verdict: verdict,
+		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {

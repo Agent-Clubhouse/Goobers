@@ -65,6 +65,10 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 // duplicateDiff (issue #316) is likewise a Runner-namespace annotation. The
 // digest itself is only journaled when non-empty. internal/runner/resume.go
 // reconstructs the gate, target-stage, and digest state from these annotations.
+// reason (issue #3250) mirrors it: the machine-readable ReasonUnchangedRepass
+// code, journaled only when non-empty, so a reader can match on a stable
+// string instead of re-deriving "was this an unchanged repass" from
+// duplicateDiff/repassCause alone.
 //
 // verdictCacheHit (issue #523) is a third Runner-namespace annotation,
 // alongside duplicateDiff: true when this attempt reused
@@ -103,6 +107,9 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	if r.RepassCause != nil {
 		runner["repassCause"] = r.RepassCause
+	}
+	if r.Reason != "" {
+		runner["reason"] = r.Reason
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,

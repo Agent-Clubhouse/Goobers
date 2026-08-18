@@ -1598,6 +1598,10 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
+	if retryClass == "" && gr.Outcome == gate.OutcomeInfra {
+		retryClass = journal.AttemptInfra
+		retryable = true
+	}
 	retryTarget, retry, err := routeRetryDecision(ws.jr, gr, ws.lastStage, ws.lastResult, retryClass, retryable)
 	if err != nil {
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
@@ -1718,10 +1722,14 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	}
 	if gr.Escalated {
 		if gr.DuplicateDiff {
-			if gr.RepassCause != nil {
-				return gr.RepassCause.String() + "; the implementer produced no change in response", true
+			reason := gr.Reason
+			if reason == "" {
+				reason = gate.ReasonUnchangedRepass
 			}
-			return "repass produced a diff identical to the immediately prior attempt", true
+			if gr.RepassCause != nil {
+				return reason + ": " + gr.RepassCause.String() + "; the implementer produced no change in response", true
+			}
+			return reason + ": repass produced a diff identical to the immediately prior attempt", true
 		}
 		return "repass budget exhausted", true
 	}
@@ -3775,14 +3783,28 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 				cause.Rationale = strings.TrimSpace(verdict.Summary)
 			}
 		}
+		var infrastructureEvidence *bool
 		for j := i - 1; j >= 0; j-- {
 			prior := events[j]
 			if prior.Type == journal.EventGateEvaluated {
 				break
 			}
+			switch {
+			case prior.Type == journal.EventRunnerAnnotation &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			case prior.Type == journal.EventError && prior.Stage == subjectStage &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			}
 			if prior.Type == journal.EventStageFinished && prior.Status == string(apiv1.ResultFailure) {
 				cause.Kind = "stage-failure"
 				cause.Stage = prior.Stage
+				// AttemptClass describes how an attempt started, not why it
+				// failed. Use the retry decision journaled for this stage.
+				cause.Infrastructure = infrastructureEvidence != nil && *infrastructureEvidence
 				if prior.Error != nil {
 					cause.ErrorCode = prior.Error.Code
 					cause.ErrorMessage = prior.Error.Message

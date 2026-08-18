@@ -2274,7 +2274,20 @@ func gateEscalationReason(event journal.Event) string {
 	if gateMarkedEscalated(event) {
 		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
 		if duplicateDiff {
-			return "repass produced a diff identical to the immediately prior attempt"
+			reason, _ := event.Runner["reason"].(string)
+			if reason == "" {
+				reason = "UNCHANGED_REPASS"
+			}
+			classification := "subject"
+			if repassTarget, _ := event.Runner["repassTarget"].(string); strings.TrimSpace(repassTarget) != "" {
+				classification = strings.TrimSpace(repassTarget)
+			}
+			if repassCause, ok := event.Runner["repassCause"].(map[string]interface{}); ok {
+				if infra, _ := repassCause["infrastructure"].(bool); infra {
+					classification = "infrastructure"
+				}
+			}
+			return fmt.Sprintf("%s: repass produced a diff identical to the immediately prior attempt (%s-classified failure)", reason, classification)
 		}
 		return "repass budget exhausted"
 	}

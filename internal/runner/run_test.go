@@ -5503,6 +5503,44 @@ func TestTerminalGateNotificationRetainedForArbitraryStage(t *testing.T) {
 	}
 }
 
+// TestTerminalGateNotificationClassifiesUnchangedRepass is issue #3250's
+// notification-surface acceptance: an escalation caused by a duplicate diff
+// must lead with the stable UNCHANGED_REPASS reason code and must classify
+// the upstream cause distinctly when it was itself an infrastructure/
+// environment failure, so an operator reading the escalation comment (or
+// `goobers trace`) never mistakes an environmentally-caused no-op repass for
+// an unresolved implementation defect.
+func TestTerminalGateNotificationClassifiesUnchangedRepass(t *testing.T) {
+	infraReason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
+		Escalated: true, DuplicateDiff: true, Reason: gate.ReasonUnchangedRepass,
+		RepassCause: &gate.RepassCause{
+			Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci",
+			ErrorCode: "host_contention", Infrastructure: true,
+		},
+	})
+	if !notify || !strings.HasPrefix(infraReason, gate.ReasonUnchangedRepass) ||
+		!strings.Contains(infraReason, "infrastructure/environment") {
+		t.Fatalf("infra reason = %q,%t, want UNCHANGED_REPASS-prefixed infrastructure classification", infraReason, notify)
+	}
+
+	implReason, notify := terminalGateNotificationReason(gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
+		Escalated: true, DuplicateDiff: true, Reason: gate.ReasonUnchangedRepass,
+		RepassCause: &gate.RepassCause{
+			Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci",
+			ErrorCode: "test_failure", Infrastructure: false,
+		},
+	})
+	if !notify || !strings.HasPrefix(implReason, gate.ReasonUnchangedRepass) ||
+		!strings.Contains(implReason, "an implementation") {
+		t.Fatalf("implementation reason = %q,%t, want UNCHANGED_REPASS-prefixed implementation classification", implReason, notify)
+	}
+	if infraReason == implReason {
+		t.Fatalf("infra and implementation reasons must differ: %q", infraReason)
+	}
+}
+
 func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 	t.Run("CI failure", func(t *testing.T) {
 		run := newRunnerTestJournal(t, "repass-cause-ci")
@@ -5520,8 +5558,41 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 			t.Fatalf("priorRepassCause: %v", err)
 		}
 		if cause == nil || cause.Kind != "stage-failure" || cause.Stage != "local-ci" ||
-			cause.ErrorCode != "deadline_exceeded" {
-			t.Fatalf("cause = %+v, want local-ci deadline failure", cause)
+			cause.ErrorCode != "deadline_exceeded" || cause.Infrastructure {
+			t.Fatalf("cause = %+v, want local-ci deadline failure classified as implementation (no AttemptClass=infra recorded)", cause)
+		}
+	})
+
+	// #3250: a stage attempt journaled with AttemptClass=infra (an
+	// environmental/infrastructure failure, e.g. host contention or a
+	// transient dependency-transport failure) must be classified distinctly
+	// from an ordinary implementation failure, so a subsequent duplicate-diff
+	// escalation can tell the implementer's correct "nothing to fix" apart
+	// from a genuine unresolved defect.
+	t.Run("infrastructure-classified CI failure", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-ci-infra")
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultFailure),
+			Error: &journal.ErrorDetail{Code: "host_contention", Message: "runner host under contention"},
+		}); err != nil {
+			t.Fatalf("append stage failure: %v", err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "local-ci",
+			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+		}); err != nil {
+			t.Fatalf("append retry decision: %v", err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement"}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		cause, err := priorRepassCause(run, "implement")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "stage-failure" || cause.Stage != "local-ci" ||
+			cause.ErrorCode != "host_contention" || !cause.Infrastructure {
+			t.Fatalf("cause = %+v, want local-ci host_contention failure classified as infrastructure", cause)
 		}
 	})
 
@@ -5955,6 +6026,7 @@ func (c *repeatingDeterministic) Run(_ context.Context, env apiv1.InvocationEnve
 // diff it already judged.
 func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
 	reviewer := &alwaysNeedsChangesReviewer{}
+	deterministic := &unchangingAfterFirstDeterministic{t: t}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -5964,7 +6036,7 @@ func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	r, err := New(Config{
 		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
-			return &repeatingDeterministic{t: t}, nil
+			return deterministic, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return reviewer, nil
@@ -5993,6 +6065,9 @@ func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
 	if reviewer.calls != 1 {
 		t.Fatalf("reviewer.calls = %d, want 1 (must not be re-invoked on a detected duplicate diff)", reviewer.calls)
 	}
+	if deterministic.calls != 2 {
+		t.Fatalf("implementation calls = %d, want 2 (unchanged repass must not consume another implementation attempt)", deterministic.calls)
+	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-duplicate-diff"))
 	if err != nil {
@@ -6016,6 +6091,9 @@ func TestRunnerEscalatesOnDuplicateRepassDiff(t *testing.T) {
 	}
 	if gateEvents[1].Target != workflow.TargetEscalate {
 		t.Fatalf("2nd gate.evaluated event target = %q, want %q", gateEvents[1].Target, workflow.TargetEscalate)
+	}
+	if reason, _ := gateEvents[1].Runner["reason"].(string); reason != gate.ReasonUnchangedRepass {
+		t.Fatalf("2nd gate.evaluated reason = %q, want %q", reason, gate.ReasonUnchangedRepass)
 	}
 }
 
@@ -6827,5 +6905,286 @@ func TestDefaultRepoCloneURL(t *testing.T) {
 				t.Fatalf("defaultRepoCloneURL() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// unchangingAfterFirstDeterministic commits once and then produces no further
+// changes — used for testing infrastructure failure scenarios where the
+// implementer cannot fix the underlying issue.
+type unchangingAfterFirstDeterministic struct {
+	t     *testing.T
+	calls int
+}
+
+func (c *unchangingAfterFirstDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	c.calls++
+	if c.calls == 1 {
+		// First attempt: make a real commit
+		if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("initial content\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(c.t, env.Workspace, "add", "-A")
+		runGit(c.t, env.Workspace, "commit", "-m", "initial implementation")
+	}
+	// All subsequent calls: make no changes
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "no changes needed"}, nil
+}
+
+// changedContentDeterministic produces different content on each call —
+// used for testing legitimate changed repasses that should converge.
+type changedContentDeterministic struct {
+	t     *testing.T
+	calls int
+}
+
+func (c *changedContentDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	c.t.Helper()
+	c.calls++
+	content := fmt.Sprintf("content version %d\n", c.calls)
+	if err := os.WriteFile(filepath.Join(env.Workspace, "work.txt"), []byte(content), 0o644); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	runGit(c.t, env.Workspace, "add", "-A")
+	runGit(c.t, env.Workspace, "commit", "-m", fmt.Sprintf("version %d", c.calls))
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: fmt.Sprintf("version %d", c.calls)}, nil
+}
+
+// needsChangesThenApproveReviewer requests changes on first attempt, approves
+// on second — used for testing legitimate changed repasses.
+type needsChangesThenApproveReviewer struct {
+	t     *testing.T
+	calls int
+}
+
+func (r *needsChangesThenApproveReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (r *needsChangesThenApproveReviewer) Review(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.calls++
+	if r.calls == 1 {
+		return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "need improvements", Rationale: "code review feedback"}, nil
+	}
+	return apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good"}, nil
+}
+
+type environmentalCIThenUnchangedDeterministic struct {
+	t                   *testing.T
+	ciCalls             int
+	implementationCalls int
+}
+
+func (d *environmentalCIThenUnchangedDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.t.Helper()
+	if strings.HasSuffix(env.TaskID, ":local-ci") {
+		d.ciCalls++
+		if d.ciCalls == 1 {
+			return apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "environment_failure", Message: "runner host unavailable", Retryable: true},
+			}, nil
+		}
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	d.implementationCalls++
+	if d.implementationCalls == 1 {
+		if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("implementation\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(d.t, env.Workspace, "add", "-A")
+		runGit(d.t, env.Workspace, "commit", "-m", "implementation")
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func environmentalCIMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Start: "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-ci"},
+			{Name: "local-ci", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-gate"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+				Branches:  map[string]string{gate.OutcomePass: "review", gate.OutcomeInfra: "implement", gate.OutcomeFail: workflow.TargetAbort},
+			},
+			{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": workflow.TerminalComplete, "needs-changes": "implement", "fail": workflow.TargetAbort},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "environmental-ci-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile environmental CI machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T) {
+	det := &environmentalCIThenUnchangedDeterministic{t: t}
+	reviewer := &needsChangesThenApproveReviewer{t: t}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		NewAgentic:       func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) { return reviewer, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr, RunsDir: runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID: "run-environmental-unchanged", Machine: environmentalCIMachine(t),
+		Gaggle: "acme-web", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated", res.Phase)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("reviewer.calls = %d, want 1 (duplicate repass must skip review)", reviewer.calls)
+	}
+	if det.ciCalls != 3 {
+		t.Fatalf("local-ci calls = %d, want 3 (the unchanged result must not trigger another CI run after duplicate detection)", det.ciCalls)
+	}
+	if det.implementationCalls != 3 {
+		t.Fatalf("implementation calls = %d, want 3 (the unchanged result must not consume another implementation attempt)", det.implementationCalls)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-environmental-unchanged"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var escalation journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" && event.Escalated {
+			escalation = event
+		}
+	}
+	if escalation.Type == "" || escalation.Runner["reason"] != gate.ReasonUnchangedRepass {
+		t.Fatalf("review escalation = %+v, want UNCHANGED_REPASS", escalation)
+	}
+	if duplicate, _ := escalation.Runner["duplicateDiff"].(bool); !duplicate {
+		t.Fatalf("review escalation duplicateDiff = %v, want true", escalation.Runner["duplicateDiff"])
+	}
+	var environmentalFailure, infrastructureAnnotation bool
+	for _, event := range events {
+		if event.Type == journal.EventStageFinished && event.Stage == "local-ci" &&
+			event.Status == string(apiv1.ResultFailure) && event.Error != nil &&
+			event.Error.Code == "environment_failure" {
+			environmentalFailure = true
+		}
+		if event.Type == journal.EventRunnerAnnotation && event.Stage == "local-ci" &&
+			event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+			infrastructureAnnotation = true
+		}
+	}
+	if !environmentalFailure || !infrastructureAnnotation {
+		t.Fatalf("environmental failure evidence missing: failure=%v infrastructure=%v", environmentalFailure, infrastructureAnnotation)
+	}
+	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 3 {
+		t.Fatalf("review escalation repassAttempt = %v, want 3 (unchanged result must not consume another implementation repass)", escalation.Runner["repassAttempt"])
+	}
+}
+
+// gateMarkedEscalated is a helper to check if a gate event is marked as escalated.
+func gateMarkedEscalated(event journal.Event) bool {
+	if event.Escalated {
+		return true
+	}
+	escalated, _ := event.Runner["escalated"].(bool)
+	return escalated
+}
+
+// TestRunnerLegitimateChangedRepassConverges is issue #3250's
+// "legitimate changed repasses" scenario: an implementer receives a needs-changes
+// verdict from review, and on the repass produces genuinely new, different content
+// that converts to passing. This must NOT trigger the identical-diff guard and
+// must complete successfully. This is regression coverage for the acceptance
+// criterion "Add regression coverage for environmental CI failures, identical
+// repasses, and legitimate changed repasses."
+func TestRunnerLegitimateChangedRepassConverges(t *testing.T) {
+	det := &changedContentDeterministic{t: t}
+	reviewer := &needsChangesThenApproveReviewer{t: t}
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-changed-repass",
+		Machine: agenticGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Expected flow:
+	// 1. implement (version 1) -> review (needs-changes) -> implement
+	// 2. implement (version 2, different content) -> review (pass) -> complete
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed (legitimate changed repass should converge)", res.Phase)
+	}
+	if det.calls != 2 {
+		t.Fatalf("deterministic.calls = %d, want 2", det.calls)
+	}
+	if reviewer.calls != 2 {
+		t.Fatalf("reviewer.calls = %d, want 2 (both reviews should execute)", reviewer.calls)
+	}
+
+	// Verify no duplicate diff escalation occurred.
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-changed-repass"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated && e.Gate == "reviewgate" {
+			if dup, _ := e.Runner["duplicateDiff"].(bool); dup {
+				t.Fatalf("review gate event has duplicateDiff=true; want false (content changed legitimately)")
+			}
+		}
 	}
 }
