@@ -86,7 +86,7 @@ describe("runs history pagination under live events", () => {
       failed: 101,
       escalated: 51,
       aborted: 0,
-    }, 10_000);
+    });
     const failedRuns = fixtures.runs.runs.filter((run) => run.phase === "failed");
     const escalatedRuns = fixtures.runs.runs.filter((run) => run.phase === "escalated");
     const olderDuplicate = failedRuns.at(-1);
@@ -132,7 +132,7 @@ describe("runs history pagination under live events", () => {
       .filter(([request]) => request?.cursor)
       .map(([request]) => request?.phase);
     expect(paginatedPhases).toEqual(["failed", "escalated", "failed"]);
-  });
+  }, 10_000);
 
   // #1713: a live run event collapsed the Runs page back to the first page,
   // discarding everything the user had paged in.
