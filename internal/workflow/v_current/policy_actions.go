@@ -48,6 +48,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"resolve-review-threads":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"route-provider-verdict":        {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
@@ -77,6 +78,7 @@ var commandPolicyActions = map[string][]string{
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
+	"resolve-review-threads": {"resolve-review-threads"},
 	"set-milestone":          {"assign-milestone"},
 	"update-behind-pr":       {"update-pr-branch", "clear-remediation"},
 }

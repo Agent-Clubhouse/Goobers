@@ -95,6 +95,8 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 			createdAt = comment.CreatedAt.Format(time.RFC3339)
 		}
 		comments = append(comments, apiv1.RemediationInlineComment{
+			ID:                comment.ID,
+			ThreadID:          comment.ThreadID,
 			Author:            comment.Author,
 			Body:              comment.Body,
 			Path:              comment.Path,

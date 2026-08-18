@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -68,6 +69,172 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 	if status.ProviderQuotaResumeAt == nil || !status.ProviderQuotaResumeAt.Equal(activeReset) {
 		t.Fatalf("ProviderQuotaResumeAt = %v, want %v", status.ProviderQuotaResumeAt, activeReset)
+	}
+}
+
+func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	startedAt := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	eventTime := startedAt.Add(-time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time {
+		return eventTime
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(-time.Second)
+	if err := log.Append(journal.Event{
+		Type:   journal.EventDaemonDirtyRestart,
+		Reason: "process exited unexpectedly",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt
+	if err := log.Append(journal.Event{
+		Type: journal.EventDaemonStarted,
+		Runner: map[string]any{
+			"pid":          42,
+			"version":      "v1.2.3",
+			"instanceRoot": "/srv/goobers",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(time.Second)
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-resumed",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"action": journal.RecoveryActionResumed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-new",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationTriggerRecovery,
+			"action": journal.RecoveryActionNewClaim,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	old, oldClock := createFixtureRun(
+		t, layout, machine, "run-failed", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	oldClock.now = startedAt.Add(2 * time.Second)
+	if err := old.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": "daemon_restart",
+			"action": journal.RecoveryActionRetried,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "interrupted"},
+		Runner:  map[string]any{"interruptedAttempt": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _ := createFixtureRun(
+		t, layout, machine, "run-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuine, genuineClock := createFixtureRun(
+		t, layout, machine, "run-genuine-failure", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	genuineClock.now = startedAt.Add(2 * time.Second)
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventRunnerAnnotation,
+			Runner: map[string]any{
+				"kind": journal.RunnerAnnotationRunRecovery, "reason": "daemon_restart",
+				"action": journal.RecoveryActionRetried,
+			},
+		},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+			Status: string(apiv1.ResultFailure), Error: &journal.ErrorDetail{Code: "interrupted"},
+			Runner: map[string]any{"interruptedAttempt": true},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra,
+			Status: string(apiv1.ResultFailure),
+			Error:  &journal.ErrorDetail{Code: "external_telemetry_schema_mismatch"},
+		},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
+	} {
+		if err := genuine.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := genuine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuineReplacement, _ := createFixtureRun(
+		t, layout, machine, "run-genuine-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	if err := genuineReplacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := status.DaemonRestart
+	if got == nil ||
+		!got.At.Equal(startedAt) ||
+		got.Reason != "process exited unexpectedly" ||
+		got.PID != 42 ||
+		got.Version != "v1.2.3" ||
+		got.Root != "/srv/goobers" {
+		t.Fatalf("DaemonRestart = %+v", got)
+	}
+	if len(got.RunIDs) != 1 || got.RunIDs[0] != "run-resumed" {
+		t.Fatalf("recovered run IDs = %v, want [run-resumed]", got.RunIDs)
+	}
+	if len(got.Replacements) != 1 ||
+		got.Replacements[0].ItemID != "3090" ||
+		got.Replacements[0].FailedRunID != "run-failed" ||
+		got.Replacements[0].ReplacementRunID != "run-replacement" {
+		t.Fatalf("replacements = %+v", got.Replacements)
 	}
 }
 

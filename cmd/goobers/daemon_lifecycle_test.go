@@ -19,11 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// newStuckRun hand-constructs a run left non-terminal (task-checkpointed, no
-// run.finished event) for the given workflow — the same "prior crash or
-// unclean shutdown" fixture shape TestUpResumesInterruptedRun uses, factored
-// out for the #135 tests that build their own Scheduler/runner directly
-// rather than going through a full runUpContext.
+// newStuckRun hand-constructs a run interrupted during deterministic dispatch:
+// the task is checkpointed and started, but has no matching stage.finished.
 func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	t.Helper()
 	set, report, err := instance.LoadConfigDir(l.ConfigDir())
@@ -58,6 +55,11 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	}
 	jr.SetMachineState("local-ci")
 	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := jr.Close(); err != nil {
@@ -193,6 +195,36 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	}
 	if finished.Gaggle != "example" || finished.Workflow != "default-implement" {
 		t.Fatalf("instance-log workflow identity = %q/%q, want example/default-implement", finished.Gaggle, finished.Workflow)
+	}
+	var instanceRecovery bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.RunID == "stuck-2" &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery &&
+			event.Runner["action"] == journal.RecoveryActionResumed {
+			instanceRecovery = true
+		}
+	}
+	if !instanceRecovery {
+		t.Fatalf("instance events = %+v, want run.recovery annotation", events)
+	}
+	runReader, err := journal.OpenRead(filepath.Join(l.RunsDir(), "stuck-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEvents, err := runReader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runRecovery bool
+	for _, event := range runEvents {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery {
+			runRecovery = true
+		}
+	}
+	if !runRecovery {
+		t.Fatalf("run events = %+v, want run.recovery annotation", runEvents)
 	}
 }
 

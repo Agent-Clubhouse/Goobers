@@ -110,6 +110,23 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	if runID == "" {
 		t.Fatal("expected a non-empty run id")
 	}
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.RunID == runID &&
+			event.Runner["kind"] == journal.RunnerAnnotationTriggerRecovery &&
+			event.Runner["action"] == journal.RecoveryActionNewClaim &&
+			event.Runner["requestId"] == requestID {
+			recovered = true
+		}
+	}
+	if !recovered {
+		t.Fatalf("events = %+v, want pending trigger new-claim annotation", events)
+	}
 }
 
 func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {

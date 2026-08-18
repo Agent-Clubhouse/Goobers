@@ -3857,10 +3857,147 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	}
 }
 
-// TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget proves a crash
-// during a task's LAST allowed attempt does not grant it a bonus attempt —
-// Resume must fail closed, not silently extend the retry budget.
-func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
+func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web",
+		Start:  "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder",
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+		}},
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{Name: "agentic-recovery", Version: 1, Spec: spec},
+		workflow.WithPreviewFeatures(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-agentic-recovery"
+	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
+	goober := &capturingSuccessGoober{}
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef:        apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		RecoveryReason: "daemon_restart",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Phase != journal.PhaseCompleted || len(goober.invocations) != 1 {
+		t.Fatalf("result = %+v, agent invocations = %d", result, len(goober.invocations))
+	}
+	events := readRunEvents(t, runsDir, runID)
+	var recovery, interrupted bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery &&
+			event.Runner["action"] == journal.RecoveryActionRetried &&
+			event.Runner["stage"] == "implement" &&
+			event.Runner["attemptClass"] == string(journal.AttemptInfra) {
+			recovery = true
+		}
+		if event.Type == journal.EventStageFinished &&
+			event.Stage == "implement" &&
+			event.Attempt == 1 &&
+			event.Error != nil &&
+			event.Error.Code == interruptedAttemptErrorCode {
+			interrupted = true
+		}
+	}
+	if !recovery || !interrupted {
+		t.Fatalf("events = %+v, want recovery annotation and preserved interruption failure", events)
+	}
+}
+
+func TestRunnerResumePreservesCompletedFailureIdentity(t *testing.T) {
+	for _, code := range []string{budgetExceededErrorCode, "external_telemetry_schema_mismatch"} {
+		t.Run(code, func(t *testing.T) {
+			machine := retryFixtureMachine(t, 1)
+			runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+			runID := "run-preserve-" + strings.ReplaceAll(code, "_", "-")
+			jr, err := journal.Create(runsDir, journal.RunIdentity{
+				RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+				WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jr.SetMachineState("implement")
+			if err := jr.Append(journal.Event{
+				Type: journal.EventStageStarted, Stage: "implement", Attempt: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Append(journal.Event{
+				Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+				Status: string(apiv1.ResultFailure),
+				Error:  &journal.ErrorDetail{Code: code, Message: "specific failure"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := jr.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			det := &flakyDeterministic{}
+			r, err := New(Config{
+				NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+					return det, nil
+				},
+				Automated:    gate.NewAutomatedEvaluator(),
+				Worktrees:    wtMgr,
+				RunsDir:      runsDir,
+				RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Resume(context.Background(), ResumeInput{
+				RunID: runID, Machine: machine,
+				RepoRef:        apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+				RecoveryReason: "daemon_restart",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Phase != journal.PhaseAborted || det.calls != 0 {
+				t.Fatalf("result = %+v, executor calls = %d; want replayed failure", result, det.calls)
+			}
+			events := readRunEvents(t, runsDir, runID)
+			var foundSpecific bool
+			for _, event := range events {
+				if event.Type == journal.EventStageFinished && event.Stage == "implement" {
+					if event.Error != nil && event.Error.Code == code {
+						foundSpecific = true
+					}
+					if event.Error != nil && event.Error.Code == interruptedAttemptErrorCode {
+						t.Fatalf("specific failure was hidden by interruption: %+v", events)
+					}
+				}
+			}
+			if !foundSpecific {
+				t.Fatalf("events = %+v, want failure code %q", events, code)
+			}
+		})
+	}
+}
+
+func TestRunnerResumeRetriesWhenFinalPolicyAttemptWasInterrupted(t *testing.T) {
 	machine := retryFixtureMachine(t, 1) // MaxAttempts=1: no retries allowed at all
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -3884,36 +4021,91 @@ func TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	_, err = r.Resume(context.Background(), ResumeInput{
+	result, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   "run-crash-exhausted",
 		Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
-	if err == nil {
-		t.Fatal("Resume: want an error — the interrupted attempt already consumed the entire 1-attempt budget")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
 	}
-	if det.calls != 0 {
-		t.Fatalf("executor called %d times, want 0 — must not dispatch beyond the exhausted budget", det.calls)
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
 	}
-
-	// The exhaustion must reach a terminal journal state (ruling #110's
-	// failTerminal), not leave the run at phase=running — that's what makes
-	// a SECOND Resume (TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget,
-	// #109) short-circuit instead of granting a fresh attempt budget.
-	rd, rerr := journal.OpenRead(filepath.Join(runsDir, "run-crash-exhausted"))
-	if rerr != nil {
-		t.Fatalf("OpenRead: %v", rerr)
-	}
-	st, serr := rd.State()
-	if serr != nil {
-		t.Fatalf("State: %v", serr)
-	}
-	if st.Phase != journal.PhaseFailed {
-		t.Fatalf("state.json phase = %q, want failed", st.Phase)
+	if det.calls != 1 {
+		t.Fatalf("executor called %d times, want one infrastructure replacement", det.calls)
 	}
 }
 
-func TestRunnerResumeRecordsDeferredBranchBeforeExhaustedBudget(t *testing.T) {
+func TestRunnerResumePreservesInterruptedInfrastructureRetry(t *testing.T) {
+	machine := retryFixtureMachine(t, 1)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-crash-during-infrastructure-retry"
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("implement")
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{
+			Type: journal.EventError, Stage: "implement", Attempt: 1,
+			Error:  &journal.ErrorDetail{Code: "executor_error"},
+			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
+	} {
+		if err := jr.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	det := &infrastructureFlakyDeterministic{
+		failUntil: 1,
+		cause:     errors.New("temporary provider outage"),
+	}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+			return det, nil
+		},
+		Automated:    gate.NewAutomatedEvaluator(),
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID: runID, Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err == nil {
+		t.Fatal("Resume succeeded after the preserved infrastructure slot also failed")
+	}
+	if result.Phase != journal.PhaseFailed || det.calls != 1 {
+		t.Fatalf("result = %+v, executor calls = %d; want one preserved infrastructure dispatch and no extra retry", result, det.calls)
+	}
+	events := readRunEvents(t, runsDir, runID)
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == "implement" && event.Attempt == 3 {
+			if event.AttemptClass != journal.AttemptInfra {
+				t.Fatalf("replacement attempt = %+v, want infrastructure class", event)
+			}
+			return
+		}
+	}
+	t.Fatalf("events = %+v, want replacement attempt 3", events)
+}
+
+func TestRunnerResumeRecordsDeferredBranchBeforeInfrastructureReplacement(t *testing.T) {
 	const runID = "run-scheduled-crash-exhausted"
 	machine := fixtureMachine(t)
 	det := &flakyDeterministic{}
@@ -3922,16 +4114,16 @@ func TestRunnerResumeRecordsDeferredBranchBeforeExhaustedBudget(t *testing.T) {
 	}, gate.NewAutomatedEvaluator())
 	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerSchedule}, false)
 
-	_, err := r.Resume(context.Background(), ResumeInput{
+	result, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   runID,
 		Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	})
-	if err == nil {
-		t.Fatal("Resume: want an error because the interrupted attempt exhausted the default one-attempt budget")
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
 	}
-	if det.calls != 0 {
-		t.Fatalf("executor called %d times, want 0", det.calls)
+	if result.Phase != journal.PhaseCompleted || det.calls != 1 {
+		t.Fatalf("result = %+v, executor calls = %d; want completed with one replacement", result, det.calls)
 	}
 
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
@@ -3958,20 +4150,7 @@ func TestRunnerResumeRecordsDeferredBranchBeforeExhaustedBudget(t *testing.T) {
 	}
 }
 
-// TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget is #109's
-// acceptance scenario: Resume #1 of a crash on a task's LAST allowed attempt
-// must not leave the run resumable again with a fresh budget. Before #110's
-// failTerminal fix, Resume #1's "no attempts left" error propagated with no
-// terminal journal write, so Resume #2 read a still-"running" state.json,
-// found interruptedAttempt back at 0 (the infra-tagged marker Resume #1 DID
-// manage to journal made started==finished again), and re-dispatched
-// "implement" from attempt 1 with its full budget restored — exactly what a
-// crash-loop-of-restarts (cmd/goobers/daemon.go auto-resumes every
-// PhaseRunning run) would repeat forever. #110's failTerminal closes this by
-// journaling PhaseFailed before Resume #1 returns its error, so Resume #2
-// short-circuits at the terminal-phase check instead of re-entering the walk
-// at all.
-func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
+func TestDoubleResumeAfterFailedInfrastructureReplacementDoesNotGrantFreshBudget(t *testing.T) {
 	machine := retryFixtureMachine(t, 1) // MaxAttempts=1: no retries allowed at all
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -3983,7 +4162,7 @@ func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
 
 	simulateCrashMidAttempt(t, runsDir, machine, "run-double-resume", "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
 
-	det := &flakyDeterministic{}
+	det := &flakyDeterministic{failUntil: 10}
 	r, err := New(Config{
 		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
 		Automated:        gate.NewAutomatedEvaluator(),
@@ -3995,15 +4174,12 @@ func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	// Resume #1: the interrupted attempt already consumed the entire budget,
-	// so this errors (TestRunnerResumeFailsWhenInterruptedAttemptExhaustsBudget
-	// covers this in isolation) — but must still journal a terminal phase.
 	if _, err := r.Resume(context.Background(), ResumeInput{
 		RunID:   "run-double-resume",
 		Machine: machine,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
 	}); err == nil {
-		t.Fatal("Resume #1: want an error — the interrupted attempt already exhausted its budget")
+		t.Fatal("Resume #1: want the replacement dispatch failure")
 	}
 
 	// Resume #2 (the daemon-restart-retries-forever scenario): must NOT
@@ -4020,8 +4196,8 @@ func TestDoubleResumeAfterExhaustedBudgetDoesNotGrantFreshBudget(t *testing.T) {
 	if res2.Phase != journal.PhaseFailed {
 		t.Fatalf("Resume #2 phase = %q, want failed (idempotent terminal short-circuit, not a fresh attempt)", res2.Phase)
 	}
-	if det.calls != 0 {
-		t.Fatalf("executor called %d times across both resumes, want 0 — a crash on the last attempt must never grant a fresh budget on a later resume", det.calls)
+	if det.calls != 1 {
+		t.Fatalf("executor called %d times across both resumes, want only the infrastructure replacement", det.calls)
 	}
 }
 

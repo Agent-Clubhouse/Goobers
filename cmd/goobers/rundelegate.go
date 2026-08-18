@@ -314,6 +314,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 					}
 				default:
 					resp.RunID = runID
+					sched.RecordRecoveredTrigger(requestID, req.Workflow, runID)
 				}
 			}
 		}

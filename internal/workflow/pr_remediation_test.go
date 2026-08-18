@@ -254,6 +254,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !containsString(implement.ExpectedOutputs, "findingResponses") {
 		t.Errorf("implement expectedOutputs = %v, missing findingResponses account", implement.ExpectedOutputs)
 	}
+	if !containsString(implement.ExpectedOutputs, "threadResponses") {
+		t.Errorf("implement expectedOutputs = %v, missing threadResponses account", implement.ExpectedOutputs)
+	}
 
 	validateResponses, ok := m.Task("validate-finding-responses")
 	if !ok {
@@ -594,8 +597,8 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if !ok {
 		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
 	}
-	if respond.Next != "release-claim" {
-		t.Errorf("respond-to-findings next = %q, want release-claim", respond.Next)
+	if respond.Next != "published-remediation-gate" {
+		t.Errorf("respond-to-findings next = %q, want published-remediation-gate", respond.Next)
 	}
 	if respond.Run == nil {
 		t.Fatal("respond-to-findings has no deterministic run command")
@@ -618,6 +621,35 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	}
 	if !containsString(respond.ExpectedOutputs, "posted") {
 		t.Errorf("respond-to-findings outputs = %v, missing posted status", respond.ExpectedOutputs)
+	}
+	publishedGate, ok := m.Gate("published-remediation-gate")
+	if !ok || publishedGate.Automated == nil ||
+		publishedGate.Automated.Check != "output-equals" ||
+		publishedGate.Automated.Params["key"] != "posted" ||
+		publishedGate.Automated.Params["equals"] != "true" ||
+		publishedGate.Branches["pass"] != "resolve-review-threads" ||
+		publishedGate.Branches["fail"] != "release-claim" {
+		t.Errorf("published-remediation-gate = %+v, want posted publication routing", publishedGate)
+	}
+	resolveThreads, ok := m.Task("resolve-review-threads")
+	if !ok {
+		t.Fatal("resolve-review-threads not found")
+	}
+	if resolveThreads.Run == nil || !reflect.DeepEqual(resolveThreads.Run.Command, []string{"goobers", "resolve-review-threads"}) {
+		t.Errorf("resolve-review-threads command = %v", resolveThreads.Run)
+	}
+	if resolveThreads.Next != "review-threads-gate" ||
+		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") {
+		t.Errorf("resolve-review-threads routing contract = next %q outputs %v", resolveThreads.Next, resolveThreads.ExpectedOutputs)
+	}
+	threadGate, ok := m.Gate("review-threads-gate")
+	if !ok || threadGate.Automated == nil ||
+		threadGate.Automated.Check != "output-equals" ||
+		threadGate.Automated.Params["key"] != "unresolvedThreadCount" ||
+		threadGate.Automated.Params["equals"] != "0" ||
+		threadGate.Branches["pass"] != "release-claim" ||
+		threadGate.Branches["fail"] != "park-unresolved-review-threads" {
+		t.Errorf("review-threads-gate = %+v, want unresolved-count routing", threadGate)
 	}
 	for c, granted := range wantCaps {
 		if !granted {

@@ -263,6 +263,12 @@ var commands = map[string]Command{
 			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
 		},
 	},
+	"resolve-review-threads": {
+		ResultFile: "review-thread-resolution.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so review-thread replies and resolutions fail at runtime"),
+		},
+	},
 	"set-milestone": {
 		ResultFile: "milestone-result.json",
 		Capabilities: []CapabilityUse{
