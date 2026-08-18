@@ -1203,11 +1203,8 @@ func drainDaemonRuns(
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
-		waitScheduler()
-		// Scheduler dispatch calls trackedStarter.Start asynchronously. Waiting
-		// for scheduler dispatches first guarantees every tracked run has called
-		// wg.Add before Wait begins; resumed runs add synchronously at launch.
 		wg.Wait()
+		waitScheduler()
 		close(done)
 	}()
 
