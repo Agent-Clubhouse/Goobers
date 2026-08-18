@@ -1700,20 +1700,6 @@ func summarizeRunForStage(
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
 		}
-		operator.CurrentStage = currentStage
-		operator.Trajectory = operatorTrajectory(currentStage, phase)
-		if !lastHeartbeat.IsZero() {
-			heartbeat := lastHeartbeat
-			operator.LastHeartbeatAt = &heartbeat
-			age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
-			operator.HeartbeatAgeMillis = &age
-		}
-		if phase != journal.PhaseRunning {
-			operator.Liveness = "terminal"
-		}
-		if providerClaimRecorded {
-			operator.Claim.ProviderMarker = "recorded"
-		}
 		if graph, status, err := pinnedGraph(run); err != nil {
 			return RunSummary{}, err
 		} else if status == "pinned" {
@@ -1724,25 +1710,39 @@ func summarizeRunForStage(
 				}
 			}
 		}
-		if operator.PullRequest != nil {
-			operator.PROpenerStage = ""
+	}
+	operator.CurrentStage = currentStage
+	operator.Trajectory = operatorTrajectory(currentStage, phase)
+	if !lastHeartbeat.IsZero() {
+		heartbeat := lastHeartbeat
+		operator.LastHeartbeatAt = &heartbeat
+		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+		operator.HeartbeatAgeMillis = &age
+	}
+	if phase != journal.PhaseRunning {
+		operator.Liveness = "terminal"
+	}
+	if providerClaimRecorded {
+		operator.Claim.ProviderMarker = "recorded"
+	}
+	if operator.PullRequest != nil {
+		operator.PROpenerStage = ""
+	}
+	if phase == journal.PhaseRunning {
+		if currentStage == "" {
+			operator.NextTransition = "start the next workflow stage"
+		} else {
+			operator.NextTransition = "finish " + currentStage
 		}
-		if phase == journal.PhaseRunning {
-			if currentStage == "" {
-				operator.NextTransition = "start the next workflow stage"
-			} else {
-				operator.NextTransition = "finish " + currentStage
-			}
-		}
-		if operator.LatestError != nil {
-			operator.PotentialBlockers = append(operator.PotentialBlockers,
-				operator.LatestError.Code+": "+operator.LatestError.Message)
-		}
-		if operator.Review != nil && operator.Review.Verdict != "" &&
-			operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
-			operator.PotentialBlockers = append(operator.PotentialBlockers,
-				"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
-		}
+	}
+	if operator.LatestError != nil {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			operator.LatestError.Code+": "+operator.LatestError.Message)
+	}
+	if operator.Review != nil && operator.Review.Verdict != "" &&
+		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
 	}
 	durationEnd := observedAt
 	if finishedAt != nil {

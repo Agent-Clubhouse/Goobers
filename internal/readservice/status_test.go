@@ -167,6 +167,80 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 }
 
+func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {
+	for _, phase := range []journal.RunPhase{journal.PhaseCompleted, journal.PhaseFailed} {
+		t.Run(string(phase), func(t *testing.T) {
+			service, layout, machine := fixtureService(t)
+			startedAt := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+			run, clock := createFixtureRun(
+				t, layout, machine, "terminal-"+string(phase), "implementation", "goobers",
+				startedAt, journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"}, true,
+			)
+			clock.now = startedAt.Add(time.Minute)
+			if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+				t.Fatal(err)
+			}
+			clock.now = startedAt.Add(2 * time.Minute)
+			if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type:        journal.EventRefTouched,
+				ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "3088"},
+				Runner:      map[string]any{"operation": "claim"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			verdictData, err := json.Marshal(map[string]string{
+				"decision": "needs-changes", "rationale": "Terminal review blocker.",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdictRef, err := run.RecordArtifact("review-verdict.json", verdictData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &verdictRef,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type:  journal.EventError,
+				Error: &journal.ErrorDetail{Code: "review.failed", Message: "changes required"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			finishFixtureRun(t, run, clock, phase)
+			service.now = func() time.Time { return startedAt.Add(10 * time.Minute) }
+
+			runs, err := service.ListStatusRuns(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != 1 {
+				t.Fatalf("runs = %+v", runs)
+			}
+			got := runs[0].Operator
+			if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(startedAt.Add(2*time.Minute)) ||
+				got.HeartbeatAgeMillis == nil || *got.HeartbeatAgeMillis != (8*time.Minute).Milliseconds() ||
+				got.Liveness != "terminal" {
+				t.Fatalf("liveness = %+v", got)
+			}
+			if got.Trajectory != "parked" || got.NextTransition != "" ||
+				got.Claim.ProviderMarker != "recorded" {
+				t.Fatalf("terminal projection = %+v", got)
+			}
+			if len(got.PotentialBlockers) != 2 ||
+				got.PotentialBlockers[0] != "review.failed: changes required" ||
+				got.PotentialBlockers[1] != "review needs-changes: Terminal review blocker." {
+				t.Fatalf("blockers = %+v", got.PotentialBlockers)
+			}
+		})
+	}
+}
+
 func TestOperatorTrajectory(t *testing.T) {
 	for stage, want := range map[string]string{
 		"query-backlog":            "implementing",
