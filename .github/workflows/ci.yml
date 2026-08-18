@@ -850,8 +850,11 @@ jobs:
       # Windows must use the CLI's embedded time/tzdata import (#2863).
       # TestValidatePlanDetectsLiveParentConflict guards the API read cache's
       # bounded CreateFile fallback, which is only observable on Windows.
+      # TestRunDashboardContextAcceptsNonLoopbackListenWithAuth exercises the
+      # non-loopback contract through the loopback-only test listener, guarding
+      # against firewall prompts for the temporary test executable (#3114).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
