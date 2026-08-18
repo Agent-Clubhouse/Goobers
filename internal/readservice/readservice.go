@@ -91,6 +91,7 @@ type LocalSources struct {
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
 	ReadModel          readmodel.Reader
+	WorkItemLookup     WorkItemLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 }

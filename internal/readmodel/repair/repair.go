@@ -399,7 +399,12 @@ func (s *Sweeper) project(dir string) (readmodel.Projection, bool, error) {
 		return readmodel.Projection{}, false,
 			fmt.Errorf("repair: read events in %s: %w", dir, err)
 	}
-	return readmodel.ProjectRun(identity, readmodel.Projection{}, events), true, nil
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return readmodel.Projection{}, false,
+			fmt.Errorf("repair: project operator facts in %s: %w", dir, err)
+	}
+	return projection, true, nil
 }
 
 // hasMarker reports whether intake holds anything for this run.

@@ -23,5 +23,14 @@ describe("overview page", () => {
         name: "Open run 01JZ455ESCALATE",
       }),
     ).toBeInTheDocument();
+    const active = within(screen.getByRole("region", { name: "Active runs" }));
+    expect(active.getByText("#3088 Operator status progress")).toBeInTheDocument();
+    expect(active.getByText("review · recent heartbeat 30s ago · claim active/verified")).toBeInTheDocument();
+    expect(active.getByText("review · PR via open-pr · finish review")).toBeInTheDocument();
+    expect(
+      active.getByText(
+        "Error provider.rate_limit: quota exhausted · Review needs-changes: Show operator context. · Blockers: provider quota is exhausted",
+      ),
+    ).toBeInTheDocument();
   });
 });

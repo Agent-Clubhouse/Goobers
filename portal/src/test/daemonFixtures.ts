@@ -142,6 +142,22 @@ function run(
     policyRetryCount: 0,
     infraRetryCount: 0,
     noWork: false,
+    operator:
+      phase === "running"
+        ? {
+            issue: { number: "3088", title: "Operator status progress" },
+            currentStage: "review",
+            heartbeatAgeMillis: 30_000,
+            liveness: "recent",
+            trajectory: "review",
+            prOpenerStage: "open-pr",
+            claim: { leaseStatus: "active", providerMarker: "verified" },
+            latestError: { code: "provider.rate_limit", message: "quota exhausted" },
+            review: { verdict: "needs-changes", rationale: "Show operator context." },
+            nextTransition: "finish review",
+            potentialBlockers: ["provider quota is exhausted"],
+          }
+        : undefined,
   };
 }
 

@@ -192,12 +192,13 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 }
 
 type statusJSONSummary struct {
-	RunID          string    `json:"runId"`
-	Workflow       string    `json:"workflow"`
-	Gaggle         string    `json:"gaggle"`
-	Phase          string    `json:"phase"`
-	StartedAt      time.Time `json:"startedAt"`
-	LastActivityAt time.Time `json:"lastActivityAt"`
+	RunID          string                         `json:"runId"`
+	Workflow       string                         `json:"workflow"`
+	Gaggle         string                         `json:"gaggle"`
+	Phase          string                         `json:"phase"`
+	StartedAt      time.Time                      `json:"startedAt"`
+	LastActivityAt time.Time                      `json:"lastActivityAt"`
+	Operator       readservice.OperatorRunSummary `json:"operator"`
 }
 
 type statusJSONOutput struct {
@@ -267,6 +268,7 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 			Phase:          string(r.Phase),
 			StartedAt:      r.StartedAt,
 			LastActivityAt: r.LastActivityAt,
+			Operator:       r.Operator,
 		}
 	}
 	return summaries
@@ -488,6 +490,7 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 			Phase:          run.Phase,
 			StartedAt:      run.StartedAt,
 			LastActivityAt: run.LastActivityAt,
+			Operator:       run.Operator,
 		}
 	}
 	return runs, nil
@@ -504,6 +507,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
@@ -633,11 +637,18 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	warnings := report.CLIWarnings()
 	sources := readservice.LocalSources{
-		Layout:      l,
-		Config:      cfg,
-		Definitions: set,
-		Validation:  report,
+		Layout:         l,
+		Config:         cfg,
+		Definitions:    set,
+		Validation:     report,
+		WorkItemLookup: statusWorkItemLookup(l.Root, set),
 	}
+	livenessTimeout, err := cfg.Runner.LivenessTimeoutDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	sources.LivenessTimeout = livenessTimeout
 	var timeToFirstPROpenErr error
 	if supportsWatch {
 		telemetryDB, err := openRollup(l, false)
@@ -824,12 +835,60 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		return
 	}
 
-	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED", "LAST ACTIVITY")
+	pf(stdout, "%-34s  %-24s  %-10s  %-22s  %-14s  %-12s  %-18s  %s\n",
+		"RUN ID", "ISSUE", "PHASE", "STAGE / TRAJECTORY", "LAST ACTIVITY", "PR", "CLAIM / MARKER", "NEXT")
 	for _, r := range runs {
-		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n",
-			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339),
-			formatLastActivity(now, r.LastActivityAt))
+		issue := "-"
+		if r.Operator.Issue != nil {
+			issue = "#" + r.Operator.Issue.Number
+			if r.Operator.Issue.Title != "" {
+				issue += " " + r.Operator.Issue.Title
+			}
+		}
+		pr := "-"
+		if r.Operator.PullRequest != nil {
+			pr = "#" + r.Operator.PullRequest.ID
+		} else if r.Operator.PROpenerStage != "" {
+			pr = "via " + r.Operator.PROpenerStage
+		}
+		heartbeat := "-"
+		if r.Operator.LastHeartbeatAt != nil {
+			heartbeat = r.Operator.Liveness + " " + formatLastActivity(now, *r.Operator.LastHeartbeatAt)
+		} else if r.Phase == journal.PhaseRunning {
+			heartbeat = r.Operator.Liveness
+		}
+		stage := r.Operator.CurrentStage
+		if stage == "" {
+			stage = "-"
+		}
+		stage += " / " + r.Operator.Trajectory
+		claim := r.Operator.Claim.LeaseStatus + " / " + r.Operator.Claim.ProviderMarker
+		pf(stdout, "%-34s  %-24s  %-10s  %-22s  %-14s  %-12s  %-18s  %s\n",
+			r.RunID, truncateStatusCell(issue, 24), r.Phase, truncateStatusCell(stage, 22),
+			heartbeat, pr, claim, r.Operator.NextTransition)
+		pf(stdout, "  workflow: %s / %s; started %s; last activity %s\n",
+			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
+		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
+			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
+		}
+		if r.Operator.Review != nil && r.Operator.Review.Rationale != "" {
+			pf(stdout, "  review %s: %s\n", r.Operator.Review.Verdict, r.Operator.Review.Rationale)
+		}
+		if len(r.Operator.PotentialBlockers) > 0 {
+			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
+		}
 	}
+}
+
+func truncateStatusCell(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
 }
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {

@@ -189,6 +189,15 @@ func newWireFixtures() wireFixtures {
 		RetryCount:       2,
 		PolicyRetryCount: 1,
 		InfraRetryCount:  1,
+		Operator: readservice.OperatorRunSummary{
+			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
+			CurrentStage:      "review",
+			Liveness:          "terminal",
+			Trajectory:        "parked",
+			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+			NextTransition:    "",
+			PotentialBlockers: []string{},
+		},
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",

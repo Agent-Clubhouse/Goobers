@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -173,6 +174,106 @@ func TestReadModelPathHidesNoWorkByDefault(t *testing.T) {
 	}
 	if len(shown.Runs) != 2 {
 		t.Fatalf("ShowNoWork list from the read model = %+v, want both runs", shown.Runs)
+	}
+}
+
+func TestReadModelPathProjectsOperatorSummaryWithoutOpeningJournal(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"projected-operator",
+		"implementation",
+		"goobers",
+		fixedTime,
+		journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"},
+		true,
+	)
+	clock.now = fixedTime.Add(time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = fixedTime.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	verdict, err := json.Marshal(map[string]string{
+		"decision": "needs-changes", "rationale": "Project operator facts.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := run.RecordArtifact("review-verdict.json", verdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &ref,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "projected-operator"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, projection); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return fixedTime.Add(3 * time.Minute) }
+
+	opens := 0
+	openRunObserver = func(string) { opens++ }
+	t.Cleanup(func() { openRunObserver = nil })
+	page, err := service.ListRuns(ctx, RunListOptions{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 {
+		t.Fatalf("runs = %+v, want one", page.Runs)
+	}
+	if opens != 0 {
+		t.Fatalf("read-model list opened %d journals, want zero", opens)
+	}
+	operator := page.Runs[0].Operator
+	if operator.Issue == nil || operator.Issue.Number != "3088" ||
+		operator.CurrentStage != "implementation" ||
+		operator.HeartbeatAgeMillis == nil ||
+		*operator.HeartbeatAgeMillis != time.Minute.Milliseconds() ||
+		operator.Review == nil ||
+		operator.Review.Rationale != "Project operator facts." {
+		t.Fatalf("operator = %+v", operator)
 	}
 }
 

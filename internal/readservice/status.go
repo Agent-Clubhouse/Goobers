@@ -3,6 +3,7 @@ package readservice
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resumes at "
@@ -48,10 +50,97 @@ type RunReplacement struct {
 	ReplacementRunID string `json:"replacementRunId"`
 }
 
+// WorkItemLookup reads the current provider state for a claimed item.
+type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, error)
+
 // ListStatusRuns returns every readable run in display order. Individual
 // malformed historical journals are omitted so status remains best-effort.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
 	return s.runSummaries(ctx, true)
+}
+
+func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, now time.Time) error {
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.sources.Layout.SchedulerDir(), "claims.json"))
+	if err != nil {
+		return fmt.Errorf("read claim leases for status: %w", err)
+	}
+	for i := range runs {
+		if runs[i].Phase == journal.PhaseRunning &&
+			runs[i].Operator.HeartbeatAgeMillis != nil {
+			runs[i].Operator.Liveness = "recent"
+			if s.sources.LivenessTimeout > 0 &&
+				*runs[i].Operator.HeartbeatAgeMillis > s.sources.LivenessTimeout.Milliseconds() {
+				runs[i].Operator.Liveness = "stale"
+				runs[i].Operator.PotentialBlockers = append(
+					runs[i].Operator.PotentialBlockers,
+					"stage heartbeat is stale",
+				)
+			}
+		}
+		active := ledger.ForRunAll(runs[i].ID)
+		history := ledger.HistoryForRun(runs[i].ID)
+		switch {
+		case len(active) > 0:
+			entry := active[0]
+			expires := entry.ExpiresAt
+			runs[i].Operator.Claim.ExpiresAt = &expires
+			if entry.ExpiresAt.After(now) {
+				runs[i].Operator.Claim.LeaseStatus = "active"
+			} else {
+				runs[i].Operator.Claim.LeaseStatus = "expired"
+			}
+			if runs[i].Operator.Issue == nil {
+				runs[i].Operator.Issue = &OperatorIssue{Number: entry.ItemID}
+			}
+		case len(history) > 0:
+			runs[i].Operator.Claim.LeaseStatus = "released"
+		}
+		markerVerified := false
+		markerPresent := false
+		if s.sources.WorkItemLookup != nil &&
+			runs[i].Phase == journal.PhaseRunning &&
+			runs[i].Operator.Issue != nil &&
+			runs[i].Operator.Issue.Number != "" {
+			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
+			if err != nil {
+				runs[i].Operator.Claim.ProviderMarker = "unavailable"
+				runs[i].Operator.PotentialBlockers = append(
+					runs[i].Operator.PotentialBlockers,
+					"provider claim marker verification unavailable: "+err.Error(),
+				)
+				continue
+			}
+			markerVerified = true
+			markerPresent = item.HasLabel(providers.LabelClaimed)
+			if runs[i].Operator.Issue.Title == "" {
+				runs[i].Operator.Issue.Title = item.Title
+			}
+		}
+		if markerVerified &&
+			runs[i].Operator.Claim.LeaseStatus != "active" &&
+			markerPresent {
+			runs[i].Operator.Claim.ProviderMarker = "drift"
+			runs[i].Operator.PotentialBlockers = append(
+				runs[i].Operator.PotentialBlockers,
+				"provider claim marker exists without an active lease",
+			)
+		} else if markerVerified &&
+			runs[i].Operator.Claim.LeaseStatus == "active" &&
+			!markerPresent {
+			runs[i].Operator.Claim.ProviderMarker = "drift"
+			runs[i].Operator.PotentialBlockers = append(
+				runs[i].Operator.PotentialBlockers,
+				"active claim lease has no provider marker",
+			)
+		} else if markerVerified &&
+			runs[i].Operator.Claim.LeaseStatus == "active" &&
+			markerPresent {
+			runs[i].Operator.Claim.ProviderMarker = "verified"
+		} else if markerVerified && !markerPresent {
+			runs[i].Operator.Claim.ProviderMarker = "not-present"
+		}
+	}
+	return nil
 }
 
 // TimeToFirstPR merges the retained lifetime milestone with the successful-init
