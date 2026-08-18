@@ -122,8 +122,8 @@ func TestBaseEnvRoutesPublicRegistryLockfileThroughAlternateRegistry(t *testing.
 		t.Skipf("%s is required for the Node registry routing integration test: %v", npm, err)
 	}
 
-	packageJSON := []byte(`{"name":"example","version":"1.0.0","main":"index.js"}`)
-	tarball := makeNPMPackageTarball(t, packageJSON)
+	const packageJSON = `{"name":"example","version":"1.0.0","main":"index.js"}`
+	tarball := makeNPMPackageTarball(t, []byte(packageJSON))
 	var tarballRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/example/-/example-1.0.0.tgz" {
@@ -158,7 +158,8 @@ func TestBaseEnvRoutesPublicRegistryLockfileThroughAlternateRegistry(t *testing.
 		t.Fatal(err)
 	}
 	workspace := t.TempDir()
-	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"name":"registry-routing-fixture","version":"1.0.0","dependencies":{"example":"1.0.0"}}`), 0o600); err != nil {
+	const workspacePackageJSON = `{"name":"registry-routing-fixture","version":"1.0.0","dependencies":{"example":"1.0.0"}}`
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(workspacePackageJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, "package-lock.json"), lockfileJSON, 0o600); err != nil {
