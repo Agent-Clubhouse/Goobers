@@ -147,6 +147,7 @@ func TestResolveReviewThreadsRepliesBeforeResolvingAndReturnsUnresolvedCount(t *
 	t.Cleanup(func() { newGitHubProvider = previousProvider })
 	t.Setenv("GOOBERS_RUN_ID", runID)
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_PROVIDER_SNAPSHOT", "resolve-threads-snapshot")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")

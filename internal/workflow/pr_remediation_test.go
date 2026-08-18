@@ -597,8 +597,8 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if !ok {
 		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
 	}
-	if respond.Next != "resolve-review-threads" {
-		t.Errorf("respond-to-findings next = %q, want resolve-review-threads", respond.Next)
+	if respond.Next != "published-remediation-gate" {
+		t.Errorf("respond-to-findings next = %q, want published-remediation-gate", respond.Next)
 	}
 	if respond.Run == nil {
 		t.Fatal("respond-to-findings has no deterministic run command")
@@ -621,6 +621,15 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	}
 	if !containsString(respond.ExpectedOutputs, "posted") {
 		t.Errorf("respond-to-findings outputs = %v, missing posted status", respond.ExpectedOutputs)
+	}
+	publishedGate, ok := m.Gate("published-remediation-gate")
+	if !ok || publishedGate.Automated == nil ||
+		publishedGate.Automated.Check != "output-equals" ||
+		publishedGate.Automated.Params["key"] != "posted" ||
+		publishedGate.Automated.Params["equals"] != "true" ||
+		publishedGate.Branches["pass"] != "resolve-review-threads" ||
+		publishedGate.Branches["fail"] != "release-claim" {
+		t.Errorf("published-remediation-gate = %+v, want posted publication routing", publishedGate)
 	}
 	resolveThreads, ok := m.Task("resolve-review-threads")
 	if !ok {

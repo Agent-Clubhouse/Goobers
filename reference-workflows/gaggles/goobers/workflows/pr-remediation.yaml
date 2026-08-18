@@ -606,7 +606,7 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 5
-      next: resolve-review-threads
+      next: published-remediation-gate
 
     - name: resolve-review-threads
       type: deterministic
@@ -865,6 +865,20 @@ spec:
       branches:
         pass: release-claim
         fail: park-unresolved-review-threads
+
+    # respond-to-findings records posted=false when push-remediated discovers
+    # that the PR closed mid-run. Preserve that terminal no-op by releasing the
+    # claim without attempting to reconcile threads on an unpublished head.
+    - name: published-remediation-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: posted
+          equals: "true"
+      branches:
+        pass: resolve-review-threads
+        fail: release-claim
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on
