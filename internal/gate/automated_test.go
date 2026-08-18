@@ -2,8 +2,12 @@ package gate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
@@ -15,6 +19,82 @@ func evalCheck(t *testing.T, check string, params map[string]string, inputs map[
 	e := NewAutomatedEvaluator()
 	env := apiv1.InvocationEnvelope{Inputs: inputs}
 	return e.Evaluate(context.Background(), apiv1.AutomatedGate{Check: check, Params: params}, env)
+}
+
+func TestAcmeClaudeAdvisoryVerdictRoutesBothModes(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config-examples", "gaggles", "acme-web-claude", "workflows", "merge-review.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &definition); err != nil {
+		t.Fatal(err)
+	}
+
+	var selector, publisher apiv1.Task
+	for _, task := range definition.Spec.Tasks {
+		switch task.Name {
+		case "pr-select":
+			selector = task
+		case "apply-verdict":
+			publisher = task
+		}
+	}
+	if !containsString(selector.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("pr-select does not declare advisoryMode as an expected output")
+	}
+	if got := publisher.InputsFrom["advisoryMode"]; got != "advisoryMode" {
+		t.Fatalf("apply-verdict advisoryMode input source = %q, want advisoryMode", got)
+	}
+	if !containsString(publisher.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("apply-verdict does not declare advisoryMode as an expected output")
+	}
+
+	var configured apiv1.Gate
+	for _, candidate := range definition.Spec.Gates {
+		if candidate.Name == "advisory-verdict" {
+			configured = candidate
+			break
+		}
+	}
+	if configured.Automated == nil {
+		t.Fatal("advisory-verdict automated gate not found")
+	}
+
+	for _, test := range []struct {
+		mode        string
+		wantOutcome string
+		wantTarget  string
+	}{
+		{mode: "true", wantOutcome: OutcomePass, wantTarget: wf.TerminalComplete},
+		{mode: "false", wantOutcome: OutcomeFail, wantTarget: "published-verdict"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			outcome, err := NewAutomatedEvaluator().Evaluate(
+				context.Background(),
+				*configured.Automated,
+				apiv1.InvocationEnvelope{Inputs: map[string]interface{}{"advisoryMode": test.mode}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", outcome, test.wantOutcome)
+			}
+			if target, ok := configured.Branches[outcome]; !ok || target != test.wantTarget {
+				t.Fatalf("branch target = %q, %t; want %q, true", target, ok, test.wantTarget)
+			}
+		})
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStatusEqualsDefaultsToSuccess(t *testing.T) {
