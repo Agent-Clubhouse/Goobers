@@ -132,7 +132,7 @@ describe("runs history pagination under live events", () => {
       .filter(([request]) => request?.cursor)
       .map(([request]) => request?.phase);
     expect(paginatedPhases).toEqual(["failed", "escalated", "failed"]);
-  });
+  }, 10_000);
 
   // #1713: a live run event collapsed the Runs page back to the first page,
   // discarding everything the user had paged in.

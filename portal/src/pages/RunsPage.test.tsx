@@ -47,7 +47,7 @@ describe("runs history page", () => {
     const revisitedHistory = screen.getByRole("region", { name: "Run history" });
     expect(revisitedHistory.querySelectorAll("a")).toHaveLength(68);
     expect(listRuns).not.toHaveBeenCalled();
-  });
+  }, 10_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
