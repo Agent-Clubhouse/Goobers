@@ -82,11 +82,13 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Install Portal dependencies and pinned Chromium
+        timeout-minutes: 12
         run: |
           npm --prefix portal ci --no-audit --no-fund
           npm --prefix portal exec -- playwright install --with-deps chromium
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        timeout-minutes: 8
         shell: bash
         run: |
           set -o pipefail
@@ -148,6 +150,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -189,6 +192,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -232,6 +236,7 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -245,6 +250,7 @@ jobs:
           exit 1
 
       - name: Install Portal dependencies and pinned Chromium
+        timeout-minutes: 12
         run: |
           npm --prefix portal ci --no-audit --no-fund
           npm --prefix portal exec -- playwright install --with-deps chromium
@@ -296,6 +302,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -309,6 +316,7 @@ jobs:
           exit 1
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        timeout-minutes: 8
         # Explicit bash for pipefail: without it the pipeline reports only sh's
         # status, so a failed curl would feed an empty script to a shell that
         # exits 0 and the step would "succeed" with no linter installed.
@@ -355,6 +363,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -404,6 +413,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -440,6 +450,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -550,6 +561,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -590,6 +602,7 @@ jobs:
           cache: maven
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -605,6 +618,7 @@ jobs:
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
       - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
+        timeout-minutes: 12
         run: |
           sudo apt-get update
           sudo apt-get install --yes bash bubblewrap coreutils dash maven
@@ -631,6 +645,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -706,6 +721,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -742,6 +758,7 @@ jobs:
       # on the Makefile's own cross-platform shell portability rather than a
       # portal build smoke test — that's covered elsewhere.
       - name: Install make (windows)
+        timeout-minutes: 8
         run: choco install make --no-progress -y
 
       - name: make build (windows)
