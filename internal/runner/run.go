@@ -810,11 +810,19 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // recorded is true after a second crash finds that closure already journaled
 // but the replacement attempt not yet started.
 type resumeContext struct {
-	stage                string
-	attempt              int
-	class                journal.AttemptClass
-	recorded             bool
-	committedWorkOnInfra bool
+	stage                  string
+	attempt                int
+	class                  journal.AttemptClass
+	recorded               bool
+	committedWorkOnInfra   bool
+	policyAttempts         int32
+	infrastructureFailures int32
+}
+
+type resumeRetryAccounting struct {
+	policyAttempts            int32
+	infrastructureFailures    int32
+	replacementConsumesPolicy bool
 }
 
 // BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
@@ -1408,6 +1416,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	var taskRerun *rerunContext
 	var resumedResult *apiv1.ResultEnvelope
 	var infraFailedAttemptCommittedWork bool
+	var resumeAccounting *resumeRetryAccounting
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
@@ -1416,6 +1425,11 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	}
 	if ws.resume != nil && ws.resume.stage == t.Name {
 		infraFailedAttemptCommittedWork = ws.resume.committedWorkOnInfra
+		resumeAccounting = &resumeRetryAccounting{
+			policyAttempts:            ws.resume.policyAttempts,
+			infrastructureFailures:    ws.resume.infrastructureFailures,
+			replacementConsumesPolicy: ws.resume.class != journal.AttemptInfra,
+		}
 		interruptedClass := journal.AttemptInfra
 		if ws.rerun != nil && ws.rerun.stage == t.Name {
 			interruptedClass = ws.resume.class
@@ -1482,6 +1496,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			ctx, ws.jr, ws.in, ws.ex, t, branch, upstreamPointers, ws.lastResult,
 			ws.completed, ws.fanIn, startAttempt, firstClass, instructionAddendum,
 			ws.workspaceBranch, taskRerun, &ws.branchRecorded, infraFailedAttemptCommittedWork,
+			resumeAccounting,
 		)
 	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
@@ -2490,9 +2505,8 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // cancels it mid-dispatch. walk checks ordinary cancellation between stages.
 //
 // startAttempt is normally 1; a resume past an interrupted attempt (resume.go)
-// passes the next attempt number instead, so the attempts a crash already
-// consumed still count against the task's own MaxAttempts budget — a crash
-// must never grant a task more attempts than its declared policy allows.
+// passes the next sequence number while resumeAccounting preserves policy and
+// infrastructure usage and whether the interrupted slot belonged to policy.
 //
 // upstreamResult is the immediately preceding stage's ResultEnvelope (the
 // zero value for the run's first task) — dispatchTask threads its Outputs
@@ -2614,7 +2628,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
@@ -2667,6 +2681,18 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
 	policyAttempts := startAttempt - 1
 	var infrastructureFailures int32
+	replacementConsumesPolicy := true
+	if resumeAccounting != nil {
+		policyAttempts = resumeAccounting.policyAttempts
+		infrastructureFailures = resumeAccounting.infrastructureFailures
+		replacementConsumesPolicy = resumeAccounting.replacementConsumesPolicy
+		remainingDispatches := policyMaxAttempts - policyAttempts +
+			DefaultMaxInfrastructureAttempts - 1 - infrastructureFailures
+		if !replacementConsumesPolicy {
+			remainingDispatches++
+		}
+		maxAttempts = startAttempt + remainingDispatches - 1
+	}
 	if rerun != nil {
 		maxAttempts = int32(rerun.requestAttempt) + policyMaxAttempts + DefaultMaxInfrastructureAttempts - 2
 		policyAttempts = rerun.policyAttempts
@@ -2683,8 +2709,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			err := fmt.Errorf("runner: task %q has no attempts left after resuming human rerun (interrupted attempts exhausted the combined retry budget)", t.Name)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
-	} else if startAttempt > policyMaxAttempts {
-		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
+	} else if policyAttempts >= policyMaxAttempts && replacementConsumesPolicy {
+		err := fmt.Errorf("runner: task %q has no policy attempts left after resume (%d-attempt budget exhausted)", t.Name, policyMaxAttempts)
 		return apiv1.ResultEnvelope{}, nil, err
 	}
 
@@ -2708,9 +2734,10 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		case attempt > startAttempt:
 			class = nextRetryClass
 		}
-		// A crash-driven continuation is infra-tagged for conformance but still
-		// consumes policy budget; provider infrastructure retries do not.
-		if class != journal.AttemptInfra || attempt == startAttempt {
+		// A crash-driven continuation is infra-tagged for conformance, but it
+		// occupies the policy slot that the interrupted dispatch did not finish.
+		// Provider infrastructure retries after that do not consume policy.
+		if class != journal.AttemptInfra || (attempt == startAttempt && replacementConsumesPolicy) {
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
