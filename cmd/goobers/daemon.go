@@ -1347,13 +1347,28 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			gooberDigest := gooberDigests[identity]
 
 			resumed = append(resumed, id.RunID)
+			if log != nil {
+				if err := log.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+					Runner: map[string]any{
+						"kind":   journal.RunnerAnnotationRunRecovery,
+						"reason": "daemon_restart",
+						"action": journal.RecoveryActionResumed,
+					},
+				}); err != nil {
+					return resumed, warned, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+				}
+			}
 			wg.Add(1)
 			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
 				defer untrack()
-				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
+				result, err := rn.Resume(ctx, runner.ResumeInput{
+					RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
+					RecoveryReason: "daemon_restart",
+				})
 				ingestRunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:

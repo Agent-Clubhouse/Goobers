@@ -503,6 +503,7 @@ func (r *Runner) runParallelBranch(
 	startAttempt := int32(1)
 	var firstClass journal.AttemptClass
 	var committedWorkOnInfra bool
+	var resumeAccounting *resumeRetryAccounting
 	if boundary, ok := lastParallelBoundary(history); ok {
 		if task, isTask := in.Machine.Task(state); isTask {
 			switch {
@@ -545,6 +546,11 @@ func (r *Runner) runParallelBranch(
 					startAttempt = int32(attempt) + 1
 					firstClass = journal.AttemptInfra
 					committedWorkOnInfra = infraFailedAttemptCommittedWork(history, state, attempt)
+					resumeAccounting = &resumeRetryAccounting{
+						policyAttempts:            policyAttemptsBefore(history, state, attempt),
+						infrastructureFailures:    infrastructureFailuresBefore(history, state, attempt),
+						replacementConsumesPolicy: boundary.AttemptClass != journal.AttemptInfra,
+					}
 				}
 			}
 		} else if _, isGate := in.Machine.Gate(state); isGate &&
@@ -592,10 +598,11 @@ func (r *Runner) runParallelBranch(
 					ctx, branchJournal, in, ex, task, branch.id,
 					branchContextPointers(basePointers, result.pointers),
 					result.lastResult, result.completed, nil, startAttempt, firstClass,
-					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra,
+					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra, resumeAccounting,
 				)
 				startAttempt = 1
 				firstClass = ""
+				resumeAccounting = nil
 			}
 			if err != nil {
 				result.status, result.err = journal.BranchFailed, err

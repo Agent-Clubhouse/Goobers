@@ -1461,6 +1461,19 @@ func TestFormatEvent(t *testing.T) {
 			event: journal.Event{Seq: 17, Type: journal.EventRepaired},
 			want:  "[17] repaired",
 		},
+		{
+			name: "daemon recovery annotation",
+			event: journal.Event{
+				Seq: 18, Type: journal.EventRunnerAnnotation,
+				Runner: map[string]any{
+					"kind":   journal.RunnerAnnotationRunRecovery,
+					"action": journal.RecoveryActionRetried,
+					"reason": "daemon_restart",
+					"stage":  "implement",
+				},
+			},
+			want: "[18] runner.annotation kind=run.recovery action=retried reason=daemon_restart stage=implement",
+		},
 	}
 
 	for _, tt := range tests {
