@@ -2165,6 +2165,171 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	return res, err
 }
 
+type transcriptToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type transcriptEvent struct {
+	Role     string              `json:"role"`
+	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
+}
+
+func normalizeInputToolName(name string) string {
+	return strings.TrimPrefix(name, "functions.")
+}
+
+func parseTranscriptInputInspection(transcript []byte, required map[string]struct{}) (bool, map[string]bool) {
+	inspected := make(map[string]bool, len(required))
+	var sawListInputs bool
+	for _, line := range bytes.Split(transcript, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		if event.Role != "assistant" || event.ToolCall == nil {
+			continue
+		}
+		toolName := normalizeInputToolName(event.ToolCall.Name)
+		switch toolName {
+		case "goobers-io-list_inputs":
+			sawListInputs = true
+		case "goobers-io-read_input", "goobers-io-grep_input":
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(event.ToolCall.Arguments, &args); err != nil {
+				continue
+			}
+			if _, ok := required[args.Name]; ok {
+				inspected[args.Name] = true
+			}
+		}
+	}
+	return sawListInputs, inspected
+}
+
+func pointerValidationErrorMessage(missing []string, sawListInputs bool) string {
+	if len(missing) == 0 && sawListInputs {
+		return ""
+	}
+	listStatus := "not called"
+	if sawListInputs {
+		listStatus = "called"
+	}
+	return fmt.Sprintf(
+		"required context pointers were not inspected before DEPENDENCY_NOT_MET (list_inputs: %s; unread pointers: %s)",
+		listStatus,
+		strings.Join(missing, ", "),
+	)
+}
+
+func dependencyValidationMessage(validation string, result apiv1.ResultEnvelope) string {
+	if result.Error == nil || strings.TrimSpace(result.Error.Message) == "" {
+		return validation
+	}
+	return validation + "; original dependency error: " + result.Error.Message
+}
+
+func dependencyContextInspectionError(cause, validation string, result apiv1.ResultEnvelope) string {
+	message := cause
+	if validation != "" {
+		message += "; " + validation
+	}
+	return dependencyValidationMessage(message, result)
+}
+
+// validateDependencyNotMet checks whether a DEPENDENCY_NOT_MET failure in a
+// repass scenario has evidence of input inspection. When a stage reports
+// blocked with DEPENDENCY_NOT_MET but did not attempt to inspect provided
+// context pointers using list_inputs plus read_input/grep_input for each named
+// pointer, this returns a validation error with code CONTEXT_NOT_INSPECTED.
+func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	if result.Transcript == nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				"cannot inspect required context: result transcript pointer is missing",
+				pointerValidationErrorMessage(requiredContextPointerNames(requiredPointers), false),
+				result,
+			),
+		}
+	}
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]struct{}, len(requiredNames))
+	for _, name := range requiredNames {
+		requiredSet[name] = struct{}{}
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: open run journal %q: %v", jr.Dir(), err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	transcriptRef := journal.Ref{
+		Path:      result.Transcript.Path,
+		Digest:    result.Transcript.Digest,
+		Size:      result.Transcript.Size,
+		Integrity: result.Transcript.Integrity,
+	}
+	transcript, err := rd.SpanBytes(transcriptRef)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: read transcript %q: %v", transcriptRef.Path, err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	sawListInputs, inspected := parseTranscriptInputInspection(transcript, requiredSet)
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
+		return nil
+	}
+	return &apiv1.ErrorInfo{
+		Code:    "CONTEXT_NOT_INSPECTED",
+		Message: dependencyValidationMessage(pointerValidationErrorMessage(missing, sawListInputs), result),
+	}
+}
+
+func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
+	if len(pointers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(pointers))
+	names := make([]string, 0, len(pointers))
+	for _, pointer := range pointers {
+		name := strings.TrimSpace(pointer.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // taskOutcome applies the #110 stage-status ruling to a finished task's
 // result: success advances to Next; failure advances when ContinueOnError is
 // set or Next is a gate (which branches on the honest failed status), otherwise
@@ -2191,6 +2356,23 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
 		return "", stalledResult, false, stalledErr
 	}
+
+	// #3249: validate DEPENDENCY_NOT_MET failures have evidence of context inspection
+	// when context pointers were provided in the invocation.
+	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
+		result.Error.Code == "DEPENDENCY_NOT_MET" && len(ws.pointers) > 0 {
+		if validationErr := r.validateDependencyNotMet(jr, t.Name, result, ws.pointers); validationErr != nil {
+			result.Error.Code = validationErr.Code
+			result.Error.Message = validationErr.Message
+			if validationErr.Code == "CONTEXT_NOT_INSPECTED" {
+				// This is a transport/inspection failure, not a real dependency.
+				// Retry the same stage without entering blocked handling or the
+				// gate's repass and unchanged-diff accounting.
+				return t.Name, Result{}, true, nil
+			}
+		}
+	}
+
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to

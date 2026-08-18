@@ -2906,6 +2906,465 @@ func TestRunnerTaskBlockedFinishesEscalated(t *testing.T) {
 	}
 }
 
+func recordTranscriptSpanPointer(t *testing.T, jr *journal.Run, stage string, events []map[string]any) *apiv1.ArtifactPointer {
+	t.Helper()
+	var data bytes.Buffer
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal transcript event: %v", err)
+		}
+		data.Write(encoded)
+		data.WriteByte('\n')
+	}
+	ref, err := jr.RecordSpanWithSchema(stage, "copilot-cli.transcript", telemetry.GenAIEventSchema, data.Bytes())
+	if err != nil {
+		t.Fatalf("RecordSpanWithSchema: %v", err)
+	}
+	return &apiv1.ArtifactPointer{
+		Path:      ref.Path,
+		Digest:    ref.Digest,
+		Size:      ref.Size,
+		Integrity: ref.Integrity,
+	}
+}
+
+func TestValidateDependencyNotMetRequiresStructuredInputInspection(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-context-validation"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "content": "I should call goobers-io-list_inputs and goobers-io-read_input."},
+	})
+
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status:     apiv1.ResultBlocked,
+		Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "context artifacts are unreadable"},
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateDependencyNotMet returned nil, want CONTEXT_NOT_INSPECTED")
+	}
+	if validationErr.Code != "CONTEXT_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want CONTEXT_NOT_INSPECTED", validationErr.Code)
+	}
+	if !strings.Contains(validationErr.Message, "query-backlog.artifact[0]") || !strings.Contains(validationErr.Message, "review.verdict") {
+		t.Fatalf("validation message = %q, want unread pointer names", validationErr.Message)
+	}
+}
+
+func TestValidateDependencyNotMetAllowsPointerSpecificInputReadFailure(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-context-read-failure"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "tool_call": map[string]any{"id": "tool-1", "name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
+		{"role": "assistant", "tool_call": map[string]any{"id": "tool-2", "name": "goobers-io-read_input", "arguments": map[string]any{"name": "query-backlog.artifact[0]"}}},
+	})
+
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status: apiv1.ResultBlocked,
+		Error: &apiv1.ErrorInfo{
+			Code:    "DEPENDENCY_NOT_MET",
+			Message: `read_input failed for query-backlog.artifact[0]: no input named "query-backlog.artifact[0]"`,
+		},
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{{Name: "query-backlog.artifact[0]"}})
+	if validationErr != nil {
+		t.Fatalf("validateDependencyNotMet = %+v, want nil for a genuine pointer-specific read failure", validationErr)
+	}
+}
+
+func TestTaskOutcomeRewritesDependencyNotMetWithoutContextInspection(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-task-outcome-context-validation"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "content": "The prompt says to use list_inputs and read_input."},
+	})
+	r := &Runner{}
+	ws := &walkState{
+		jr:       jr,
+		in:       StartInput{RunID: "run-task-outcome-context-validation"},
+		steps:    1,
+		pointers: []apiv1.ContextPointer{{Name: "query-backlog.artifact[0]"}},
+	}
+	next, result, advance, err := r.taskOutcome(context.Background(), ws, taskTransition{
+		task: apiv1.Task{Name: "implement"},
+		result: apiv1.ResultEnvelope{
+			Status:     apiv1.ResultBlocked,
+			Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "required context unavailable"},
+			Transcript: transcript,
+		},
+	})
+	if err != nil {
+		t.Fatalf("taskOutcome: %v", err)
+	}
+	if !advance {
+		t.Fatal("taskOutcome advance = false, want same-stage retry")
+	}
+	if result.Phase != "" {
+		t.Fatalf("phase = %q, want empty for non-terminal retry", result.Phase)
+	}
+	if next != "implement" {
+		t.Fatalf("next = %q, want implement for same-stage retry", next)
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var blockedCause *journal.ErrorDetail
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "blocked_by_agent" {
+			blockedCause = event.Error
+			break
+		}
+	}
+	if blockedCause != nil {
+		t.Fatalf("unexpected blocked_by_agent cause during context retry: %q", blockedCause.Message)
+	}
+}
+
+// Regression test: implementer returns DEPENDENCY_NOT_MET without inspecting inputs.
+// Verifies that the validator detects missing list_inputs call.
+func TestValidateDependencyNotMetDetectsNoListInputsCall(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-no-list-inputs"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	// Transcript with content but no tool calls at all
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "content": "I'll analyze the problem."},
+	})
+
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status:     apiv1.ResultBlocked,
+		Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "blocked on external issue"},
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateDependencyNotMet returned nil, want CONTEXT_NOT_INSPECTED for no list_inputs call")
+	}
+	if validationErr.Code != "CONTEXT_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want CONTEXT_NOT_INSPECTED", validationErr.Code)
+	}
+	// Error message must name both pointers
+	if !strings.Contains(validationErr.Message, "query-backlog.artifact[0]") {
+		t.Fatalf("validation message missing first pointer: %q", validationErr.Message)
+	}
+	if !strings.Contains(validationErr.Message, "review.verdict") {
+		t.Fatalf("validation message missing second pointer: %q", validationErr.Message)
+	}
+	// Error message must indicate list_inputs was not called
+	if !strings.Contains(validationErr.Message, "list_inputs") {
+		t.Fatalf("validation message missing list_inputs status: %q", validationErr.Message)
+	}
+	if !strings.Contains(validationErr.Message, "blocked on external issue") {
+		t.Fatalf("validation message missing original dependency error: %q", validationErr.Message)
+	}
+}
+
+// Regression test: implementer calls list_inputs but not read_input/grep_input for required pointers.
+// Verifies that the validator detects incomplete input inspection.
+func TestValidateDependencyNotMetDetectsIncompleteInputInspection(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-incomplete-inspection"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	// Transcript with list_inputs call but no read_input calls
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs"}},
+		{"role": "assistant", "content": "Now I should read the inputs."},
+	})
+
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status:     apiv1.ResultBlocked,
+		Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "context is incomplete"},
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateDependencyNotMet returned nil, want CONTEXT_NOT_INSPECTED for unread pointers")
+	}
+	if validationErr.Code != "CONTEXT_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want CONTEXT_NOT_INSPECTED", validationErr.Code)
+	}
+	// Error message must name both unread pointers
+	if !strings.Contains(validationErr.Message, "query-backlog.artifact[0]") {
+		t.Fatalf("validation message missing first unread pointer: %q", validationErr.Message)
+	}
+	if !strings.Contains(validationErr.Message, "review.verdict") {
+		t.Fatalf("validation message missing second unread pointer: %q", validationErr.Message)
+	}
+}
+
+// Regression test: implementer calls list_inputs and read_input for all required pointers.
+// Verifies that the validator allows genuine external dependency failures.
+func TestValidateDependencyNotMetAllowsGenuineExternalFailure(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-genuine-external-failure"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	// Transcript with list_inputs and read_input calls for all required pointers
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "query-backlog.artifact[0]"}}},
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "review.verdict"}}},
+	})
+
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status: apiv1.ResultBlocked,
+		Error: &apiv1.ErrorInfo{
+			Code:    "DEPENDENCY_NOT_MET",
+			Message: "blocking issue #442 must merge first",
+		},
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr != nil {
+		t.Fatalf("validateDependencyNotMet = %+v, want nil when all pointers were inspected", validationErr)
+	}
+}
+
+// Regression test: corrupt/missing artifact scenarios.
+// Verifies that validation handles transcript access failures.
+func TestValidateDependencyNotMetCorruptTranscript(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-corrupt-transcript"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	// Create a result with a pointer to a non-existent transcript
+	validationErr := (&Runner{}).validateDependencyNotMet(jr, "implement", apiv1.ResultEnvelope{
+		Status: apiv1.ResultBlocked,
+		Error:  &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET"},
+		Transcript: &apiv1.ArtifactPointer{
+			Path:      "nonexistent/transcript",
+			Digest:    "nonexistent",
+			Size:      0,
+			Integrity: "nonexistent",
+		},
+	}, []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateDependencyNotMet returned nil, want CONTEXT_NOT_INSPECTED for corrupt transcript")
+	}
+	if validationErr.Code != "CONTEXT_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want CONTEXT_NOT_INSPECTED for corrupt artifact", validationErr.Code)
+	}
+	// Error message should identify the unread pointer
+	if !strings.Contains(validationErr.Message, "query-backlog.artifact[0]") {
+		t.Fatalf("validation message missing pointer name: %q", validationErr.Message)
+	}
+	if !strings.Contains(validationErr.Message, `read transcript "nonexistent/transcript"`) {
+		t.Fatalf("validation message missing transcript pointer: %q", validationErr.Message)
+	}
+	if !strings.Contains(validationErr.Message, `journal: resolve blob "nonexistent/transcript"`) {
+		t.Fatalf("validation message missing underlying journal read error: %q", validationErr.Message)
+	}
+}
+
+// Unit test for parseTranscriptInputInspection function.
+func TestParseTranscriptInputInspection(t *testing.T) {
+	tests := []struct {
+		name          string
+		transcript    string
+		required      map[string]struct{}
+		wantList      bool
+		wantInspected map[string]bool
+	}{
+		{
+			name:          "empty transcript",
+			transcript:    "",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      false,
+			wantInspected: map[string]bool{},
+		},
+		{
+			name:          "list_inputs only",
+			transcript:    `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{},
+		},
+		{
+			name: "list_inputs and read_input for required pointer",
+			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{"pointer1": true},
+		},
+		{
+			name: "read_input for unrequired pointer",
+			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"unrequired"}}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{},
+		},
+		{
+			name: "grep_input for required pointer",
+			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-grep_input","arguments":{"name":"pointer1"}}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{"pointer1": true},
+		},
+		{
+			name: "multiple pointers with mixed inspection",
+			transcript: `{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer2"}}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}, "pointer2": {}, "pointer3": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{"pointer1": true, "pointer2": true},
+		},
+		{
+			name: "malformed JSON lines are skipped",
+			transcript: `not json` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"invalid":json}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"pointer1"}}}` + "\n",
+			required:      map[string]struct{}{"pointer1": {}},
+			wantList:      true,
+			wantInspected: map[string]bool{"pointer1": true},
+		},
+		{
+			name: "non-assistant role is ignored",
+			transcript: `{"role":"user","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n" +
+				`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs"}}` + "\n",
+			required:      map[string]struct{}{},
+			wantList:      true,
+			wantInspected: map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotList, gotInspected := parseTranscriptInputInspection([]byte(tt.transcript), tt.required)
+			if gotList != tt.wantList {
+				t.Fatalf("sawListInputs = %v, want %v", gotList, tt.wantList)
+			}
+			// The function returns true for required pointers that were inspected,
+			// and does not include entries for pointers not found
+			for key, wantVal := range tt.wantInspected {
+				if gotVal, ok := gotInspected[key]; !ok || gotVal != wantVal {
+					t.Fatalf("inspected[%q] = %v (ok=%v), want %v", key, gotVal, ok, wantVal)
+				}
+			}
+			// Check that pointers not in wantInspected are also not in gotInspected
+			for key := range gotInspected {
+				if _, ok := tt.wantInspected[key]; !ok {
+					t.Fatalf("unexpected inspected pointer: %q", key)
+				}
+			}
+		})
+	}
+}
+
+// Unit test for pointerValidationErrorMessage function.
+func TestPointerValidationErrorMessage(t *testing.T) {
+	tests := []struct {
+		name      string
+		missing   []string
+		sawList   bool
+		wantMsg   string
+		wantEmpty bool
+	}{
+		{
+			name:      "no missing pointers and list_inputs was called",
+			missing:   []string{},
+			sawList:   true,
+			wantEmpty: true,
+		},
+		{
+			name:    "missing pointers and list_inputs not called",
+			missing: []string{"pointer1", "pointer2"},
+			sawList: false,
+			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
+		},
+		{
+			name:    "missing pointers and list_inputs was called",
+			missing: []string{"pointer1", "pointer2"},
+			sawList: true,
+			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
+		},
+		{
+			name:    "single missing pointer",
+			missing: []string{"single-pointer"},
+			sawList: false,
+			wantMsg: "required context pointers were not inspected before DEPENDENCY_NOT_MET",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := pointerValidationErrorMessage(tt.missing, tt.sawList)
+			if tt.wantEmpty && msg != "" {
+				t.Fatalf("message = %q, want empty", msg)
+			}
+			if !tt.wantEmpty && msg == "" {
+				t.Fatalf("message is empty, want non-empty")
+			}
+			if !tt.wantEmpty {
+				if !strings.Contains(msg, tt.wantMsg) {
+					t.Fatalf("message = %q, want to contain %q", msg, tt.wantMsg)
+				}
+				// Verify all missing pointers are named in the message
+				for _, pointer := range tt.missing {
+					if !strings.Contains(msg, pointer) {
+						t.Fatalf("message = %q, want to contain pointer %q", msg, pointer)
+					}
+				}
+				// Verify list_inputs status is included
+				if !strings.Contains(msg, "list_inputs") {
+					t.Fatalf("message = %q, want to contain list_inputs status", msg)
+				}
+			}
+		})
+	}
+}
+
 // TestRunnerTaskBlockedHandlerErrorStillTerminal proves the Blocked handler is
 // best-effort: its failure is journaled (blocked_handling_failed) but the run
 // still reaches escalated — the terminal-cleanup guarantee (I1) must not
