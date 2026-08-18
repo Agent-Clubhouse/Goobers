@@ -86,7 +86,7 @@ describe("runs history pagination under live events", () => {
       failed: 101,
       escalated: 51,
       aborted: 0,
-    });
+    }, 10_000);
     const failedRuns = fixtures.runs.runs.filter((run) => run.phase === "failed");
     const escalatedRuns = fixtures.runs.runs.filter((run) => run.phase === "escalated");
     const olderDuplicate = failedRuns.at(-1);
