@@ -1,6 +1,16 @@
 package procenv
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -104,28 +114,100 @@ func TestBaseEnvPassesThroughToolchainFamilies(t *testing.T) {
 }
 
 func TestBaseEnvRoutesPublicRegistryLockfileThroughAlternateRegistry(t *testing.T) {
-	const lockfile = `{"packages":{"node_modules/example":{"resolved":"https://registry.npmjs.org/example/-/example-1.0.0.tgz"}}}`
-	t.Setenv("NPM_CONFIG_REGISTRY", "https://registry.example.internal")
+	npm := "npm"
+	if runtime.GOOS == "windows" {
+		npm = "npm.cmd"
+	}
+	if _, err := exec.LookPath(npm); err != nil {
+		t.Skipf("%s is required for the Node registry routing integration test: %v", npm, err)
+	}
+
+	packageJSON := []byte(`{"name":"example","version":"1.0.0","main":"index.js"}`)
+	tarball := makeNPMPackageTarball(t, packageJSON)
+	var tarballRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/example/-/example-1.0.0.tgz" {
+			http.NotFound(w, r)
+			return
+		}
+		tarballRequests++
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(tarball)
+	}))
+	t.Cleanup(server.Close)
+
+	const publicTarballURL = "https://registry.npmjs.org/example/-/example-1.0.0.tgz"
+	lockfile := map[string]any{
+		"name":            "registry-routing-fixture",
+		"lockfileVersion": 3,
+		"requires":        true,
+		"packages": map[string]any{
+			"": map[string]any{
+				"name":         "registry-routing-fixture",
+				"version":      "1.0.0",
+				"dependencies": map[string]string{"example": "1.0.0"},
+			},
+			"node_modules/example": map[string]any{
+				"version":  "1.0.0",
+				"resolved": publicTarballURL,
+			},
+		},
+	}
+	lockfileJSON, err := json.Marshal(lockfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"name":"registry-routing-fixture","version":"1.0.0","dependencies":{"example":"1.0.0"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "package-lock.json"), lockfileJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NPM_CONFIG_REGISTRY", server.URL)
 	t.Setenv("NPM_CONFIG_REPLACE_REGISTRY_HOST", "always")
 	t.Setenv("npm_config_//registry.npmjs.org/:_authToken", "must-not-pass")
+	t.Setenv("npm_config_cache", filepath.Join(workspace, "npm-cache"))
 
-	if !strings.Contains(lockfile, "https://registry.npmjs.org/") {
-		t.Fatal("test lockfile does not contain a public registry URL")
+	cmd := exec.Command(npm, "ci", "--ignore-scripts", "--no-audit", "--fund=false")
+	cmd.Dir = workspace
+	cmd.Env = BaseEnv()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("npm ci failed: %v\n%s", err, output)
 	}
-	env := BaseEnv()
-	for _, want := range []string{
-		"NPM_CONFIG_REGISTRY=https://registry.example.internal",
-		"NPM_CONFIG_REPLACE_REGISTRY_HOST=always",
+	if tarballRequests != 1 {
+		t.Fatalf("alternate registry received %d tarball requests, want 1", tarballRequests)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "node_modules", "example", "package.json")); err != nil {
+		t.Fatalf("npm ci did not install the package from the alternate registry: %v", err)
+	}
+}
+
+func makeNPMPackageTarball(t *testing.T, packageJSON []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for name, content := range map[string][]byte{
+		"package/package.json": packageJSON,
+		"package/index.js":     []byte("module.exports = true;\n"),
 	} {
-		if !contains(env, want) {
-			t.Fatalf("Node registry routing setting %q did not pass through BaseEnv(): %v", want, env)
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(content))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(content); err != nil {
+			t.Fatal(err)
 		}
 	}
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "npm_config_//registry.npmjs.org/:_authToken=") {
-			t.Fatalf("npm registry credential leaked into BaseEnv(): %v", env)
-		}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
 	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
 
 func TestBaseEnvPassesThroughJavaToolchainFamily(t *testing.T) {
