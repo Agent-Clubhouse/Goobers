@@ -55,6 +55,10 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	runGit(t, root, "add", ".")
 	runGit(t, root, "commit", "-q", "-m", "release ga feature")
 	runGit(t, root, "tag", "v1.1.0")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, root, "init", "--bare", "-q", remote)
+	runGit(t, root, "remote", "add", "origin", remote)
+	runGit(t, root, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
 
 	fabricatedHistory := []SupportTransition{
 		{Level: SupportPreview, SinceVersion: "dev"},
@@ -65,6 +69,7 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	writeFixtureFeatureRegistry(t, root, SupportRemoved, "v1.3.0", fabricatedHistory)
 	runGit(t, root, "add", ".")
 	runGit(t, root, "commit", "-q", "-m", "fabricate deprecation and removal")
+	runGit(t, root, "tag", "v9.0.0")
 
 	released, tag := loadLatestReleasedFeatureRegistry(t, root)
 	if tag != "v1.1.0" {
@@ -93,7 +98,7 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 
 func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (FeatureRegistry, string) {
 	t.Helper()
-	tag := latestReleaseTag(t, repository)
+	tag, revision := latestReleaseTag(t, repository)
 	if tag == "" {
 		registry, err := NewFeatureRegistry(nil)
 		if err != nil {
@@ -103,7 +108,7 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	}
 
 	releaseTree := filepath.Join(t.TempDir(), "release")
-	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, tag)
+	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, revision)
 	t.Cleanup(func() {
 		if output, err := testgit.Command("-C", repository, "worktree", "remove", "--force", releaseTree).CombinedOutput(); err != nil {
 			t.Errorf("remove release worktree: %v: %s", err, strings.TrimSpace(string(output)))
@@ -127,6 +132,10 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	if err := json.Unmarshal([]byte(output), &features); err != nil {
 		t.Fatalf("decode feature registry from release %s: %v", tag, err)
 	}
+	features, err := FeaturesAtDSLVersion(features, DSLVersion)
+	if err != nil {
+		t.Fatalf("project feature registry from release %s to DSL %s: %v", tag, DSLVersion, err)
+	}
 	registry, err := NewFeatureRegistry(features)
 	if err != nil {
 		t.Fatalf("feature registry from release %s is invalid: %v", tag, err)
@@ -134,22 +143,28 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	return registry, tag
 }
 
-func latestReleaseTag(t *testing.T, repository string) string {
+func latestReleaseTag(t *testing.T, repository string) (string, string) {
 	t.Helper()
-	output := runGit(t, repository, "tag", "--merged", "HEAD", "--list")
-	var latestTag string
+	output := runGit(t, repository, "ls-remote", "--tags", "--refs", "origin")
+	var latestTag, latestRevision string
 	var latestVersion releaseVersion
-	for _, tag := range strings.Fields(output) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		tag := strings.TrimPrefix(fields[1], "refs/tags/")
 		version, err := parseReleaseVersion(tag, false)
 		if err != nil {
 			continue
 		}
 		if latestTag == "" || compareReleaseVersions(version, latestVersion) > 0 {
 			latestTag = tag
+			latestRevision = fields[0]
 			latestVersion = version
 		}
 	}
-	return latestTag
+	return latestTag, latestRevision
 }
 
 func writeFixtureFeatureRegistry(
@@ -171,10 +186,16 @@ type SupportTransition struct {
 	SinceVersion string `+"`json:\"sinceVersion\"`"+`
 }
 
+type DSLFeatureSupport struct {
+	Version string `+"`json:\"version\"`"+`
+	Level   string `+"`json:\"level\"`"+`
+}
+
 type Feature struct {
 	ID           string              `+"`json:\"id\"`"+`
 	Level        string              `+"`json:\"level\"`"+`
 	SinceVersion string              `+"`json:\"sinceVersion\"`"+`
+	DSLVersions  []DSLFeatureSupport `+"`json:\"dslVersions\"`"+`
 	History      []SupportTransition `+"`json:\"history\"`"+`
 }
 
@@ -187,10 +208,14 @@ func AllFeatures() []Feature {
 		ID:           "example.feature",
 		Level:        %q,
 		SinceVersion: %q,
+		DSLVersions: []DSLFeatureSupport{{
+			Version: %q,
+			Level:   %q,
+		}},
 		History:      history,
 	}}
 }
-`, historyJSON, level, sinceVersion)
+`, historyJSON, level, sinceVersion, DSLVersion, level)
 	source = "package workflow\n\nimport \"encoding/json\"\n\n" + strings.TrimPrefix(source, "package workflow\n\n")
 	writeFile(t, filepath.Join(root, "internal", "workflow", "features.go"), source)
 }
