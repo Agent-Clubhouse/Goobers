@@ -7877,7 +7877,9 @@ func (g *remediationEvidenceGoober) Invoke(_ context.Context, env apiv1.Invocati
 		return apiv1.ResultEnvelope{}, err
 	}
 	return apiv1.ResultEnvelope{
-		Status: apiv1.ResultSuccess, Summary: "failure is non-actionable",
+		Status:  apiv1.ResultSuccess,
+		Summary: "failure is non-actionable",
+		Outputs: map[string]interface{}{"remediationClassification": "environmental"},
 	}, nil
 }
 
