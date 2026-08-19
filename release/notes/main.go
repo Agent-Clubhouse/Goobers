@@ -247,7 +247,9 @@ func trimDeltaRows(notes, heading string, n int) string {
 			line = head[idx : idx+lineEnd]
 			head = head[:idx]
 		}
-		fmt.Sscanf(line, "_…delta truncated: %d", &already)
+		if _, err := fmt.Sscanf(line, "_…delta truncated: %d", &already); err != nil {
+			already = 0 // unparsable prior omission line: recount from zero rather than guess
+		}
 	}
 	omission := fmt.Sprintf(
 		"%s%d rows omitted to fit GitHub's release-body limit; the complete matrix ships in the release docs bundle (docs/feature-matrix.md)._\n",
