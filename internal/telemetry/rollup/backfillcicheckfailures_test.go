@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -63,19 +64,25 @@ startedAt: %s
 }
 
 // TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot is #3280's acceptance
-// criterion: instanceRoot/runs commonly symlinks to one of the
+// criterion: instanceRoot/runs commonly aliases one of the
 // gaggles/<gaggle>/runs roots this same pass already scans (the documented
 // legacy compat layout), so without dedup the same run is scanned — and its
 // CI check failure inserted — twice, colliding on ci_check_failures'
 // (run_id, seq, check_name) primary key and aborting the whole migration.
+//
+// Uses instance.CreateLegacyRuntimeAlias rather than os.Symlink to build the
+// alias, so this exercises the platform-native form the real migration path
+// creates — a directory junction on Windows, not a symlink (see
+// internal/instance/runtime_alias_windows.go) — instead of only the
+// Unix-symlink case.
 func TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot(t *testing.T) {
 	tmp := t.TempDir()
 	gaggleRuns := filepath.Join(tmp, "gaggles", "web", "runs")
 	runID := fixtureRunID
 	writeRunWithCIFailure(t, gaggleRuns, runID, fixtureStart)
 
-	if err := os.Symlink(gaggleRuns, filepath.Join(tmp, "runs")); err != nil {
-		t.Fatalf("symlink instanceRoot/runs -> gaggles/web/runs: %v", err)
+	if err := instance.CreateLegacyRuntimeAlias(filepath.Join(tmp, "runs"), gaggleRuns); err != nil {
+		t.Fatalf("create instanceRoot/runs alias -> gaggles/web/runs: %v", err)
 	}
 
 	db := openTestDB(t, tmp)
@@ -121,9 +128,11 @@ func TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot(t *testing.T) {
 }
 
 // TestCanonicalRunsRootDedupesSymlinkAlias exercises canonicalRunsRoot
-// directly: a symlinked root and its real target must resolve to the same
-// key, and a root that doesn't exist yet (no legacy dir, no compat symlink)
-// must resolve without error instead of aborting the migration.
+// directly: a compat-aliased root (a symlink off Windows, a directory
+// junction on Windows — see instance.CreateLegacyRuntimeAlias) and its real
+// target must resolve to the same key, and a root that doesn't exist yet (no
+// legacy dir, no compat alias) must resolve without error instead of
+// aborting the migration.
 func TestCanonicalRunsRootDedupesSymlinkAlias(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "gaggles", "web", "runs")
@@ -131,8 +140,8 @@ func TestCanonicalRunsRootDedupesSymlinkAlias(t *testing.T) {
 		t.Fatalf("mkdir real runs dir: %v", err)
 	}
 	link := filepath.Join(tmp, "runs")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatalf("symlink: %v", err)
+	if err := instance.CreateLegacyRuntimeAlias(link, real); err != nil {
+		t.Fatalf("create alias: %v", err)
 	}
 
 	realKey, err := canonicalRunsRoot(real)

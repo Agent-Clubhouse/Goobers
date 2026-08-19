@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -515,13 +516,19 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 
 // canonicalRunsRoot resolves a scan root to a key that's stable across
 // symlink aliasing, so two roots pointing at the same physical directory
-// (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat
-// symlink) dedupe to one scan. A root that doesn't exist yet can't alias
-// anything real, so it resolves to its own cleaned path rather than erroring.
+// (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat alias)
+// dedupe to one scan. It goes through instance.ResolveRuntimeAlias rather
+// than filepath.EvalSymlinks directly because that alias is a plain symlink
+// off Windows but a directory junction on Windows (createLegacyRuntimeAlias),
+// and Go 1.23+'s EvalSymlinks walks straight past a junction instead of
+// resolving it — only ResolveRuntimeAlias's per-platform reparse-point
+// handling gets the real target on both. A root that doesn't exist yet can't
+// alias anything real, so it resolves to its own cleaned path rather than
+// erroring.
 func canonicalRunsRoot(root string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(root)
+	resolved, err := instance.ResolveRuntimeAlias(root)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return filepath.Clean(root), nil
 		}
 		return "", fmt.Errorf("rollup: resolve runs root %s: %w", root, err)
