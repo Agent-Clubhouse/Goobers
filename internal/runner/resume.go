@@ -431,15 +431,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := &walkState{
-		jr:            jr,
-		reg:           registrar,
-		pointers:      reconstructPointers(pointerEvents, in.Machine),
-		completed:     reconstructStageOutputs(seedEvents, in.Machine),
-		visitedStages: stageVisitSeed(seedEvents),
-		parallel:      activeParallel,
-		fanIn:         pendingFanIn(seedEvents, in.Machine),
-	}
+	ws := newWalkState(jr, StartInput{
+		RunID:   in.RunID,
+		Machine: in.Machine,
+		RepoRef: in.RepoRef,
+	}, registrar, "")
+	ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+	ws.visitedStages = stageVisitSeed(seedEvents)
+	ws.parallel = activeParallel
+	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
 	if activeParallel != nil {
 		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		jr.SetBranchCursors(activeParallel.cursors())
