@@ -1,0 +1,9 @@
+{
+  "snapshotSha256": "4fffe1d6101a968d105ede4da63269b02eb8f240f1848d72e455406f4e041dee",
+  "changes": [
+    {
+      "version": 1,
+      "description": "Initial snapshot: the subcommand→capability-requirement table as committed when the drift guard landed. Breaks nothing — this records the live contract as-is; motivated by #2386 (TBH-1) silently narrowing backlog-dedupe/gather-issue-context/gather-pr-context requirements and breaking every shipped config."
+    }
+  ]
+}
