@@ -85,7 +85,7 @@ func isLegacyRuntimeAlias(path string, info fs.FileInfo) (bool, error) {
 // filepath.EvalSymlinks cannot do this on Windows. Go 1.23 stopped reporting
 // directory junctions (IO_REPARSE_TAG_MOUNT_POINT) as symlinks, so EvalSymlinks
 // walks straight past one and hands back the junction's own path instead of its
-// target. createLegacyRuntimeAlias creates exactly such a junction, so the
+// target. CreateLegacyRuntimeAlias creates exactly such a junction, so the
 // target has to come out of the reparse buffer — the same reason
 // isLegacyRuntimeAlias cannot trust fs.ModeSymlink either. Exported so other
 // packages that scan a runtime tree containing such an alias (e.g.

@@ -519,7 +519,7 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 // (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat alias)
 // dedupe to one scan. It goes through instance.ResolveRuntimeAlias rather
 // than filepath.EvalSymlinks directly because that alias is a plain symlink
-// off Windows but a directory junction on Windows (createLegacyRuntimeAlias),
+// off Windows but a directory junction on Windows (CreateLegacyRuntimeAlias),
 // and Go 1.23+'s EvalSymlinks walks straight past a junction instead of
 // resolving it — only ResolveRuntimeAlias's per-platform reparse-point
 // handling gets the real target on both. A root that doesn't exist yet can't

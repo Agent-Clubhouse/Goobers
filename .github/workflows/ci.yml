@@ -805,6 +805,17 @@ jobs:
       - name: Windows instance runtime
         run: go test ./internal/instance
 
+      # Named, not the whole package: internal/telemetry/rollup's suite runs
+      # ~15s on Linux and isn't otherwise Windows-sensitive, so only the two
+      # tests that actually exercise canonicalRunsRoot's dependency on
+      # instance.ResolveRuntimeAlias run here. Without this step they only ran
+      # under unit-gate (ubuntu-latest), where ResolveRuntimeAlias takes the
+      # plain-symlink branch and the Windows reparse-point junction parser in
+      # runtime_alias_windows.go — the one this PR's alias-dedup fix depends
+      # on — stayed unexercised on the only platform where it runs (#3280).
+      - name: Windows rollup migration alias dedup
+        run: go test ./internal/telemetry/rollup -run 'TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot|TestCanonicalRunsRootDedupesSymlinkAlias'
+
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
       # POSIX — and none of these packages were covered here until #1997.
