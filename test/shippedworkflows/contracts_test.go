@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -249,6 +250,104 @@ func assertCITimeoutRecovery(t *testing.T, events []journal.Event) {
 	}
 	if got := stageStarts["park-escalated"]; got != 0 {
 		t.Errorf("park-escalated starts = %d, want 0 for pending CI", got)
+	}
+}
+
+func TestImplementationInfrastructureRetryPreservesReviewedCheckpoint(t *testing.T) {
+	root := repositoryRoot(t)
+	configPath := filepath.Join(root, "reference-workflows")
+	set, report, err := instance.LoadConfigDir(configPath)
+	if err != nil {
+		t.Fatalf("load shipped config: %v\n%v", err, report)
+	}
+	var definition apiv1.Workflow
+	for _, candidate := range set.Workflows {
+		if candidate.Spec.Gaggle == "goobers" && candidate.Name == "implementation" {
+			definition = candidate
+			break
+		}
+	}
+	if definition.Name == "" {
+		t.Fatal("reference implementation workflow not found")
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{
+			Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		},
+		workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{
+			"review":       {string(apiv1.VerdictPass)},
+			"local-gate":   {gate.OutcomeInfra, gate.OutcomePass},
+			"open-pr-gate": {gate.OutcomePass},
+			"ci-gate":      {gate.OutcomePass},
+		},
+		wantPhase: journal.PhaseCompleted,
+	})
+	localRunner, runsDir := newContractRunner(t, script, gooberCapabilities(set.Goobers))
+	const runID = "implementation-infra-retry-preserves-checkpoint"
+	if _, err := localRunner.Start(context.Background(), runner.StartInput{
+		RunID: runID, Machine: machine, Gaggle: definition.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "fixture", Name: "repository", Branch: "main",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := map[string]int{}
+	gateEvaluations := map[string]int{}
+	var sequence []string
+	var infraDecision bool
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageStarted:
+			starts[event.Stage]++
+			sequence = append(sequence, event.Stage)
+		case journal.EventGateEvaluated:
+			gateEvaluations[event.Gate]++
+		case journal.EventRunnerAnnotation:
+			if event.Stage == "local-ci" &&
+				event.Runner["kind"] == "stage.retry.decision" &&
+				event.Runner["retryFailureClass"] == string(journal.AttemptInfra) {
+				infraDecision = true
+			}
+		}
+	}
+	for stage, want := range map[string]int{
+		"implement":   1,
+		"push-branch": 1,
+		"local-ci":    2,
+		"open-pr":     1,
+	} {
+		if got := starts[stage]; got != want {
+			t.Errorf("%s starts = %d, want %d; sequence=%v", stage, got, want, sequence)
+		}
+	}
+	if gateEvaluations["review"] != 1 || gateEvaluations["local-gate"] != 2 {
+		t.Errorf("gate evaluations = %v, want review=1 local-gate=2", gateEvaluations)
+	}
+	if starts["park-escalated"] != 0 {
+		t.Fatalf("park-escalated starts = %d, want 0", starts["park-escalated"])
+	}
+	if !infraDecision {
+		t.Fatal("local-ci retry was not journaled as infrastructure")
+	}
+	pushIndex, firstCIIndex := slices.Index(sequence, "push-branch"), slices.Index(sequence, "local-ci")
+	if pushIndex < 0 || firstCIIndex < 0 || pushIndex > firstCIIndex {
+		t.Fatalf("execution sequence = %v, want push-branch before local-ci", sequence)
 	}
 }
 
@@ -1053,7 +1152,11 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 			continue
 		}
 		path := append([]workflow.GraphEdge(nil), prefix...)
-		for range contractMaxRepasses {
+		repasses := contractMaxRepasses
+		if candidate.Outcome == gate.OutcomeInfra {
+			repasses = gate.DefaultMaxInfrastructureRepasses
+		}
+		for range repasses {
 			path = append(path, candidate)
 			path = append(path, loopback...)
 		}
