@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -117,9 +118,22 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	// harnessFailures (live-probe failures like an expired/over-quota
+	// credential) are deliberately not treated as fatal here, same as the
+	// daemon startup path (#2812): forGaggle is invoked lazily per activity
+	// dispatch, so failing closed on a harness this gaggle's actual run
+	// doesn't use would reproduce the very bug #2812 fixed, just one layer
+	// down. A run that dispatches through the broken harness still fails on
+	// its own, same as always. Unlike the daemon path there is no
+	// report/CLIWarnings seam reaching this far into the worker, so these are
+	// printed directly rather than silently swallowed — forGaggle is memoized
+	// per gaggle, so this fires once per gaggle, not once per dispatch.
+	harnessInfo, harnessFailures, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
+	}
+	for h, ferr := range harnessFailures {
+		fmt.Fprintf(os.Stderr, "worker: harness %q failed its startup preflight probe and is unavailable until this is resolved: %v\n", h, ferr)
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
