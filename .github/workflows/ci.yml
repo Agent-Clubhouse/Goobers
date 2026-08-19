@@ -91,11 +91,14 @@ jobs:
         run: |
           set -o pipefail
           for attempt in 1 2 3; do
-            if npm --prefix portal ci --no-audit --no-fund \
-              && npm --prefix portal exec -- playwright install --with-deps chromium; then
+            # Per-attempt timeout: tonight's evolved failure mode is npm/CDN
+            # HANGING rather than failing (#3139) — without this, one stalled
+            # attempt eats the whole step window and the retry never cycles.
+            if timeout 240 npm --prefix portal ci --no-audit --no-fund \
+              && timeout 240 npm --prefix portal exec -- playwright install --with-deps chromium; then
               exit 0
             fi
-            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
+            echo "::warning::portal/Chromium install attempt ${attempt} failed or hung; retrying"
             sleep $((attempt * 10))
           done
           echo "portal/Chromium install failed after 3 attempts" >&2
@@ -273,11 +276,14 @@ jobs:
         run: |
           set -o pipefail
           for attempt in 1 2 3; do
-            if npm --prefix portal ci --no-audit --no-fund \
-              && npm --prefix portal exec -- playwright install --with-deps chromium; then
+            # Per-attempt timeout: tonight's evolved failure mode is npm/CDN
+            # HANGING rather than failing (#3139) — without this, one stalled
+            # attempt eats the whole step window and the retry never cycles.
+            if timeout 240 npm --prefix portal ci --no-audit --no-fund \
+              && timeout 240 npm --prefix portal exec -- playwright install --with-deps chromium; then
               exit 0
             fi
-            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
+            echo "::warning::portal/Chromium install attempt ${attempt} failed or hung; retrying"
             sleep $((attempt * 10))
           done
           echo "portal/Chromium install failed after 3 attempts" >&2
