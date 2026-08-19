@@ -7606,6 +7606,179 @@ func environmentalCIMachine(t *testing.T) *workflow.Machine {
 	return machine
 }
 
+type remediationEvidenceDeterministic struct {
+	t       *testing.T
+	rec     ArtifactRecorder
+	ciCalls int
+}
+
+func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.t.Helper()
+	if !strings.HasSuffix(env.TaskID, ":local-ci") {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	d.ciCalls++
+	if d.ciCalls != 2 {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	ref, err := d.rec.RecordArtifact("failure.txt", []byte("internal/example.go:42: actionable failure\n"))
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "test_failure", Message: "actionable local CI failure"},
+		Artifacts: []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+		}},
+	}, nil
+}
+
+type remediationEvidenceGoober struct {
+	t           *testing.T
+	rec         ArtifactRecorder
+	implement   int
+	reviewCalls *int
+}
+
+func (g *remediationEvidenceGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.t.Helper()
+	if env.Goal == "review" {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	g.implement++
+	if g.implement == 1 {
+		if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("implementation\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(g.t, env.Workspace, "add", "-A")
+		runGit(g.t, env.Workspace, "commit", "-m", "implementation")
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	if g.implement == 2 {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "no changes needed"}, nil
+	}
+	data := []byte(
+		`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs","arguments":{}}}` + "\n" +
+			`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"local-ci.artifact[0]"}}}` + "\n",
+	)
+	recorder, ok := g.rec.(interface {
+		RecordSpanWithSchema(string, string, string, []byte) (journal.Ref, error)
+	})
+	if !ok {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("transcript recorder unavailable")
+	}
+	ref, err := recorder.RecordSpanWithSchema("implement", "copilot-cli.transcript", telemetry.GenAIEventSchema, data)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status: apiv1.ResultSuccess, Summary: "failure is non-actionable",
+		Transcript: &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, Integrity: ref.Integrity,
+		},
+	}, nil
+}
+
+func (g *remediationEvidenceGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	*g.reviewCalls++
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationEvidenceMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Start: "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Next: "local-ci"},
+			{Name: "remediate", Type: apiv1.TaskAgentic, Goober: "coder", Next: "review"},
+			{Name: "local-ci", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-gate"},
+		},
+		Gates: []apiv1.Gate{
+			{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+				Branches: map[string]string{gate.OutcomePass: "review", gate.OutcomeFail: "remediate", gate.OutcomeInfra: "remediate"}},
+			{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": "local-ci", "needs-changes": "implement", "fail": workflow.TargetAbort}},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-evidence-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation evidence machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerRejectsUninspectedRemediationBeforeReview(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	var reviewCalls int
+	var coder *remediationEvidenceGoober
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &remediationEvidenceDeterministic{t: t, rec: rec}, nil
+		},
+		NewAgentic: func(name string, rec ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				if coder == nil {
+					coder = &remediationEvidenceGoober{t: t, rec: rec, reviewCalls: &reviewCalls}
+				}
+				return coder, nil
+			}
+			return &remediationEvidenceGoober{t: t, rec: rec, reviewCalls: &reviewCalls}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-evidence", Machine: remediationEvidenceMachine(t),
+		Gaggle: "acme-web", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated after inspected unchanged remediation", result.Phase)
+	}
+	if reviewCalls != 1 {
+		t.Fatalf("review calls = %d, want 1 (evidence rejection and duplicate diff must not re-invoke review)", reviewCalls)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-remediation-evidence"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var rejected, escalated bool
+	remediationAttempts := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["code"] == "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+			rejected = true
+			if event.Runner["triggeringStage"] != "local-ci" || event.Runner["requiredFailureEvidencePointers"] == nil {
+				t.Fatalf("evidence annotation = %+v, want local-ci pointer provenance", event.Runner)
+			}
+		}
+		if event.Type == journal.EventStageStarted && event.Stage == "remediate" {
+			remediationAttempts++
+		}
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" && event.Escalated {
+			escalated = true
+		}
+	}
+	if !rejected || remediationAttempts < 2 || !escalated {
+		t.Fatalf("evidence routing = rejected:%v remediationAttempts:%d escalated:%v, want rejection, same-stage retry, and escalation", rejected, remediationAttempts, escalated)
+	}
+}
+
 func TestInfrastructureGateRetryIsCrashResumable(t *testing.T) {
 	machine := environmentalCIMachine(t)
 	localGate, ok := machine.Gate("local-gate")
