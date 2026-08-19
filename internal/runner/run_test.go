@@ -5484,7 +5484,7 @@ func TestRunnerAutomaticEscalationDoesNotDoubleNotify(t *testing.T) {
 }
 
 func TestTerminalGateNotificationDefersToParkingStage(t *testing.T) {
-	reason, notify := terminalGateNotificationReason(gate.Result{
+	reason, notify := terminalGateNotificationReason(escalationParkingMachine(t), gate.Result{
 		Gate: "review", Outcome: "needs-changes", Target: "park-escalated",
 		Escalated: true, DuplicateDiff: true,
 	})
@@ -5494,7 +5494,7 @@ func TestTerminalGateNotificationDefersToParkingStage(t *testing.T) {
 }
 
 func TestTerminalGateNotificationRetainedForArbitraryStage(t *testing.T) {
-	reason, notify := terminalGateNotificationReason(gate.Result{
+	reason, notify := terminalGateNotificationReason(escalationParkingMachine(t), gate.Result{
 		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
 		Escalated: true, DuplicateDiff: true,
 	})
@@ -5511,7 +5511,7 @@ func TestTerminalGateNotificationRetainedForArbitraryStage(t *testing.T) {
 // `goobers trace`) never mistakes an environmentally-caused no-op repass for
 // an unresolved implementation defect.
 func TestTerminalGateNotificationClassifiesUnchangedRepass(t *testing.T) {
-	infraReason, notify := terminalGateNotificationReason(gate.Result{
+	infraReason, notify := terminalGateNotificationReason(nil, gate.Result{
 		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
 		Escalated: true, DuplicateDiff: true, Reason: gate.ReasonUnchangedRepass,
 		RepassCause: &gate.RepassCause{
@@ -5524,7 +5524,7 @@ func TestTerminalGateNotificationClassifiesUnchangedRepass(t *testing.T) {
 		t.Fatalf("infra reason = %q,%t, want UNCHANGED_REPASS-prefixed infrastructure classification", infraReason, notify)
 	}
 
-	implReason, notify := terminalGateNotificationReason(gate.Result{
+	implReason, notify := terminalGateNotificationReason(nil, gate.Result{
 		Gate: "review", Outcome: "needs-changes", Target: "custom-disposition",
 		Escalated: true, DuplicateDiff: true, Reason: gate.ReasonUnchangedRepass,
 		RepassCause: &gate.RepassCause{
@@ -5578,13 +5578,17 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 			t.Fatalf("append stage failure: %v", err)
 		}
 		if err := run.Append(journal.Event{
-			Type: journal.EventRunnerAnnotation, Stage: "local-ci",
-			Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+			Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement",
+		}); err != nil {
+			t.Fatalf("append gate verdict: %v", err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "local-ci", Gate: "local-gate",
+			Runner: map[string]any{
+				"kind": retryDecisionKind, retryFailureClassKey: string(journal.AttemptInfra),
+			},
 		}); err != nil {
 			t.Fatalf("append retry decision: %v", err)
-		}
-		if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "implement"}); err != nil {
-			t.Fatalf("append gate verdict: %v", err)
 		}
 		cause, err := priorRepassCause(run, "implement")
 		if err != nil {
@@ -5998,23 +6002,6 @@ func (r *alwaysNeedsChangesReviewer) Invoke(context.Context, apiv1.InvocationEnv
 func (r *alwaysNeedsChangesReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	r.calls++
 	return apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "please fix X"}, nil
-}
-
-// repeatingDeterministic commits the exact same file content on every
-// invocation, using --allow-empty once the tree is already unchanged from
-// the prior attempt — reproducing #316's non-convergent-implementer failure
-// mode (byte-identical diffs attempt after attempt) without a real stuck
-// model.
-type repeatingDeterministic struct{ t *testing.T }
-
-func (c *repeatingDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-	c.t.Helper()
-	if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("real implementation change\n"), 0o644); err != nil {
-		return apiv1.ResultEnvelope{}, err
-	}
-	runGit(c.t, env.Workspace, "add", "-A")
-	runGit(c.t, env.Workspace, "commit", "--allow-empty", "-m", "impl change")
-	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "implemented"}, nil
 }
 
 // TestRunnerEscalatesOnDuplicateRepassDiff is issue #316's end-to-end
@@ -7026,6 +7013,54 @@ func environmentalCIMachine(t *testing.T) *workflow.Machine {
 	return machine
 }
 
+func TestInfrastructureGateRetryIsCrashResumable(t *testing.T) {
+	machine := environmentalCIMachine(t)
+	localGate, ok := machine.Gate("local-gate")
+	if !ok {
+		t.Fatal("local-gate not found")
+	}
+	run := newRunnerTestJournal(t, "infra-retry-resume")
+	defer func() { _ = run.Close() }()
+
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: localGate.Name,
+		Verdict: gate.OutcomeInfra, Target: "implement",
+	}); err != nil {
+		t.Fatalf("append gate evaluation: %v", err)
+	}
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "environment_failure", Message: "runner host unavailable"},
+	}
+	events, err := journal.OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	history, err := events.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	result, retry, completed, err := resumeCompletedRetry(run, history, localGate, "local-ci", subject)
+	if err != nil {
+		t.Fatalf("resumeCompletedRetry: %v", err)
+	}
+	if !completed || !retry || result.Target != "implement" {
+		t.Fatalf("resume result = %+v retry=%v completed=%v, want implement retry", result, retry, completed)
+	}
+
+	events, err = journal.OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead after retry annotation: %v", err)
+	}
+	history, err = events.Events()
+	if err != nil {
+		t.Fatalf("Events after retry annotation: %v", err)
+	}
+	if target, pending := pendingRetryTarget(history, machine, "local-ci", subject); !pending || target != "implement" {
+		t.Fatalf("pendingRetryTarget = %q,%v, want implement,true", target, pending)
+	}
+}
+
 func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T) {
 	det := &environmentalCIThenUnchangedDeterministic{t: t}
 	reviewer := &needsChangesThenApproveReviewer{t: t}
@@ -7103,15 +7138,6 @@ func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T
 	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 3 {
 		t.Fatalf("review escalation repassAttempt = %v, want 3 (unchanged result must not consume another implementation repass)", escalation.Runner["repassAttempt"])
 	}
-}
-
-// gateMarkedEscalated is a helper to check if a gate event is marked as escalated.
-func gateMarkedEscalated(event journal.Event) bool {
-	if event.Escalated {
-		return true
-	}
-	escalated, _ := event.Runner["escalated"].(bool)
-	return escalated
 }
 
 // TestRunnerLegitimateChangedRepassConverges is issue #3250's

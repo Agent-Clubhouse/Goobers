@@ -813,11 +813,11 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 	if !ok {
 		return gate.Result{}, false, false, nil
 	}
-	class, _, retryable := retryFailureClass(g, subject)
+	result := gateResultFromEvent(evaluated)
+	class, _, retryable := retryFailureClassForGateResult(g, subject, result.Outcome)
 	if !retryable {
 		return gate.Result{}, false, false, nil
 	}
-	result := gateResultFromEvent(evaluated)
 	if hasRetryDecisionAfter(events, evaluated) {
 		if result.Outcome == gate.OutcomePass || result.Escalated {
 			return result, false, true, nil
@@ -892,7 +892,11 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 			if !ok {
 				return "", false
 			}
-			if _, _, retryable := retryFailureClass(g, subject); !retryable {
+			outcome := ""
+			if class, ok := e.Runner[retryFailureClassKey].(string); ok && class == string(journal.AttemptInfra) {
+				outcome = gate.OutcomeInfra
+			}
+			if _, _, retryable := retryFailureClassForGateResult(g, subject, outcome); !retryable {
 				return "", false
 			}
 			target, ok := e.Runner["target"].(string)
