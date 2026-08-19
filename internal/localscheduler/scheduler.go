@@ -1628,6 +1628,34 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 		"manual")
 }
 
+// TriggerSignal fires one unqualified workflow with an external signal
+// reference, using the same ambiguity rules as Trigger.
+func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	var gaggles []string
+	for identity := range s.workflows {
+		if identity.Workflow == workflow {
+			gaggles = append(gaggles, identity.Gaggle)
+		}
+	}
+	s.mu.Unlock()
+	if len(gaggles) == 0 {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
+	}
+	if len(gaggles) > 1 {
+		sort.Strings(gaggles)
+		commands := make([]string, 0, len(gaggles))
+		for _, gaggle := range gaggles {
+			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
+		}
+		return "", fmt.Errorf(
+			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
+			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
+		)
+	}
+	return s.TriggerSignalExact(ctx, WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
+}
+
 // TriggerExact manually fires one workflow identified by its gaggle and name.
 func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
 	s.mu.Lock()
@@ -1639,6 +1667,25 @@ func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity,
 	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
+}
+
+// TriggerSignalExact fires one exact workflow with an external signal
+// reference, retaining normal run-condition admission.
+func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	for _, subscribed := range entry.Signals {
+		if subscribed == signal {
+			return s.triggerWorkflow(ctx, entry, now,
+				journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
+				"signal")
+		}
+	}
+	return "", fmt.Errorf("localscheduler: workflow %q in gaggle %q is not subscribed to signal %q", identity.Workflow, identity.Gaggle, signal)
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run

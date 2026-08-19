@@ -448,6 +448,34 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestTriggerSignalExactPreservesTargetedReference(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}})
+
+	runID, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err != nil {
+		t.Fatalf("TriggerSignalExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerSignalExact returned an empty run ID")
+	}
+	waitForCount(t, starter.count, 1)
+	starter.mu.Lock()
+	trigger := starter.starts[0].Trigger
+	starter.mu.Unlock()
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want targeted pull-request signal", trigger)
+	}
+	sched.Wait()
+}
+
 func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)

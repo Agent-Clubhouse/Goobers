@@ -9,6 +9,7 @@ import (
 	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -40,8 +42,8 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run <gaggle>/<workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
@@ -72,6 +74,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
+	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -85,6 +88,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if *pr < 0 || (*pr > 0 && target.Workflow != "merge-review") {
+		pf(stderr, "error: --pr requires a positive pull request number and the merge-review workflow\n")
+		return 2
+	}
+	target.PR = *pr
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
@@ -116,7 +124,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		return runDetachedTrigger(ctx, l, target.String(), root, stdout, stderr)
+		name := target.String()
+		if target.PR > 0 {
+			name += "#pr-" + strconv.Itoa(target.PR)
+		}
+		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
@@ -124,6 +136,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 type runTarget struct {
 	Gaggle   string
 	Workflow string
+	PR       int
 }
 
 func (t runTarget) String() string {
@@ -213,10 +226,14 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		triggerCtx = context.WithoutCancel(ctx)
 	}
 	var runID string
-	if target.Gaggle != "" {
-		runID, err = sched.TriggerExact(triggerCtx, localscheduler.WorkflowIdentity{
-			Gaggle: target.Gaggle, Workflow: target.Workflow,
-		}, time.Now())
+	if target.Gaggle != "" || target.PR > 0 {
+		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
+		if target.PR > 0 {
+			runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
+				webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+		} else {
+			runID, err = sched.TriggerExact(triggerCtx, identity, time.Now())
+		}
 	} else {
 		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
 	}
@@ -272,7 +289,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 // perspective the two paths are otherwise indistinguishable except for which
 // process actually held the scheduler.
 func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait bool, stdout, stderr io.Writer) int {
-	requestID, err := writeTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow)
+	var (
+		requestID string
+		err       error
+	)
+	if target.PR > 0 {
+		requestID, err = writeTargetedTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
+	} else {
+		requestID, err = writeTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -319,7 +344,19 @@ func runFlagArgs(args []string) []string {
 			}
 			continue
 		}
+		if arg == "--pr" || arg == "-pr" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
 		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "--pr=") || strings.HasPrefix(arg, "-pr=") {
 			flags = append(flags, arg)
 			continue
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/durability"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
 // rundelegate.go implements #343: when a short-lived `goobers run` process
@@ -44,6 +45,7 @@ const pendingTriggersDir = "pending-triggers"
 type triggerRequest struct {
 	Workflow  string    `json:"workflow"`
 	Gaggle    string    `json:"gaggle,omitempty"`
+	PR        int       `json:"pr,omitempty"`
 	SourceRun string    `json:"sourceRun,omitempty"`
 	Priority  bool      `json:"priority,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -79,6 +81,15 @@ func writeTriggerRequest(schedulerDir, gaggle, workflow string) (requestID strin
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
 		Workflow:  workflow,
 		Gaggle:    gaggle,
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
+func writeTargetedTriggerRequest(schedulerDir, gaggle, workflow string, pr int) (requestID string, err error) {
+	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
+		Workflow:  workflow,
+		Gaggle:    gaggle,
+		PR:        pr,
 		CreatedAt: time.Now().UTC(),
 	})
 }
@@ -281,11 +292,21 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 						Gaggle: req.Gaggle, Workflow: req.Workflow,
 					}, req.SourceRun, sweepTime)
 				} else if req.Gaggle != "" {
-					runID, terr = sched.TriggerExact(ctx, localscheduler.WorkflowIdentity{
-						Gaggle: req.Gaggle, Workflow: req.Workflow,
-					}, sweepTime)
+					identity := localscheduler.WorkflowIdentity{Gaggle: req.Gaggle, Workflow: req.Workflow}
+					if req.PR > 0 {
+						runID, terr = sched.TriggerSignalExact(ctx, identity, webhookhttp.SignalName("pull_request"),
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+					} else {
+						runID, terr = sched.TriggerExact(ctx, identity, sweepTime)
+					}
 				} else {
-					runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
+					if req.PR > 0 {
+						runID, terr = sched.TriggerSignal(ctx, req.Workflow,
+							webhookhttp.SignalName("pull_request"),
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+					} else {
+						runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
+					}
 				}
 				var rejected *localscheduler.TriggerRejectedError
 				switch {
