@@ -395,11 +395,11 @@ func TestMigrateLegacyRuntimeRetainsGeneratedAliases(t *testing.T) {
 		if _, err := os.Stat(legacyRepo); err != nil {
 			t.Fatalf("retained workcopies alias is unusable: %v", err)
 		}
-		// resolveRuntimeAlias, not EvalSymlinks: the left-hand side is the
+		// ResolveRuntimeAlias, not EvalSymlinks: the left-hand side is the
 		// alias itself, which is a junction on Windows and would otherwise
 		// resolve to its own path. The right-hand side is a real directory, so
 		// EvalSymlinks is correct there and normalises it the same way.
-		target, err := resolveRuntimeAlias(layout.WorkcopiesDir())
+		target, err := ResolveRuntimeAlias(layout.WorkcopiesDir())
 		if err != nil {
 			t.Fatal(err)
 		}
