@@ -1558,7 +1558,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		instructionAddendum = ws.rerun.instructionAddendum
 		ws.rerun = nil
 	}
-	retryClass, knownOutcome, retryable := retryFailureClass(g, ws.lastResult)
+	_, knownOutcome, _ := retryFailureClass(g, ws.lastResult)
 	var gr gate.Result
 	var err, removeErr error
 	if g.Evaluator == apiv1.EvaluatorHuman {
@@ -1598,7 +1598,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
-	retryClass, _, retryable = retryFailureClassForGateResult(g, ws.lastResult, gr.Outcome)
+	retryClass, _, retryable := retryFailureClassForGateResult(g, ws.lastResult, gr.Outcome)
 	retryTarget, retry, err := routeRetryDecision(ws.jr, gr, ws.lastStage, ws.lastResult, retryClass, retryable)
 	if err != nil {
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
