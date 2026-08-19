@@ -72,6 +72,8 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			env = append(env, executor.AdditionalReposEnvVar+"="+strings.Join(names, ","))
 		}
 	}
+	storedCopilotAuth := false
+	repositoryToken := false
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := cfg.envCapabilities[capability]
 		if !ok {
@@ -101,6 +103,34 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, capability, err)
 		}
 		env = append(env, envVar+"="+token)
+		if envVar == "GH_TOKEN" {
+			repositoryToken = true
+		}
+	}
+	for _, capability := range req.Envelope.Capabilities {
+		if capability == "agent:model" &&
+			cfg.optionalCredentialCapabilities[capability] &&
+			!hasEnvVar(env, cfg.envCapabilities[capability]) &&
+			cfg.envCapabilities[capability] == "COPILOT_GITHUB_TOKEN" {
+			storedCopilotAuth = true
+			break
+		}
+	}
+	if storedCopilotAuth && repositoryToken {
+		return nil, fmt.Errorf(
+			"harness: %s: stored Copilot login cannot be used with a repository GH_TOKEN; configure a distinct agent:model credential",
+			cfg.adapterName,
+		)
 	}
 	return env, nil
+}
+
+func hasEnvVar(env []string, name string) bool {
+	prefix := name + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+	return false
 }

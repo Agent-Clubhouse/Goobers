@@ -344,6 +344,7 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
 	if err != nil {
 		t.Fatal(err)
@@ -386,6 +387,48 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") {
 			t.Fatalf("unexpected model token injected during stored auth: %v", runner.lastReq.Env)
 		}
+	}
+}
+
+func TestCopilotAdapterRejectsStoredAuthWithRepositoryToken(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "COPILOT_GITHUB_TOKEN",
+			"repo:push":   "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("PUSH_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "push-ref", Env: "PUSH_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "repo:push", Ref: "push-ref"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "repo:push"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "repo:push"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configure a distinct agent:model credential") {
+		t.Fatalf("Run error = %v, want actionable stored-auth conflict", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("Copilot launched despite stored-auth conflict: %+v", runner.lastReq)
 	}
 }
 
