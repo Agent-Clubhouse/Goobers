@@ -81,7 +81,9 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 
 func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 	var output bytes.Buffer
-	code := runValidate([]string{root}, &output, &output)
+	// Startup runs the same single validation engine, in its non-spawning
+	// discovery mode — see validateOptions.deferModelDiscovery (#3336).
+	code := runValidateAsDeferring("validate", []string{root}, &output, &output, true)
 	if skip {
 		if code == 0 {
 			pf(stderr, "WARNING: --skip-preflight enabled; startup validation enforcement is disabled\n")
@@ -104,6 +106,19 @@ func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 // checks and exit codes — there is exactly one validation path, never a weaker
 // second one that could disagree (the #252 footgun this closes for good).
 func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
+	return runValidateAsDeferring(name, args, stdout, stderr, false)
+}
+
+// runValidateAsDeferring is runValidateAs with the validation engine's one
+// internal, non-CLI knob: deferModelDiscovery — the daemon's startup preflight
+// mode (#3336). Model discovery spawns the Copilot CLI, and in a memory-capped
+// pod the spawned children can OOM the daemon before the discovery timeout
+// fires — so the startup pass accepts models unverified (the same degradation
+// as an unreachable CLI) instead of spawning. Interactive `goobers validate`
+// keeps discovery live; this is a survival knob for the in-process caller, not
+// a second, weaker validation path (#252's single-engine rule still holds —
+// same engine, one documented divergence).
+func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer, deferModelDiscovery bool) int {
 	fs := newCLIFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
@@ -135,11 +150,12 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		diagnostics = &diagnosticCollector{}
 	}
 	code := runValidateConfig(validateOptions{
-		root:         root,
-		sourceTree:   *sourceTree,
-		checkHarness: *checkHarness,
-		checkRepos:   *checkRepos,
-		strict:       *strict,
+		root:                root,
+		sourceTree:          *sourceTree,
+		checkHarness:        *checkHarness,
+		checkRepos:          *checkRepos,
+		strict:              *strict,
+		deferModelDiscovery: deferModelDiscovery,
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
@@ -160,6 +176,9 @@ type validateOptions struct {
 	checkHarness bool
 	checkRepos   bool
 	strict       bool
+	// deferModelDiscovery is set only by the daemon's startup preflight —
+	// see runValidateAsDeferring (#3336). Never set from a CLI flag.
+	deferModelDiscovery bool
 }
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
@@ -248,6 +267,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		options.deferModelDiscovery,
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -1214,7 +1234,7 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
 func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "")
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false)
 	if err != nil {
 		return nil, err
 	}
