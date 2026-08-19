@@ -129,22 +129,31 @@ func TestValidateWarnsDocsRootsWhenTreeIsNotTargetRepository(t *testing.T) {
 // that is not inside a git repository used to SKIP the docs-root check
 // silently; it must now warn per declared root instead, and still render the
 // DSLVERSION summary.
-func TestValidateWarnsDocsRootsWhenTreeIsNotGitRepository(t *testing.T) {
+func TestValidateNotesDocsRootsWhenTreeIsNotGitRepository(t *testing.T) {
 	unsetRunContext(t)
 	root := demoWithDocsRootsNoGit(t, []string{"MISSING.md"})
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
-		t.Fatalf("code = %d, want 0 (advisory warning); stdout = %q stderr = %q", code, stdout, stderr)
+		t.Fatalf("code = %d, want 0 (informational only); stdout = %q stderr = %q", code, stdout, stderr)
 	}
 	if strings.Contains(stdout, "skipped existence check") {
 		t.Fatalf("stdout = %q, silent-skip notice must be gone (#3285)", stdout)
 	}
-	if !strings.Contains(stdout, `WARNING DOCS003 Workflow/default-implement: declared docs root "MISSING.md" not verified: config tree is not the target repository your-org/your-repo`) {
-		t.Fatalf("stdout = %q, want a DOCS003 warning naming the target repository", stdout)
+	// Not-a-git-repo is the PERMANENT state of every instance root (an
+	// instance root is never a checkout), so it must NOT warn — a warning
+	// here fires on every `goobers init` forever and is unactionable noise
+	// (it broke TestInitThenReferenceWorkflowsValidates for exactly that
+	// reason). It prints an informational line instead: visible, never
+	// silent, never gating.
+	if strings.Contains(stdout, "WARNING DOCS003") {
+		t.Fatalf("stdout = %q, a non-git tree must not WARN (instance roots are never checkouts)", stdout)
+	}
+	if !strings.Contains(stdout, `DOCSROOTS Workflow/default-implement: declared docs root "MISSING.md" not verified here (checked at runtime against your-org/your-repo)`) {
+		t.Fatalf("stdout = %q, want the informational not-verified-here line naming the target repository", stdout)
 	}
 	if !strings.Contains(stdout, "DSLVERSION") {
-		t.Fatalf("stdout = %q, want the DSLVERSION summary to render past the warning", stdout)
+		t.Fatalf("stdout = %q, want the DSLVERSION summary to render past the notice", stdout)
 	}
 }
 

@@ -702,7 +702,25 @@ func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *inst
 	ok := true
 	for _, d := range declared {
 		owner, name := docsRootTargetRepository(cfg, set, d.gaggle)
-		if toplevelErr != nil || !remotesNameRepository(treeRemotes, owner, name) {
+		if toplevelErr != nil {
+			// Not inside a git repository at all — the permanent, expected
+			// state of every INSTANCE ROOT (an instance root is never a
+			// checkout of anything). A WARNING here would fire on every
+			// `goobers init` and every instance-root validate forever, with
+			// nothing the operator can do about it — unactionable noise that
+			// trains people to ignore warnings. Print an informational line
+			// (never a silent skip, #3285) and move on; DOCS003 stays
+			// reserved for the actionable case below.
+			pf(stdout, "DOCSROOTS Workflow/%s: declared docs root %q not verified here (checked at runtime against %s/%s)\n",
+				d.workflow, d.root, owner, name)
+			continue
+		}
+		if !remotesNameRepository(treeRemotes, owner, name) {
+			// A git checkout whose remotes do not name the target repository:
+			// a standalone workflowSource repo, or a checkout of the WRONG
+			// repo. Actionable (the operator can verify against the real
+			// target), so it earns the advisory diagnostic gnyaml-style
+			// allowlists track (#3285).
 			message := fmt.Sprintf("declared docs root %q not verified: config tree is not the target repository %s/%s",
 				d.root, owner, name)
 			pf(stdout, "WARNING DOCS003 Workflow/%s: %s\n", d.workflow, message)
