@@ -515,7 +515,7 @@ func migrateLegacyDir(legacy, scoped string) (bool, error) {
 			return false, fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 		}
 		if alias {
-			target, err := resolveRuntimeAlias(legacy)
+			target, err := ResolveRuntimeAlias(legacy)
 			if err != nil {
 				return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
 			}
@@ -588,7 +588,7 @@ func ensureLegacyRuntimeAlias(legacy, scoped string) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 	}
-	if err := createLegacyRuntimeAlias(legacy, scoped); err != nil {
+	if err := CreateLegacyRuntimeAlias(legacy, scoped); err != nil {
 		return fmt.Errorf("create legacy runtime alias %s: %w", legacy, err)
 	}
 	return nil

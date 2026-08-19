@@ -972,57 +972,37 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkMissingSkillPackages(r, configRoot)
 }
 
+// featureDefinitionsForGaggle adapts the indexed workflows to the shared
+// per-DSL-pin fan-out (wf.FeatureDefinitionsByDSLVersion, #3297) so the
+// validator and `goobers features --used` cannot drift on version-resolution
+// policy — including the workflow-less fallback.
 func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
-	byVersion := map[string]wf.Definition{}
+	var definitions []wf.Definition
 	for identity, indexed := range ix.workflows {
 		if identity.gaggle != gaggle {
 			continue
 		}
 		definition := indexed.definition
-		byVersion[definition.DSLVersion] = wf.Definition{
+		definitions = append(definitions, wf.Definition{
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
-		}
+		})
 	}
-	if len(byVersion) == 0 {
-		return []wf.Definition{{}}
-	}
-	versions := make([]string, 0, len(byVersion))
-	for version := range byVersion {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	definitions := make([]wf.Definition, 0, len(versions))
-	for _, version := range versions {
-		definitions = append(definitions, byVersion[version])
-	}
-	return definitions
+	return wf.FeatureDefinitionsByDSLVersion(definitions)
 }
 
 func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
-	byVersion := map[string]wf.Definition{}
+	var definitions []wf.Definition
 	for _, name := range spec.Workflows {
 		indexed, ok := ix.workflows[workflowIdentity{gaggle: spec.Gaggle, name: name}]
 		if !ok {
 			continue
 		}
 		definition := indexed.definition
-		byVersion[definition.DSLVersion] = wf.Definition{
+		definitions = append(definitions, wf.Definition{
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
-		}
+		})
 	}
-	if len(byVersion) == 0 {
-		return []wf.Definition{{}}
-	}
-	versions := make([]string, 0, len(byVersion))
-	for version := range byVersion {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	definitions := make([]wf.Definition, 0, len(versions))
-	for _, version := range versions {
-		definitions = append(definitions, byVersion[version])
-	}
-	return definitions
+	return wf.FeatureDefinitionsByDSLVersion(definitions)
 }
 
 func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {

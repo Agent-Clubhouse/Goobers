@@ -80,15 +80,18 @@ func isLegacyRuntimeAlias(path string, info fs.FileInfo) (bool, error) {
 	return tag == windows.IO_REPARSE_TAG_MOUNT_POINT || tag == windows.IO_REPARSE_TAG_SYMLINK, nil
 }
 
-// resolveRuntimeAlias reports the target a compatibility alias points at.
+// ResolveRuntimeAlias reports the target a compatibility alias points at.
 //
 // filepath.EvalSymlinks cannot do this on Windows. Go 1.23 stopped reporting
 // directory junctions (IO_REPARSE_TAG_MOUNT_POINT) as symlinks, so EvalSymlinks
 // walks straight past one and hands back the junction's own path instead of its
-// target. createLegacyRuntimeAlias creates exactly such a junction, so the
+// target. CreateLegacyRuntimeAlias creates exactly such a junction, so the
 // target has to come out of the reparse buffer — the same reason
-// isLegacyRuntimeAlias cannot trust fs.ModeSymlink either.
-func resolveRuntimeAlias(path string) (string, error) {
+// isLegacyRuntimeAlias cannot trust fs.ModeSymlink either. Exported so other
+// packages that scan a runtime tree containing such an alias (e.g.
+// internal/telemetry/rollup, #3280) can dedupe against it without
+// reimplementing platform-specific reparse-point resolution.
+func ResolveRuntimeAlias(path string) (string, error) {
 	data, ok, err := readReparsePoint(path)
 	if err != nil {
 		return "", err
@@ -141,7 +144,11 @@ func resolveRuntimeAlias(path string) (string, error) {
 	return filepath.Clean(target), nil
 }
 
-func createLegacyRuntimeAlias(legacy, scoped string) error {
+// CreateLegacyRuntimeAlias creates the compatibility alias at legacy pointing
+// at scoped, as a directory junction (see ResolveRuntimeAlias for why plain
+// symlinks aren't used here). Exported so other packages/tests can construct
+// the same platform-native alias this package's own migration path creates.
+func CreateLegacyRuntimeAlias(legacy, scoped string) error {
 	target, err := filepath.Abs(scoped)
 	if err != nil {
 		return err

@@ -1435,6 +1435,37 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 	}
 }
 
+// TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion pins the #3297
+// fallback: a gaggle (or goober) with zero workflows must have its features
+// checked at the newest supported DSL version. The pre-#3297 fallback was an
+// unpinned wf.Definition{}, which the version router rewrote to
+// supportmatrix.CurrentDSLVersion ("1.4", deprecated) — so every workflow-less
+// gaggle would fail validation the moment 1.4 turns unsupported (declared for
+// v0.5.0), with an error its author cannot act on because GaggleSpec has no
+// dslVersion field.
+func TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion(t *testing.T) {
+	ix := newIndex()
+
+	assertNewestSupported := func(kind string, definitions []wf.Definition) {
+		t.Helper()
+		if len(definitions) != 1 {
+			t.Fatalf("%s definitions = %+v, want exactly one fallback probe", kind, definitions)
+		}
+		got := definitions[0].DSLVersion
+		if got == "" || got == supportmatrix.CurrentDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q; must not be unpinned or the deprecated %q",
+				kind, got, supportmatrix.CurrentDSLVersion)
+		}
+		if got != supportmatrix.NextDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q, want newest supported %q",
+				kind, got, supportmatrix.NextDSLVersion)
+		}
+	}
+
+	assertNewestSupported("gaggle", ix.featureDefinitionsForGaggle("workflow-less"))
+	assertNewestSupported("goober", ix.featureDefinitionsForGoober(apiv1.GooberSpec{Gaggle: "workflow-less"}))
+}
+
 func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-warnings")

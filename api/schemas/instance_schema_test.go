@@ -205,6 +205,26 @@ workcopies:
 	}
 }
 
+// TestInstanceSchemaAcceptsWorkflowSourceGitHubAppFixture is #3274's agreed
+// acceptance: a sanitized copy of the cloud deployment's real instance.yaml,
+// exercising the three-way combination a synthetic document misses — per-repo
+// App auth x daemonIdentity App auth x workflowSource App auth, with two
+// different installation IDs. Before $defs.workflowSource gained the auth
+// property this failed with exactly one error ('auth' unexpected under
+// workflowSource, because the def is additionalProperties:false), so the
+// deployment's own config could not validate. It must now validate with zero
+// errors, unchanged.
+func TestInstanceSchemaAcceptsWorkflowSourceGitHubAppFixture(t *testing.T) {
+	schema := compileInstanceSchema(t)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "instance-workflowsource-app-auth.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInstanceYAML(t, schema, string(fixture)); err != nil {
+		t.Fatalf("#3274 acceptance fixture was rejected: %v", err)
+	}
+}
+
 func TestInstanceSchemaRefusesStructurallyImpossibleInstances(t *testing.T) {
 	schema := compileInstanceSchema(t)
 

@@ -2,6 +2,7 @@ package vnext
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,9 +34,6 @@ func TestFeatureRegistryAgainstLatestRelease(t *testing.T) {
 	released, tag := loadLatestReleasedFeatureRegistry(t, root)
 
 	if _, err := newFeatureRegistryAgainstReleased(released, AllFeatures()); err != nil {
-		if tag == "" {
-			t.Fatalf("current feature registry violates the pre-release compatibility policy: %v", err)
-		}
 		t.Fatalf("current feature registry violates compatibility with %s: %v", tag, err)
 	}
 }
@@ -96,16 +94,78 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	}
 }
 
+// TestReleaseBaselineGateFailsLoudlyWithoutTag proves the empty-baseline guard
+// in loadLatestReleasedFeatureRegistry actually fires. It re-runs the real gate
+// in a subprocess whose repository origin has no version-shaped tag — the exact
+// shape of the 8-day window in which v0.1.0's tag was unreachable from main
+// until #2924's ls-remote fix. Before the guard, that gate compared against an
+// empty registry and passed vacuously.
+func TestReleaseBaselineGateFailsLoudlyWithoutTag(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "README.md"), "fixture without releases\n")
+	runGit(t, root, "init", "-q")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	runGit(t, root, "config", "user.name", "Test")
+	runGit(t, root, "config", "commit.gpgSign", "false")
+	runGit(t, root, "config", "tag.gpgSign", "false")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "fixture without releases")
+	// A tag that is not version-shaped must not count as a baseline either.
+	runGit(t, root, "tag", "not-a-release")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, root, "init", "--bare", "-q", remote)
+	runGit(t, root, "remote", "add", "origin", remote)
+	runGit(t, root, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
+
+	output, err := runTestBinary(t, root, "^TestFeatureRegistryAgainstLatestRelease$")
+	if err == nil {
+		t.Fatalf("gate passed with no release baseline; it must fail loudly:\n%s", output)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("re-run gate without baseline: %v: %s", err, output)
+	}
+	for _, want := range []string{
+		"no release baseline",
+		"nothing to compare against",
+		"explicit opt-in",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("gate failure does not explain %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestReleaseBaselineTagIsEchoed asserts the gate names the release it compared
+// against in its log. A green gate that never says which baseline it used is
+// the other half of how #2924's vacuous pass went unnoticed.
+func TestReleaseBaselineTagIsEchoed(t *testing.T) {
+	output, err := runTestBinary(t, "", "^TestLatestReleasedFeatureRegistryComesFromTag$")
+	if err != nil {
+		t.Fatalf("re-run fixture-tag test: %v:\n%s", err, output)
+	}
+	if !strings.Contains(output, "feature registry baseline: release v1.1.0") {
+		t.Fatalf("baseline tag is not echoed in the test log:\n%s", output)
+	}
+}
+
 func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (FeatureRegistry, string) {
 	t.Helper()
 	tag, revision := latestReleaseTag(t, repository)
 	if tag == "" {
-		registry, err := NewFeatureRegistry(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return registry, ""
+		// Comparing against an empty registry makes this gate pass vacuously.
+		// That exact failure mode was live for 8 days while v0.1.0's tag was
+		// unreachable from main (#2924) and nothing reported the guard was
+		// off. v0.1.0 exists on origin, so an empty result here is always a
+		// defect, never a fresh-repository default.
+		t.Fatalf("no release baseline: git ls-remote found no version-shaped tag on origin of %s; "+
+			"the compatibility gate has nothing to compare against and would pass vacuously; "+
+			"a repository with genuinely no releases yet must make that an explicit opt-in, not a silent default",
+			repository)
 	}
+	// Name the baseline so CI output shows which release the gate compared
+	// against (asserted by TestReleaseBaselineTagIsEchoed).
+	t.Logf("feature registry baseline: release %s (%s)", tag, revision)
 
 	releaseTree := filepath.Join(t.TempDir(), "release")
 	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, revision)
@@ -254,4 +314,20 @@ func runCommand(t *testing.T, directory, name string, args ...string) string {
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+// runTestBinary re-executes this test binary against a single test so a test
+// can observe another test failing or logging: t.Fatalf and t.Logf cannot be
+// observed in-process. An empty directory inherits the parent's working
+// directory.
+func runTestBinary(t *testing.T, directory, pattern string) (string, error) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(executable, "-test.run="+pattern, "-test.v")
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	return string(output), err
 }

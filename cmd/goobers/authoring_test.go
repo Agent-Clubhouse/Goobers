@@ -171,7 +171,9 @@ func TestAuthoringCommandsRejectInvalidInputAndRenderHumanOutput(t *testing.T) {
 	}{
 		{[]string{"schema", "not-a-schema"}, 1, `unknown schema kind "not-a-schema"`},
 		{[]string{"explain", "workflow.stages[].gate"}, 1, `unknown selector "workflow.stages[].gate"`},
-		{[]string{"explain", "workflow.spec.tasks[].run.script"}, 1, "unavailable selector"},
+		// workflow.spec.tasks[].run.script is 2.0 surface and explains
+		// successfully now that resolution spans every loadable DSL version
+		// (#3291); internal/authoring's tests pin the positive behavior.
 		{[]string{"schema"}, 2, "Usage:"},
 		{[]string{"schema", "--list", "goober"}, 2, "Usage:"},
 		{[]string{"explain"}, 2, "Usage:"},

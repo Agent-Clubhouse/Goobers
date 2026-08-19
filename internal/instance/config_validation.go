@@ -546,19 +546,39 @@ func (c RunnerConfig) validate() error {
 	return nil
 }
 
-func (c *Config) validateWorkflowSourceToken(stores map[string]bool) error {
-	if c.WorkflowSource == nil || c.WorkflowSource.Token == nil {
+// validateWorkflowSourceCredentials checks the credential refs a
+// workflowSource carries — the static token or, for auth kind github-app
+// (#3274), the App private key — against the declared secret stores and the
+// stage environment. Structural auth checks (required fields, token/auth
+// mutual exclusion) live in WorkflowSource.Validate; these need the stores set
+// and runner.envPassthrough, which only this Config-level pass has.
+func (c *Config) validateWorkflowSourceCredentials(stores map[string]bool) error {
+	if c.WorkflowSource == nil {
 		return nil
 	}
-	if err := validateStoreRef("workflowSource.token", *c.WorkflowSource.Token, stores); err != nil {
-		return err
+	if token := c.WorkflowSource.Token; token != nil {
+		if err := validateStoreRef("workflowSource.token", *token, stores); err != nil {
+			return err
+		}
+		if token.Env != "" && stageEnvironmentAllows(token.Env, c.Runner.EnvPassthrough) {
+			return fmt.Errorf(
+				"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				token.Env,
+			)
+		}
 	}
-	if c.WorkflowSource.Token.Env != "" &&
-		stageEnvironmentAllows(c.WorkflowSource.Token.Env, c.Runner.EnvPassthrough) {
-		return fmt.Errorf(
-			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-			c.WorkflowSource.Token.Env,
-		)
+	if auth := c.WorkflowSource.Auth; auth != nil && auth.PrivateKey != nil {
+		if err := validateStoreRef("workflowSource.auth.privateKey", *auth.PrivateKey, stores); err != nil {
+			return err
+		}
+		// The App key can mint tokens broadly — never allow the stage
+		// environment to carry it, mirroring repos[] and daemonIdentity.
+		if auth.PrivateKey.Env != "" && stageEnvironmentAllows(auth.PrivateKey.Env, c.Runner.EnvPassthrough) {
+			return fmt.Errorf(
+				"workflowSource.auth.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
+				auth.PrivateKey.Env,
+			)
+		}
 	}
 	return nil
 }
