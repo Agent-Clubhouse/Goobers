@@ -2,6 +2,7 @@
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
 # Public API and compatibility surfaces.
+github.com/goobers/goobers/internal/workflow/v_next.dslVersionLevel # Per-version level lookup reachable only through the release-gate evolution validation (#3307 wave), which the tagged-baseline tests drive; the admission path never calls it.
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
