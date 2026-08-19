@@ -1600,6 +1600,14 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		}
 	}
 	if err != nil {
+		var evidenceErr *remediationEvidenceInspectionError
+		if errors.As(err, &evidenceErr) {
+			ws.retryInstructionAddendum = "Your unchanged remediation result was rejected by the runner: " +
+				evidenceErr.info.Message +
+				". Inspect every required failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the failure is non-actionable if no source change is needed."
+			ws.state = ws.lastStage
+			return gr, true, Result{}, false, nil
+		}
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
@@ -2200,6 +2208,17 @@ type transcriptEvent struct {
 	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
 }
 
+type remediationEvidenceInspectionError struct {
+	info *apiv1.ErrorInfo
+}
+
+func (e *remediationEvidenceInspectionError) Error() string {
+	if e == nil || e.info == nil {
+		return "remediation failure evidence was not inspected"
+	}
+	return e.info.Message
+}
+
 func normalizeInputToolName(name string) string {
 	return strings.TrimPrefix(name, "functions.")
 }
@@ -2345,6 +2364,21 @@ func (r *Runner) validateDependencyResult(jr executionJournal, stage string, res
 		result.Artifacts = nil
 	}
 	return result
+}
+
+func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	validationErr := r.validateDependencyNotMet(jr, stage, result, requiredPointers)
+	if validationErr == nil {
+		return nil
+	}
+	validationErr.Code = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
+	validationErr.Message = strings.Replace(
+		validationErr.Message,
+		"before DEPENDENCY_NOT_MET",
+		"before accepting unchanged remediation",
+		1,
+	)
+	return validationErr
 }
 
 func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
@@ -3898,6 +3932,33 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		err = fmt.Errorf("runner: resolve prior repass cause for gate %q: %w", g.Name, err)
 		span.Fail(err)
 		return gate.Result{}, err, nil
+	}
+	if instructionAddendum == "" && diffDigest != "" &&
+		gateEval.LastDiffDigest != nil && gateEval.LastDiffDigest[g.Name] == diffDigest {
+		if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+			gateEval.RepassCause != nil && len(upstream) > 0 {
+			if validationErr := r.validateRemediationEvidence(jr, subjectStage, subjectResult, upstream); validationErr != nil {
+				required := requiredContextPointerNames(upstream)
+				if appendErr := jr.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
+					Runner: map[string]any{
+						"kind":                            "remediation-evidence-validation",
+						"code":                            validationErr.Code,
+						"triggeringGate":                  gateEval.RepassCause.Gate,
+						"triggeringStage":                 gateEval.RepassCause.Stage,
+						"requiredFailureEvidencePointers": required,
+						"message":                         validationErr.Message,
+					},
+				}); appendErr != nil {
+					err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
+					span.Fail(err)
+					return gate.Result{}, err, nil
+				}
+				err = &remediationEvidenceInspectionError{info: validationErr}
+				span.Fail(err)
+				return gate.Result{}, err, nil
+			}
+		}
 	}
 	if instructionAddendum != "" {
 		// An explicit operator rerun must invoke the reviewer it targets, even

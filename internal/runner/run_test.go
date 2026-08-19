@@ -2992,6 +2992,41 @@ func TestValidateDependencyNotMetAllowsPointerSpecificInputReadFailure(t *testin
 	}
 }
 
+func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-remediation-evidence-validation"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "content": "The existing change appears complete."},
+	})
+	validationErr := (&Runner{}).validateRemediationEvidence(jr, "implement", apiv1.ResultEnvelope{
+		Status:     apiv1.ResultSuccess,
+		Summary:    "no changes needed",
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "local-ci.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateRemediationEvidence returned nil, want stable rejection")
+	}
+	if validationErr.Code != "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want REMEDIATION_EVIDENCE_NOT_INSPECTED", validationErr.Code)
+	}
+	for _, pointer := range []string{"local-ci.artifact[0]", "review.verdict"} {
+		if !strings.Contains(validationErr.Message, pointer) {
+			t.Fatalf("validation message = %q, want unread pointer %q", validationErr.Message, pointer)
+		}
+	}
+	if !strings.Contains(validationErr.Message, "accepting unchanged remediation") {
+		t.Fatalf("validation message = %q, want unchanged-remediation classification", validationErr.Message)
+	}
+}
+
 func TestValidateDependencyResultUsesOnlyInvocationPointers(t *testing.T) {
 	runsDir := t.TempDir()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-context-from-validation"}, nil)
