@@ -1618,6 +1618,25 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		if ws.parallel != nil {
 			gatePointers = ws.parallel.currentPointers(ws.parallelRootPointers)
 		}
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+				instructionAddendum == "" {
+				cause, causeErr := priorRepassCause(ws.jr, ws.lastStage)
+				if causeErr != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+						fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
+					return gr, false, terminal, true, failErr
+				}
+				required := remediationFailureEvidencePointers(cause, gatePointers)
+				if cause != nil && len(required) > 0 {
+					if appendErr := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); appendErr != nil {
+						terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+							fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, appendErr))
+						return gr, false, terminal, true, failErr
+					}
+				}
+			}
+		}
 		gateSubject := ws.lastResult
 		if ws.fanIn != nil && g.Name == ws.fanIn.spec.Join {
 			gateSubject.Artifacts = nil
@@ -1660,24 +1679,6 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
-		if retryTarget == ws.lastStage && gr.RepassCause == nil {
-			cause, causeErr := priorRepassCause(ws.jr, ws.lastStage)
-			if causeErr != nil {
-				terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-					fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
-				return gr, false, terminal, true, failErr
-			}
-			if cause != nil {
-				if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic {
-					required := remediationFailureEvidencePointers(cause, gatePointers)
-					if err := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); err != nil {
-						terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-							fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, err))
-						return gr, false, terminal, true, failErr
-					}
-				}
-			}
-		}
 		if gr.VerdictArtifact != nil {
 			pointer := apiv1.ContextPointer{
 				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,

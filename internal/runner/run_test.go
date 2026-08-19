@@ -3027,6 +3027,42 @@ func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testin
 	}
 }
 
+func TestRemediationEvidenceRequirementRecordsTriggerAndPointers(t *testing.T) {
+	run := newRunnerTestJournal(t, "remediation-evidence-requirement")
+	defer func() { _ = run.Close() }()
+
+	cause := &gate.RepassCause{Kind: "stage-failure", Gate: "local-gate", Stage: "local-ci"}
+	required := []apiv1.ContextPointer{
+		{Name: "local-ci.artifact[0]"},
+		{Name: "local-ci.artifact[1]"},
+	}
+	if err := appendRemediationEvidenceRequirement(run, "implement", "review", cause, required); err != nil {
+		t.Fatalf("appendRemediationEvidenceRequirement: %v", err)
+	}
+	rd, err := journal.OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 2 || events[1].Type != journal.EventRunnerAnnotation {
+		t.Fatalf("events = %+v, want one remediation requirement annotation", events)
+	}
+	annotation := events[1]
+	if annotation.Stage != "implement" || annotation.Gate != "review" ||
+		annotation.Runner["triggeringGate"] != "local-gate" ||
+		annotation.Runner["triggeringStage"] != "local-ci" {
+		t.Fatalf("annotation = %+v, want triggering stage and gate", annotation)
+	}
+	if !reflect.DeepEqual(annotation.Runner["requiredFailureEvidencePointers"], []interface{}{
+		"local-ci.artifact[0]", "local-ci.artifact[1]",
+	}) {
+		t.Fatalf("required pointers = %#v, want exact failure evidence pointers", annotation.Runner["requiredFailureEvidencePointers"])
+	}
+}
+
 func TestRemediationFailureEvidencePointersSelectTriggeringEvidence(t *testing.T) {
 	pointers := []apiv1.ContextPointer{
 		{Name: "query-backlog.artifact[0]"},
