@@ -859,11 +859,12 @@ type walkState struct {
 
 	gateEval *gate.Evaluator
 
-	state      string
-	resume     *resumeContext
-	rerun      *rerunContext
-	steps      int
-	stepBudget atomic.Int64
+	state                    string
+	resume                   *resumeContext
+	rerun                    *rerunContext
+	retryInstructionAddendum string
+	steps                    int
+	stepBudget               atomic.Int64
 
 	pointers   []apiv1.ContextPointer
 	lastStage  string
@@ -1417,6 +1418,10 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	var resumedResult *apiv1.ResultEnvelope
 	var infraFailedAttemptCommittedWork bool
 	var resumeAccounting *resumeRetryAccounting
+	if ws.retryInstructionAddendum != "" {
+		instructionAddendum = ws.retryInstructionAddendum
+		ws.retryInstructionAddendum = ""
+	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
@@ -2165,6 +2170,184 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	return res, err
 }
 
+type transcriptToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type transcriptEvent struct {
+	Role     string              `json:"role"`
+	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
+}
+
+func normalizeInputToolName(name string) string {
+	return strings.TrimPrefix(name, "functions.")
+}
+
+func parseTranscriptInputInspection(transcript []byte, required map[string]struct{}) (bool, map[string]bool) {
+	inspected := make(map[string]bool, len(required))
+	var sawListInputs bool
+	for _, line := range bytes.Split(transcript, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		if event.Role != "assistant" || event.ToolCall == nil {
+			continue
+		}
+		toolName := normalizeInputToolName(event.ToolCall.Name)
+		switch toolName {
+		case "goobers-io-list_inputs":
+			sawListInputs = true
+		case "goobers-io-read_input", "goobers-io-grep_input":
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(event.ToolCall.Arguments, &args); err != nil {
+				continue
+			}
+			if _, ok := required[args.Name]; ok {
+				inspected[args.Name] = true
+			}
+		}
+	}
+	return sawListInputs, inspected
+}
+
+func pointerValidationErrorMessage(missing []string, sawListInputs bool) string {
+	if len(missing) == 0 && sawListInputs {
+		return ""
+	}
+	listStatus := "not called"
+	if sawListInputs {
+		listStatus = "called"
+	}
+	return fmt.Sprintf(
+		"required context pointers were not inspected before DEPENDENCY_NOT_MET (list_inputs: %s; unread pointers: %s)",
+		listStatus,
+		strings.Join(missing, ", "),
+	)
+}
+
+func dependencyValidationMessage(validation string, result apiv1.ResultEnvelope) string {
+	if result.Error == nil || strings.TrimSpace(result.Error.Message) == "" {
+		return validation
+	}
+	return validation + "; original dependency error: " + result.Error.Message
+}
+
+func dependencyContextInspectionError(cause, validation string, result apiv1.ResultEnvelope) string {
+	message := cause
+	if validation != "" {
+		message += "; " + validation
+	}
+	return dependencyValidationMessage(message, result)
+}
+
+// validateDependencyNotMet checks whether a DEPENDENCY_NOT_MET failure in a
+// repass scenario has evidence of input inspection. When a stage reports
+// blocked with DEPENDENCY_NOT_MET but did not attempt to inspect provided
+// context pointers using list_inputs plus read_input/grep_input for each named
+// pointer, this returns a validation error with code CONTEXT_NOT_INSPECTED.
+func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	if result.Transcript == nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				"cannot inspect required context: result transcript pointer is missing",
+				pointerValidationErrorMessage(requiredContextPointerNames(requiredPointers), false),
+				result,
+			),
+		}
+	}
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]struct{}, len(requiredNames))
+	for _, name := range requiredNames {
+		requiredSet[name] = struct{}{}
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: open run journal %q: %v", jr.Dir(), err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	transcriptRef := journal.Ref{
+		Path:      result.Transcript.Path,
+		Digest:    result.Transcript.Digest,
+		Size:      result.Transcript.Size,
+		Integrity: result.Transcript.Integrity,
+	}
+	transcript, err := rd.SpanBytes(transcriptRef)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: read transcript %q: %v", transcriptRef.Path, err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	sawListInputs, inspected := parseTranscriptInputInspection(transcript, requiredSet)
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
+		return nil
+	}
+	return &apiv1.ErrorInfo{
+		Code:    "CONTEXT_NOT_INSPECTED",
+		Message: dependencyValidationMessage(pointerValidationErrorMessage(missing, sawListInputs), result),
+	}
+}
+
+func (r *Runner) validateDependencyResult(jr executionJournal, stage string, result apiv1.ResultEnvelope, invocationPointers []apiv1.ContextPointer) apiv1.ResultEnvelope {
+	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
+		result.Error.Code != "DEPENDENCY_NOT_MET" || len(invocationPointers) == 0 {
+		return result
+	}
+	if validationErr := r.validateDependencyNotMet(jr, stage, result, invocationPointers); validationErr != nil {
+		result.Error = validationErr
+		result.Outputs = nil
+		result.Artifacts = nil
+	}
+	return result
+}
+
+func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
+	if len(pointers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(pointers))
+	names := make([]string, 0, len(pointers))
+	for _, pointer := range pointers {
+		name := strings.TrimSpace(pointer.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // taskOutcome applies the #110 stage-status ruling to a finished task's
 // result: success advances to Next; failure advances when ContinueOnError is
 // set or Next is a gate (which branches on the honest failed status), otherwise
@@ -2191,6 +2374,16 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
 		return "", stalledResult, false, stalledErr
 	}
+
+	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
+		result.Error.Code == "CONTEXT_NOT_INSPECTED" {
+		// runTask validates before stage.finished is journaled, so the retry
+		// reason survives a crash and is available as the prior result.
+		ws.retryInstructionAddendum = "Your previous result was rejected by the runner: " + result.Error.Message +
+			". Inspect every provided context pointer with list_inputs and read_input or grep_input before returning DEPENDENCY_NOT_MET."
+		return t.Name, Result{}, true, nil
+	}
+
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to
@@ -2748,10 +2941,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
-		var attemptAddendum string
-		if class == journal.AttemptHuman {
-			attemptAddendum = instructionAddendum
-		}
+		attemptAddendum := instructionAddendum
 		var usage attemptUsageCollector
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
@@ -2860,6 +3050,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
+		result = r.validateDependencyResult(jr, t.Name, result, upstream)
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
