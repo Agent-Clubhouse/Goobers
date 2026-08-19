@@ -3047,7 +3047,9 @@ func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.
 			t.Fatal(err)
 		}
 		if validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
-			Status: apiv1.ResultSuccess,
+			Status:  apiv1.ResultSuccess,
+			Outputs: map[string]interface{}{"remediationClassification": "environmental"},
+			Summary: "the failure is caused by an unavailable external dependency",
 		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}}); validationErr != nil {
 			t.Fatalf("validateRemediationEvidence = %+v, want trusted receipts to pass", validationErr)
 		}
@@ -3068,6 +3070,74 @@ func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.
 		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}})
 		if validationErr == nil || validationErr.Code != "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
 			t.Fatalf("validateRemediationEvidence = %+v, want transcript-only evidence rejection", validationErr)
+		}
+	})
+
+	t.Run("inspected unchanged success requires classification", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-classification-required")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{1}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}})
+		if validationErr == nil || !strings.Contains(validationErr.Message, "remediationClassification") {
+			t.Fatalf("validateRemediationEvidence = %+v, want classification rejection", validationErr)
+		}
+	})
+
+	t.Run("actionable evidence rejects unrelated receipt", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-actionable-evidence")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "remediation-evidence-required",
+				"actionableEvidence": []actionableEvidence{{
+					Pointer:    "local-ci.artifact[0]",
+					Ranges:     []receiptLineRange{{Start: 42, End: 42}},
+					Signatures: []string{"unit widget panic"},
+				}},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", MatchLines: []int{7}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		}, []apiv1.ContextPointer{{
+			Name:     "local-ci.artifact[0]",
+			Artifact: &apiv1.ArtifactPointer{Digest: "sha256:evidence"},
+		}})
+		if validationErr == nil {
+			t.Fatal("validateRemediationEvidence passed unrelated actionable receipt")
 		}
 	})
 
@@ -3126,7 +3196,9 @@ func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.
 					t.Fatal(err)
 				}
 				validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
-					Status: apiv1.ResultSuccess,
+					Status:  apiv1.ResultSuccess,
+					Outputs: map[string]interface{}{"remediationClassification": "flaky"},
+					Summary: "the failure is a transient flaky test with no source correction",
 				}, []apiv1.ContextPointer{{
 					Name: "local-ci.artifact[0]",
 					Artifact: &apiv1.ArtifactPointer{

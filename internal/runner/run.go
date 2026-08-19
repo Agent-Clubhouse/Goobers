@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -106,6 +107,7 @@ func remediationFailureEvidencePointers(cause *gate.RepassCause, pointers []apiv
 }
 
 func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName string, cause *gate.RepassCause, pointers []apiv1.ContextPointer) error {
+	requirements := remediationEvidenceRequirements(jr, pointers)
 	return jr.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
 		Runner: map[string]any{
@@ -113,8 +115,82 @@ func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName s
 			"triggeringGate":                  cause.Gate,
 			"triggeringStage":                 cause.Stage,
 			"requiredFailureEvidencePointers": requiredContextPointerNames(pointers),
+			"actionableEvidence":              requirements,
 		},
 	})
+}
+
+type actionableEvidence struct {
+	Pointer    string             `json:"pointer"`
+	Ranges     []receiptLineRange `json:"ranges,omitempty"`
+	Signatures []string           `json:"signatures,omitempty"`
+}
+
+func remediationEvidenceRequirements(jr executionJournal, pointers []apiv1.ContextPointer) []actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	requirements := make([]actionableEvidence, 0, len(pointers))
+	for _, pointer := range pointers {
+		requirement := actionableEvidence{Pointer: pointer.Name}
+		if pointer.Artifact == nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		data, err := rd.ArtifactBytes(journal.Ref{
+			Path:      pointer.Artifact.Path,
+			Digest:    pointer.Artifact.Digest,
+			Size:      pointer.Artifact.Size,
+			Integrity: pointer.Artifact.Integrity,
+		})
+		if err != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		var evidence struct {
+			Checks []struct {
+				Annotations []struct {
+					Path      string `json:"path"`
+					StartLine int    `json:"startLine"`
+					EndLine   int    `json:"endLine"`
+					Title     string `json:"title"`
+					Message   string `json:"message"`
+				} `json:"annotations"`
+			} `json:"checks"`
+		}
+		if json.Unmarshal(data, &evidence) != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		for _, check := range evidence.Checks {
+			for _, annotation := range check.Annotations {
+				signature := normalizeEvidenceSignature(annotation.Path, annotation.Title, annotation.Message)
+				if signature == "" {
+					continue
+				}
+				requirement.Signatures = append(requirement.Signatures, signature)
+				start := bytes.Index(data, []byte(annotation.Message))
+				if start >= 0 {
+					line := bytes.Count(data[:start], []byte{'\n'}) + 1
+					requirement.Ranges = append(requirement.Ranges, receiptLineRange{Start: line, End: line})
+				}
+			}
+		}
+		requirements = append(requirements, requirement)
+	}
+	return requirements
+}
+
+func normalizeEvidenceSignature(parts ...string) string {
+	words := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Join(strings.Fields(strings.ToLower(part)), " ")
+		if part != "" {
+			words = append(words, part)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 type wallHeartbeatTicker struct {
@@ -2428,11 +2504,11 @@ func (r *Runner) validateDependencyResult(jr executionJournal, stage string, res
 }
 
 type receiptLineRange struct {
-	start int
-	end   int
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
-func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string) (bool, map[string]bool, error) {
+func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return false, nil, err
@@ -2498,12 +2574,13 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 				}
 				readTotals[receipt.Input] = receipt.TotalLines
 				readRanges[receipt.Input] = append(readRanges[receipt.Input], receiptLineRange{
-					start: receipt.StartLine,
-					end:   receipt.EndLine,
+					Start: receipt.StartLine,
+					End:   receipt.EndLine,
 				})
 			case "grep_input":
 				expectedDigest, ok := required[receipt.Input]
-				if ok && (expectedDigest == "" || receipt.InputDigest == expectedDigest) && len(receipt.MatchLines) > 0 {
+				if ok && (expectedDigest == "" || receipt.InputDigest == expectedDigest) && len(receipt.MatchLines) > 0 &&
+					receiptMatchesActionableEvidence(receipt.Pattern, actionable[receipt.Input]) {
 					inspected[receipt.Input] = true
 				}
 			}
@@ -2514,22 +2591,53 @@ func parseReceiptInputInspection(jr executionJournal, stage string, required map
 			continue
 		}
 		slices.SortFunc(ranges, func(a, b receiptLineRange) int {
-			return a.start - b.start
+			return a.Start - b.Start
 		})
 		coveredThrough := 0
 		for _, lineRange := range ranges {
-			if lineRange.start > coveredThrough+1 {
+			if lineRange.Start > coveredThrough+1 {
 				break
 			}
-			if lineRange.end > coveredThrough {
-				coveredThrough = lineRange.end
+			if lineRange.End > coveredThrough {
+				coveredThrough = lineRange.End
 			}
 		}
 		if coveredThrough >= readTotals[input] {
 			inspected[input] = true
+			continue
+		}
+		if requirement, ok := actionable[input]; ok && receiptRangesOverlap(readRanges[input], requirement.Ranges) {
+			inspected[input] = true
 		}
 	}
 	return collected && sawListInputs, inspected, nil
+}
+
+func receiptRangesOverlap(received, required []receiptLineRange) bool {
+	for _, got := range received {
+		for _, want := range required {
+			if got.Start <= want.End && want.Start <= got.End {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func receiptMatchesActionableEvidence(pattern string, requirement actionableEvidence) bool {
+	if len(requirement.Signatures) == 0 {
+		return true
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	for _, signature := range requirement.Signatures {
+		if re.MatchString(signature) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
@@ -2542,7 +2650,8 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 			requiredSet[pointer.Name] = ""
 		}
 	}
-	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet)
+	actionable := remediationEvidenceRequirementsFromJournal(jr, stage)
+	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet, actionable)
 	if err != nil {
 		return &apiv1.ErrorInfo{
 			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
@@ -2559,6 +2668,12 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 		}
 	}
 	if sawListInputs && len(missing) == 0 {
+		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
+			return &apiv1.ErrorInfo{
+				Code:    "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+				Message: dependencyValidationMessage(classificationErr, result),
+			}
+		}
 		return nil
 	}
 	return &apiv1.ErrorInfo{
@@ -2573,6 +2688,55 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 			result,
 		),
 	}
+}
+
+func remediationEvidenceRequirementsFromJournal(jr executionJournal, stage string) map[string]actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return nil
+	}
+	requirements := make(map[string]actionableEvidence)
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "remediation-evidence-required" ||
+			event.Stage != stage {
+			continue
+		}
+		data, err := json.Marshal(event.Runner["actionableEvidence"])
+		if err != nil {
+			continue
+		}
+		var entries []actionableEvidence
+		if json.Unmarshal(data, &entries) == nil {
+			for _, entry := range entries {
+				requirements[entry.Pointer] = entry
+			}
+		}
+	}
+	return requirements
+}
+
+const remediationClassificationOutput = "remediationClassification"
+
+func validateUnchangedRemediationClassification(result apiv1.ResultEnvelope) string {
+	raw, ok := result.Outputs[remediationClassificationOutput]
+	classification, valid := raw.(string)
+	if !ok || !valid {
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	switch strings.ToLower(strings.TrimSpace(classification)) {
+	case "environmental", "flaky", "obsolete", "non-actionable":
+		// accepted classification
+	default:
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	if strings.TrimSpace(result.Summary) == "" {
+		return "unchanged remediation must explain why the inspected failure is non-actionable in summary"
+	}
+	return ""
 }
 
 func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
