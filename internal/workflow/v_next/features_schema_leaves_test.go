@@ -19,15 +19,16 @@ var authorSchemaFiles = map[string]string{
 	"goober":   "goober.schema.json",
 }
 
-// schemaLeafExceptions is the authoritative, shrinking worklist for the #3292
-// registry backfill: every author-facing schema leaf that has no registered
-// FeatureID must appear here with a written reason. Adding a leaf to any of
-// the three schemas without either a FeatureID or an entry here fails
-// TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become registered
-// (or leave the schemas) fail it too, so the map can only shrink as #3292
-// lands. Reasons beginning with "identity/envelope" mark leaves that are
-// deliberately not DSL capabilities and are expected to stay; everything else
-// is backfill work.
+// schemaLeafExceptions lists every author-facing schema leaf that resolves to
+// no registered FeatureID, each with a settled reason. The #3292 backfill
+// discharged the worklist this map used to carry: every leaf that earns its
+// own FeatureID under the naming rules is registered, and what remains here
+// is deliberate — identity envelope, per-enum-value discriminators, payload
+// folded into a registered container feature, and id spellings that differ
+// from the leaf path. Adding a leaf to any of the three schemas without
+// either a FeatureID or an entry here fails
+// TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
+// registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
 	// Identity envelope: fixed document identity and k8s-style metadata are not
 	// DSL capabilities and are expected to stay excepted.
@@ -48,108 +49,77 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
-	// Registered under a different FeatureID than the leaf-derived candidates
-	// reach — #3292 decides whether to align the id or extend the mapping.
-	"workflow.spec.gates.agentic.retry.backoffSeconds":   "registered as gate.evaluator.agentic.retry.backoff (#3292: align id or mapping)",
-	"workflow.spec.gates.automated.retry.backoffSeconds": "registered as gate.evaluator.automated.retry.backoff (#3292: align id or mapping)",
-	"workflow.spec.gates.human.timeoutSeconds":           "registered as gate.evaluator.human.timeout (#3292: align id or mapping)",
-	"workflow.spec.tasks.retry.backoffSeconds":           "registered as task.retry.backoff (#3292: align id or mapping)",
-	"workflow.spec.triggers.selector":                    "registered as trigger.backlog-item.selector (#3292: align id or mapping)",
-	"workflow.spec.triggers.trustLabel":                  "registered as trigger.backlog-item.trustLabel (#3292: align id or mapping)",
+	// Registered under a FeatureID whose spelling differs from the leaf path.
+	// #3292 ruled: keep the exception rather than align. Released FeatureIDs
+	// are pinned by validateFeatureRegistryEvolution, so the id cannot be
+	// respelled, and aliasing the candidate mapping here would diverge from
+	// internal/authoring's selectorFeatureCandidates, which deliberately has
+	// no such aliases.
+	"workflow.spec.gates.agentic.retry.backoffSeconds":   "registered as gate.evaluator.agentic.retry.backoff; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
+	"workflow.spec.gates.automated.retry.backoffSeconds": "registered as gate.evaluator.automated.retry.backoff; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
+	"workflow.spec.gates.human.timeoutSeconds":           "registered as gate.evaluator.human.timeout; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
+	"workflow.spec.tasks.retry.backoffSeconds":           "registered as task.retry.backoff; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
+	"workflow.spec.triggers.selector":                    "registered as trigger.backlog-item.selector; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
+	"workflow.spec.triggers.trustLabel":                  "registered as trigger.backlog-item.trustLabel; released ids are pinned, and the candidate mapping mirrors authoring's un-aliased rules",
 
 	// Discriminators registered per enum value rather than per field.
 	"workflow.spec.tasks.type":    "registered per enum value (task.deterministic, task.agentic); the discriminator has no id of its own",
 	"workflow.spec.triggers.type": "registered per enum value (trigger.manual, trigger.backlog-item, ...); the discriminator has no id of its own",
 
-	// Sub-fields of a registered container feature without ids of their own.
-	"gaggle.spec.sandbox.agentic":                      "#3292 backfill: sub-field of registered gaggle.spec.sandbox without its own FeatureID",
-	"workflow.spec.parallels.branches.name":            "#3292 backfill: sub-field of registered workflow.spec.parallels.branches without its own FeatureID",
-	"workflow.spec.parallels.branches.start":           "#3292 backfill: sub-field of registered workflow.spec.parallels.branches without its own FeatureID",
-	"workflow.spec.parallels.name":                     "#3292 backfill: sub-field of registered workflow.spec.parallels without its own FeatureID",
-	"workflow.spec.runControls.maxRepasses":            "#3292 backfill: sub-field of registered workflow.spec.runControls without its own FeatureID",
-	"workflow.spec.runControls.maxRunDuration":         "#3292 backfill: sub-field of registered workflow.spec.runControls without its own FeatureID",
-	"workflow.spec.runControls.stalledRunTimeout":      "#3292 backfill: sub-field of registered workflow.spec.runControls without its own FeatureID",
-	"goober.spec.mcpServers.args":                      "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.command":                   "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.capability": "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.env":        "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.header":     "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.kind":       "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.ref":        "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.credentialRefs.scheme":     "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.name":                      "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
-	"goober.spec.mcpServers.url":                       "#3292 backfill: sub-field of registered goober.spec.mcpServers without its own FeatureID",
+	// Sub-fields folded into a registered container feature (#3292 naming rule:
+	// behavior-selecting fields get an ID, inert payload folds into the parent).
+	"gaggle.spec.sandbox.agentic":                      "sole leaf of registered gaggle.spec.sandbox, whose released id is pinned at the container",
+	"workflow.spec.parallels.branches.name":            "payload of registered workflow.spec.parallels.branches",
+	"workflow.spec.parallels.branches.start":           "payload of registered workflow.spec.parallels.branches",
+	"workflow.spec.parallels.name":                     "state identity payload of registered workflow.spec.parallels",
+	"goober.spec.mcpServers.args":                      "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.command":                   "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.capability": "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.env":        "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.header":     "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.kind":       "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.ref":        "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.credentialRefs.scheme":     "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.name":                      "payload of registered goober.spec.mcpServers (one id over the server list)",
+	"goober.spec.mcpServers.url":                       "payload of registered goober.spec.mcpServers (one id over the server list)",
 
-	// Trigger fields carried by registered trigger kinds without ids of their own.
-	"workflow.spec.triggers.events":              "#3292 backfill: webhook trigger's event list (trigger.webhook is registered) without its own FeatureID",
-	"workflow.spec.triggers.idleBackoff.ceiling": "#3292 backfill: schedule-trigger idle-backoff control without a FeatureID",
-	"workflow.spec.triggers.idleBackoff.enabled": "#3292 backfill: schedule-trigger idle-backoff control without a FeatureID",
-	"workflow.spec.triggers.idleBackoff.floor":   "#3292 backfill: schedule-trigger idle-backoff control without a FeatureID",
-	"workflow.spec.triggers.priority":            "#3292 backfill: provider polling priority without a FeatureID",
+	// A trigger type's required payload belongs to the type feature (#3292
+	// ruling): Trigger.Events is MinItems=1 and meaningless without webhook,
+	// exactly as schedule/signal fold into their type ids. Only optional
+	// refinements split (trigger.backlog-item.selector, trigger.idleBackoff).
+	"workflow.spec.triggers.events": "required payload of registered trigger.webhook; a type's required payload folds into the type feature",
 
-	// Workflow surface that predates the registry.
-	"workflow.spec.docsRoots":                  "#3292 backfill: unregistered DSL surface (docs-updater roots, #472/#1016)",
-	"workflow.spec.gates.maxRepasses":          "#3292 backfill: unregistered DSL surface (per-gate re-entry budget)",
-	"workflow.spec.outboxMirrorPath":           "#3292 backfill: unregistered DSL surface (journal outbox mirroring)",
-	"workflow.spec.requires.capabilities":      "#3292 backfill: unregistered DSL surface (provider-capability requirements, CONF-6/#2079)",
-	"workflow.spec.tasks.outbox":               "#3292 backfill: unregistered DSL surface (journal outbox export)",
-	"workflow.spec.tasks.outboxMirrorPath":     "#3292 backfill: unregistered DSL surface (journal outbox mirroring)",
-	"workflow.spec.tasks.requiredCapabilities": "#3292 backfill: unregistered DSL surface (runner capabilities, RRQ-1/#1101)",
-	"workflow.spec.tutorScope.target":          "#3292 backfill: unregistered DSL surface (tutor topology, TUT-A4)",
-	"workflow.spec.tutorScope.tier":            "#3292 backfill: unregistered DSL surface (tutor topology, TUT-A4)",
+	// Identity coordinates folded into their registered container feature
+	// (#3292 rule 5): owner/project/name/branch/connectionRef are inert
+	// identity payload; provider, baseUrl, and checkout.sparse select behavior
+	// and carry their own ids. ConnectionRef additionally has the runtime
+	// credential-scoping defect tracked by #3296 — registering it would
+	// promise a semantic the platform does not keep.
+	"gaggle.spec.additionalRepos.branch":        "identity payload of registered gaggle.spec.additionalRepos",
+	"gaggle.spec.additionalRepos.connectionRef": "identity payload of registered gaggle.spec.additionalRepos; runtime scoping defect tracked by #3296",
+	"gaggle.spec.additionalRepos.name":          "identity payload of registered gaggle.spec.additionalRepos",
+	"gaggle.spec.additionalRepos.owner":         "identity payload of registered gaggle.spec.additionalRepos",
+	"gaggle.spec.additionalRepos.project":       "identity payload of registered gaggle.spec.additionalRepos",
+	"gaggle.spec.backlog.connectionRef":         "identity payload of registered gaggle.spec.backlog; runtime scoping defect tracked by #3296",
+	"gaggle.spec.backlog.project":               "identity payload of registered gaggle.spec.backlog",
+	"gaggle.spec.project.branch":                "identity payload of registered gaggle.spec.project",
+	"gaggle.spec.project.connectionRef":         "identity payload of registered gaggle.spec.project; runtime scoping defect tracked by #3296",
+	"gaggle.spec.project.name":                  "identity payload of registered gaggle.spec.project",
+	"gaggle.spec.project.owner":                 "identity payload of registered gaggle.spec.project",
+	"gaggle.spec.project.project":               "identity payload of registered gaggle.spec.project",
 
-	// Goober persona policy-action surface.
-	"goober.spec.conditionalPolicyActions": "#3292 backfill: persona policy-action surface without a FeatureID",
-	"goober.spec.policyActions":            "#3292 backfill: persona policy-action surface without a FeatureID",
-
-	// Gaggle surface predates the registry: only gaggle.spec.sandbox and
-	// gaggle.spec.project.checkout.sparse are registered today.
-	"gaggle.spec.additionalRepos.baseUrl":          "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.branch":           "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.checkout.sparse":  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.connectionRef":    "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.name":             "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.owner":            "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.project":          "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.additionalRepos.provider":         "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.baseUrl":                  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.connectionRef":            "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.fieldPredicate":           "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.labelPredicate":           "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.labels":                   "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.project":                  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.provider":                 "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.backlog.query":                    "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.branchNamespace":                  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.ciCommand":                        "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.displayName":                      "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.isolation.identityRef":            "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.isolation.namespace":              "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.outboxMirrorPath":                 "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.baseUrl":                  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.branch":                   "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.connectionRef":            "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.name":                     "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.owner":                    "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.project":                  "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.project.provider":                 "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.requireLabels":                    "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.requiredCapabilities":             "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.runControls.maxRepasses":          "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.runControls.maxRunDuration":       "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.runControls.stalledRunTimeout":    "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.selfIdentity":                     "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.label":                   "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.baseUrl":         "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.branch":          "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.checkout.sparse": "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.connectionRef":   "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.name":            "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.owner":           "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.project":         "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.project.provider":        "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.siblings.requireLabels":           "#3292 backfill: gaggle surface predates the feature registry",
-	"gaggle.spec.workcopies.root":                  "#3292 backfill: gaggle surface predates the feature registry",
+	// Validate-only sibling metadata: gaggle.spec.siblings is one id over the
+	// whole element list (#3292 rule 5); nothing at runtime reads a sibling.
+	"gaggle.spec.siblings.label":                   "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.baseUrl":         "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.branch":          "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.checkout.sparse": "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.connectionRef":   "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.name":            "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.owner":           "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.project":         "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.provider":        "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.requireLabels":           "payload of registered gaggle.spec.siblings (one id over the sibling list)",
 }
 
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry is the fail-closed schema-to-

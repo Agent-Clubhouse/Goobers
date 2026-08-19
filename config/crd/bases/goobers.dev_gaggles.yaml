@@ -168,8 +168,6 @@ spec:
                     - ado
                     - gitea
                     type: string
-                  query:
-                    type: string
                 required:
                 - project
                 - provider

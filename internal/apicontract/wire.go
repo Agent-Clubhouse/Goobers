@@ -286,7 +286,6 @@ func newWireFixtures() wireFixtures {
 					Provider:      apiv1.ProviderGitHub,
 					Project:       "Agent-Clubhouse/Goobers",
 					Labels:        []string{"goobers:ready"},
-					Query:         "is:issue",
 					ConnectionRef: "github",
 				},
 				GooberCount:    1,
