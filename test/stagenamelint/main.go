@@ -38,6 +38,7 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/runtime_capabilities.go", Value: "self-update", Reason: "CLI command registry key and lookup"},
 	{Path: "cmd/goobers/selfupdate.go", Value: "self-update", Reason: "CLI flag-set name and help lookup"},
 	{Path: "cmd/goobers/completionmodel.go", Value: "self-update", Reason: "CLI completion flag-spec registry key"},
+	{Path: "internal/builtincmd/builtincmd.go", Value: "self-update", Reason: "built-in subcommand inventory entry (#2861); names the CLI subcommand, not a workflow"},
 	{Path: "cmd/goobers/tutorprpolicy.go", Value: "tutor", Reason: "legacy tutor-name compatibility; TutorScope is preferred"},
 
 	// Existing telemetry projections still infer roles from shipped names.
