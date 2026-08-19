@@ -412,11 +412,15 @@
       "properties": {
         "kind": { "type": "string", "enum": ["local-dir", "git"], "description": "How the workflow tree is obtained. `local-dir` accepts only path; `git` accepts exactly one of path or url." },
         "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
-        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref." },
+        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
         "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
         "token": {
           "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "GitHub App installation-token minting for a REMOTE git source: kind `github-app` with appId, installationId, and privateKey, the same shape repos[].auth uses. Mutually exclusive with token — exactly one identity mechanism per source; short-lived minted tokens replace the static ref, and the private key is refused any env name stages can see.",
+          "$ref": "#/$defs/repoAuth"
         }
       },
       "allOf": [

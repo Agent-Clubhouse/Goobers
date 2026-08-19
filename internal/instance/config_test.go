@@ -843,6 +843,128 @@ func TestWorkflowSourceValidation(t *testing.T) {
 			},
 			wantErr: "token is only valid for a remote git url",
 		},
+		// The github-app auth block (#3274) mirrors repos[]' validation: kind
+		// github-app forbids a sibling token ref, requires its identity
+		// fields, and is meaningless anywhere but a remote git url.
+		{
+			name: "github-app auth with sibling token ref",
+			source: WorkflowSource{
+				Kind:  "git",
+				URL:   "https://example.com/config.git",
+				Token: &TokenRef{Env: "CONFIG_TOKEN"},
+				Auth:  workflowSourceTestAppAuth(),
+			},
+			wantErr: "must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted",
+		},
+		{
+			name: "auth kind pat is not how a static credential is spelled",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{Kind: GitHubAuthPAT},
+			},
+			wantErr: "unsupported auth kind",
+		},
+		{
+			name: "github-app auth missing appId",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:           GitHubAuthApp,
+					InstallationID: "10000001",
+					PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+				},
+			},
+			wantErr: "auth.appId is required",
+		},
+		{
+			name: "github-app auth missing installationId",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:       GitHubAuthApp,
+					AppID:      "123456",
+					PrivateKey: &TokenRef{File: "/run/secrets/app-key.pem"},
+				},
+			},
+			wantErr: "auth.installationId is required",
+		},
+		{
+			name: "github-app auth non-numeric installationId",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:           GitHubAuthApp,
+					AppID:          "123456",
+					InstallationID: "Iv1NOTNUMERIC",
+					PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+				},
+			},
+			wantErr: "must be the numeric installation ID",
+		},
+		{
+			name: "github-app auth missing privateKey",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:           GitHubAuthApp,
+					AppID:          "123456",
+					InstallationID: "10000001",
+				},
+			},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app auth privateKey with two sources",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:           GitHubAuthApp,
+					AppID:          "123456",
+					InstallationID: "10000001",
+					PrivateKey:     &TokenRef{Env: "APP_KEY", File: "/run/secrets/app-key.pem"},
+				},
+			},
+			wantErr: "auth.privateKey must reference exactly one",
+		},
+		{
+			name: "github-app auth with ADO fields",
+			source: WorkflowSource{
+				Kind: "git",
+				URL:  "https://example.com/config.git",
+				Auth: &RepoAuthConfig{
+					Kind:           GitHubAuthApp,
+					Tenant:         "contoso",
+					AppID:          "123456",
+					InstallationID: "10000001",
+					PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+				},
+			},
+			wantErr: "auth.tenant and auth.clientId",
+		},
+		{
+			name: "local git with auth",
+			source: WorkflowSource{
+				Kind: "git",
+				Path: "config",
+				Auth: workflowSourceTestAppAuth(),
+			},
+			wantErr: "auth is only valid for a remote git url",
+		},
+		{
+			name: "local directory with auth",
+			source: WorkflowSource{
+				Kind: "local-dir",
+				Path: "config",
+				Auth: workflowSourceTestAppAuth(),
+			},
+			wantErr: "accepts only path",
+		},
 		{
 			name:    "location with surrounding whitespace",
 			source:  WorkflowSource{Kind: "local-dir", Path: " config"},
@@ -858,6 +980,99 @@ func TestWorkflowSourceValidation(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// workflowSourceTestAppAuth is a structurally complete github-app auth block
+// (#3274) for tests that reject it on grounds other than its own fields.
+func workflowSourceTestAppAuth() *RepoAuthConfig {
+	return &RepoAuthConfig{
+		Kind:           GitHubAuthApp,
+		AppID:          "123456",
+		InstallationID: "10000001",
+		PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+	}
+}
+
+// TestWorkflowSourceGitHubAppAuthValidates pins #3274's accepted shape: a
+// remote git source whose only identity mechanism is the github-app auth
+// block, with no token ref at all.
+func TestWorkflowSourceGitHubAppAuthValidates(t *testing.T) {
+	cfg := Config{WorkflowSource: &WorkflowSource{
+		Kind: WorkflowSourceKindGit,
+		URL:  "https://github.com/example-org/example-config",
+		Ref:  "main",
+		Auth: workflowSourceTestAppAuth(),
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for a github-app workflowSource", err)
+	}
+	if !cfg.WorkflowSource.GitHubAppAuth() {
+		t.Fatal("GitHubAppAuth() = false, want true")
+	}
+}
+
+// TestConfigRejectsWorkflowSourceAppKeyExposedToStages extends the existing
+// workflowSource.token.env guard to the App private key (#3274): the key can
+// mint tokens for every repository the installation covers, so an env name
+// stages can also see is refused at load, mirroring repos[] and daemonIdentity.
+func TestConfigRejectsWorkflowSourceAppKeyExposedToStages(t *testing.T) {
+	cfg := Config{
+		WorkflowSource: &WorkflowSource{
+			Kind: WorkflowSourceKindGit,
+			URL:  "https://example.com/config.git",
+			Auth: &RepoAuthConfig{
+				Kind:           GitHubAuthApp,
+				AppID:          "123456",
+				InstallationID: "10000001",
+				PrivateKey:     &TokenRef{Env: "WORKFLOW_SOURCE_APP_KEY"},
+			},
+		},
+		Runner: RunnerConfig{EnvPassthrough: []string{"WORKFLOW_SOURCE_APP_KEY"}},
+	}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "workflowSource.auth.privateKey.env") ||
+		!strings.Contains(err.Error(), "must not be exposed to stages") {
+		t.Fatalf("Validate error = %v, want workflow-source App key exposure rejection", err)
+	}
+}
+
+// TestConfigRejectsWorkflowSourceStoreBackedAppKeyWithoutStores pins the #683
+// fail-closed rule for the App key ref (#3274): a store-backed privateKey with
+// no declared secretStores is a load-time error, not a first-mint surprise.
+func TestConfigRejectsWorkflowSourceStoreBackedAppKeyWithoutStores(t *testing.T) {
+	cfg := Config{WorkflowSource: &WorkflowSource{
+		Kind: WorkflowSourceKindGit,
+		URL:  "https://example.com/config.git",
+		Auth: &RepoAuthConfig{
+			Kind:           GitHubAuthApp,
+			AppID:          "123456",
+			InstallationID: "10000001",
+			PrivateKey:     &TokenRef{Store: "prod-kv/app-key"},
+		},
+	}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "workflowSource.auth.privateKey") {
+		t.Fatalf("Validate error = %v, want store-ref-without-stores rejection", err)
+	}
+}
+
+// TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture loads #3274's acceptance
+// fixture — a sanitized copy of the cloud deployment's real instance.yaml,
+// combining per-repo App auth, daemonIdentity App auth, and workflowSource App
+// auth in one document — through the full LoadConfig strict-decode + Validate
+// path. Before WorkflowSource carried Auth, the strict decoder refused the
+// document outright ("unknown field").
+func TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture(t *testing.T) {
+	cfg, err := LoadConfig(filepath.Join("..", "..", "api", "schemas", "testdata", "instance-workflowsource-app-auth.fixture.yaml"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.WorkflowSource == nil || !cfg.WorkflowSource.GitHubAppAuth() {
+		t.Fatalf("WorkflowSource = %+v, want github-app auth", cfg.WorkflowSource)
+	}
+	if got := string(cfg.WorkflowSource.Auth.InstallationID); got != "10000001" {
+		t.Fatalf("workflowSource installation = %q, want the fixture's org installation", got)
 	}
 }
 
