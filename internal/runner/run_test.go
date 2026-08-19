@@ -3056,6 +3056,9 @@ func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.
 	t.Run("transcript-only tool claims are rejected", func(t *testing.T) {
 		run := newRunnerTestJournal(t, "remediation-transcript-rejected")
 		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
 		transcript := recordTranscriptSpanPointer(t, run, "implement", []map[string]any{
 			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
 			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "local-ci.artifact[0]"}}},
