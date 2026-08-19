@@ -778,6 +778,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	// #3274: a github-app workflowSource mints installation tokens instead of
+	// reading a static token ref. The minter is built once here — the
+	// composition root, since internal/instance cannot import
+	// internal/githubapp — and shared by the apply sweep and the reconcile
+	// loop below, so both draw on one near-expiry-refreshing token cache.
+	var workflowSourceAppTokens instance.GitTokenSource
+	if source := setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
+		minted, mintErr := newWorkflowSourceAppTokenSource(*source, setup.SharedRegistry, setup.SecretStores)
+		if mintErr != nil {
+			pf(stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
+			return 1
+		}
+		workflowSourceAppTokens = minted
+	}
 	var sourceReconcileMu sync.Mutex
 	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
@@ -785,7 +799,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
 			if syncErr != nil {
 				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
 				return resp
@@ -1016,6 +1030,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					root,
 					*source,
 					sourceRevision,
+					workflowSourceAppTokens,
 					setup.SharedRegistry,
 					setup.SecretStores,
 				)
