@@ -76,6 +76,46 @@ type heartbeatTicker interface {
 	Stop()
 }
 
+func remediationFailureEvidencePointers(cause *gate.RepassCause, pointers []apiv1.ContextPointer) []apiv1.ContextPointer {
+	if cause == nil {
+		return nil
+	}
+	var prefix string
+	switch cause.Kind {
+	case "reviewer":
+		if cause.Gate == "" {
+			return nil
+		}
+		prefix = cause.Gate + ".verdict"
+	case "stage-failure":
+		if cause.Stage == "" {
+			return nil
+		}
+		prefix = cause.Stage + ".artifact["
+	default:
+		return nil
+	}
+	var required []apiv1.ContextPointer
+	for _, pointer := range pointers {
+		if pointer.Name == prefix || (strings.HasSuffix(prefix, "[") && strings.HasPrefix(pointer.Name, prefix)) {
+			required = append(required, pointer)
+		}
+	}
+	return required
+}
+
+func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName string, cause *gate.RepassCause, pointers []apiv1.ContextPointer) error {
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
+		Runner: map[string]any{
+			"kind":                            "remediation-evidence-required",
+			"triggeringGate":                  cause.Gate,
+			"triggeringStage":                 cause.Stage,
+			"requiredFailureEvidencePointers": requiredContextPointerNames(pointers),
+		},
+	})
+}
+
 type wallHeartbeatTicker struct {
 	ticker *time.Ticker
 }
@@ -1566,6 +1606,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	_, knownOutcome, _ := retryFailureClass(g, ws.lastResult)
 	var gr gate.Result
 	var err, removeErr error
+	var gatePointers []apiv1.ContextPointer
 	if g.Evaluator == apiv1.EvaluatorHuman {
 		if ws.humanDecision.Gate != g.Name {
 			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: human decision for gate %q reached gate %q", ws.humanDecision.Gate, g.Name)
@@ -1573,7 +1614,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		gr, err = ws.gateEval.EvaluateHuman(g, ws.humanDecision.Decision, ws.humanDecision.Actor)
 		ws.humanDecision = nil
 	} else {
-		gatePointers := ws.pointers
+		gatePointers = ws.pointers
 		if ws.parallel != nil {
 			gatePointers = ws.parallel.currentPointers(ws.parallelRootPointers)
 		}
@@ -1619,6 +1660,22 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
+		if retryTarget == ws.lastStage && gr.RepassCause == nil {
+			cause, causeErr := priorRepassCause(ws.jr, ws.lastStage)
+			if causeErr != nil {
+				terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+					fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
+				return gr, false, terminal, true, failErr
+			}
+			if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic {
+				required := remediationFailureEvidencePointers(cause, gatePointers)
+				if err := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); err != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+						fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, err))
+					return gr, false, terminal, true, failErr
+				}
+			}
+		}
 		if gr.VerdictArtifact != nil {
 			pointer := apiv1.ContextPointer{
 				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
@@ -3937,26 +3994,29 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		gateEval.LastDiffDigest != nil && gateEval.LastDiffDigest[g.Name] == diffDigest {
 		if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
 			gateEval.RepassCause != nil && len(upstream) > 0 {
-			if validationErr := r.validateRemediationEvidence(jr, subjectStage, subjectResult, upstream); validationErr != nil {
-				required := requiredContextPointerNames(upstream)
-				if appendErr := jr.Append(journal.Event{
-					Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
-					Runner: map[string]any{
-						"kind":                            "remediation-evidence-validation",
-						"code":                            validationErr.Code,
-						"triggeringGate":                  gateEval.RepassCause.Gate,
-						"triggeringStage":                 gateEval.RepassCause.Stage,
-						"requiredFailureEvidencePointers": required,
-						"message":                         validationErr.Message,
-					},
-				}); appendErr != nil {
-					err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
+			requiredPointers := remediationFailureEvidencePointers(gateEval.RepassCause, upstream)
+			if len(requiredPointers) > 0 {
+				if validationErr := r.validateRemediationEvidence(jr, subjectStage, subjectResult, requiredPointers); validationErr != nil {
+					required := requiredContextPointerNames(requiredPointers)
+					if appendErr := jr.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
+						Runner: map[string]any{
+							"kind":                            "remediation-evidence-validation",
+							"code":                            validationErr.Code,
+							"triggeringGate":                  gateEval.RepassCause.Gate,
+							"triggeringStage":                 gateEval.RepassCause.Stage,
+							"requiredFailureEvidencePointers": required,
+							"message":                         validationErr.Message,
+						},
+					}); appendErr != nil {
+						err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
+						span.Fail(err)
+						return gate.Result{}, err, nil
+					}
+					err = &remediationEvidenceInspectionError{info: validationErr}
 					span.Fail(err)
 					return gate.Result{}, err, nil
 				}
-				err = &remediationEvidenceInspectionError{info: validationErr}
-				span.Fail(err)
-				return gate.Result{}, err, nil
 			}
 		}
 	}

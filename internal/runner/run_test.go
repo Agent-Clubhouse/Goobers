@@ -3027,6 +3027,34 @@ func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testin
 	}
 }
 
+func TestRemediationFailureEvidencePointersSelectTriggeringEvidence(t *testing.T) {
+	pointers := []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "local-ci.artifact[0]"},
+		{Name: "local-ci.artifact[1]"},
+		{Name: "review.verdict"},
+		{Name: "review.diff"},
+	}
+	t.Run("CI failure", func(t *testing.T) {
+		got := remediationFailureEvidencePointers(&gate.RepassCause{
+			Kind: "stage-failure", Stage: "local-ci",
+		}, pointers)
+		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{
+			"local-ci.artifact[0]", "local-ci.artifact[1]",
+		}) {
+			t.Fatalf("failure evidence = %v, want only local-ci artifacts", names)
+		}
+	})
+	t.Run("review", func(t *testing.T) {
+		got := remediationFailureEvidencePointers(&gate.RepassCause{
+			Kind: "reviewer", Gate: "review",
+		}, pointers)
+		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{"review.verdict"}) {
+			t.Fatalf("failure evidence = %v, want only review verdict", names)
+		}
+	})
+}
+
 func TestValidateDependencyResultUsesOnlyInvocationPointers(t *testing.T) {
 	runsDir := t.TempDir()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-context-from-validation"}, nil)
