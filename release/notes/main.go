@@ -91,6 +91,10 @@ func run(
 			return fmt.Errorf("combine feature notes %s: %w", *featureNotes, err)
 		}
 	}
+	notes, err = boundReleaseNotes(notes)
+	if err != nil {
+		return err
+	}
 	if *output == "" {
 		_, err = io.WriteString(stdout, notes)
 		return err
@@ -99,6 +103,156 @@ func run(
 		return fmt.Errorf("write %s: %w", *output, err)
 	}
 	return nil
+}
+
+// GitHub rejects release bodies over 125,000 characters with an opaque
+// HTTP 422 at PUBLISH time — after every artifact is built and signed. The
+// v0.2.0 release hit exactly that: the #3292 registry backfill grew the
+// inlined DSL delta tables past the limit and the publish step died as the
+// last act of an otherwise green pipeline. maxReleaseNotesLen keeps headroom
+// under the API limit so the bound fails at BUILD time or trims at build
+// time, never at publish.
+const maxReleaseNotesLen = 120000
+
+// deltaSections are the generated, unbounded-growth sections whose table rows
+// may be trimmed to fit; every other section is authored prose and is never
+// touched. The complete tables always ship in the release docs bundle
+// (docs/feature-matrix.md), so trimming here loses no information.
+var deltaSections = []string{
+	"## DSL feature-support delta",
+	"## DSL support-matrix delta",
+}
+
+// boundReleaseNotes enforces maxReleaseNotesLen. Oversized notes lose table
+// rows from the bottom of the largest delta section first, each trimmed
+// section gaining an explicit omission line; if the notes still cannot fit
+// (the overflow is outside the trimmable sections), it errors loudly so the
+// release fails before an artifact is published against it.
+func boundReleaseNotes(notes string) (string, error) {
+	if len(notes) <= maxReleaseNotesLen {
+		return notes, nil
+	}
+	for len(notes) > maxReleaseNotesLen {
+		section, rows := largestTrimmableDelta(notes)
+		if section == "" || rows == 0 {
+			return "", fmt.Errorf(
+				"release notes are %d characters (limit %d) and no delta table rows remain to trim — shorten the authored sections",
+				len(notes), maxReleaseNotesLen)
+		}
+		trim := (len(notes) - maxReleaseNotesLen + rowLen(notes, section) - 1) / rowLen(notes, section)
+		if trim < 1 {
+			trim = 1
+		}
+		if trim > rows {
+			trim = rows
+		}
+		notes = trimDeltaRows(notes, section, trim)
+	}
+	return notes, nil
+}
+
+// sectionBounds returns the [start, end) of the named section, where end is
+// the next "\n## " heading or the end of the notes.
+func sectionBounds(notes, heading string) (int, int) {
+	start := strings.Index(notes, heading)
+	if start < 0 {
+		return -1, -1
+	}
+	rest := notes[start+len(heading):]
+	next := strings.Index(rest, "\n## ")
+	if next < 0 {
+		return start, len(notes)
+	}
+	return start, start + len(heading) + next + 1
+}
+
+// tableRowIndexes returns the offsets (relative to notes) of each markdown
+// table BODY row in the section — lines starting with "| " excluding the
+// header and separator rows.
+func tableRowIndexes(notes, heading string) []int {
+	start, end := sectionBounds(notes, heading)
+	if start < 0 {
+		return nil
+	}
+	var rows []int
+	seenHeader := false
+	seenSeparator := false
+	offset := start
+	for _, line := range strings.SplitAfter(notes[start:end], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "|") {
+			switch {
+			case !seenHeader:
+				seenHeader = true
+			case !seenSeparator:
+				seenSeparator = true
+			default:
+				rows = append(rows, offset)
+			}
+		}
+		offset += len(line)
+	}
+	return rows
+}
+
+func largestTrimmableDelta(notes string) (string, int) {
+	best, bestRows := "", 0
+	for _, heading := range deltaSections {
+		if n := len(tableRowIndexes(notes, heading)); n > bestRows {
+			best, bestRows = heading, n
+		}
+	}
+	return best, bestRows
+}
+
+// rowLen estimates the byte cost of one table row in the section (its last
+// row's length), used to compute how many rows must go.
+func rowLen(notes, heading string) int {
+	rows := tableRowIndexes(notes, heading)
+	if len(rows) == 0 {
+		return 1
+	}
+	last := rows[len(rows)-1]
+	lineEnd := strings.IndexByte(notes[last:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(notes) - last
+	}
+	if lineEnd < 1 {
+		return 1
+	}
+	return lineEnd + 1
+}
+
+// trimDeltaRows removes the last n table rows of the section and appends an
+// omission line accounting for every row trimmed from it so far.
+func trimDeltaRows(notes, heading string, n int) string {
+	rows := tableRowIndexes(notes, heading)
+	if n > len(rows) {
+		n = len(rows)
+	}
+	cut := rows[len(rows)-n]
+	_, end := sectionBounds(notes, heading)
+	tail := notes[end:]
+	head := notes[:cut]
+
+	const omissionPrefix = "_…delta truncated: "
+	already := 0
+	if idx := strings.LastIndex(head, omissionPrefix); idx >= 0 && idx > strings.Index(head, heading) {
+		lineEnd := strings.IndexByte(head[idx:], '\n')
+		var line string
+		if lineEnd < 0 {
+			line = head[idx:]
+			head = head[:idx]
+		} else {
+			line = head[idx : idx+lineEnd]
+			head = head[:idx]
+		}
+		fmt.Sscanf(line, "_…delta truncated: %d", &already)
+	}
+	omission := fmt.Sprintf(
+		"%s%d rows omitted to fit GitHub's release-body limit; the complete matrix ships in the release docs bundle (docs/feature-matrix.md)._\n",
+		omissionPrefix, already+n)
+	return strings.TrimRight(head, "\n") + "\n" + omission + tail
 }
 
 func combineFeatureNotes(changelog, generated string) (string, error) {
