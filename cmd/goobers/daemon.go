@@ -586,6 +586,7 @@ func buildSchedulerDefinitions(
 	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		true,
 	)
 	if err != nil {
 		return nil, err

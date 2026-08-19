@@ -6,6 +6,8 @@ Every workflow-DSL feature this build of goobers understands, projected across t
 
 This DSL and the runner that executes it are stack-neutral; see [Stack support](guides/stack-support.md) for which parts of Goobers are generic vs. what a gaggle must declare for its own language/toolchain.
 
+A caveat on the version columns: the registry was backfilled (#3292) to cover every author-facing field, so many rows — the gaggle surface, `docsRoots`, `ciCommand`, run controls, and their kin — describe long-shipped fields that are only *listed* under DSL 2.0 because the frozen 1.4 registry cannot be amended. Those rows are registry-coverage expansion of surface that has been in live use since before the registry existed, NOT new 2.0 features; the `1.4 -> 2.0` delta below inherits the same caveat.
+
 | Feature | DSL version | Feature support | Version support | Since app version |
 | --- | --- | --- | --- | --- |
 | `gaggle.spec.project.checkout.sparse` | 1.4 | ga | deprecated | dev |
@@ -119,8 +121,42 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `workflow.terminal.abort` | 1.4 | ga | deprecated | dev |
 | `workflow.terminal.complete` | 1.4 | ga | deprecated | dev |
 | `workflow.terminal.escalate` | 1.4 | ga | deprecated | dev |
+| `gaggle.spec.additionalRepos` | 2.0 | ga | supported | dev |
+| `gaggle.spec.additionalRepos.baseUrl` | 2.0 | ga | supported | dev |
+| `gaggle.spec.additionalRepos.checkout.sparse` | 2.0 | ga | supported | dev |
+| `gaggle.spec.additionalRepos.provider.ado` | 2.0 | ga | supported | dev |
+| `gaggle.spec.additionalRepos.provider.gitea` | 2.0 | ga | supported | dev |
+| `gaggle.spec.additionalRepos.provider.github` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.baseUrl` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.fieldPredicate` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.labelPredicate` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.labels` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.provider.ado` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.provider.gitea` | 2.0 | ga | supported | dev |
+| `gaggle.spec.backlog.provider.github` | 2.0 | ga | supported | dev |
+| `gaggle.spec.branchNamespace` | 2.0 | ga | supported | dev |
+| `gaggle.spec.ciCommand` | 2.0 | ga | supported | dev |
+| `gaggle.spec.displayName` | 2.0 | ga | supported | dev |
+| `gaggle.spec.isolation.identityRef` | 2.0 | ga | supported | dev |
+| `gaggle.spec.isolation.namespace` | 2.0 | ga | supported | dev |
+| `gaggle.spec.outboxMirrorPath` | 2.0 | ga | supported | dev |
+| `gaggle.spec.project` | 2.0 | ga | supported | dev |
+| `gaggle.spec.project.baseUrl` | 2.0 | ga | supported | dev |
 | `gaggle.spec.project.checkout.sparse` | 2.0 | ga | supported | dev |
+| `gaggle.spec.project.provider.ado` | 2.0 | ga | supported | dev |
+| `gaggle.spec.project.provider.gitea` | 2.0 | ga | supported | dev |
+| `gaggle.spec.project.provider.github` | 2.0 | ga | supported | dev |
+| `gaggle.spec.requireLabels` | 2.0 | ga | supported | dev |
+| `gaggle.spec.requiredCapabilities` | 2.0 | ga | supported | dev |
+| `gaggle.spec.runControls` | 2.0 | ga | supported | dev |
+| `gaggle.spec.runControls.maxRepasses` | 2.0 | ga | supported | dev |
+| `gaggle.spec.runControls.maxRunDuration` | 2.0 | ga | supported | dev |
+| `gaggle.spec.runControls.stalledRunTimeout` | 2.0 | ga | supported | dev |
 | `gaggle.spec.sandbox` | 2.0 | preview | supported | dev |
+| `gaggle.spec.selfIdentity` | 2.0 | ga | supported | dev |
+| `gaggle.spec.siblings` | 2.0 | ga | supported | dev |
+| `gaggle.spec.workcopies.root` | 2.0 | ga | supported | dev |
 | `gate.branch.escalate` | 2.0 | ga | supported | dev |
 | `gate.branches` | 2.0 | ga | supported | dev |
 | `gate.evaluator.agentic` | 2.0 | ga | supported | dev |
@@ -155,8 +191,10 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `gate.evaluator.human.onTimeout.reject` | 2.0 | ga | supported | dev |
 | `gate.evaluator.human.onTimeout.remind` | 2.0 | ga | supported | dev |
 | `gate.evaluator.human.timeout` | 2.0 | ga | supported | dev |
+| `gate.maxRepasses` | 2.0 | ga | supported | dev |
 | `gate.name` | 2.0 | ga | supported | dev |
 | `goober.spec.capabilities` | 2.0 | ga | supported | dev |
+| `goober.spec.conditionalPolicyActions` | 2.0 | ga | supported | dev |
 | `goober.spec.displayName` | 2.0 | ga | supported | dev |
 | `goober.spec.gaggle` | 2.0 | ga | supported | dev |
 | `goober.spec.harness.claude-code` | 2.0 | ga | supported | dev |
@@ -165,6 +203,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `goober.spec.instructions` | 2.0 | ga | supported | dev |
 | `goober.spec.mcpServers` | 2.0 | ga | supported | dev |
 | `goober.spec.model` | 2.0 | ga | supported | dev |
+| `goober.spec.policyActions` | 2.0 | ga | supported | dev |
 | `goober.spec.role` | 2.0 | ga | supported | dev |
 | `goober.spec.scaleFactor` | 2.0 | ga | supported | dev |
 | `goober.spec.skills` | 2.0 | ga | supported | dev |
@@ -195,7 +234,7 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `task.inputs` | 2.0 | ga | supported | dev |
 | `task.inputs.fieldOrder` | 2.0 | ga | supported | dev |
 | `task.inputsFrom` | 2.0 | ga | supported | dev |
-| `task.inputsFrom.stageQualified` | 2.0 | preview | supported | dev |
+| `task.inputsFrom.stageQualified` | 2.0 | ga | supported | v0.2.0 |
 | `task.limits` | 2.0 | ga | supported | dev |
 | `task.limits.maxCostUSD` | 2.0 | ga | supported | dev |
 | `task.limits.maxDurationSeconds` | 2.0 | ga | supported | dev |
@@ -205,7 +244,10 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `task.next` | 2.0 | ga | supported | dev |
 | `task.onTimeout.fail` | 2.0 | ga | supported | dev |
 | `task.onTimeout.salvage` | 2.0 | ga | supported | dev |
+| `task.outbox` | 2.0 | ga | supported | dev |
+| `task.outboxMirrorPath` | 2.0 | ga | supported | dev |
 | `task.policyActions` | 2.0 | ga | supported | dev |
+| `task.requiredCapabilities` | 2.0 | ga | supported | dev |
 | `task.retry` | 2.0 | ga | supported | dev |
 | `task.retry.backoff` | 2.0 | ga | supported | dev |
 | `task.retry.maxAttempts` | 2.0 | ga | supported | dev |
@@ -214,14 +256,21 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `trigger.backlog-item.selector` | 2.0 | ga | supported | dev |
 | `trigger.backlog-item.trustLabel` | 2.0 | ga | supported | dev |
 | `trigger.fieldPredicate` | 2.0 | ga | supported | dev |
+| `trigger.idleBackoff` | 2.0 | ga | supported | dev |
+| `trigger.idleBackoff.ceiling` | 2.0 | ga | supported | dev |
+| `trigger.idleBackoff.enabled` | 2.0 | ga | supported | dev |
+| `trigger.idleBackoff.floor` | 2.0 | ga | supported | dev |
 | `trigger.labelPredicate` | 2.0 | ga | supported | dev |
 | `trigger.manual` | 2.0 | ga | supported | dev |
+| `trigger.priority` | 2.0 | ga | supported | dev |
 | `trigger.schedule` | 2.0 | ga | supported | dev |
 | `trigger.signal` | 2.0 | ga | supported | dev |
 | `trigger.webhook` | 2.0 | ga | supported | dev |
 | `workflow.spec.displayName` | 2.0 | ga | supported | dev |
+| `workflow.spec.docsRoots` | 2.0 | ga | supported | dev |
 | `workflow.spec.gaggle` | 2.0 | ga | supported | dev |
 | `workflow.spec.gates` | 2.0 | ga | supported | dev |
+| `workflow.spec.outboxMirrorPath` | 2.0 | ga | supported | dev |
 | `workflow.spec.parallels` | 2.0 | ga | supported | dev |
 | `workflow.spec.parallels.branchTimeoutSeconds` | 2.0 | ga | supported | dev |
 | `workflow.spec.parallels.branches` | 2.0 | ga | supported | dev |
@@ -235,10 +284,17 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 | `workflow.spec.readiness.maxOpenPRs` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxRunsPerDay` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxRunsPerHour` | 2.0 | ga | supported | dev |
+| `workflow.spec.requires.capabilities` | 2.0 | ga | supported | dev |
 | `workflow.spec.runControls` | 2.0 | ga | supported | dev |
+| `workflow.spec.runControls.maxRepasses` | 2.0 | ga | supported | dev |
+| `workflow.spec.runControls.maxRunDuration` | 2.0 | ga | supported | dev |
+| `workflow.spec.runControls.stalledRunTimeout` | 2.0 | ga | supported | dev |
 | `workflow.spec.start` | 2.0 | ga | supported | dev |
 | `workflow.spec.tasks` | 2.0 | ga | supported | dev |
 | `workflow.spec.triggers` | 2.0 | ga | supported | dev |
+| `workflow.spec.tutorScope` | 2.0 | ga | supported | dev |
+| `workflow.spec.tutorScope.target` | 2.0 | ga | supported | dev |
+| `workflow.spec.tutorScope.tier` | 2.0 | ga | supported | dev |
 | `workflow.terminal.abort` | 2.0 | ga | supported | dev |
 | `workflow.terminal.complete` | 2.0 | ga | supported | dev |
 | `workflow.terminal.escalate` | 2.0 | ga | supported | dev |
@@ -247,6 +303,6 @@ This DSL and the runner that executes it are stack-neutral; see [Stack support](
 
 ### 1.4 -> 2.0
 
-- Added: `gate.evaluator.agentic.workspace`, `stage.run.script`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.inputsFrom.stageQualified`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`
+- Added: `gaggle.spec.additionalRepos`, `gaggle.spec.additionalRepos.baseUrl`, `gaggle.spec.additionalRepos.checkout.sparse`, `gaggle.spec.additionalRepos.provider.ado`, `gaggle.spec.additionalRepos.provider.gitea`, `gaggle.spec.additionalRepos.provider.github`, `gaggle.spec.backlog`, `gaggle.spec.backlog.baseUrl`, `gaggle.spec.backlog.fieldPredicate`, `gaggle.spec.backlog.labelPredicate`, `gaggle.spec.backlog.labels`, `gaggle.spec.backlog.provider.ado`, `gaggle.spec.backlog.provider.gitea`, `gaggle.spec.backlog.provider.github`, `gaggle.spec.branchNamespace`, `gaggle.spec.ciCommand`, `gaggle.spec.displayName`, `gaggle.spec.isolation.identityRef`, `gaggle.spec.isolation.namespace`, `gaggle.spec.outboxMirrorPath`, `gaggle.spec.project`, `gaggle.spec.project.baseUrl`, `gaggle.spec.project.provider.ado`, `gaggle.spec.project.provider.gitea`, `gaggle.spec.project.provider.github`, `gaggle.spec.requireLabels`, `gaggle.spec.requiredCapabilities`, `gaggle.spec.runControls`, `gaggle.spec.runControls.maxRepasses`, `gaggle.spec.runControls.maxRunDuration`, `gaggle.spec.runControls.stalledRunTimeout`, `gaggle.spec.selfIdentity`, `gaggle.spec.siblings`, `gaggle.spec.workcopies.root`, `gate.evaluator.agentic.workspace`, `gate.maxRepasses`, `goober.spec.conditionalPolicyActions`, `goober.spec.policyActions`, `stage.run.script`, `stage.workspace`, `stage.workspace.repo-readonly`, `task.inputsFrom.stageQualified`, `task.outbox`, `task.outboxMirrorPath`, `task.requiredCapabilities`, `trigger.idleBackoff`, `trigger.idleBackoff.ceiling`, `trigger.idleBackoff.enabled`, `trigger.idleBackoff.floor`, `trigger.priority`, `workflow.spec.docsRoots`, `workflow.spec.outboxMirrorPath`, `workflow.spec.parallels`, `workflow.spec.parallels.branchTimeoutSeconds`, `workflow.spec.parallels.branches`, `workflow.spec.parallels.failurePolicy`, `workflow.spec.parallels.join`, `workflow.spec.parallels.maxConcurrentBranches`, `workflow.spec.parallels.onFailure`, `workflow.spec.requires.capabilities`, `workflow.spec.runControls.maxRepasses`, `workflow.spec.runControls.maxRunDuration`, `workflow.spec.runControls.stalledRunTimeout`, `workflow.spec.tutorScope`, `workflow.spec.tutorScope.target`, `workflow.spec.tutorScope.tier`
 - Removed: none
 - Level changes: none

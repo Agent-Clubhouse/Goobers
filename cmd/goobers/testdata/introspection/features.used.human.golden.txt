@@ -1,4 +1,11 @@
 FEATURE                                    DSL VERSION  FEATURE SUPPORT  VERSION SUPPORT  SINCE
+gaggle.spec.backlog                        2.0          ga               supported        dev
+gaggle.spec.backlog.labels                 2.0          ga               supported        dev
+gaggle.spec.backlog.provider.github        2.0          ga               supported        dev
+gaggle.spec.displayName                    2.0          ga               supported        dev
+gaggle.spec.isolation.namespace            2.0          ga               supported        dev
+gaggle.spec.project                        2.0          ga               supported        dev
+gaggle.spec.project.provider.github        2.0          ga               supported        dev
 goober.spec.capabilities                   2.0          ga               supported        dev
 goober.spec.displayName                    2.0          ga               supported        dev
 goober.spec.gaggle                         2.0          ga               supported        dev
@@ -37,4 +44,4 @@ workflow.spec.tasks                        2.0          ga               support
 workflow.spec.triggers                     2.0          ga               supported        dev
 workflow.terminal.complete                 2.0          ga               supported        dev
 
-37 feature/version row(s)
+44 feature/version row(s)

@@ -354,6 +354,7 @@ func tutorConfigVersions(configDir, gaggle string, names, envPassthrough []strin
 	}
 	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, envPassthrough, harnessCommand,
+		false,
 	)
 	if err != nil {
 		return nil, err

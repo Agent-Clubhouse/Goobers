@@ -151,6 +151,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
 					}
 					scenarios := terminalScenarios(t, machine)
+					if hasCITimeoutRoute(machine) && !hasCITimeoutRecoveryScenario(scenarios) {
+						t.Fatalf("%s: workflow %q has no CI timeout-then-pass recovery scenario", source, key)
+					}
 					for _, scenario := range scenarios {
 						scenario := scenario
 						t.Run(scenario.name, func(t *testing.T) {
@@ -185,6 +188,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 							}
 							assertJournalScenario(t, definition, events, scenario)
 							assertRequiredValueHandoffs(t, definition.Name, events)
+							if isCITimeoutRecoveryScenario(scenario) {
+								assertCITimeoutRecovery(t, events)
+							}
 							state, err := reader.State()
 							if err != nil {
 								t.Fatalf("%s: workflow %q read journal state: %v", source, key, err)
@@ -199,6 +205,50 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func hasCITimeoutRoute(machine *workflow.Machine) bool {
+	ciGate, ok := machine.Gate("ci-gate")
+	if !ok {
+		return false
+	}
+	_, ok = workflow.BranchTarget(ciGate, gate.OutcomeTimeout)
+	return ok
+}
+
+func hasCITimeoutRecoveryScenario(scenarios []terminalScenario) bool {
+	for _, scenario := range scenarios {
+		if isCITimeoutRecoveryScenario(scenario) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCITimeoutRecoveryScenario(scenario terminalScenario) bool {
+	return reflect.DeepEqual(
+		scenario.gateOutcomes["ci-gate"],
+		[]string{gate.OutcomeTimeout, gate.OutcomePass},
+	)
+}
+
+func assertCITimeoutRecovery(t *testing.T, events []journal.Event) {
+	t.Helper()
+	stageStarts := map[string]int{}
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			stageStarts[event.Stage]++
+		}
+	}
+	if got := stageStarts["ci-poll"]; got != 2 {
+		t.Errorf("ci-poll starts = %d, want 2 for timeout then pass", got)
+	}
+	if got := stageStarts["implement"]; got != 1 {
+		t.Errorf("implement starts = %d, want 1; pending CI must not consume an implementation repass", got)
+	}
+	if got := stageStarts["park-escalated"]; got != 0 {
+		t.Errorf("park-escalated starts = %d, want 0 for pending CI", got)
 	}
 }
 
@@ -1792,7 +1842,10 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "scripted CI timeout",
-				Outputs: map[string]any{executor.OutputCIStatus: executor.CIStatusTimeout},
+				Outputs: map[string]any{
+					executor.OutputCIStatus: executor.CIStatusTimeout,
+					executor.OutputPRNumber: env.Inputs[executor.InputPRNumber],
+				},
 				Error: &apiv1.ErrorInfo{
 					Code: "poll_timeout", Message: "scripted CI timeout", Retryable: true,
 				},

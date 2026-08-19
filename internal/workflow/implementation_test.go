@@ -201,8 +201,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("reviewer capabilities = %v, want exactly [agent:model]", goobers["reviewer"].Capabilities)
 	}
 
-	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
-	// @escalate instead of the "fail" branch's implement repass).
+	// #239: ci-gate gained a distinct "timeout" branch so pending CI does not
+	// enter the "fail" branch's implement repass. #3325 now routes that branch
+	// back to ci-poll instead of terminally escalating a healthy open PR.
 	// #237: a deterministic push-branch stage was inserted between
 	// local-gate and open-pr (the implementer commits but no longer pushes).
 	// #361/#355: query-backlog gained excludeLabels (goobers/status:in-review)
@@ -219,11 +220,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	// #929: ci-gate's timeout branch now routes through park-escalated rather
-	// than straight at "@escalate". The run's terminal phase is unchanged, but
-	// the issue-side bookkeeping (clear ready, release claimed, apply the park
-	// label) only runs if that stage does — see
-	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
+	// #929 still governs genuine mechanical escalations through
+	// park-escalated; pending CI no longer escalates and instead checkpoints by
+	// re-entering ci-poll (#3325).
 	// #947: open-pr now emits an `opened` output and routes through the new
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
@@ -243,7 +242,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// ci-poll input builder injects that default where 1.4 left it unset), so
 	// the compiled runtime behavior is identical; only the hashed definition
 	// (DSLVersion + the now-explicit pin) moved the digest.
-	const wantDigest = "sha256:743c1246e3b876dc802e212954668e10227967bcbbb49c096d56e9a53f4d06b5"
+	const wantDigest = "sha256:3dbfd52d2f23b56cfc130efc2442788fda8c6f60bfdc3f2c54170e4ec42b9b70"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
