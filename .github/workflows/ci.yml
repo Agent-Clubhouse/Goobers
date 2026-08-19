@@ -82,10 +82,24 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Install Portal dependencies and pinned Chromium
-        timeout-minutes: 12
+        # Retried because these are the repo's dominant CI flake (#3139): npm
+        # and the Chromium download stall on registry/CDN hiccups and eat the
+        # whole timeout, unlike go mod download and golangci-lint which
+        # already retry. Six timeouts in one night on the v0.2.0 wave.
+        timeout-minutes: 15
+        shell: bash
         run: |
-          npm --prefix portal ci --no-audit --no-fund
-          npm --prefix portal exec -- playwright install --with-deps chromium
+          set -o pipefail
+          for attempt in 1 2 3; do
+            if npm --prefix portal ci --no-audit --no-fund \
+              && npm --prefix portal exec -- playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "portal/Chromium install failed after 3 attempts" >&2
+          exit 1
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
         timeout-minutes: 8
@@ -250,10 +264,24 @@ jobs:
           exit 1
 
       - name: Install Portal dependencies and pinned Chromium
-        timeout-minutes: 12
+        # Retried because these are the repo's dominant CI flake (#3139): npm
+        # and the Chromium download stall on registry/CDN hiccups and eat the
+        # whole timeout, unlike go mod download and golangci-lint which
+        # already retry. Six timeouts in one night on the v0.2.0 wave.
+        timeout-minutes: 15
+        shell: bash
         run: |
-          npm --prefix portal ci --no-audit --no-fund
-          npm --prefix portal exec -- playwright install --with-deps chromium
+          set -o pipefail
+          for attempt in 1 2 3; do
+            if npm --prefix portal ci --no-audit --no-fund \
+              && npm --prefix portal exec -- playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "portal/Chromium install failed after 3 attempts" >&2
+          exit 1
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
