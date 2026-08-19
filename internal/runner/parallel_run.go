@@ -702,7 +702,7 @@ func (r *Runner) runParallelBranch(
 				result.err = fmt.Errorf("runner: parallel %q branch %q reached human gate %q", par.spec.Name, branch.name, g.Name)
 				return result
 			}
-			retryClass, knownOutcome, retryable := retryFailureClass(g, result.lastResult)
+			_, knownOutcome, _ := retryFailureClass(g, result.lastResult)
 			replayed := replayGate != nil
 			var gr gate.Result
 			var err, removeErr error
@@ -734,6 +734,7 @@ func (r *Runner) runParallelBranch(
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
+			retryClass, _, retryable := retryFailureClassForGateResult(g, result.lastResult, gr.Outcome)
 			var retryTarget string
 			var retry bool
 			if replayed && replayGateEvent != nil && hasRetryDecisionAfter(history, *replayGateEvent) {
@@ -789,7 +790,7 @@ func (r *Runner) runParallelBranch(
 				return result
 			default:
 				if gr.Escalated {
-					if reason, notify := terminalGateNotificationReason(gr); notify {
+					if reason, notify := terminalGateNotificationReason(in.Machine, gr); notify {
 						if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
 							result.status, result.err = journal.BranchFailed, err
 							return result

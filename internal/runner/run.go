@@ -1563,7 +1563,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		instructionAddendum = ws.rerun.instructionAddendum
 		ws.rerun = nil
 	}
-	retryClass, knownOutcome, retryable := retryFailureClass(g, ws.lastResult)
+	_, knownOutcome, _ := retryFailureClass(g, ws.lastResult)
 	var gr gate.Result
 	var err, removeErr error
 	if g.Evaluator == apiv1.EvaluatorHuman {
@@ -1603,6 +1603,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
+	retryClass, _, retryable := retryFailureClassForGateResult(g, ws.lastResult, gr.Outcome)
 	retryTarget, retry, err := routeRetryDecision(ws.jr, gr, ws.lastStage, ws.lastResult, retryClass, retryable)
 	if err != nil {
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
@@ -1669,7 +1670,7 @@ func (r *Runner) gateTransition(ctx context.Context, ws *walkState, gr gate.Resu
 	jr, in := ws.jr, ws.in
 	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
 	lastStage, lastResult, steps := ws.lastStage, ws.lastResult, ws.steps
-	if reason, ok := terminalGateNotificationReason(gr); ok {
+	if reason, ok := terminalGateNotificationReason(machine, gr); ok {
 		notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, runID, repoRef, item, gr, reason)
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, gr.Gate, steps); stalled {
 			return "", stalledResult, false, stalledErr
@@ -1707,7 +1708,7 @@ func gateClearsFailure(gr gate.Result, gateDef apiv1.Gate) bool {
 	return gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
 }
 
-func terminalGateNotificationReason(gr gate.Result) (string, bool) {
+func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (string, bool) {
 	// An escalation still notifies the driving issue when the gate's escalate
 	// control branch routes disposition work (a parking stage) before the
 	// terminal, rather than naming @escalate directly: the repass-attempt count
@@ -1716,17 +1717,29 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
-	// The shipped parking stage owns the single human-facing comment. Other
-	// named targets are not guaranteed to notify, so they retain this fallback.
-	if gr.Escalated && gr.Target == "park-escalated" {
-		return "", false
+	// An escalation-control task that runs the configured issue close-out
+	// operation owns the human-facing disposition. Merely being the escalation
+	// branch target is insufficient: custom cleanup tasks may not notify.
+	if gr.Escalated && machine != nil {
+		if g, ok := machine.Gate(gr.Gate); ok {
+			if target, configured := workflow.BranchTarget(g, workflow.BranchEscalate); configured &&
+				target == gr.Target && !workflow.IsReservedAnyTarget(target) {
+				if task, ok := machine.Task(target); ok && taskOwnsEscalationNotification(task) {
+					return "", false
+				}
+			}
+		}
 	}
 	if gr.Escalated {
 		if gr.DuplicateDiff {
-			if gr.RepassCause != nil {
-				return gr.RepassCause.String() + "; the implementer produced no change in response", true
+			reason := gr.Reason
+			if reason == "" {
+				reason = gate.ReasonUnchangedRepass
 			}
-			return "repass produced a diff identical to the immediately prior attempt", true
+			if gr.RepassCause != nil {
+				return reason + ": " + gr.RepassCause.String() + "; the implementer produced no change in response", true
+			}
+			return reason + ": repass produced a diff identical to the immediately prior attempt", true
 		}
 		return "repass budget exhausted", true
 	}
@@ -1742,6 +1755,13 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 		}
 	}
 	return reason, true
+}
+
+func taskOwnsEscalationNotification(task apiv1.Task) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		task.Run.Command[0] == "goobers" &&
+		task.Run.Command[1] == "issue-close-out"
 }
 
 func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
@@ -3137,6 +3157,14 @@ func retryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.Attem
 	}
 }
 
+func retryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, outcome string) (journal.AttemptClass, string, bool) {
+	class, knownOutcome, retryable := retryFailureClass(g, result)
+	if !retryable && outcome == gate.OutcomeInfra {
+		return journal.AttemptInfra, "", true
+	}
+	return class, knownOutcome, retryable
+}
+
 func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
 	if !retryable || result.Outcome == gate.OutcomePass || result.Escalated {
 		return "", false, nil
@@ -3149,6 +3177,10 @@ func routeRetryDecision(jr executionJournal, result gate.Result, stage string, s
 	// also recovers the target from gate.evaluated if a crash lands between the
 	// verdict and this append, or between this append's fsync and checkpoint.
 	jr.SetMachineState(result.Target)
+	failureCode := ""
+	if subject.Error != nil {
+		failureCode = subject.Error.Code
+	}
 	if err := jr.Append(journal.Event{
 		Type:  journal.EventRunnerAnnotation,
 		Stage: stage,
@@ -3156,7 +3188,7 @@ func routeRetryDecision(jr executionJournal, result gate.Result, stage string, s
 		Runner: map[string]any{
 			"kind":               retryDecisionKind,
 			retryFailureClassKey: string(class),
-			"failureCode":        subject.Error.Code,
+			"failureCode":        failureCode,
 			"repassAttempt":      result.Attempt,
 			"target":             result.Target,
 		},
@@ -3966,14 +3998,45 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 				cause.Rationale = strings.TrimSpace(verdict.Summary)
 			}
 		}
+		var infrastructureEvidence *bool
+		for j := i + 1; j < len(events); j++ {
+			following := events[j]
+			if following.Type == journal.EventStageStarted ||
+				following.Type == journal.EventStageFinished ||
+				following.Type == journal.EventGateStarted ||
+				following.Type == journal.EventGateEvaluated {
+				break
+			}
+			if following.Type == journal.EventRunnerAnnotation &&
+				following.Gate == event.Gate &&
+				following.Runner["kind"] == retryDecisionKind &&
+				following.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+				break
+			}
+		}
 		for j := i - 1; j >= 0; j-- {
 			prior := events[j]
 			if prior.Type == journal.EventGateEvaluated {
 				break
 			}
+			switch {
+			case prior.Type == journal.EventRunnerAnnotation &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			case prior.Type == journal.EventError && prior.Stage == subjectStage &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			}
 			if prior.Type == journal.EventStageFinished && prior.Status == string(apiv1.ResultFailure) {
 				cause.Kind = "stage-failure"
 				cause.Stage = prior.Stage
+				// AttemptClass describes how an attempt started, not why it
+				// failed. Use the retry decision journaled for this stage.
+				cause.Infrastructure = infrastructureEvidence != nil && *infrastructureEvidence
 				if prior.Error != nil {
 					cause.ErrorCode = prior.Error.Code
 					cause.ErrorMessage = prior.Error.Message

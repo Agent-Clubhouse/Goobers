@@ -1874,6 +1874,8 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 			"escalated":     true,
 			"duplicateDiff": true,
 			"diffDigest":    "sha256:aaaa",
+			"reason":        "UNCHANGED_REPASS",
+			"repassTarget":  "implement",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1884,12 +1886,13 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantReason := "UNCHANGED_REPASS: repass produced a diff identical to the immediately prior attempt (implement-classified failure)"
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector.Kind != "gate" ||
 		detail.Escalation.Selector.Name != "review" ||
 		detail.Escalation.SelectedBranch != "needs-changes" ||
-		detail.Escalation.TerminalReason != "repass produced a diff identical to the immediately prior attempt" {
-		t.Fatalf("duplicate-diff escalation = %+v", detail.Escalation)
+		detail.Escalation.TerminalReason != wantReason {
+		t.Fatalf("duplicate-diff escalation = %+v, want reason %q", detail.Escalation, wantReason)
 	}
 }
 

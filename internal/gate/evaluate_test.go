@@ -554,6 +554,83 @@ func TestEvaluatorDuplicateDiffNamesUpstreamRepassCause(t *testing.T) {
 	}
 }
 
+// TestEvaluatorUnchangedRepassClassifiesInfrastructureVsImplementation is
+// issue #3250's core acceptance: a duplicate-diff escalation must carry a
+// stable, matchable Reason (ReasonUnchangedRepass) and must classify whether
+// the upstream failure that triggered the unproductive repass was itself an
+// infrastructure/environment failure (RepassCause.Infrastructure, set by the
+// runner from the failed attempt's own recorded AttemptClass) — distinct
+// from an ordinary implementation defect the implementer failed to converge
+// on — so downstream consumers (escalation notifications, `goobers
+// trace`/status) never conflate the two.
+func TestEvaluatorUnchangedRepassClassifiesInfrastructureVsImplementation(t *testing.T) {
+	g := apiv1.Gate{
+		Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+		Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			string(apiv1.VerdictPass): wf.TerminalComplete, string(apiv1.VerdictNeedsChanges): "implement",
+		},
+	}
+	tests := []struct {
+		name           string
+		cause          RepassCause
+		wantInfraWords []string
+	}{
+		{
+			name: "environmental CI failure",
+			cause: RepassCause{
+				Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci",
+				ErrorCode: "host_contention", ErrorMessage: "runner host under contention",
+				Infrastructure: true,
+			},
+			wantInfraWords: []string{"infrastructure/environment"},
+		},
+		{
+			name: "genuine implementation failure",
+			cause: RepassCause{
+				Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci",
+				ErrorCode: "test_failure", ErrorMessage: "TestFoo failed",
+				Infrastructure: false,
+			},
+			wantInfraWords: []string{"an implementation"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newTestJournal(t)
+			ev := &Evaluator{
+				Reviewer:       &ReviewerEvaluator{Goober: &fakeGoober{}},
+				Journal:        run,
+				LastDiffDigest: map[string]string{"review": "sha256:same"},
+				RepassCause:    &tc.cause,
+			}
+			result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "sha256:same", false)
+			if err != nil {
+				t.Fatalf("Evaluate: %v", err)
+			}
+			if !result.DuplicateDiff || result.Reason != ReasonUnchangedRepass {
+				t.Fatalf("result = %+v, want DuplicateDiff=true Reason=%q", result, ReasonUnchangedRepass)
+			}
+			for _, want := range tc.wantInfraWords {
+				if !strings.Contains(result.Verdict.Rationale, want) {
+					t.Fatalf("rationale = %q, want substring %q", result.Verdict.Rationale, want)
+				}
+			}
+			events := readGateEvents(t, run)
+			if reason, _ := events[0].Runner["reason"].(string); reason != ReasonUnchangedRepass {
+				t.Fatalf("journaled reason = %q, want %q", reason, ReasonUnchangedRepass)
+			}
+			cause, ok := events[0].Runner["repassCause"].(map[string]any)
+			if !ok {
+				t.Fatalf("journal repassCause missing: %#v", events[0].Runner["repassCause"])
+			}
+			if infra, _ := cause["infrastructure"].(bool); infra != tc.cause.Infrastructure {
+				t.Fatalf("journaled repassCause.infrastructure = %v, want %v", infra, tc.cause.Infrastructure)
+			}
+		})
+	}
+}
+
 // TestEvaluatorReusesCachedVerdictWithoutReviewerCall is issue #523's core
 // mechanism test: when the caller (merge-review's gather-sibling-context, in
 // production; the test itself here) has already found a digest-matched
