@@ -1,6 +1,6 @@
 # External call-out stages
 
-**Status:** design of record, pending the owner rulings in §9.
+**Status:** draft — design of record, pending the owner rulings in §9.
 **Verified against** `origin/main` @ `e447359f`.
 
 A workflow declares a stage that hands work to an HTTP endpoint outside the instance and brings
