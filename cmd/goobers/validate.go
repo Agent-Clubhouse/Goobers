@@ -303,10 +303,12 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
 	// the filesystem half — a declared root that does not exist in the
 	// repository — which api-level validation cannot do because it has no repo
-	// tree. Resolved against the git working tree containing the config; skipped
-	// (not failed) when the config is not inside a git repository, since there is
-	// then no tree to check against.
-	if !checkDocsRootsExist(root, configDir, set, stdout, diagnostics) {
+	// tree. docsRoots name paths in each gaggle's TARGET repository
+	// (spec.project), so the existence check is authoritative only when the git
+	// tree containing the config IS that repository; any other tree — a
+	// standalone workflowSource repo, a non-git directory — gets an advisory
+	// warning instead of an error or a silent skip (#3285).
+	if !checkDocsRootsExist(root, configDir, cfg, set, stdout, diagnostics) {
 		return 1
 	}
 
@@ -659,15 +661,25 @@ func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, e
 }
 
 // checkDocsRootsExist verifies every workflow-declared docs root exists in the
-// repository (#1016). base is the user-supplied validate path (a config source
-// tree or an instance root); the repository is its containing git working tree.
-// It returns false (failing validation) when a declared root is missing, and
-// true — skipping the check with a note — when base is not inside a git
-// repository, since the lexical config-load checks already ran and there is no
-// tree here to resolve roots against.
-func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout io.Writer, collectors ...*diagnosticCollector) bool {
+// gaggle's target repository (#1016). base is the user-supplied validate path
+// (a config source tree or an instance root). docsRoots name paths in the
+// repository the gaggle works on (spec.project), NOT in the config tree, so
+// the existence check is authoritative only when the git working tree
+// containing base is a checkout of that repository — decided by matching the
+// target's owner/name against the tree's git remotes (#3285). There it
+// returns false (failing validation) when a declared root is missing, exactly
+// as before. Any other tree — a standalone workflowSource repo with a
+// different remote, a tree with no remotes, or no git repository at all
+// (which pre-#3285 skipped SILENTLY) — proves nothing about the target repo,
+// so each declared root is reported as an advisory DOCS003 warning naming the
+// repository the roots will be checked against at runtime. Advisory means
+// exit-neutral and excluded from --strict's promotion, the same contract as
+// checkRepositoryReality's findings: where validate happens to run is machine
+// state, not config, and must never turn a green tree red.
+func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *instance.ConfigSet, stdout io.Writer, collectors ...*diagnosticCollector) bool {
 	type declaredRoot struct {
 		workflow string
+		gaggle   string
 		source   string
 		root     string
 		index    int
@@ -676,19 +688,28 @@ func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout
 	for _, w := range set.Workflows {
 		source, _ := set.WorkflowSource(w.Spec.Gaggle, w.Name)
 		for i, dr := range w.Spec.DocsRoots {
-			declared = append(declared, declaredRoot{workflow: w.Name, source: source, root: dr, index: i})
+			declared = append(declared, declaredRoot{workflow: w.Name, gaggle: w.Spec.Gaggle, source: source, root: dr, index: i})
 		}
 	}
 	if len(declared) == 0 {
 		return true
 	}
-	repoRoot, err := gitToplevel(base)
-	if err != nil {
-		pf(stdout, "DOCSROOTS: skipped existence check (%s is not inside a git repository)\n", base)
-		return true
+	repoRoot, toplevelErr := gitToplevel(base)
+	var treeRemotes []string
+	if toplevelErr == nil {
+		treeRemotes = gitRemoteURLs(repoRoot)
 	}
 	ok := true
 	for _, d := range declared {
+		owner, name := docsRootTargetRepository(cfg, set, d.gaggle)
+		if toplevelErr != nil || !remotesNameRepository(treeRemotes, owner, name) {
+			message := fmt.Sprintf("declared docs root %q not verified: config tree is not the target repository %s/%s",
+				d.root, owner, name)
+			pf(stdout, "WARNING DOCS003 Workflow/%s: %s\n", d.workflow, message)
+			addDiagnostic(collectors, configSourceDiagnosticFile(base, configDir, d.source),
+				fmt.Sprintf("/spec/docsRoots/%d", d.index), "DOCS003", string(validate.Warning), message)
+			continue
+		}
 		clean := filepath.Clean(strings.TrimSpace(d.root))
 		full := filepath.Join(repoRoot, clean)
 		if _, statErr := os.Stat(full); statErr != nil {
@@ -703,6 +724,72 @@ func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout
 	return ok
 }
 
+// docsRootTargetRepository resolves the repository a gaggle's docsRoots refer
+// to: its spec.project, or — mirroring the runtime single-repo binding that
+// checkGaggleRepositoryBindings reports as REPO003 — instance repos[0] when
+// the project is empty and exactly one repository is configured.
+func docsRootTargetRepository(cfg *instance.Config, set *instance.ConfigSet, gaggleName string) (owner, name string) {
+	for _, gaggle := range set.Gaggles {
+		if gaggle.Name == gaggleName {
+			owner, name = gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name
+			break
+		}
+	}
+	if owner == "" && name == "" && cfg != nil && len(cfg.Repos) == 1 {
+		owner, name = cfg.Repos[0].Owner, cfg.Repos[0].Name
+	}
+	return owner, name
+}
+
+// remotesNameRepository reports whether any configured git remote plausibly
+// names the owner/name repository — the #3285 test for "the validated tree IS
+// the gaggle's target repo", deliberately network-free.
+func remotesNameRepository(remotes []string, owner, name string) bool {
+	if owner == "" || name == "" {
+		return false
+	}
+	for _, remote := range remotes {
+		if remoteURLNamesRepository(remote, owner, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteURLNamesRepository matches one remote URL against owner/name: the
+// last path segment (sans .git) must be the repository name and the owner
+// must appear as an earlier path segment. Segment matching tolerates the URL
+// shapes in the wild — https://host/owner/name, ssh://git@host/owner/name,
+// scp-like git@host:owner/name, and ADO's org/project/_git/repo — without a
+// per-provider parser; a local mirror path that carries neither coordinate
+// simply fails to match and downgrades to the advisory warning.
+func remoteURLNamesRepository(remote, owner, name string) bool {
+	path := remote
+	if scheme := strings.Index(path, "://"); scheme >= 0 {
+		path = path[scheme+len("://"):]
+		slash := strings.Index(path, "/")
+		if slash < 0 {
+			return false
+		}
+		path = path[slash+1:]
+	} else if colon := strings.Index(path, ":"); colon >= 0 && !strings.Contains(path[:colon], "/") {
+		path = path[colon+1:]
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) < 2 {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSuffix(segments[len(segments)-1], ".git"), name) {
+		return false
+	}
+	for _, segment := range segments[:len(segments)-1] {
+		if strings.EqualFold(segment, owner) {
+			return true
+		}
+	}
+	return false
+}
+
 func gitToplevel(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
@@ -710,6 +797,25 @@ func gitToplevel(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitRemoteURLs returns every remote URL configured for the repository at
+// repoRoot, in config order; nil when there are none. Reading raw config
+// values (not `git remote get-url`, which applies insteadOf rewrites) keeps
+// the #3285 target-repo match on what the operator actually declared.
+func gitRemoteURLs(repoRoot string) []string {
+	cmd := exec.Command("git", "-C", repoRoot, "config", "--get-regexp", `^remote\..*\.url$`)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var urls []string
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		if _, url, found := strings.Cut(strings.TrimSpace(line), " "); found && url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls
 }
 
 type stageCommandFinding struct {

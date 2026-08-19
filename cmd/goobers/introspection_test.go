@@ -291,6 +291,10 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 	t.Run("docs root", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		runGitT(t, root, "init", "-q")
+		// #3285: the existence ERROR only fires when the validated tree is a
+		// checkout of the gaggle's target repository (starter spec.project =
+		// your-org/your-repo); without this remote it is an advisory warning.
+		runGitT(t, root, "remote", "add", "origin", "https://github.com/your-org/your-repo.git")
 		replaceInFile(t, defaultWorkflowPath(root), "  start: query-backlog",
 			"  start: query-backlog\n  docsRoots:\n    - missing-docs")
 
