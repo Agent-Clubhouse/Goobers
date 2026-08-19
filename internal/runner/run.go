@@ -588,13 +588,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	inputs := map[string][]byte{}
 	inputIntegrity := map[string]apiv1.Integrity{
-		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
 	}
 	graph, err := json.Marshal(in.Machine.Graph())
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: marshal pinned workflow graph: %w", err)
 	}
 	inputs[journal.PinnedWorkflowGraphInputName] = graph
+	definition, err := json.Marshal(in.Machine.Def)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: marshal pinned workflow definition: %w", err)
+	}
+	inputs[journal.PinnedWorkflowDefinitionInputName] = definition
 	if in.Item != nil {
 		b, err := json.Marshal(in.Item)
 		if err != nil {

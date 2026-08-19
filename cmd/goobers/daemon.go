@@ -1252,6 +1252,13 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 }
 
+func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
+	if id.WorkflowDigest != "" && current.Digest() != id.WorkflowDigest {
+		return nil, "pinned-snapshot"
+	}
+	return current, "current-config"
+}
+
 func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -1343,6 +1350,9 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				}
 				continue
 			}
+			// Never reinterpret a historical run under the current workflow
+			// merely because the name still matches.
+			machine, machineSource := interruptedRunMachine(id, machine)
 			repoRef := repoRefs[identity]
 			gooberDigest := gooberDigests[identity]
 
@@ -1351,9 +1361,11 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				if err := log.Append(journal.Event{
 					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 					Runner: map[string]any{
-						"kind":   journal.RunnerAnnotationRunRecovery,
-						"reason": "daemon_restart",
-						"action": journal.RecoveryActionResumed,
+						"kind":                     journal.RunnerAnnotationRunRecovery,
+						"reason":                   "daemon_restart",
+						"action":                   journal.RecoveryActionResumed,
+						"workflowDigest":           id.WorkflowDigest,
+						"workflowDefinitionSource": machineSource,
 					},
 				}); err != nil {
 					return resumed, warned, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)

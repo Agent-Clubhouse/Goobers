@@ -620,6 +620,13 @@ func TestProjectRunFailsClosed(t *testing.T) {
 			want: "no journal ops",
 		},
 		{
+			name: "missing pinned workflow definition",
+			proj: mutate(func(p *JournalProjection) {
+				p.Definition = nil
+			}),
+			want: "no pinned workflow definition",
+		},
+		{
 			name: "gate verdict references unrecorded artifact",
 			proj: mutate(func(p *JournalProjection) {
 				at := p.Ops[1].Time

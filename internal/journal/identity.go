@@ -10,6 +10,10 @@ import (
 // canonical graph a run started with.
 const PinnedWorkflowGraphInputName = "workflow-graph"
 
+// PinnedWorkflowDefinitionInputName is the immutable workflow Definition
+// snapshot used to reconstruct the exact compiled machine after process loss.
+const PinnedWorkflowDefinitionInputName = "workflow-definition"
+
 // TriggerKind is how a run was started.
 type TriggerKind string
 

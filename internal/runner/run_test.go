@@ -1889,12 +1889,24 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		id.RunControls.StalledRunTimeout != "2h0m0s" || id.RunControls.MaxRunDuration != "6h0m0s" {
 		t.Errorf("run.yaml runControls = %+v, want pinned effective controls", id.RunControls)
 	}
-	if len(id.Inputs) != 2 ||
+	if len(id.Inputs) != 3 ||
 		id.Inputs[0].Name != "item" ||
-		id.Inputs[1].Name != journal.PinnedWorkflowGraphInputName {
-		t.Errorf("expected the backlog item and workflow graph snapshotted as immutable inputs, got %+v", id.Inputs)
+		id.Inputs[1].Name != journal.PinnedWorkflowDefinitionInputName ||
+		id.Inputs[2].Name != journal.PinnedWorkflowGraphInputName {
+		t.Errorf("expected the backlog item, workflow definition, and workflow graph snapshotted as immutable inputs, got %+v", id.Inputs)
 	}
-	graphBytes, err := rd.ArtifactBytes(id.Inputs[1].Ref)
+	definitionBytes, err := rd.ArtifactBytes(id.Inputs[1].Ref)
+	if err != nil {
+		t.Fatalf("read pinned workflow definition: %v", err)
+	}
+	var pinnedDefinition workflow.Definition
+	if err := json.Unmarshal(definitionBytes, &pinnedDefinition); err != nil {
+		t.Fatalf("parse pinned workflow definition: %v", err)
+	}
+	if !reflect.DeepEqual(pinnedDefinition, machine.Def) {
+		t.Errorf("pinned workflow definition = %+v, want %+v", pinnedDefinition, machine.Def)
+	}
+	graphBytes, err := rd.ArtifactBytes(id.Inputs[2].Ref)
 	if err != nil {
 		t.Fatalf("read pinned workflow graph: %v", err)
 	}
