@@ -55,7 +55,10 @@ var goldenDigests = map[string]string{
 	// #2213/#2341: await-ci and PR-opening tasks declare provider-neutral PR
 	// capabilities.
 	// #2386: read-only duplicate discovery declares issue-read, not issue-write.
-	"implementation.yaml":   "sha256:0465d9488b0bbbc979b98394793d16d3209ad708dc175768d0332cd39dcd8281",
+	// C+D2/#2861 wave: await-ci gained inputs.kind=ci-poll — its command was
+	// always a placeholder (there is no `goobers ci-poll` CLI command), and the
+	// new unknown-subcommand admission makes the kind dispatch explicit.
+	"implementation.yaml":   "sha256:8a7ea8c6942f2a1bdbb94e56631573bf690c6e7dc4a18b23efbcc2eafc672df5",
 	"backlog-curation.yaml": "sha256:73b4c30bc6a74f64d912709b7414a5e4ad52b08afbddc74dd3612df91b69cdbd",
 	"work-nomination.yaml":  "sha256:88d04995ecc49d586b989ccb8d4127c932174e4067f9249fd8e92e31c52bd0d4",
 }

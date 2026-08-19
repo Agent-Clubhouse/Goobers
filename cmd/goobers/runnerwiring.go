@@ -630,6 +630,13 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// Gaggle-level runner requirements feed push-boundary admission (#2861):
+	// each stage's effective requirement set is its gaggle's
+	// RequiredCapabilities union its own.
+	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
+	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -641,6 +648,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
+			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}

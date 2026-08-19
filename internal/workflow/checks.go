@@ -49,6 +49,18 @@ func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec)
 	return interpreter.checkWorkflowAdmission(def, goobersForCapabilityAdmission(goobers))
 }
 
+// CheckPushBoundaries reports provably cross-platform task transitions that
+// hand off unpushed repo workspace state (#2861). gaggleRequiredCapabilities
+// is the workflow's gaggle-level GaggleSpec.RequiredCapabilities; each
+// stage's effective requirement set is that union its own.
+func CheckPushBoundaries(def Definition, gaggleRequiredCapabilities []string) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkPushBoundaries(def, gaggleRequiredCapabilities)
+}
+
 // CheckGateParameters reports invalid built-in gate parameters.
 func CheckGateParameters(def Definition) []string {
 	interpreter, err := interpreterForDefinition(def)

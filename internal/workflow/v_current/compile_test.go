@@ -318,7 +318,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 		{name: "empty result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "  "}, wantWarn: true},
 		{name: "configured result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "claimed-item.json"}},
 		{name: "read only query", command: []string{"goobers", "backlog-query"}},
-		{name: "unrelated claim flag", command: []string{"goobers", "status", "--claim"}},
+		{name: "unrelated claim flag", command: []string{"goobers", "publish-batch", "--claim"}},
 		{name: "shell command", command: []string{"sh", "-c", "goobers backlog-query --claim"}, wantWarn: true},
 	}
 	for _, tc := range cases {
@@ -869,18 +869,25 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	}
 
 	readOnlyTask := apiv1.Task{
-		Name:         "read-backlog",
-		Type:         apiv1.TaskDeterministic,
-		Goal:         "confirm backlog access",
-		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
-		Capabilities: []string{string(capability.GitHubIssuesWrite)},
+		Name: "read-backlog",
+		Type: apiv1.TaskDeterministic,
+		Goal: "confirm backlog access",
+		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
 	}
-	_, err := compileAcknowledged(definition("write-only-backlog-read", readOnlyTask))
+	_, err := compileAcknowledged(definition("no-capability-backlog-read", readOnlyTask))
 	want := `task "read-backlog" invokes built-in subcommand "backlog-query" but does not declare capability "github:issues:read"`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
-	readOnlyTask.Capabilities = append(readOnlyTask.Capabilities, string(capability.GitHubIssuesRead))
+	// The #2386 un-breaking: a broader write grant explicitly SUBSUMES the
+	// narrowed read requirement (internal/capability.Subsumes, #3300), so a
+	// config already holding strictly more authority than the requirement
+	// asks for keeps compiling.
+	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	if _, err := compileAcknowledged(definition("write-subsumes-backlog-read", readOnlyTask)); err != nil {
+		t.Fatalf("read-only backlog-query with subsuming write capability should compile: %v", err)
+	}
+	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesRead)}
 	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {
 		t.Fatalf("read-only backlog-query with explicit read capability should compile: %v", err)
 	}
