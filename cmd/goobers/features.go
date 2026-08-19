@@ -170,14 +170,17 @@ func featureMatrixRows(features []workflow.Feature, onlyVersion string) ([]featu
 // 0 on success, 2 for a missing/unreadable root, and 1 for a config that fails
 // to load, mirroring `goobers validate`.
 func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, int) {
-	return instanceUsedFeaturesWithResolver(root, stderr, workflow.FeaturesForGoober)
+	return instanceUsedFeaturesWithResolver(root, stderr, workflow.FeaturesForGaggle, workflow.FeaturesForGoober)
 }
+
+type gaggleFeatureResolver func(workflow.Definition, apiv1.GaggleSpec) ([]workflow.Feature, error)
 
 type gooberFeatureResolver func(workflow.Definition, apiv1.GooberSpec) ([]workflow.Feature, error)
 
 func instanceUsedFeaturesWithResolver(
 	root string,
 	stderr io.Writer,
+	resolveGaggle gaggleFeatureResolver,
 	resolveGoober gooberFeatureResolver,
 ) ([]workflow.Feature, int) {
 	l := instance.NewLayout(root)
@@ -211,6 +214,22 @@ func instanceUsedFeaturesWithResolver(
 			addUsedFeature(used, feature)
 		}
 	}
+	// Gaggle-scoped features (sandbox posture, sparse checkout) live on the
+	// GaggleSpec, not on any workflow, so without this fan-out they are
+	// invisible to --used (#3297).
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		for _, def := range featureDefinitionsForGaggle(set.Workflows, g.Name) {
+			features, err := resolveGaggle(def, g.Spec)
+			if err != nil {
+				pf(stderr, "error: gaggle %q: %v\n", g.Name, err)
+				return nil, 1
+			}
+			for _, feature := range features {
+				addUsedFeature(used, feature)
+			}
+		}
+	}
 	for i := range set.Goobers {
 		g := &set.Goobers[i]
 		for _, def := range featureDefinitionsForGoober(set.Workflows, g.Spec) {
@@ -233,31 +252,22 @@ func instanceUsedFeaturesWithResolver(
 	return out, 0
 }
 
+// featureDefinitionsForGaggle adapts the loaded workflow list to the shared
+// per-DSL-pin fan-out (workflow.FeatureDefinitionsByDSLVersion, #3297) so this
+// CLI and api/validate cannot drift on version-resolution policy — including
+// the workflow-less fallback to the newest supported version.
 func featureDefinitionsForGaggle(workflows []apiv1.Workflow, gaggle string) []workflow.Definition {
-	byVersion := map[string]workflow.Definition{}
+	var definitions []workflow.Definition
 	for i := range workflows {
 		wf := &workflows[i]
 		if wf.Spec.Gaggle != gaggle {
 			continue
 		}
-		version := wf.DSLVersion
-		byVersion[version] = workflow.Definition{
-			Name: wf.Name, DSLVersion: version, Spec: wf.Spec,
-		}
+		definitions = append(definitions, workflow.Definition{
+			Name: wf.Name, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+		})
 	}
-	if len(byVersion) == 0 {
-		return []workflow.Definition{{}}
-	}
-	versions := make([]string, 0, len(byVersion))
-	for version := range byVersion {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	definitions := make([]workflow.Definition, 0, len(versions))
-	for _, version := range versions {
-		definitions = append(definitions, byVersion[version])
-	}
-	return definitions
+	return workflow.FeatureDefinitionsByDSLVersion(definitions)
 }
 
 func featureDefinitionsForGoober(workflows []apiv1.Workflow, spec apiv1.GooberSpec) []workflow.Definition {

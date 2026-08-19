@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -259,6 +262,57 @@ var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfi
 		return nil, err
 	}
 	return source.Token, nil
+}
+
+// newWorkflowSourceAppTokenSource builds the installation-token minting source
+// for a github-app workflowSource (#3274). The daemon's config-repo fetch is
+// wired here — the composition root — because internal/instance owns the
+// gitsource seam but cannot import internal/githubapp (which imports it); the
+// gitsource receives the returned instance.GitTokenSource instead. A package
+// var, like newGitHubAppTokenSource, so CLI tests substitute a fake minter.
+var newWorkflowSourceAppTokenSource = func(source instance.WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (instance.GitTokenSource, error) {
+	if !source.GitHubAppAuth() {
+		return nil, errors.New("workflowSource does not use github-app auth")
+	}
+	repository, err := workflowSourceRepositoryName(source.URL)
+	if err != nil {
+		return nil, err
+	}
+	const keyRefName = "workflow-source-private-key"
+	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{source.Auth.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
+	if err != nil {
+		return nil, fmt.Errorf("configure workflow-source App key source: %w", err)
+	}
+	return githubapp.New(githubapp.Config{
+		AppID:          string(source.Auth.AppID),
+		InstallationID: string(source.Auth.InstallationID),
+		// Down-scope every mint to the config repo itself — the same per-repo
+		// scoping discipline as repos[] App auth (MGV-5 #1012): the App
+		// installation may cover more repositories than the definitions tree,
+		// and this token only ever needs to read one of them.
+		Repositories: []string{repository},
+		Key: func(ctx context.Context) (string, error) {
+			return keyResolver.Resolve(ctx, keyRefName)
+		},
+		Registrar: registrar,
+	})
+}
+
+// workflowSourceRepositoryName derives the repository name the minted
+// installation token is down-scoped to from the remote config URL's last path
+// segment (GitHub clone URLs end /<owner>/<repo>[.git]). Fail closed on a URL
+// with no derivable name: minting unscoped instead would silently widen the
+// token to the installation's whole repository set.
+func workflowSourceRepositoryName(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse workflowSource url: %w", err)
+	}
+	name := path.Base(strings.TrimSuffix(parsed.Path, ".git"))
+	if name == "" || name == "." || name == "/" {
+		return "", fmt.Errorf("cannot derive the config repository name from workflowSource url %q for installation-token down-scoping", rawURL)
+	}
+	return name, nil
 }
 
 // buildWorktreeGitEnv builds the worktree Manager's per-repo git-auth resolver
