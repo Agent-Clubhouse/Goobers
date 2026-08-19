@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // runPollInterval bounds how often waitForRunTerminal re-reads a run's
@@ -88,7 +89,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *pr < 0 || (*pr > 0 && target.Workflow != "merge-review") {
+	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) || (*pr > 0 && target.Workflow != "merge-review") {
 		pf(stderr, "error: --pr requires a positive pull request number and the merge-review workflow\n")
 		return 2
 	}
@@ -197,7 +198,9 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	for _, e := range setup.Entries {
 		if e.Workflow == target.Workflow && (target.Gaggle == "" || e.Gaggle == target.Gaggle) {
 			matches++
-			gaggle = e.Gaggle
+			if matches == 1 {
+				gaggle = e.Gaggle
+			}
 		}
 	}
 	if matches == 0 {
@@ -229,11 +232,17 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	if target.Gaggle != "" || target.PR > 0 {
 		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
 		if target.PR > 0 {
-			runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
-				webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			if target.Gaggle != "" {
+				runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			} else {
+				runID, err = sched.TriggerSignal(triggerCtx, target.Workflow, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			}
 		} else {
 			runID, err = sched.TriggerExact(triggerCtx, identity, time.Now())
 		}
+
 	} else {
 		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
 	}
@@ -277,6 +286,48 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	pf(stdout, "finished: phase=%s\n", phase)
 	pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 	return exitForPhase(phase)
+}
+
+func flagWasSet(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || arg == "-"+name || strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+type targetedPullRequestReader interface {
+	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
+}
+
+func validateTargetedPullRequest(ctx context.Context, root string, entry localscheduler.WorkflowEntry, number int) error {
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(entry.RepoRef.Provider),
+		Owner:    entry.RepoRef.Owner,
+		Project:  entry.RepoRef.Project,
+		Name:     entry.RepoRef.Name,
+		URL:      entry.RepoRef.BaseURL,
+	}
+	provider, err := newProviderForStage(root, repo, true, withStageProviderCache())
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository: %w", number, err)
+	}
+	reader, ok := provider.(targetedPullRequestReader)
+	if !ok {
+		return fmt.Errorf("validate pull request #%d: provider %q does not support pull-request lookup", number, repo.Provider)
+	}
+	pr, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(number))
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository: %w", number, err)
+	}
+	if pr.Number != number {
+		return fmt.Errorf("pull request #%d was not returned by the configured repository", number)
+	}
+	if !strings.EqualFold(pr.State, "open") {
+		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, pr.State)
+	}
+	return nil
 }
 
 // runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock

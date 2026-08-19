@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -474,6 +475,28 @@ func TestTriggerSignalExactPreservesTargetedReference(t *testing.T) {
 		t.Fatalf("trigger = %+v, want targeted pull-request signal", trigger)
 	}
 	sched.Wait()
+}
+
+func TestTriggerSignalExactValidatesTargetedPullRequestBeforeDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, number int) error {
+		return fmt.Errorf("pull request #%d is closed", number)
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "pull request #3261 is closed") {
+		t.Fatalf("targeted validation error = %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
 }
 
 func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {

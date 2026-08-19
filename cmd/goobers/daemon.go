@@ -47,6 +47,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
+	Root         string
 	Runner       *runner.Runner
 	Runners      map[string]*runner.Runner
 	LegacyRunner *runner.Runner
@@ -445,6 +446,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	return &schedulerSetup{
+		Root:              l.Root,
 		Runner:            definitions.Runner,
 		Runners:           definitions.Runners,
 		LegacyRunner:      legacyRunner,
@@ -1124,6 +1126,11 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.Root != "" {
+		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
+			return validateTargetedPullRequest(ctx, s.Root, entry, number)
+		}))
+	}
 	// RRQ-1/#1101: the local runner's static advertised capability set, so
 	// dispatch can refuse a run whose gaggle/stages require a capability this
 	// runner does not claim. Wired uniformly for both `up` and `run`.

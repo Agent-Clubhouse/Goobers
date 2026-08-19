@@ -243,7 +243,8 @@ type Scheduler struct {
 	// capability the runner does not claim. Empty (the default) claims nothing,
 	// which only matters for entries that declare RequiredCapabilities — an
 	// entry that declares none is never refused on this axis.
-	runnerCapabilities runnercap.Claimed
+	runnerCapabilities  runnercap.Claimed
+	targetedPRValidator func(context.Context, WorkflowEntry, int) error
 }
 
 // Option configures a Scheduler.
@@ -333,6 +334,15 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 func WithRunnerCapabilities(caps []string) Option {
 	return func(s *Scheduler) {
 		s.runnerCapabilities = runnercap.NewClaimed(caps)
+	}
+}
+
+// WithTargetedPRValidator validates a manually targeted pull request before a
+// signal trigger is admitted. It is optional so the scheduler package remains
+// independent of provider construction.
+func WithTargetedPRValidator(validate func(context.Context, WorkflowEntry, int) error) Option {
+	return func(s *Scheduler) {
+		s.targetedPRValidator = validate
 	}
 }
 
@@ -1677,6 +1687,15 @@ func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIde
 	s.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	if pullNumber, targeted := webhookhttp.PullNumberFromTriggerRef(ref); targeted && s.targetedPRValidator != nil {
+		number, convErr := strconv.Atoi(pullNumber)
+		if convErr != nil {
+			return "", fmt.Errorf("localscheduler: invalid targeted pull request %q: %w", pullNumber, convErr)
+		}
+		if err := s.targetedPRValidator(ctx, entry, number); err != nil {
+			return "", err
+		}
 	}
 	for _, subscribed := range entry.Signals {
 		if subscribed == signal {
