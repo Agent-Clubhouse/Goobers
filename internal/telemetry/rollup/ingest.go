@@ -475,7 +475,23 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 			runsRoots = append(runsRoots, filepath.Join(instanceRoot, "gaggles", gaggle.Name(), "runs"))
 		}
 	}
+	seenRoots := make(map[string]bool, len(runsRoots))
 	for _, runsRoot := range runsRoots {
+		canonical, err := canonicalRunsRoot(runsRoot)
+		if err != nil {
+			return err
+		}
+		if seenRoots[canonical] {
+			// instanceRoot/runs commonly symlinks to one of the
+			// gaggles/<gaggle>/runs roots (documented compat layout); without
+			// this dedup the same run directory is scanned — and its CI check
+			// failures inserted — twice, colliding on the failures table's
+			// (run_id, seq, check_name) primary key and aborting the whole
+			// migration transaction.
+			continue
+		}
+		seenRoots[canonical] = true
+
 		dirs, err := runDirs(runsRoot)
 		if err != nil {
 			return err
@@ -495,6 +511,22 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 		}
 	}
 	return nil
+}
+
+// canonicalRunsRoot resolves a scan root to a key that's stable across
+// symlink aliasing, so two roots pointing at the same physical directory
+// (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat
+// symlink) dedupe to one scan. A root that doesn't exist yet can't alias
+// anything real, so it resolves to its own cleaned path rather than erroring.
+func canonicalRunsRoot(root string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filepath.Clean(root), nil
+		}
+		return "", fmt.Errorf("rollup: resolve runs root %s: %w", root, err)
+	}
+	return resolved, nil
 }
 
 // Runner-namespace keys carrying a stage failure's typed cause. The producer
