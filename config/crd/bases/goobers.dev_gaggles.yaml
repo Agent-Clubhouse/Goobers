@@ -150,7 +150,7 @@ spec:
                     type: string
                   labels:
                     description: |-
-                      Query/labels narrow which items this gaggle considers work. Routing of an
+                      Labels narrow which items this gaggle considers work. Routing of an
                       item to a specific workflow is handled by workflow selectors (SCH-010).
                     items:
                       type: string
