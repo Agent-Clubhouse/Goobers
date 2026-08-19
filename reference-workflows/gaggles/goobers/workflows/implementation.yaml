@@ -289,6 +289,8 @@ spec:
         - provider:pr:write
       expectedOutputs:
         - ciStatus
+        # Passed through by the built-in so timeout can re-enter this task.
+        - prNumber
       next: ci-gate
 
     - name: close-out
@@ -437,17 +439,7 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it parks for remediation/investigation
-        # instead of spending an agentic repass re-implementing a change
-        # that was never actually reviewed as failing.
-        #
-        # Via park-escalated, NOT straight to "@escalate" (#929). Both reach
-        # the same terminal phase — park-escalated's own next is "@escalate" —
-        # but the issue-side bookkeeping only runs if the stage does. Routing
-        # timeout directly at the terminal state left the driving issue
-        # permanently orphaned: still goobers:ready, still goobers:claimed,
-        # never parked at all (#2028: goobers:needs-remediation here). Still
-        # claimed means query-backlog will not re-offer it, and no park label
-        # means no one sees it either, so it silently left the workable
-        # backlog with no signal at all.
-        timeout: park-escalated
+        # didn't finish in this polling window. Re-enter ci-poll at the
+        # journaled stage boundary so the same PR remains claimed and keeps
+        # waiting without consuming implementation or repass budget (#3325).
+        timeout: ci-poll
