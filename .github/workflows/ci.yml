@@ -86,20 +86,27 @@ jobs:
         # and the Chromium download stall on registry/CDN hiccups and eat the
         # whole timeout, unlike go mod download and golangci-lint which
         # already retry. Six timeouts in one night on the v0.2.0 wave.
-        timeout-minutes: 15
+        timeout-minutes: 20
         shell: bash
         run: |
-          set -o pipefail
-          for attempt in 1 2 3; do
-            if npm --prefix portal ci --no-audit --no-fund \
-              && npm --prefix portal exec -- playwright install --with-deps chromium; then
-              exit 0
-            fi
-            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
-            sleep $((attempt * 10))
-          done
-          echo "portal/Chromium install failed after 3 attempts" >&2
-          exit 1
+          retry_network_command() {
+            local label="$1"
+            shift
+            for attempt in 1 2 3; do
+              if timeout --signal=TERM --kill-after=15s 180s "$@"; then
+                return 0
+              fi
+              echo "::warning::${label} attempt ${attempt}/3 failed or hung; retrying"
+              sleep $((attempt * 10))
+            done
+            echo "::error::${label} failed after 3 bounded attempts"
+            return 1
+          }
+
+          retry_network_command "portal npm install" \
+            npm --prefix portal ci --no-audit --no-fund
+          retry_network_command "Playwright Chromium install" \
+            npm --prefix portal exec -- playwright install --with-deps chromium
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
         timeout-minutes: 8
@@ -268,20 +275,27 @@ jobs:
         # and the Chromium download stall on registry/CDN hiccups and eat the
         # whole timeout, unlike go mod download and golangci-lint which
         # already retry. Six timeouts in one night on the v0.2.0 wave.
-        timeout-minutes: 15
+        timeout-minutes: 20
         shell: bash
         run: |
-          set -o pipefail
-          for attempt in 1 2 3; do
-            if npm --prefix portal ci --no-audit --no-fund \
-              && npm --prefix portal exec -- playwright install --with-deps chromium; then
-              exit 0
-            fi
-            echo "::warning::portal/Chromium install attempt ${attempt} failed; retrying"
-            sleep $((attempt * 10))
-          done
-          echo "portal/Chromium install failed after 3 attempts" >&2
-          exit 1
+          retry_network_command() {
+            local label="$1"
+            shift
+            for attempt in 1 2 3; do
+              if timeout --signal=TERM --kill-after=15s 180s "$@"; then
+                return 0
+              fi
+              echo "::warning::${label} attempt ${attempt}/3 failed or hung; retrying"
+              sleep $((attempt * 10))
+            done
+            echo "::error::${label} failed after 3 bounded attempts"
+            return 1
+          }
+
+          retry_network_command "portal npm install" \
+            npm --prefix portal ci --no-audit --no-fund
+          retry_network_command "Playwright Chromium install" \
+            npm --prefix portal exec -- playwright install --with-deps chromium
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
@@ -647,9 +661,31 @@ jobs:
       # `make test-integration`. Strict mode makes an absent executable red.
       - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
         timeout-minutes: 12
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash maven
+          # Hosted runners occasionally leave the Azure mirror connected but
+          # unable to serve package indexes. Use the canonical mirror and bound
+          # every attempt so this setup cannot hold the workflow indefinitely.
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install \
+                 bash bubblewrap coreutils dash maven; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::declared dependency provisioning failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::declared dependency provisioning attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
@@ -1003,6 +1039,7 @@ jobs:
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
     if: ${{ github.event_name != 'push' }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -1020,8 +1057,28 @@ jobs:
 
       - name: Install bubblewrap
         if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install bubblewrap; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::bubblewrap installation failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::bubblewrap installation attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
           # namespaces via AppArmor, which bubblewrap needs to set up its
           # uid map. Relax it so the confinement probe can create the

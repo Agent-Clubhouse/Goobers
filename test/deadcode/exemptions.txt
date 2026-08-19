@@ -2,7 +2,7 @@
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
 # Public API and compatibility surfaces.
-github.com/goobers/goobers/internal/capability.Subsumes # Capability subsumption relation (#3300): defined ahead of its admission-check consumer (the C+D2 wave wires it into admissionProblems and removes this entry); exhaustively exercised by subsume_test.go.
+github.com/goobers/goobers/internal/workflow/v_next.dslVersionLevel # Per-version level lookup reachable only through the release-gate evolution validation (#3307 wave), which the tagged-baseline tests drive; the admission path never calls it.
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
@@ -46,6 +46,7 @@ github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-con
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
+github.com/goobers/goobers/internal/builtincmd.Names # Built-in subcommand inventory accessor, exercised by cmd/goobers/builtincmd_parity_test.go's CLI-registry parity check (#2861 admission hardening).
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory, exercised by telemetry_test.go and otlp_test.go's attribute-coverage checks (#2044 audit).
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
