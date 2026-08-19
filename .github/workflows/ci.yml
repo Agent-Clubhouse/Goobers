@@ -59,68 +59,6 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
-  unit-gate:
-    name: unit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: portal/package-lock.json
-
-      - name: Install Portal dependencies and pinned Chromium
-        # Retried because these are the repo's dominant CI flake (#3139): npm
-        # and the Chromium download stall on registry/CDN hiccups and eat the
-        # whole timeout, unlike go mod download and golangci-lint which
-        # already retry. Six timeouts in one night on the v0.2.0 wave.
-        timeout-minutes: 20
-        shell: bash
-        run: |
-          retry_network_command() {
-            local label="$1"
-            shift
-            for attempt in 1 2 3; do
-              if timeout --signal=TERM --kill-after=15s 180s "$@"; then
-                return 0
-              fi
-              echo "::warning::${label} attempt ${attempt}/3 failed or hung; retrying"
-              sleep $((attempt * 10))
-            done
-            echo "::error::${label} failed after 3 bounded attempts"
-            return 1
-          }
-
-          retry_network_command "portal npm install" \
-            npm --prefix portal ci --no-audit --no-fund
-          retry_network_command "Playwright Chromium install" \
-            npm --prefix portal exec -- playwright install --with-deps chromium
-
-      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
-        timeout-minutes: 8
-        shell: bash
-        run: |
-          set -o pipefail
-          curl -sSfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 15 \
-            "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
-            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: Run unit gate
-        run: make ci
-
   e2e:
     name: e2e
     runs-on: ubuntu-latest
@@ -873,7 +811,7 @@ jobs:
       # ~15s on Linux and isn't otherwise Windows-sensitive, so only the two
       # tests that actually exercise canonicalRunsRoot's dependency on
       # instance.ResolveRuntimeAlias run here. Without this step they only ran
-      # under unit-gate (ubuntu-latest), where ResolveRuntimeAlias takes the
+      # under the Linux unit shards, where ResolveRuntimeAlias takes the
       # plain-symlink branch and the Windows reparse-point junction parser in
       # runtime_alias_windows.go — the one this PR's alias-dedup fix depends
       # on — stayed unexercised on the only platform where it runs (#3280).
@@ -973,7 +911,11 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
-    # unit-gate, e2e, envtest, and coverage joined in #3206. #3152 added those
+    # e2e, envtest, and coverage joined in #3206 (#3152 added them as jobs
+    # without wiring them here). unit-gate — the pre-parallelization `make ci`
+    # monolith — was retired once every check it ran had a dedicated job; it
+    # duplicated the checks/lint/unit/shipped/deadcode slices wholesale and
+    # doubled the CI-setup network exposure (#3139/#3322) for zero coverage.
     # four jobs intending to make them required, but never added them here — and
     # this aggregate is the only context the branch ruleset requires, so all four
     # could go red while `make ci` reported success and the merge proceeded. That
@@ -985,7 +927,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, unit-gate, e2e, envtest, coverage]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, e2e, envtest, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -1004,7 +946,6 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
           LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
-          UNIT_GATE_RESULT: ${{ needs.unit-gate.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
           ENVTEST_RESULT: ${{ needs.envtest.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
@@ -1030,7 +971,6 @@ jobs:
           check "declared-dependency integration"    "$INTEGRATION_RESULT"
           check "sandbox confinement"                "$SANDBOX_RESULT"
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
-          check "unit gate (make ci)"                "$UNIT_GATE_RESULT"
           check "end-to-end gate"                    "$E2E_RESULT"
           check "envtest integration gate"           "$ENVTEST_RESULT"
           check "coverage threshold"                 "$COVERAGE_RESULT"
