@@ -1712,13 +1712,14 @@ func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
-	// A declared escalation-control task owns the human-facing disposition.
-	// Derive that role from the workflow instead of a shipped stage name.
+	// An escalation-control task that runs the configured issue close-out
+	// operation owns the human-facing disposition. Merely being the escalation
+	// branch target is insufficient: custom cleanup tasks may not notify.
 	if gr.Escalated && machine != nil {
 		if g, ok := machine.Gate(gr.Gate); ok {
 			if target, configured := workflow.BranchTarget(g, workflow.BranchEscalate); configured &&
 				target == gr.Target && !workflow.IsReservedAnyTarget(target) {
-				if _, task := machine.Task(target); task {
+				if task, ok := machine.Task(target); ok && taskOwnsEscalationNotification(task) {
 					return "", false
 				}
 			}
@@ -1749,6 +1750,13 @@ func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (
 		}
 	}
 	return reason, true
+}
+
+func taskOwnsEscalationNotification(task apiv1.Task) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		task.Run.Command[0] == "goobers" &&
+		task.Run.Command[1] == "issue-close-out"
 }
 
 func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, reason string) error {

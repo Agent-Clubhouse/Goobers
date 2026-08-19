@@ -1033,7 +1033,13 @@ func escalationParkingMachine(t *testing.T) *workflow.Machine {
 			// the shipped implementation workflow: parking must not downgrade an
 			// escalation to an abort, which is what every escalation surface
 			// (run exit 3, escalationCause, trace) selects on.
-			{Name: "park-escalated", Type: apiv1.TaskDeterministic, Goal: "park the escalated issue", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: workflow.TargetEscalate},
+			{
+				Name: "park-escalated", Type: apiv1.TaskDeterministic, Goal: "park the escalated issue",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "issue-close-out"}},
+				Capabilities:  []string{"github:issues:write"},
+				PolicyActions: []string{"update-issue"},
+				Next:          workflow.TargetEscalate,
+			},
 		},
 		Gates: []apiv1.Gate{{
 			Name:      "review",
