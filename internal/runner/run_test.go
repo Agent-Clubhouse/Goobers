@@ -2986,7 +2986,37 @@ func TestValidateDependencyNotMetAllowsPointerSpecificInputReadFailure(t *testin
 	}
 }
 
-func TestTaskOutcomeRewritesDependencyNotMetWithoutContextInspection(t *testing.T) {
+func TestValidateDependencyResultUsesOnlyInvocationPointers(t *testing.T) {
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-context-from-validation"}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = jr.Close() }()
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
+		{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "included.artifact[0]"}}},
+	})
+	result := apiv1.ResultEnvelope{
+		Status:     apiv1.ResultBlocked,
+		Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "external dependency remains"},
+		Transcript: transcript,
+	}
+	allPointers := []apiv1.ContextPointer{
+		{Name: "included.artifact[0]"},
+		{Name: "excluded.artifact[0]"},
+	}
+	task := apiv1.Task{Name: "implement", ContextFrom: []string{"included.artifact[0]"}}
+	invocationPointers := apiv1.SelectContextPointers(allPointers, task.ContextFrom)
+
+	got := (&Runner{}).validateDependencyResult(jr, task.Name, result, invocationPointers)
+	if got.Error == nil || got.Error.Code != "DEPENDENCY_NOT_MET" {
+		t.Fatalf("validated result error = %+v, want original dependency after inspecting every invocation pointer", got.Error)
+	}
+}
+
+func TestTaskOutcomeRetriesJournaledContextInspectionFailure(t *testing.T) {
 	runsDir := t.TempDir()
 	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-task-outcome-context-validation"}, nil)
 	if err != nil {
@@ -2994,22 +3024,17 @@ func TestTaskOutcomeRewritesDependencyNotMetWithoutContextInspection(t *testing.
 	}
 	defer func() { _ = jr.Close() }()
 
-	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
-		{"role": "assistant", "content": "The prompt says to use list_inputs and read_input."},
-	})
 	r := &Runner{}
 	ws := &walkState{
-		jr:       jr,
-		in:       StartInput{RunID: "run-task-outcome-context-validation"},
-		steps:    1,
-		pointers: []apiv1.ContextPointer{{Name: "query-backlog.artifact[0]"}},
+		jr:    jr,
+		in:    StartInput{RunID: "run-task-outcome-context-validation"},
+		steps: 1,
 	}
 	next, result, advance, err := r.taskOutcome(context.Background(), ws, taskTransition{
 		task: apiv1.Task{Name: "implement"},
 		result: apiv1.ResultEnvelope{
-			Status:     apiv1.ResultBlocked,
-			Error:      &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "required context unavailable"},
-			Transcript: transcript,
+			Status: apiv1.ResultBlocked,
+			Error:  &apiv1.ErrorInfo{Code: "CONTEXT_NOT_INSPECTED", Message: "required context was not read"},
 		},
 	})
 	if err != nil {
@@ -3023,6 +3048,10 @@ func TestTaskOutcomeRewritesDependencyNotMetWithoutContextInspection(t *testing.
 	}
 	if next != "implement" {
 		t.Fatalf("next = %q, want implement for same-stage retry", next)
+	}
+	if !strings.Contains(ws.retryInstructionAddendum, "required context was not read") ||
+		!strings.Contains(ws.retryInstructionAddendum, "list_inputs") {
+		t.Fatalf("retry instruction addendum = %q, want durable rejection feedback", ws.retryInstructionAddendum)
 	}
 
 	rd, err := journal.OpenRead(jr.Dir())

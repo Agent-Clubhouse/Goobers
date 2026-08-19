@@ -859,11 +859,12 @@ type walkState struct {
 
 	gateEval *gate.Evaluator
 
-	state      string
-	resume     *resumeContext
-	rerun      *rerunContext
-	steps      int
-	stepBudget atomic.Int64
+	state                    string
+	resume                   *resumeContext
+	rerun                    *rerunContext
+	retryInstructionAddendum string
+	steps                    int
+	stepBudget               atomic.Int64
 
 	pointers   []apiv1.ContextPointer
 	lastStage  string
@@ -1417,6 +1418,10 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	var resumedResult *apiv1.ResultEnvelope
 	var infraFailedAttemptCommittedWork bool
 	var resumeAccounting *resumeRetryAccounting
+	if ws.retryInstructionAddendum != "" {
+		instructionAddendum = ws.retryInstructionAddendum
+		ws.retryInstructionAddendum = ""
+	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
@@ -2309,6 +2314,19 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 	}
 }
 
+func (r *Runner) validateDependencyResult(jr executionJournal, stage string, result apiv1.ResultEnvelope, invocationPointers []apiv1.ContextPointer) apiv1.ResultEnvelope {
+	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
+		result.Error.Code != "DEPENDENCY_NOT_MET" || len(invocationPointers) == 0 {
+		return result
+	}
+	if validationErr := r.validateDependencyNotMet(jr, stage, result, invocationPointers); validationErr != nil {
+		result.Error = validationErr
+		result.Outputs = nil
+		result.Artifacts = nil
+	}
+	return result
+}
+
 func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
 	if len(pointers) == 0 {
 		return nil
@@ -2357,20 +2375,13 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", stalledResult, false, stalledErr
 	}
 
-	// #3249: validate DEPENDENCY_NOT_MET failures have evidence of context inspection
-	// when context pointers were provided in the invocation.
 	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
-		result.Error.Code == "DEPENDENCY_NOT_MET" && len(ws.pointers) > 0 {
-		if validationErr := r.validateDependencyNotMet(jr, t.Name, result, ws.pointers); validationErr != nil {
-			result.Error.Code = validationErr.Code
-			result.Error.Message = validationErr.Message
-			if validationErr.Code == "CONTEXT_NOT_INSPECTED" {
-				// This is a transport/inspection failure, not a real dependency.
-				// Retry the same stage without entering blocked handling or the
-				// gate's repass and unchanged-diff accounting.
-				return t.Name, Result{}, true, nil
-			}
-		}
+		result.Error.Code == "CONTEXT_NOT_INSPECTED" {
+		// runTask validates before stage.finished is journaled, so the retry
+		// reason survives a crash and is available as the prior result.
+		ws.retryInstructionAddendum = "Your previous result was rejected by the runner: " + result.Error.Message +
+			". Inspect every provided context pointer with list_inputs and read_input or grep_input before returning DEPENDENCY_NOT_MET."
+		return t.Name, Result{}, true, nil
 	}
 
 	switch result.Status {
@@ -2930,10 +2941,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
-		var attemptAddendum string
-		if class == journal.AttemptHuman {
-			attemptAddendum = instructionAddendum
-		}
+		attemptAddendum := instructionAddendum
 		var usage attemptUsageCollector
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
@@ -3042,6 +3050,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
+		result = r.validateDependencyResult(jr, t.Name, result, upstream)
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
