@@ -787,6 +787,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
 	}
+	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
+	out.InputInspectionReceipts = receipts
+	out.InputInspectionReceiptsCollected = receiptsCollected
+	if receiptsErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
+	}
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics

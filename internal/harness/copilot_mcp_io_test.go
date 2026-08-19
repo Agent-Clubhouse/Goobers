@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,6 +117,13 @@ func TestGoobersIOAdditionalMCPConfigArgEmptyWithoutSelfBin(t *testing.T) {
 
 func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T) {
 	workspace := t.TempDir()
+	staleReceiptPath := filepath.Join(workspace, goobersIOReceiptFile())
+	if err := os.MkdirAll(filepath.Dir(staleReceiptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleReceiptPath, []byte(`{"tool":"list_inputs","success":true}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	req := RunRequest{
 		Envelope:  testEnvelope(workspace),
 		Workspace: workspace,
@@ -131,6 +139,9 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	}
 	if arg == "" {
 		t.Fatal("expected a non-empty --additional-mcp-config argument")
+	}
+	if _, err := os.Stat(staleReceiptPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale receipt log was not reset: %v", err)
 	}
 	if strings.HasPrefix(arg, "{") {
 		t.Fatalf("--additional-mcp-config must be a file path, got inline JSON %q", arg)
@@ -195,6 +206,9 @@ func TestGoobersIOAdditionalMCPConfigArgBuildsRegistrationAndConfig(t *testing.T
 	}
 	if cfg.ArtifactFile != "findings.md" {
 		t.Errorf("ArtifactFile = %q, want findings.md", cfg.ArtifactFile)
+	}
+	if cfg.ReceiptFile != goobersIOReceiptFile() {
+		t.Errorf("ReceiptFile = %q, want %q", cfg.ReceiptFile, goobersIOReceiptFile())
 	}
 	if got := cfg.Inputs["review-code-quality.artifact[0]"]; got != ".goobers/context/00-review-code-quality.artifact_0_" {
 		t.Errorf("Inputs mapping = %q", got)

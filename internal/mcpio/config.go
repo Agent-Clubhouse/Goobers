@@ -25,6 +25,10 @@ import (
 // config to, inside its own workspace-relative runtime directory.
 const ConfigFileName = "goobers-io-config.json"
 
+// ReceiptFileName is the invocation-scoped JSONL audit log written by the
+// goobers-io server for input inspection calls.
+const ReceiptFileName = "input-inspection-receipts.jsonl"
+
 // Config is what the harness writes before invocation. Workspace is the
 // stage's own worktree; the identity fields come from its invocation envelope;
 // ArtifactFile is empty when the task declares no artifactFile input
@@ -34,6 +38,7 @@ const ConfigFileName = "goobers-io-config.json"
 type Config struct {
 	Workspace    string            `json:"workspace"`
 	ArtifactFile string            `json:"artifactFile,omitempty"`
+	ReceiptFile  string            `json:"receiptFile,omitempty"`
 	Inputs       map[string]string `json:"inputs,omitempty"`
 	RunID        string            `json:"runId"`
 	WorkflowID   string            `json:"workflowId"`
