@@ -1667,12 +1667,14 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 					fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
 				return gr, false, terminal, true, failErr
 			}
-			if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic {
-				required := remediationFailureEvidencePointers(cause, gatePointers)
-				if err := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); err != nil {
-					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-						fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, err))
-					return gr, false, terminal, true, failErr
+			if cause != nil {
+				if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic {
+					required := remediationFailureEvidencePointers(cause, gatePointers)
+					if err := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); err != nil {
+						terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+							fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, err))
+						return gr, false, terminal, true, failErr
+					}
 				}
 			}
 		}
