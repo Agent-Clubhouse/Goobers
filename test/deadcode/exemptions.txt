@@ -2,6 +2,7 @@
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
 # Public API and compatibility surfaces.
+github.com/goobers/goobers/internal/capability.Subsumes # Capability subsumption relation (#3300): defined ahead of its admission-check consumer (the C+D2 wave wires it into admissionProblems and removes this entry); exhaustively exercised by subsume_test.go.
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
