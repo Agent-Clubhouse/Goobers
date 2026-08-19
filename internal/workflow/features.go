@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
@@ -120,6 +121,49 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 		return nil, err
 	}
 	return interpreter.featuresForWorkflow(def)
+}
+
+// FeatureDefinitionsByDSLVersion collapses workflow definitions into one
+// feature-probe Definition per distinct DSL pin, in ascending version order.
+// Gaggle/goober feature-support checks fan out over the returned probes: those
+// objects carry no dslVersion of their own, so their effective DSL version is
+// the set of pins their workflows declare, and a scoped feature must be
+// supported at every pin present (docs/design/dsl-version-lifecycle.md §8.4).
+//
+// An empty input — a gaggle or goober with no workflows — resolves at the
+// newest LevelSupported version from the support matrix, never as an unpinned
+// Definition{}. The version router rewrites an unpinned probe to
+// CurrentDSLVersion, which is deprecated; the moment it turns unsupported,
+// every workflow-less object would fail validation with a migrate-your-pin
+// error its author cannot act on, because those specs deliberately have no
+// dslVersion field to edit (#3297).
+func FeatureDefinitionsByDSLVersion(definitions []Definition) []Definition {
+	byVersion := map[string]Definition{}
+	for _, definition := range definitions {
+		byVersion[definition.DSLVersion] = Definition{
+			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		}
+	}
+	if len(byVersion) == 0 {
+		version, ok := supportmatrix.GetDSL().NewestSupported()
+		if !ok {
+			// No supported version declared at all — a matrix state the support
+			// policy rejects. Fall back to the transitional default rather than
+			// fabricate a version the router would refuse to route.
+			version = supportmatrix.CurrentDSLVersion
+		}
+		return []Definition{{DSLVersion: version}}
+	}
+	versions := make([]string, 0, len(byVersion))
+	for version := range byVersion {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	out := make([]Definition, 0, len(versions))
+	for _, version := range versions {
+		out = append(out, byVersion[version])
+	}
+	return out
 }
 
 // FeaturesForGaggle resolves features used by a gaggle for a pinned definition.
