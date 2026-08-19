@@ -2994,12 +2994,10 @@ func TestValidateDependencyNotMetAllowsPointerSpecificInputReadFailure(t *testin
 }
 
 func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testing.T) {
-	runsDir := t.TempDir()
-	jr, err := journal.Create(runsDir, journal.RunIdentity{RunID: "run-remediation-evidence-validation"}, nil)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
+	jr := newRunnerTestJournal(t, "run-remediation-evidence-validation")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+		t.Fatal(err)
 	}
-	defer func() { _ = jr.Close() }()
 
 	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
 		{"role": "assistant", "content": "The existing change appears complete."},
