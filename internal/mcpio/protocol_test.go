@@ -23,6 +23,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	cfg := Config{
 		Workspace:    ws,
 		ArtifactFile: "findings.md",
+		ReceiptFile:  filepath.Join(".goobers", "mcp-io", ReceiptFileName),
 		Inputs:       map[string]string{"churn-data.artifact[0]": ".goobers/context/00-churn-data.artifact_0_"},
 		RunID:        "run-123",
 		WorkflowID:   "implementation",
@@ -138,6 +139,45 @@ func TestServeFullSession(t *testing.T) {
 		if !strings.Contains(string(runInfoResult), want) {
 			t.Fatalf("get_run_info missing %q: %s", want, runInfoResult)
 		}
+	}
+
+	receipts, err := ReadInputInspectionReceipts(ws, filepath.Join(".goobers", "mcp-io", ReceiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("input inspection receipts = %+v, want list_inputs and read_input", receipts)
+	}
+	if receipts[0].Tool != "list_inputs" || !receipts[0].Success {
+		t.Fatalf("list_inputs receipt = %+v", receipts[0])
+	}
+	if receipts[1].Tool != "read_input" || receipts[1].Input != "churn-data.artifact[0]" ||
+		!receipts[1].Success || !strings.HasPrefix(receipts[1].InputDigest, "sha256:") ||
+		receipts[1].StartLine != 1 || receipts[1].EndLine != 1 {
+		t.Fatalf("read_input receipt = %+v", receipts[1])
+	}
+}
+
+func TestGrepInputRecordsMatches(t *testing.T) {
+	srv, ws := newTestServer(t)
+	var out bytes.Buffer
+	if err := srv.Serve(strings.NewReader(rpcLine(t, 1, "tools/call", map[string]interface{}{
+		"name": "grep_input",
+		"arguments": map[string]interface{}{
+			"name": "churn-data.artifact[0]", "pattern": "upstream", "contextLines": 1,
+		},
+	})), &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	receipts, err := ReadInputInspectionReceipts(ws, filepath.Join(".goobers", "mcp-io", ReceiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 || receipts[0].Tool != "grep_input" ||
+		receipts[0].Input != "churn-data.artifact[0]" || !receipts[0].Success ||
+		!strings.HasPrefix(receipts[0].InputDigest, "sha256:") ||
+		len(receipts[0].MatchLines) != 1 || receipts[0].MatchLines[0] != 1 {
+		t.Fatalf("grep_input receipts = %+v", receipts)
 	}
 }
 

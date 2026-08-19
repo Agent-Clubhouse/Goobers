@@ -3,6 +3,7 @@ package mcpio
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -200,6 +201,13 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 
 	case "list_inputs":
 		items, err := s.tools.ListInputs()
+		receipt := InputInspectionReceipt{Tool: "list_inputs", Success: err == nil}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -216,9 +224,29 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 			EndLine   int    `json:"endLine"`
 		}
 		if err := unmarshalArgs(params.Arguments, &args); err != nil {
-			return nil, err
+			receiptErr := s.tools.recordInputInspection(InputInspectionReceipt{
+				Tool: "read_input", Success: false, Error: err.Error(),
+			})
+			return nil, errors.Join(err, receiptErr)
 		}
 		result, err := s.tools.ReadInput(args.Name, args.StartLine, args.EndLine)
+		receipt := InputInspectionReceipt{
+			Tool: "read_input", Input: args.Name, Success: err == nil,
+		}
+		if err == nil {
+			receipt.InputDigest, err = s.tools.inputDigest(args.Name)
+			receipt.Success = err == nil
+			receipt.StartLine = result.StartLine
+			receipt.EndLine = result.EndLine
+			receipt.TotalLines = result.TotalLines
+			receipt.Truncated = result.Truncated
+		}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -235,9 +263,30 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 			ContextLines int    `json:"contextLines"`
 		}
 		if err := unmarshalArgs(params.Arguments, &args); err != nil {
-			return nil, err
+			receiptErr := s.tools.recordInputInspection(InputInspectionReceipt{
+				Tool: "grep_input", Success: false, Error: err.Error(),
+			})
+			return nil, errors.Join(err, receiptErr)
 		}
 		result, err := s.tools.GrepInput(args.Name, args.Pattern, args.ContextLines)
+		receipt := InputInspectionReceipt{
+			Tool: "grep_input", Input: args.Name, Pattern: args.Pattern, Success: err == nil,
+		}
+		if err == nil {
+			receipt.InputDigest, err = s.tools.inputDigest(args.Name)
+			receipt.Success = err == nil
+			receipt.Truncated = result.Truncated
+			receipt.MatchLines = make([]int, 0, len(result.Matches))
+			for _, match := range result.Matches {
+				receipt.MatchLines = append(receipt.MatchLines, match.LineNumber)
+			}
+		}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -400,6 +400,28 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	out, runErr := e.adapter.Run(ctx, req)
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	invoke.ReportAgentUsage(ctx, out.Metrics)
+	if out.InputInspectionReceiptsCollected {
+		appender, ok := e.recorder.(EventAppender)
+		if !ok {
+			runErr = errors.Join(runErr, fmt.Errorf(
+				"harness: goobers-io receipt collection requires a journal-backed recorder; %T cannot append events",
+				e.recorder,
+			))
+		} else if err := appender.Append(journal.Event{
+			Type:  journal.EventRunnerAnnotation,
+			Stage: env.TaskID,
+			Runner: map[string]any{
+				"kind":     "goobers-io-input-inspection-receipts",
+				"receipts": out.InputInspectionReceipts,
+			},
+		}); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf(
+				"harness: journal goobers-io input inspection receipts for %q: %w",
+				env.TaskID,
+				err,
+			))
+		}
+	}
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {

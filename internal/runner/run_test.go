@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -3025,6 +3026,121 @@ func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testin
 	if !strings.Contains(validationErr.Message, "accepting unchanged remediation") {
 		t.Fatalf("validation message = %q, want unchanged-remediation classification", validationErr.Message)
 	}
+}
+
+func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.T) {
+	t.Run("receipt annotation passes without transcript tool events", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-receipt-validation")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type:  journal.EventRunnerAnnotation,
+			Stage: "remediation-receipt-validation:implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{42}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}}); validationErr != nil {
+			t.Fatalf("validateRemediationEvidence = %+v, want trusted receipts to pass", validationErr)
+		}
+	})
+
+	t.Run("transcript-only tool claims are rejected", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-transcript-rejected")
+		defer func() { _ = run.Close() }()
+		transcript := recordTranscriptSpanPointer(t, run, "implement", []map[string]any{
+			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
+			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "local-ci.artifact[0]"}}},
+		})
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess, Transcript: transcript,
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}})
+		if validationErr == nil || validationErr.Code != "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+			t.Fatalf("validateRemediationEvidence = %+v, want transcript-only evidence rejection", validationErr)
+		}
+	})
+
+	t.Run("receipts must match the exact input and relevant range", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			receipts []mcpio.InputInspectionReceipt
+			wantPass bool
+		}{
+			{
+				name: "wrong digest",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:other", Success: true, StartLine: 1, EndLine: 10, TotalLines: 10},
+				},
+			},
+			{
+				name: "unrelated prefix",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 1, EndLine: 2, TotalLines: 10},
+				},
+			},
+			{
+				name: "complete paginated read",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 1, EndLine: 5, TotalLines: 10},
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 6, EndLine: 10, TotalLines: 10},
+				},
+				wantPass: true,
+			},
+			{
+				name: "grep without match",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", Success: true},
+				},
+			},
+			{
+				name: "grep with match",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", MatchLines: []int{7}, Success: true},
+				},
+				wantPass: true,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				run := newRunnerTestJournal(t, "remediation-receipt-"+strings.ReplaceAll(tt.name, " ", "-"))
+				defer func() { _ = run.Close() }()
+				if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+					t.Fatal(err)
+				}
+				receipts := append([]mcpio.InputInspectionReceipt{{Tool: "list_inputs", Success: true}}, tt.receipts...)
+				if err := run.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: "run:implement",
+					Runner: map[string]any{"kind": "goobers-io-input-inspection-receipts", "receipts": receipts},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+					Status: apiv1.ResultSuccess,
+				}, []apiv1.ContextPointer{{
+					Name: "local-ci.artifact[0]",
+					Artifact: &apiv1.ArtifactPointer{
+						Digest: "sha256:evidence",
+					},
+				}})
+				if tt.wantPass && validationErr != nil {
+					t.Fatalf("validateRemediationEvidence = %+v, want pass", validationErr)
+				}
+				if !tt.wantPass && validationErr == nil {
+					t.Fatal("validateRemediationEvidence passed irrelevant receipt")
+				}
+			})
+		}
+	})
 }
 
 func TestRemediationEvidenceRequirementRecordsTriggerAndPointers(t *testing.T) {
@@ -7658,25 +7774,37 @@ func (g *remediationEvidenceGoober) Invoke(_ context.Context, env apiv1.Invocati
 	if g.implement == 2 {
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "no changes needed"}, nil
 	}
-	data := []byte(
-		`{"role":"assistant","tool_call":{"name":"goobers-io-list_inputs","arguments":{}}}` + "\n" +
-			`{"role":"assistant","tool_call":{"name":"goobers-io-read_input","arguments":{"name":"local-ci.artifact[0]"}}}` + "\n",
-	)
-	recorder, ok := g.rec.(interface {
-		RecordSpanWithSchema(string, string, string, []byte) (journal.Ref, error)
+	appender, ok := g.rec.(interface {
+		Append(journal.Event) error
 	})
 	if !ok {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("transcript recorder unavailable")
+		return apiv1.ResultEnvelope{}, fmt.Errorf("receipt journal appender unavailable")
 	}
-	ref, err := recorder.RecordSpanWithSchema("implement", "copilot-cli.transcript", telemetry.GenAIEventSchema, data)
-	if err != nil {
+	var inputDigest string
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name == "local-ci.artifact[0]" && pointer.Artifact != nil {
+			inputDigest = pointer.Artifact.Digest
+			break
+		}
+	}
+	if err := appender.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: env.TaskID,
+		Runner: map[string]any{
+			"kind": "goobers-io-input-inspection-receipts",
+			"receipts": []mcpio.InputInspectionReceipt{
+				{Tool: "list_inputs", Success: true},
+				{
+					Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: inputDigest,
+					Success: true, StartLine: 1, EndLine: 1, TotalLines: 1,
+				},
+			},
+		},
+	}); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	return apiv1.ResultEnvelope{
 		Status: apiv1.ResultSuccess, Summary: "failure is non-actionable",
-		Transcript: &apiv1.ArtifactPointer{
-			Path: ref.Path, Digest: ref.Digest, Size: ref.Size, Integrity: ref.Integrity,
-		},
 	}, nil
 }
 
@@ -7732,6 +7860,7 @@ func TestRunnerRejectsUninspectedRemediationBeforeReview(t *testing.T) {
 			return &remediationEvidenceGoober{t: t, rec: rec, reviewCalls: &reviewCalls}, nil
 		},
 		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: runsDir,
+		MaxSteps:     20,
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 	})
 	if err != nil {

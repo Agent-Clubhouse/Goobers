@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -2426,19 +2427,152 @@ func (r *Runner) validateDependencyResult(jr executionJournal, stage string, res
 	return result
 }
 
+type receiptLineRange struct {
+	start int
+	end   int
+}
+
+func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string) (bool, map[string]bool, error) {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return false, nil, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, nil, err
+	}
+	start := -1
+	for i, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == stage {
+			start = i
+		}
+	}
+	if start < 0 {
+		return false, nil, fmt.Errorf("stage %q has no invocation boundary", stage)
+	}
+	inspected := make(map[string]bool, len(required))
+	readRanges := make(map[string][]receiptLineRange, len(required))
+	readTotals := make(map[string]int, len(required))
+	invalidReadTotals := make(map[string]bool, len(required))
+	var collected, sawListInputs bool
+	for _, event := range events[start+1:] {
+		// Harness annotations use the invocation-qualified task ID rather than
+		// the bare workflow stage. The latest stage.started boundary above is
+		// the authoritative invocation scope.
+		if event.Type != journal.EventRunnerAnnotation ||
+			event.Stage != stage && !strings.HasSuffix(event.Stage, ":"+stage) ||
+			event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+			continue
+		}
+		collected = true
+		data, err := json.Marshal(event.Runner["receipts"])
+		if err != nil {
+			return true, nil, fmt.Errorf("encode receipt annotation: %w", err)
+		}
+		var receipts []mcpio.InputInspectionReceipt
+		if err := json.Unmarshal(data, &receipts); err != nil {
+			return true, nil, fmt.Errorf("decode receipt annotation: %w", err)
+		}
+		for _, receipt := range receipts {
+			if !receipt.Success {
+				continue
+			}
+			switch receipt.Tool {
+			case "list_inputs":
+				sawListInputs = true
+			case "read_input":
+				expectedDigest, ok := required[receipt.Input]
+				if !ok || expectedDigest != "" && receipt.InputDigest != expectedDigest {
+					continue
+				}
+				if receipt.TotalLines == 0 {
+					inspected[receipt.Input] = true
+					continue
+				}
+				if receipt.StartLine < 1 || receipt.EndLine < receipt.StartLine || receipt.EndLine > receipt.TotalLines {
+					continue
+				}
+				if total, exists := readTotals[receipt.Input]; exists && total != receipt.TotalLines {
+					invalidReadTotals[receipt.Input] = true
+					continue
+				}
+				readTotals[receipt.Input] = receipt.TotalLines
+				readRanges[receipt.Input] = append(readRanges[receipt.Input], receiptLineRange{
+					start: receipt.StartLine,
+					end:   receipt.EndLine,
+				})
+			case "grep_input":
+				expectedDigest, ok := required[receipt.Input]
+				if ok && (expectedDigest == "" || receipt.InputDigest == expectedDigest) && len(receipt.MatchLines) > 0 {
+					inspected[receipt.Input] = true
+				}
+			}
+		}
+	}
+	for input, ranges := range readRanges {
+		if inspected[input] || invalidReadTotals[input] {
+			continue
+		}
+		slices.SortFunc(ranges, func(a, b receiptLineRange) int {
+			return a.start - b.start
+		})
+		coveredThrough := 0
+		for _, lineRange := range ranges {
+			if lineRange.start > coveredThrough+1 {
+				break
+			}
+			if lineRange.end > coveredThrough {
+				coveredThrough = lineRange.end
+			}
+		}
+		if coveredThrough >= readTotals[input] {
+			inspected[input] = true
+		}
+	}
+	return collected && sawListInputs, inspected, nil
+}
+
 func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
-	validationErr := r.validateDependencyNotMet(jr, stage, result, requiredPointers)
-	if validationErr == nil {
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]string, len(requiredPointers))
+	for _, pointer := range requiredPointers {
+		if pointer.Artifact != nil {
+			requiredSet[pointer.Name] = pointer.Artifact.Digest
+		} else {
+			requiredSet[pointer.Name] = ""
+		}
+	}
+	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+			Message: dependencyValidationMessage(
+				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
+				result,
+			),
+		}
+	}
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
 		return nil
 	}
-	validationErr.Code = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
-	validationErr.Message = strings.Replace(
-		validationErr.Message,
-		"before DEPENDENCY_NOT_MET",
-		"before accepting unchanged remediation",
-		1,
-	)
-	return validationErr
+	return &apiv1.ErrorInfo{
+		Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+		Message: dependencyValidationMessage(
+			strings.Replace(
+				pointerValidationErrorMessage(missing, sawListInputs),
+				"before DEPENDENCY_NOT_MET",
+				"before accepting unchanged remediation",
+				1,
+			),
+			result,
+		),
+	}
 }
 
 func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
