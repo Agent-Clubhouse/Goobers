@@ -169,7 +169,63 @@ func validateFeatureRegistryEvolution(released, current FeatureRegistry) error {
 			)
 		}
 	}
+
+	// Per-version availability is append-only (#3292): History pins the
+	// feature-level lifecycle above, but without this a released feature could
+	// silently drop a DSL version from DSLVersions — vanishing from
+	// FeaturesAtDSLVersion for workflows pinned to that version — or regress a
+	// version's level (say ga back to preview) with no record. Every version
+	// entry the released registry declared must remain declared, and its level
+	// may only advance along the same lifecycle transitions the registry level
+	// follows. The rule is scoped to the versions this registry declares at
+	// all: released snapshots come from the merged cross-interpreter
+	// workflow.AllFeatures(), so they carry versions (1.4) another interpreter
+	// serves — whole-version retirement is the support matrix's policy, while
+	// one feature losing a version its siblings keep is exactly the accident
+	// caught here. This loop runs after the removal-policy loop so an invalid
+	// removal is still reported as a removal-policy violation.
+	currentVersions := make(map[string]struct{})
+	for _, candidate := range current.All() {
+		for _, support := range candidate.DSLVersions {
+			currentVersions[support.Version] = struct{}{}
+		}
+	}
+	for _, previous := range released.All() {
+		candidate, _ := current.Lookup(previous.ID)
+		for _, releasedSupport := range previous.DSLVersions {
+			if _, declared := currentVersions[releasedSupport.Version]; !declared {
+				continue
+			}
+			currentLevel, ok := dslVersionLevel(candidate, releasedSupport.Version)
+			if !ok {
+				return fmt.Errorf(
+					"released DSL feature %q must remain available at DSL version %q",
+					previous.ID,
+					releasedSupport.Version,
+				)
+			}
+			if currentLevel != releasedSupport.Level &&
+				!validSupportTransition(releasedSupport.Level, currentLevel) {
+				return fmt.Errorf(
+					"released DSL feature %q at DSL version %q may not move from %q to %q",
+					previous.ID,
+					releasedSupport.Version,
+					releasedSupport.Level,
+					currentLevel,
+				)
+			}
+		}
+	}
 	return nil
+}
+
+func dslVersionLevel(feature Feature, version string) (SupportLevel, bool) {
+	for _, support := range feature.DSLVersions {
+		if support.Version == version {
+			return support.Level, true
+		}
+	}
+	return "", false
 }
 
 func validateFeatureHistory(feature Feature) error {

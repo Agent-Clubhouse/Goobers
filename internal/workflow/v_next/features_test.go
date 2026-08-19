@@ -337,6 +337,106 @@ func TestFeatureRegistryCompatibilityPolicyPreservesReleasedSnapshot(t *testing.
 	}
 }
 
+// TestFeatureRegistryCompatibilityPolicyPinsReleasedDSLVersions is the
+// failing-direction guard for the #3292 append-only per-version rule:
+// validateFeatureRegistryEvolution pins lifecycle History, but before this
+// guard a released feature could silently drop a DSL version from DSLVersions
+// or regress that version's level.
+func TestFeatureRegistryCompatibilityPolicyPinsReleasedDSLVersions(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	history := []SupportTransition{
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+	}
+	feature := func(id FeatureID, versions ...DSLFeatureSupport) Feature {
+		return Feature{
+			ID:           id,
+			Level:        SupportGA,
+			SinceVersion: "v1.1.0",
+			DSLVersions:  versions,
+			History:      slices.Clone(history),
+		}
+	}
+	bothVersions := []DSLFeatureSupport{
+		{Version: "1.4", Level: SupportGA},
+		{Version: "2.0", Level: SupportGA},
+	}
+	// A sibling keeps every released version declared, so the versions stay in
+	// the current registry's domain and the accident under test is one feature
+	// losing (or regressing) a version its siblings keep.
+	sibling := feature("sibling.feature", bothVersions...)
+	released, err := NewFeatureRegistry([]Feature{
+		feature("example.feature", bothVersions...),
+		sibling,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		candidate Feature
+		want      string
+	}{
+		{
+			name:      "released DSL version dropped",
+			candidate: feature("example.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+			want:      `released DSL feature "example.feature" must remain available at DSL version "1.4"`,
+		},
+		{
+			name: "released DSL version level regressed",
+			candidate: feature("example.feature",
+				DSLFeatureSupport{Version: "1.4", Level: SupportPreview},
+				DSLFeatureSupport{Version: "2.0", Level: SupportGA},
+			),
+			want: `at DSL version "1.4" may not move from "ga" to "preview"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newFeatureRegistryAgainstReleased(released, []Feature{test.candidate, sibling})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("newFeatureRegistryAgainstReleased() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("valid transition and appended version", func(t *testing.T) {
+		releasedNarrow, err := NewFeatureRegistry([]Feature{feature(
+			"example.feature",
+			DSLFeatureSupport{Version: "1.4", Level: SupportGA},
+		)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 1.4 advancing ga -> deprecated follows the lifecycle transition
+		// rules, and declaring the feature in 2.0 is an append, not a change.
+		candidate := feature("example.feature",
+			DSLFeatureSupport{Version: "1.4", Level: SupportDeprecated},
+			DSLFeatureSupport{Version: "2.0", Level: SupportGA},
+		)
+		if _, err := newFeatureRegistryAgainstReleased(releasedNarrow, []Feature{candidate}); err != nil {
+			t.Fatalf("append-only-compatible candidate was rejected: %v", err)
+		}
+	})
+
+	t.Run("interpreter-scoped version domains stay comparable", func(t *testing.T) {
+		// Released snapshots come from the merged cross-interpreter registry,
+		// so they declare versions (1.4) this interpreter never serves. A
+		// version absent from the current registry's whole domain is out of
+		// frame — whole-version retirement belongs to the support matrix.
+		nextOnly := []Feature{
+			feature("example.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+			feature("sibling.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+		}
+		if _, err := newFeatureRegistryAgainstReleased(released, nextOnly); err != nil {
+			t.Fatalf("interpreter-scoped registry was rejected: %v", err)
+		}
+	})
+}
+
 func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
 	transition := func(level SupportLevel, version string) SupportTransition {
 		return SupportTransition{Level: level, SinceVersion: version}
