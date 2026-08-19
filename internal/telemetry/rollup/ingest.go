@@ -493,7 +493,18 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 		}
 		seenRoots[canonical] = true
 
-		dirs, err := runDirs(runsRoot)
+		// Scan through canonical, not runsRoot: runsRoots lists
+		// instanceRoot/runs (the compat alias) before the gaggle roots, so
+		// the alias would otherwise win the dedup and every runDir below
+		// would be reached through it. internal/journal's artifact reader
+		// resolves the run directory with filepath.EvalSymlinks too (its own
+		// containment check), which cannot see past a Windows junction any
+		// more than canonicalRunsRoot's own resolution can — so a runDir
+		// under the alias fails there with "journal: resolve run directory:
+		// ...The system cannot find the path specified" on Windows, even
+		// though the dedup itself picked the right, single scan. Reading
+		// through the already-resolved real path sidesteps that entirely.
+		dirs, err := runDirs(canonical)
 		if err != nil {
 			return err
 		}
