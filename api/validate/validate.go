@@ -1791,6 +1791,17 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckWorkflowAdmission(def, ix.gooberSpecs()) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	// Push-boundary admission (#2861) needs the gaggle-level runner
+	// requirements to form each stage's effective set — a gaggle-level os=
+	// token is a platform every stage shares, which can prove a transition
+	// same-platform that stage-level tokens alone would flag.
+	var gaggleRequiredCapabilities []string
+	if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+		gaggleRequiredCapabilities = gaggle.Spec.RequiredCapabilities
+	}
+	for _, msg := range wf.CheckPushBoundaries(def, gaggleRequiredCapabilities) {
+		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
