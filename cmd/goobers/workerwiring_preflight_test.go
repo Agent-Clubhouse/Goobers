@@ -50,7 +50,9 @@ func TestForGaggleSurvivesHarnessPreflightFailure(t *testing.T) {
 
 	g, forGaggleErr := seams.forGaggle("example")
 
-	stderrWrite.Close()
+	if err := stderrWrite.Close(); err != nil {
+		t.Fatal(err)
+	}
 	os.Stderr = previousStderr
 	var buf strings.Builder
 	readBuf := make([]byte, 4096)
