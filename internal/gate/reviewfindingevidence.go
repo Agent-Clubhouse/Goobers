@@ -166,8 +166,6 @@ func parsePatchSource(patch string) patchSource {
 			}
 			source[path][nextLine] = raw[1:]
 			nextLine++
-		case strings.HasPrefix(raw, "-") && !strings.HasPrefix(raw, "---"):
-			// Removed lines do not advance the new-file line number.
 		}
 	}
 	return source
