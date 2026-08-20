@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,9 +18,11 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -72,6 +76,121 @@ const StalledTerminalizationGrace = 30 * time.Second
 type heartbeatTicker interface {
 	Ticks() <-chan time.Time
 	Stop()
+}
+
+func remediationFailureEvidencePointers(cause *gate.RepassCause, pointers []apiv1.ContextPointer) []apiv1.ContextPointer {
+	if cause == nil {
+		return nil
+	}
+	var prefix string
+	switch cause.Kind {
+	case "reviewer":
+		if cause.Gate == "" {
+			return nil
+		}
+		prefix = cause.Gate + ".verdict"
+	case "stage-failure":
+		if cause.Stage == "" {
+			return nil
+		}
+		prefix = cause.Stage + ".artifact["
+	default:
+		return nil
+	}
+	var required []apiv1.ContextPointer
+	for _, pointer := range pointers {
+		if pointer.Name == prefix || (strings.HasSuffix(prefix, "[") && strings.HasPrefix(pointer.Name, prefix)) {
+			required = append(required, pointer)
+		}
+	}
+	return required
+}
+
+func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName string, cause *gate.RepassCause, pointers []apiv1.ContextPointer) error {
+	requirements := remediationEvidenceRequirements(jr, pointers)
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
+		Runner: map[string]any{
+			"kind":                            "remediation-evidence-required",
+			"triggeringGate":                  cause.Gate,
+			"triggeringStage":                 cause.Stage,
+			"requiredFailureEvidencePointers": requiredContextPointerNames(pointers),
+			"actionableEvidence":              requirements,
+		},
+	})
+}
+
+type actionableEvidence struct {
+	Pointer    string             `json:"pointer"`
+	Ranges     []receiptLineRange `json:"ranges,omitempty"`
+	Signatures []string           `json:"signatures,omitempty"`
+}
+
+func remediationEvidenceRequirements(jr executionJournal, pointers []apiv1.ContextPointer) []actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	requirements := make([]actionableEvidence, 0, len(pointers))
+	for _, pointer := range pointers {
+		requirement := actionableEvidence{Pointer: pointer.Name}
+		if pointer.Artifact == nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		data, err := rd.ArtifactBytes(journal.Ref{
+			Path:      pointer.Artifact.Path,
+			Digest:    pointer.Artifact.Digest,
+			Size:      pointer.Artifact.Size,
+			Integrity: pointer.Artifact.Integrity,
+		})
+		if err != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		var evidence struct {
+			Checks []struct {
+				Annotations []struct {
+					Path      string `json:"path"`
+					StartLine int    `json:"startLine"`
+					EndLine   int    `json:"endLine"`
+					Title     string `json:"title"`
+					Message   string `json:"message"`
+				} `json:"annotations"`
+			} `json:"checks"`
+		}
+		if json.Unmarshal(data, &evidence) != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		for _, check := range evidence.Checks {
+			for _, annotation := range check.Annotations {
+				signature := normalizeEvidenceSignature(annotation.Path, annotation.Title, annotation.Message)
+				if signature == "" {
+					continue
+				}
+				requirement.Signatures = append(requirement.Signatures, signature)
+				start := bytes.Index(data, []byte(annotation.Message))
+				if start >= 0 {
+					line := bytes.Count(data[:start], []byte{'\n'}) + 1
+					requirement.Ranges = append(requirement.Ranges, receiptLineRange{Start: line, End: line})
+				}
+			}
+		}
+		requirements = append(requirements, requirement)
+	}
+	return requirements
+}
+
+func normalizeEvidenceSignature(parts ...string) string {
+	words := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Join(strings.Fields(strings.ToLower(part)), " ")
+		if part != "" {
+			words = append(words, part)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 type wallHeartbeatTicker struct {
@@ -247,7 +366,7 @@ type Config struct {
 	// evaluator=automated gate. gate.NewAutomatedEvaluator() (the default
 	// check registry) is a ready-made implementation.
 	Automated invoke.Automated
-	// MaxRepasses bounds gate repass loops before escalating
+	// MaxRepasses bounds cumulative target-stage re-entries before escalating
 	// (gate.DefaultMaxRepasses if 0). See internal/gate.Evaluator.
 	// Deprecated: use StartInput.RunControls for per-run policy.
 	MaxRepasses int
@@ -586,13 +705,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 
 	inputs := map[string][]byte{}
 	inputIntegrity := map[string]apiv1.Integrity{
-		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
 	}
 	graph, err := json.Marshal(in.Machine.Graph())
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: marshal pinned workflow graph: %w", err)
 	}
 	inputs[journal.PinnedWorkflowGraphInputName] = graph
+	definition, err := json.Marshal(in.Machine.Def)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: marshal pinned workflow definition: %w", err)
+	}
+	inputs[journal.PinnedWorkflowDefinitionInputName] = definition
 	if in.Item != nil {
 		b, err := json.Marshal(in.Item)
 		if err != nil {
@@ -808,11 +933,19 @@ func (e *executors) agentic(gooberName string) (invoke.Goober, error) {
 // recorded is true after a second crash finds that closure already journaled
 // but the replacement attempt not yet started.
 type resumeContext struct {
-	stage                string
-	attempt              int
-	class                journal.AttemptClass
-	recorded             bool
-	committedWorkOnInfra bool
+	stage                  string
+	attempt                int
+	class                  journal.AttemptClass
+	recorded               bool
+	committedWorkOnInfra   bool
+	policyAttempts         int32
+	infrastructureFailures int32
+}
+
+type resumeRetryAccounting struct {
+	policyAttempts            int32
+	infrastructureFailures    int32
+	replacementConsumesPolicy bool
 }
 
 // BaseSyncConflictErrorCode is the stage-failure code a syncBase base-merge
@@ -849,11 +982,12 @@ type walkState struct {
 
 	gateEval *gate.Evaluator
 
-	state      string
-	resume     *resumeContext
-	rerun      *rerunContext
-	steps      int
-	stepBudget atomic.Int64
+	state                    string
+	resume                   *resumeContext
+	rerun                    *rerunContext
+	retryInstructionAddendum string
+	steps                    int
+	stepBudget               atomic.Int64
 
 	pointers   []apiv1.ContextPointer
 	lastStage  string
@@ -869,16 +1003,21 @@ type walkState struct {
 	branchRecorded       bool
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
+	repassAttempts       map[string]int
+	infraGateAttempts    map[string]int
+	infraRepassAttempts  map[string]int
 	gateDiffDigests      map[string]string
+	visitedStages        map[string]bool
 }
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
 	return &walkState{
-		jr:        jr,
-		in:        in,
-		reg:       reg,
-		state:     state,
-		completed: stageOutputs{},
+		jr:            jr,
+		in:            in,
+		reg:           reg,
+		state:         state,
+		completed:     stageOutputs{},
+		visitedStages: map[string]bool{},
 	}
 }
 
@@ -1007,18 +1146,24 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // counters are run-scoped state), so a fresh one is built per walk. Start
 // always begins with an empty walkState at the machine's declared start state;
 // Resume (resume.go) reconstructs that state from the journal, optionally with a
-// resumeContext for an interrupted task attempt, gateAttempts seeded from
-// each gate's last gate.started/gate.evaluated event so a resumed run's repass
-// budget continues rather than resetting (#89/#263), gateDiffDigests likewise
-// seeded (gateDiffSeed) so a resumed run's non-convergence detection continues
-// too (#316), and context reconstructed from the journal (#107/#108).
+// resumeContext for an interrupted task attempt, gateAttempts and
+// repassAttempts seeded from gate events so interrupted evaluation recovery and
+// target-stage budgets continue rather than resetting (#89/#1973),
+// gateDiffDigests likewise seeded so non-convergence detection continues
+// (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
 	ws.gateEval = &gate.Evaluator{
-		Automated:      r.cfg.Automated,
-		Journal:        ws.jr,
-		MaxRepasses:    int(ws.in.RunControls.MaxRepasses),
-		Attempts:       ws.gateAttempts,
+		Automated:                    r.cfg.Automated,
+		Journal:                      ws.jr,
+		MaxRepasses:                  int(ws.in.RunControls.MaxRepasses),
+		Attempts:                     ws.gateAttempts,
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
+		IsReentry: func(target string) bool {
+			return ws.visitedStages[target]
+		},
 		LastDiffDigest: ws.gateDiffDigests,
 	}
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
@@ -1399,6 +1544,11 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	var taskRerun *rerunContext
 	var resumedResult *apiv1.ResultEnvelope
 	var infraFailedAttemptCommittedWork bool
+	var resumeAccounting *resumeRetryAccounting
+	if ws.retryInstructionAddendum != "" {
+		instructionAddendum = ws.retryInstructionAddendum
+		ws.retryInstructionAddendum = ""
+	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
 		taskRerun = ws.rerun
 		startAttempt = int32(ws.rerun.attempt)
@@ -1407,6 +1557,11 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	}
 	if ws.resume != nil && ws.resume.stage == t.Name {
 		infraFailedAttemptCommittedWork = ws.resume.committedWorkOnInfra
+		resumeAccounting = &resumeRetryAccounting{
+			policyAttempts:            ws.resume.policyAttempts,
+			infrastructureFailures:    ws.resume.infrastructureFailures,
+			replacementConsumesPolicy: ws.resume.class != journal.AttemptInfra,
+		}
 		interruptedClass := journal.AttemptInfra
 		if ws.rerun != nil && ws.rerun.stage == t.Name {
 			interruptedClass = ws.resume.class
@@ -1473,6 +1628,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			ctx, ws.jr, ws.in, ws.ex, t, branch, upstreamPointers, ws.lastResult,
 			ws.completed, ws.fanIn, startAttempt, firstClass, instructionAddendum,
 			ws.workspaceBranch, taskRerun, &ws.branchRecorded, infraFailedAttemptCommittedWork,
+			resumeAccounting,
 		)
 	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
@@ -1501,6 +1657,7 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 	} else {
 		ws.completed.record(t.Name, outputs, result.Integrity)
 	}
+	ws.visitedStages[t.Name] = true
 	if result.Status != apiv1.ResultFailure || !t.ContinueOnError {
 		if branch := rebindWorkspaceBranch(t, result, r.branchNamespaceFor(ws.in.Gaggle)); branch != "" {
 			ws.workspaceBranch = branch
@@ -1533,9 +1690,10 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		instructionAddendum = ws.rerun.instructionAddendum
 		ws.rerun = nil
 	}
-	retryClass, knownOutcome, retryable := retryFailureClass(g, ws.lastResult)
+	_, knownOutcome, _ := retryFailureClass(g, ws.lastResult)
 	var gr gate.Result
 	var err, removeErr error
+	var gatePointers []apiv1.ContextPointer
 	if g.Evaluator == apiv1.EvaluatorHuman {
 		if ws.humanDecision.Gate != g.Name {
 			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: human decision for gate %q reached gate %q", ws.humanDecision.Gate, g.Name)
@@ -1543,9 +1701,28 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		gr, err = ws.gateEval.EvaluateHuman(g, ws.humanDecision.Decision, ws.humanDecision.Actor)
 		ws.humanDecision = nil
 	} else {
-		gatePointers := ws.pointers
+		gatePointers = ws.pointers
 		if ws.parallel != nil {
 			gatePointers = ws.parallel.currentPointers(ws.parallelRootPointers)
+		}
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+				instructionAddendum == "" {
+				cause, causeErr := priorRepassCause(ws.jr, ws.lastStage)
+				if causeErr != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+						fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
+					return gr, false, terminal, true, failErr
+				}
+				required := remediationFailureEvidencePointers(cause, gatePointers)
+				if cause != nil && len(required) > 0 {
+					if appendErr := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); appendErr != nil {
+						terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+							fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, appendErr))
+						return gr, false, terminal, true, failErr
+					}
+				}
+			}
 		}
 		gateSubject := ws.lastResult
 		if ws.fanIn != nil && g.Name == ws.fanIn.spec.Join {
@@ -1570,9 +1747,18 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		}
 	}
 	if err != nil {
+		var evidenceErr *remediationEvidenceInspectionError
+		if errors.As(err, &evidenceErr) {
+			ws.retryInstructionAddendum = "Your unchanged remediation result was rejected by the runner: " +
+				evidenceErr.info.Message +
+				". Inspect every required failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the failure is non-actionable if no source change is needed."
+			ws.state = ws.lastStage
+			return gr, true, Result{}, false, nil
+		}
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
+	retryClass, _, retryable := retryFailureClassForGateResult(g, ws.lastResult, gr.Outcome)
 	retryTarget, retry, err := routeRetryDecision(ws.jr, gr, ws.lastStage, ws.lastResult, retryClass, retryable)
 	if err != nil {
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
@@ -1639,7 +1825,7 @@ func (r *Runner) gateTransition(ctx context.Context, ws *walkState, gr gate.Resu
 	jr, in := ws.jr, ws.in
 	runID, machine, repoRef, item := in.RunID, in.Machine, in.RepoRef, in.Item
 	lastStage, lastResult, steps := ws.lastStage, ws.lastResult, ws.steps
-	if reason, ok := terminalGateNotificationReason(gr); ok {
+	if reason, ok := terminalGateNotificationReason(machine, gr); ok {
 		notifyErr := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, runID, repoRef, item, gr, reason)
 		if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, gr.Gate, steps); stalled {
 			return "", stalledResult, false, stalledErr
@@ -1677,7 +1863,7 @@ func gateClearsFailure(gr gate.Result, gateDef apiv1.Gate) bool {
 	return gr.Outcome == gate.OutcomePass || gateDef.Evaluator == apiv1.EvaluatorHuman
 }
 
-func terminalGateNotificationReason(gr gate.Result) (string, bool) {
+func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (string, bool) {
 	// An escalation still notifies the driving issue when the gate's escalate
 	// control branch routes disposition work (a parking stage) before the
 	// terminal, rather than naming @escalate directly: the repass-attempt count
@@ -1686,17 +1872,29 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 	if gr.Target != workflow.TargetAbort && gr.Target != workflow.TargetEscalate && !gr.Escalated {
 		return "", false
 	}
-	// The shipped parking stage owns the single human-facing comment. Other
-	// named targets are not guaranteed to notify, so they retain this fallback.
-	if gr.Escalated && gr.Target == "park-escalated" {
-		return "", false
+	// An escalation-control task that runs the configured issue close-out
+	// operation owns the human-facing disposition. Merely being the escalation
+	// branch target is insufficient: custom cleanup tasks may not notify.
+	if gr.Escalated && machine != nil {
+		if g, ok := machine.Gate(gr.Gate); ok {
+			if target, configured := workflow.BranchTarget(g, workflow.BranchEscalate); configured &&
+				target == gr.Target && !workflow.IsReservedAnyTarget(target) {
+				if task, ok := machine.Task(target); ok && taskOwnsEscalationNotification(task) {
+					return "", false
+				}
+			}
+		}
 	}
 	if gr.Escalated {
 		if gr.DuplicateDiff {
-			if gr.RepassCause != nil {
-				return gr.RepassCause.String() + "; the implementer produced no change in response", true
+			reason := gr.Reason
+			if reason == "" {
+				reason = gate.ReasonUnchangedRepass
 			}
-			return "repass produced a diff identical to the immediately prior attempt", true
+			if gr.RepassCause != nil {
+				return reason + ": " + gr.RepassCause.String() + "; the implementer produced no change in response", true
+			}
+			return reason + ": repass produced a diff identical to the immediately prior attempt", true
 		}
 		return "repass budget exhausted", true
 	}
@@ -1712,6 +1910,13 @@ func terminalGateNotificationReason(gr gate.Result) (string, bool) {
 		}
 	}
 	return reason, true
+}
+
+func taskOwnsEscalationNotification(task apiv1.Task) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 &&
+		task.Run.Command[0] == "goobers" &&
+		task.Run.Command[1] == "issue-close-out"
 }
 
 func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID string, repoRef apiv1.RepoRef, item *apiv1.BacklogItem, gr gate.Result, reason string) error {
@@ -2140,6 +2345,431 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	return res, err
 }
 
+type transcriptToolCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type transcriptEvent struct {
+	Role     string              `json:"role"`
+	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
+}
+
+type remediationEvidenceInspectionError struct {
+	info *apiv1.ErrorInfo
+}
+
+func (e *remediationEvidenceInspectionError) Error() string {
+	if e == nil || e.info == nil {
+		return "remediation failure evidence was not inspected"
+	}
+	return e.info.Message
+}
+
+func normalizeInputToolName(name string) string {
+	return strings.TrimPrefix(name, "functions.")
+}
+
+func parseTranscriptInputInspection(transcript []byte, required map[string]struct{}) (bool, map[string]bool) {
+	inspected := make(map[string]bool, len(required))
+	var sawListInputs bool
+	for _, line := range bytes.Split(transcript, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var event transcriptEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+		if event.Role != "assistant" || event.ToolCall == nil {
+			continue
+		}
+		toolName := normalizeInputToolName(event.ToolCall.Name)
+		switch toolName {
+		case "goobers-io-list_inputs":
+			sawListInputs = true
+		case "goobers-io-read_input", "goobers-io-grep_input":
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(event.ToolCall.Arguments, &args); err != nil {
+				continue
+			}
+			if _, ok := required[args.Name]; ok {
+				inspected[args.Name] = true
+			}
+		}
+	}
+	return sawListInputs, inspected
+}
+
+func pointerValidationErrorMessage(missing []string, sawListInputs bool) string {
+	if len(missing) == 0 && sawListInputs {
+		return ""
+	}
+	listStatus := "not called"
+	if sawListInputs {
+		listStatus = "called"
+	}
+	return fmt.Sprintf(
+		"required context pointers were not inspected before DEPENDENCY_NOT_MET (list_inputs: %s; unread pointers: %s)",
+		listStatus,
+		strings.Join(missing, ", "),
+	)
+}
+
+func dependencyValidationMessage(validation string, result apiv1.ResultEnvelope) string {
+	if result.Error == nil || strings.TrimSpace(result.Error.Message) == "" {
+		return validation
+	}
+	return validation + "; original dependency error: " + result.Error.Message
+}
+
+func dependencyContextInspectionError(cause, validation string, result apiv1.ResultEnvelope) string {
+	message := cause
+	if validation != "" {
+		message += "; " + validation
+	}
+	return dependencyValidationMessage(message, result)
+}
+
+// validateDependencyNotMet checks whether a DEPENDENCY_NOT_MET failure in a
+// repass scenario has evidence of input inspection. When a stage reports
+// blocked with DEPENDENCY_NOT_MET but did not attempt to inspect provided
+// context pointers using list_inputs plus read_input/grep_input for each named
+// pointer, this returns a validation error with code CONTEXT_NOT_INSPECTED.
+func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	if result.Transcript == nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				"cannot inspect required context: result transcript pointer is missing",
+				pointerValidationErrorMessage(requiredContextPointerNames(requiredPointers), false),
+				result,
+			),
+		}
+	}
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]struct{}, len(requiredNames))
+	for _, name := range requiredNames {
+		requiredSet[name] = struct{}{}
+	}
+
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: open run journal %q: %v", jr.Dir(), err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	transcriptRef := journal.Ref{
+		Path:      result.Transcript.Path,
+		Digest:    result.Transcript.Digest,
+		Size:      result.Transcript.Size,
+		Integrity: result.Transcript.Integrity,
+	}
+	transcript, err := rd.SpanBytes(transcriptRef)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "CONTEXT_NOT_INSPECTED",
+			Message: dependencyContextInspectionError(
+				fmt.Sprintf("cannot inspect required context: read transcript %q: %v", transcriptRef.Path, err),
+				pointerValidationErrorMessage(requiredNames, false),
+				result,
+			),
+		}
+	}
+	sawListInputs, inspected := parseTranscriptInputInspection(transcript, requiredSet)
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
+		return nil
+	}
+	return &apiv1.ErrorInfo{
+		Code:    "CONTEXT_NOT_INSPECTED",
+		Message: dependencyValidationMessage(pointerValidationErrorMessage(missing, sawListInputs), result),
+	}
+}
+
+func (r *Runner) validateDependencyResult(jr executionJournal, stage string, result apiv1.ResultEnvelope, invocationPointers []apiv1.ContextPointer) apiv1.ResultEnvelope {
+	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
+		result.Error.Code != "DEPENDENCY_NOT_MET" || len(invocationPointers) == 0 {
+		return result
+	}
+	if validationErr := r.validateDependencyNotMet(jr, stage, result, invocationPointers); validationErr != nil {
+		result.Error = validationErr
+		result.Outputs = nil
+		result.Artifacts = nil
+	}
+	return result
+}
+
+type receiptLineRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return false, nil, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, nil, err
+	}
+	start := -1
+	for i, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == stage {
+			start = i
+		}
+	}
+	if start < 0 {
+		return false, nil, fmt.Errorf("stage %q has no invocation boundary", stage)
+	}
+	inspected := make(map[string]bool, len(required))
+	readRanges := make(map[string][]receiptLineRange, len(required))
+	readTotals := make(map[string]int, len(required))
+	invalidReadTotals := make(map[string]bool, len(required))
+	var collected, sawListInputs bool
+	for _, event := range events[start+1:] {
+		// Harness annotations use the invocation-qualified task ID rather than
+		// the bare workflow stage. The latest stage.started boundary above is
+		// the authoritative invocation scope.
+		if event.Type != journal.EventRunnerAnnotation ||
+			event.Stage != stage && !strings.HasSuffix(event.Stage, ":"+stage) ||
+			event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+			continue
+		}
+		collected = true
+		data, err := json.Marshal(event.Runner["receipts"])
+		if err != nil {
+			return true, nil, fmt.Errorf("encode receipt annotation: %w", err)
+		}
+		var receipts []mcpio.InputInspectionReceipt
+		if err := json.Unmarshal(data, &receipts); err != nil {
+			return true, nil, fmt.Errorf("decode receipt annotation: %w", err)
+		}
+		for _, receipt := range receipts {
+			if !receipt.Success {
+				continue
+			}
+			switch receipt.Tool {
+			case "list_inputs":
+				sawListInputs = true
+			case "read_input":
+				expectedDigest, ok := required[receipt.Input]
+				if !ok || expectedDigest != "" && receipt.InputDigest != expectedDigest {
+					continue
+				}
+				if receipt.TotalLines == 0 {
+					inspected[receipt.Input] = true
+					continue
+				}
+				if receipt.StartLine < 1 || receipt.EndLine < receipt.StartLine || receipt.EndLine > receipt.TotalLines {
+					continue
+				}
+				if total, exists := readTotals[receipt.Input]; exists && total != receipt.TotalLines {
+					invalidReadTotals[receipt.Input] = true
+					continue
+				}
+				readTotals[receipt.Input] = receipt.TotalLines
+				readRanges[receipt.Input] = append(readRanges[receipt.Input], receiptLineRange{
+					Start: receipt.StartLine,
+					End:   receipt.EndLine,
+				})
+			case "grep_input":
+				expectedDigest, ok := required[receipt.Input]
+				if ok && (expectedDigest == "" || receipt.InputDigest == expectedDigest) && len(receipt.MatchLines) > 0 &&
+					receiptMatchesActionableEvidence(receipt.Pattern, actionable[receipt.Input]) {
+					inspected[receipt.Input] = true
+				}
+			}
+		}
+	}
+	for input, ranges := range readRanges {
+		if inspected[input] || invalidReadTotals[input] {
+			continue
+		}
+		slices.SortFunc(ranges, func(a, b receiptLineRange) int {
+			return a.Start - b.Start
+		})
+		coveredThrough := 0
+		for _, lineRange := range ranges {
+			if lineRange.Start > coveredThrough+1 {
+				break
+			}
+			if lineRange.End > coveredThrough {
+				coveredThrough = lineRange.End
+			}
+		}
+		if coveredThrough >= readTotals[input] {
+			inspected[input] = true
+			continue
+		}
+		if requirement, ok := actionable[input]; ok && receiptRangesOverlap(readRanges[input], requirement.Ranges) {
+			inspected[input] = true
+		}
+	}
+	return collected && sawListInputs, inspected, nil
+}
+
+func receiptRangesOverlap(received, required []receiptLineRange) bool {
+	for _, got := range received {
+		for _, want := range required {
+			if got.Start <= want.End && want.Start <= got.End {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func receiptMatchesActionableEvidence(pattern string, requirement actionableEvidence) bool {
+	if len(requirement.Signatures) == 0 {
+		return true
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	for _, signature := range requirement.Signatures {
+		if re.MatchString(signature) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]string, len(requiredPointers))
+	for _, pointer := range requiredPointers {
+		if pointer.Artifact != nil {
+			requiredSet[pointer.Name] = pointer.Artifact.Digest
+		} else {
+			requiredSet[pointer.Name] = ""
+		}
+	}
+	actionable := remediationEvidenceRequirementsFromJournal(jr, stage)
+	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet, actionable)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+			Message: dependencyValidationMessage(
+				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
+				result,
+			),
+		}
+	}
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
+		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
+			return &apiv1.ErrorInfo{
+				Code:    "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+				Message: dependencyValidationMessage(classificationErr, result),
+			}
+		}
+		return nil
+	}
+	return &apiv1.ErrorInfo{
+		Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+		Message: dependencyValidationMessage(
+			strings.Replace(
+				pointerValidationErrorMessage(missing, sawListInputs),
+				"before DEPENDENCY_NOT_MET",
+				"before accepting unchanged remediation",
+				1,
+			),
+			result,
+		),
+	}
+}
+
+func remediationEvidenceRequirementsFromJournal(jr executionJournal, stage string) map[string]actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return nil
+	}
+	requirements := make(map[string]actionableEvidence)
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "remediation-evidence-required" ||
+			event.Stage != stage {
+			continue
+		}
+		data, err := json.Marshal(event.Runner["actionableEvidence"])
+		if err != nil {
+			continue
+		}
+		var entries []actionableEvidence
+		if json.Unmarshal(data, &entries) == nil {
+			for _, entry := range entries {
+				requirements[entry.Pointer] = entry
+			}
+		}
+	}
+	return requirements
+}
+
+const remediationClassificationOutput = "remediationClassification"
+
+func validateUnchangedRemediationClassification(result apiv1.ResultEnvelope) string {
+	raw, ok := result.Outputs[remediationClassificationOutput]
+	classification, valid := raw.(string)
+	if !ok || !valid {
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	switch strings.ToLower(strings.TrimSpace(classification)) {
+	case "environmental", "flaky", "obsolete", "non-actionable":
+		// accepted classification
+	default:
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	if strings.TrimSpace(result.Summary) == "" {
+		return "unchanged remediation must explain why the inspected failure is non-actionable in summary"
+	}
+	return ""
+}
+
+func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
+	if len(pointers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(pointers))
+	names := make([]string, 0, len(pointers))
+	for _, pointer := range pointers {
+		name := strings.TrimSpace(pointer.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // taskOutcome applies the #110 stage-status ruling to a finished task's
 // result: success advances to Next; failure advances when ContinueOnError is
 // set or Next is a gate (which branches on the honest failed status), otherwise
@@ -2166,6 +2796,16 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
 		return "", stalledResult, false, stalledErr
 	}
+
+	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
+		result.Error.Code == "CONTEXT_NOT_INSPECTED" {
+		// runTask validates before stage.finished is journaled, so the retry
+		// reason survives a crash and is available as the prior result.
+		ws.retryInstructionAddendum = "Your previous result was rejected by the runner: " + result.Error.Message +
+			". Inspect every provided context pointer with list_inputs and read_input or grep_input before returning DEPENDENCY_NOT_MET."
+		return t.Name, Result{}, true, nil
+	}
+
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		// #544 ruling: blocked is a schema-valid producer value, so it maps to
@@ -2491,9 +3131,8 @@ func (r *Runner) FinalizeTerminal(runID string, phase journal.RunPhase) error {
 // cancels it mid-dispatch. walk checks ordinary cancellation between stages.
 //
 // startAttempt is normally 1; a resume past an interrupted attempt (resume.go)
-// passes the next attempt number instead, so the attempts a crash already
-// consumed still count against the task's own MaxAttempts budget — a crash
-// must never grant a task more attempts than its declared policy allows.
+// passes the next sequence number while resumeAccounting preserves policy and
+// infrastructure usage and whether the interrupted slot belonged to policy.
 //
 // upstreamResult is the immediately preceding stage's ResultEnvelope (the
 // zero value for the run's first task) — dispatchTask threads its Outputs
@@ -2615,7 +3254,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
@@ -2668,6 +3307,18 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 	maxAttempts := policyMaxAttempts + DefaultMaxInfrastructureAttempts - 1
 	policyAttempts := startAttempt - 1
 	var infrastructureFailures int32
+	replacementConsumesPolicy := true
+	if resumeAccounting != nil {
+		policyAttempts = resumeAccounting.policyAttempts
+		infrastructureFailures = resumeAccounting.infrastructureFailures
+		replacementConsumesPolicy = resumeAccounting.replacementConsumesPolicy
+		remainingDispatches := policyMaxAttempts - policyAttempts +
+			DefaultMaxInfrastructureAttempts - 1 - infrastructureFailures
+		if !replacementConsumesPolicy {
+			remainingDispatches++
+		}
+		maxAttempts = startAttempt + remainingDispatches - 1
+	}
 	if rerun != nil {
 		maxAttempts = int32(rerun.requestAttempt) + policyMaxAttempts + DefaultMaxInfrastructureAttempts - 2
 		policyAttempts = rerun.policyAttempts
@@ -2684,8 +3335,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			err := fmt.Errorf("runner: task %q has no attempts left after resuming human rerun (interrupted attempts exhausted the combined retry budget)", t.Name)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
-	} else if startAttempt > policyMaxAttempts {
-		err := fmt.Errorf("runner: task %q has no attempts left after resume (interrupted attempt already exhausted its %d-attempt budget)", t.Name, policyMaxAttempts)
+	} else if policyAttempts >= policyMaxAttempts && replacementConsumesPolicy {
+		err := fmt.Errorf("runner: task %q has no policy attempts left after resume (%d-attempt budget exhausted)", t.Name, policyMaxAttempts)
 		return apiv1.ResultEnvelope{}, nil, err
 	}
 
@@ -2709,9 +3360,10 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		case attempt > startAttempt:
 			class = nextRetryClass
 		}
-		// A crash-driven continuation is infra-tagged for conformance but still
-		// consumes policy budget; provider infrastructure retries do not.
-		if class != journal.AttemptInfra || attempt == startAttempt {
+		// A crash-driven continuation is infra-tagged for conformance, but it
+		// occupies the policy slot that the interrupted dispatch did not finish.
+		// Provider infrastructure retries after that do not consume policy.
+		if class != journal.AttemptInfra || (attempt == startAttempt && replacementConsumesPolicy) {
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
@@ -2722,10 +3374,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
-		var attemptAddendum string
-		if class == journal.AttemptHuman {
-			attemptAddendum = instructionAddendum
-		}
+		attemptAddendum := instructionAddendum
 		var usage attemptUsageCollector
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
@@ -2834,6 +3483,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		}
 
 		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
+		result = r.validateDependencyResult(jr, t.Name, result, upstream)
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
@@ -2920,6 +3570,14 @@ func retryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.Attem
 	}
 }
 
+func retryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, outcome string) (journal.AttemptClass, string, bool) {
+	class, knownOutcome, retryable := retryFailureClass(g, result)
+	if !retryable && outcome == gate.OutcomeInfra {
+		return journal.AttemptInfra, "", true
+	}
+	return class, knownOutcome, retryable
+}
+
 func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
 	if !retryable || result.Outcome == gate.OutcomePass || result.Escalated {
 		return "", false, nil
@@ -2932,6 +3590,10 @@ func routeRetryDecision(jr executionJournal, result gate.Result, stage string, s
 	// also recovers the target from gate.evaluated if a crash lands between the
 	// verdict and this append, or between this append's fsync and checkpoint.
 	jr.SetMachineState(result.Target)
+	failureCode := ""
+	if subject.Error != nil {
+		failureCode = subject.Error.Code
+	}
 	if err := jr.Append(journal.Event{
 		Type:  journal.EventRunnerAnnotation,
 		Stage: stage,
@@ -2939,7 +3601,7 @@ func routeRetryDecision(jr executionJournal, result gate.Result, stage string, s
 		Runner: map[string]any{
 			"kind":               retryDecisionKind,
 			retryFailureClassKey: string(class),
-			"failureCode":        subject.Error.Code,
+			"failureCode":        failureCode,
 			"repassAttempt":      result.Attempt,
 			"target":             result.Target,
 		},
@@ -3650,6 +4312,36 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		span.Fail(err)
 		return gate.Result{}, err, nil
 	}
+	if instructionAddendum == "" && diffDigest != "" &&
+		gateEval.LastDiffDigest != nil && gateEval.LastDiffDigest[g.Name] == diffDigest {
+		if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+			gateEval.RepassCause != nil && len(upstream) > 0 {
+			requiredPointers := remediationFailureEvidencePointers(gateEval.RepassCause, upstream)
+			if len(requiredPointers) > 0 {
+				if validationErr := r.validateRemediationEvidence(jr, subjectStage, subjectResult, requiredPointers); validationErr != nil {
+					required := requiredContextPointerNames(requiredPointers)
+					if appendErr := jr.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
+						Runner: map[string]any{
+							"kind":                            "remediation-evidence-validation",
+							"code":                            validationErr.Code,
+							"triggeringGate":                  gateEval.RepassCause.Gate,
+							"triggeringStage":                 gateEval.RepassCause.Stage,
+							"requiredFailureEvidencePointers": required,
+							"message":                         validationErr.Message,
+						},
+					}); appendErr != nil {
+						err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
+						span.Fail(err)
+						return gate.Result{}, err, nil
+					}
+					err = &remediationEvidenceInspectionError{info: validationErr}
+					span.Fail(err)
+					return gate.Result{}, err, nil
+				}
+			}
+		}
+	}
 	if instructionAddendum != "" {
 		// An explicit operator rerun must invoke the reviewer it targets, even
 		// when ordinary automation would reuse a cached verdict or fast-fail an
@@ -3749,14 +4441,45 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 				cause.Rationale = strings.TrimSpace(verdict.Summary)
 			}
 		}
+		var infrastructureEvidence *bool
+		for j := i + 1; j < len(events); j++ {
+			following := events[j]
+			if following.Type == journal.EventStageStarted ||
+				following.Type == journal.EventStageFinished ||
+				following.Type == journal.EventGateStarted ||
+				following.Type == journal.EventGateEvaluated {
+				break
+			}
+			if following.Type == journal.EventRunnerAnnotation &&
+				following.Gate == event.Gate &&
+				following.Runner["kind"] == retryDecisionKind &&
+				following.Runner[retryFailureClassKey] == string(journal.AttemptInfra) {
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+				break
+			}
+		}
 		for j := i - 1; j >= 0; j-- {
 			prior := events[j]
 			if prior.Type == journal.EventGateEvaluated {
 				break
 			}
+			switch {
+			case prior.Type == journal.EventRunnerAnnotation &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			case prior.Type == journal.EventError && prior.Stage == subjectStage &&
+				prior.Runner[retryFailureClassKey] == string(journal.AttemptInfra):
+				infrastructure := true
+				infrastructureEvidence = &infrastructure
+			}
 			if prior.Type == journal.EventStageFinished && prior.Status == string(apiv1.ResultFailure) {
 				cause.Kind = "stage-failure"
 				cause.Stage = prior.Stage
+				// AttemptClass describes how an attempt started, not why it
+				// failed. Use the retry decision journaled for this stage.
+				cause.Infrastructure = infrastructureEvidence != nil && *infrastructureEvidence
 				if prior.Error != nil {
 					cause.ErrorCode = prior.Error.Code
 					cause.ErrorMessage = prior.Error.Message
@@ -3970,6 +4693,13 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	workspace, err := r.createStageWorkspace(ctx, in, stageName, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
 		return apiv1.InvocationEnvelope{}, nil, err
+	}
+	if workspaceMode == apiv1.WorkspaceScratch && slices.Contains(capabilities, string(capability.ContentsRead)) {
+		workspace.additional, err = r.provisionAdditionalCheckouts(ctx, in, stageName)
+		if err != nil {
+			_ = workspace.Remove(ctx)
+			return apiv1.InvocationEnvelope{}, nil, err
+		}
 	}
 
 	inputs := make(map[string]interface{}, len(taskInputs))

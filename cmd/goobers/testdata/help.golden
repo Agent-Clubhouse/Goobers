@@ -18,7 +18,7 @@ Usage:
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers service install|uninstall|stop|start|status [path]
                                 install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
+  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
@@ -31,8 +31,8 @@ Usage:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -68,7 +68,7 @@ Usage:
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers service install|uninstall|stop|start|status [path]
                                 install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
+  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
@@ -81,8 +81,8 @@ Usage:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -120,7 +120,7 @@ Core commands:
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
   goobers service install|uninstall|stop|start|status [path]
                                 install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
+  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
@@ -133,8 +133,8 @@ Core commands:
                                 validate config, show warnings, list runs newest first, or report daemon health with --daemon
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, follow a live run, or show recorded agent transcripts
+  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
   goobers escalations [--json] [path]
                                 list escalated runs newest first
   goobers completion bash|zsh|fish|powershell  generate a shell completion script
@@ -186,8 +186,8 @@ Advanced operator commands:
                                 print current claim leases, optionally only expired leases
   goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
                                 force-release a claim through the live daemon or claims.lock
-  goobers escalations show [--json] <run-id> [path]
-                                show escalation cause + per-stage artifact timeline
+  goobers escalations show [--json] [--include-verdict] <run-id> [path]
+                                show escalation cause, verdict, and per-stage artifact timeline
   goobers telemetry stats|errors|export|prune|prune-orphans|compact [flags] [path]
                                 query, export, prune, or compact run telemetry
   goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [path]
@@ -197,9 +197,10 @@ Workflow-stage and connector commands:
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
+  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -232,6 +233,7 @@ Workflow-stage and connector commands:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -253,9 +255,10 @@ Usage:
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
+  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
+  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -288,6 +291,7 @@ Usage:
   goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
   goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
@@ -424,7 +428,7 @@ implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 
 ### backlog-query
-Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -439,6 +443,10 @@ trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
 and uses only the github:issues:read capability.
+
+--debug writes candidate eligibility, exclusion, and claim-loss details to
+stderr. Diagnostics contain item IDs and selection metadata only; normal
+output and claim behavior are unchanged.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A
@@ -705,11 +713,13 @@ Exit codes: 0 = connected (or already connected), 1 = refusal, validation,
 or provider error, 2 = usage error.
 
 ### dashboard
-Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
+Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
 
 Serve the embedded portal against the live daemon when `goobers up` is
 running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
+--wait-for-daemon optionally waits up to 30s for a concurrently starting
+daemon; use --wait-for-daemon=<duration> to choose another bound.
 --listen overrides the full bind address (host:port) and takes the place
 of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
@@ -812,15 +822,16 @@ Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
 ### escalations
 Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] <run-id> [path]
+       goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage.
 
 ### escalations show
-Usage: goobers escalations show [--json] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
+Use --include-verdict to include reviewer verdict rationale and findings.
 
 ### examples
 Usage: goobers examples <list|show> [name]
@@ -1296,6 +1307,17 @@ Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
 command failed, 2 = usage error. A forwarded command's non-zero exit code is
 preserved.
 
+### publish-batch
+Usage: goobers publish-batch [path]
+
+publish-batch is the decomposition workflow's deterministic publication
+stage (docs/design/decomposition-workflow.md §5.2-5.3, DEC-4). It consumes
+a validated decomposition plan, resumes the prepare/publish protocol by
+stable markers, verifies the complete batch, commits eligibility through
+the parent published record, and releases the parent claim.
+
+Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.
+
 ### push-branch
 Usage: goobers push-branch [path]
 
@@ -1440,6 +1462,14 @@ Takes effect on the next `goobers up`/`goobers run` (stop the daemon
 first if one is running; the reset is applied when the scheduler next
 reconstructs its budget window). Default path ".".
 Exit codes: 0 = reset written, 2 = usage/IO error.
+
+### resolve-review-threads
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
 
 ### respond-to-findings
 Usage: goobers respond-to-findings [--check] [path]
@@ -1778,6 +1808,7 @@ Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--work
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
+Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
@@ -1871,11 +1902,12 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
 ### trace
-Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
-or --transcript to select one stage. With --follow, stream a live run's
+or --transcript to select one stage. Use --summary for run metadata and
+review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
 "."). Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
@@ -1916,10 +1948,11 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
 
 These five behavior controls are intentionally flag-only: --watch-config
 selects a process-local development watcher, --diagnostics is temporary
@@ -1996,8 +2029,9 @@ polling and let in-flight activities finish within --drain-timeout.
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
 workspace provisioning (git worktrees + scratch dirs under --work-root) are
-wired; agentic and deterministic executor seams arrive with the runtime
-wiring slice, and stages needing them fail closed with a clear error.
+wired. With --instance, the worker also wires the same agentic and
+deterministic executors as the local runner; without it, stages needing
+those executors fail closed with a clear error.
 
 Flags:
   --instance <dir>           instance root; wires the real agentic and

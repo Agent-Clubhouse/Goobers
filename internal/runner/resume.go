@@ -22,21 +22,15 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 
 // ResumeInput identifies an interrupted run to pick back up. Everything
 // recoverable from the journal is read from it (Gaggle, Trigger, the
-// snapshotted Item); RepoRef and Machine are NOT journaled — RunIdentity
-// pins the workflow's name/version/digest for verification, but not the
-// target repo or the compiled Machine object itself — so the caller (the
-// daemon, which already holds this per-gaggle/workflow config) supplies them
-// again, exactly as it did for the original Start.
+// snapshotted Item and workflow Definition); RepoRef is not journaled, so the
+// caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
-	// Machine is the compiled workflow (#9) this run was walking. Its digest
-	// MUST match the run's pinned WorkflowDigest (WF-016) — resuming a run
-	// under a changed definition is refused, not silently reinterpreted. A
-	// refusal is itself terminal (#520): the run is journaled PhaseFailed
-	// (with the WF-016 refusal text as the run.finished event's own error
-	// detail) and finalized like any other terminal run, releasing its
-	// claims — see refuseResume.
+	// Machine is the compiled workflow (#9) this run was walking. When nil,
+	// Resume reconstructs it from the immutable workflow-definition input.
+	// When supplied, its digest MUST match the run's pinned WorkflowDigest
+	// (WF-016).
 	Machine *workflow.Machine
 	// GooberDigest is the current resolved execution identity.
 	GooberDigest string
@@ -46,6 +40,9 @@ type ResumeInput struct {
 	// HumanDecision resolves the latest durable human-gate pause. Nil performs
 	// ordinary crash recovery and leaves a paused human gate awaiting input.
 	HumanDecision *HumanGateDecision
+	// RecoveryReason marks an automatic runner recovery. Empty means this is
+	// an operator-driven or otherwise ordinary resume.
+	RecoveryReason string
 }
 
 // HumanGateDecision is an explicit outcome submitted for one paused human
@@ -125,9 +122,6 @@ type ResumeFromTerminalInput struct {
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
-	}
-	if in.Machine == nil {
-		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 	if in.HumanDecision != nil {
 		decision := *in.HumanDecision
@@ -352,10 +346,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_missing_digest",
 			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
 	}
+	if in.Machine == nil {
+		in.Machine, err = pinnedWorkflowMachine(rd, id)
+		if err != nil {
+			return r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
+				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
+		}
+	}
 	if id.WorkflowDigest != in.Machine.Digest() {
 		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
+
 	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
@@ -428,14 +430,16 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := &walkState{
-		jr:        jr,
-		reg:       registrar,
-		pointers:  reconstructPointers(pointerEvents, in.Machine),
-		completed: reconstructStageOutputs(seedEvents, in.Machine),
-		parallel:  activeParallel,
-		fanIn:     pendingFanIn(seedEvents, in.Machine),
-	}
+	ws := newWalkState(jr, StartInput{
+		RunID:   in.RunID,
+		Machine: in.Machine,
+		RepoRef: in.RepoRef,
+	}, registrar, "")
+	ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+	ws.visitedStages = stageVisitSeed(seedEvents)
+	ws.parallel = activeParallel
+	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
 	if activeParallel != nil {
 		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		jr.SetBranchCursors(activeParallel.cursors())
@@ -572,17 +576,21 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:                startState,
-				attempt:              attempt,
-				class:                startedAttemptClass(segment, startState, attempt),
-				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra:   infraFailedAttemptCommittedWork(segment, startState, attempt),
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
-				stage:    startState,
-				attempt:  attempt,
-				class:    startedAttemptClass(segment, startState, attempt),
-				recorded: true,
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				recorded:               true,
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if rerun == nil && !resumedGateTransition && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
@@ -641,6 +649,28 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	ws.state = startState
 	ws.resume = resume
 	ws.rerun = rerun
+	if in.RecoveryReason != "" {
+		action := journal.RecoveryActionResumed
+		detail := map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": in.RecoveryReason,
+			"action": action,
+		}
+		if resume != nil {
+			action = journal.RecoveryActionRetried
+			detail["action"] = action
+			detail["stage"] = resume.stage
+			detail["attempt"] = resume.attempt
+			detail["attemptClass"] = string(journal.AttemptInfra)
+		}
+		if err := jr.Append(journal.Event{
+			Type:   journal.EventRunnerAnnotation,
+			Stage:  startState,
+			Runner: detail,
+		}); err != nil {
+			return Result{}, fmt.Errorf("runner: journal automatic recovery for run %q: %w", in.RunID, err)
+		}
+	}
 	_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 	if err != nil {
 		if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, startState, 0); ok {
@@ -694,7 +724,9 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	ws.gateAttempts, ws.gateDiffDigests = gateAttempts, gateDiffDigests
+	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
+	ws.infraGateAttempts = gateInfrastructureSeed(segment)
+	ws.infraRepassAttempts = infrastructureTargetRepassSeed(segment)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -783,11 +815,11 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 	if !ok {
 		return gate.Result{}, false, false, nil
 	}
-	class, _, retryable := retryFailureClass(g, subject)
+	result := gateResultFromEvent(evaluated)
+	class, _, retryable := retryFailureClassForGateResult(g, subject, result.Outcome)
 	if !retryable {
 		return gate.Result{}, false, false, nil
 	}
-	result := gateResultFromEvent(evaluated)
 	if hasRetryDecisionAfter(events, evaluated) {
 		if result.Outcome == gate.OutcomePass || result.Escalated {
 			return result, false, true, nil
@@ -862,7 +894,11 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 			if !ok {
 				return "", false
 			}
-			if _, _, retryable := retryFailureClass(g, subject); !retryable {
+			outcome := ""
+			if class, ok := e.Runner[retryFailureClassKey].(string); ok && class == string(journal.AttemptInfra) {
+				outcome = gate.OutcomeInfra
+			}
+			if _, _, retryable := retryFailureClassForGateResult(g, subject, outcome); !retryable {
 				return "", false
 			}
 			target, ok := e.Runner["target"].(string)
@@ -895,17 +931,62 @@ func gateRepassAttempt(e journal.Event) int {
 	return int(n)
 }
 
+// pinnedWorkflowMachine reconstructs the historical machine from the trusted,
+// content-addressed Definition snapshot and verifies every identity boundary.
+func pinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+	var definitionRef *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
+			definitionRef = &id.Inputs[i]
+			break
+		}
+	}
+	if definitionRef == nil {
+		return nil, fmt.Errorf("immutable input %q is missing", journal.PinnedWorkflowDefinitionInputName)
+	}
+	if definitionRef.Integrity != apiv1.IntegrityTrusted {
+		return nil, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedWorkflowDefinitionInputName, definitionRef.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(definitionRef.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("read immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	var def workflow.Definition
+	if err := json.Unmarshal(data, &def); err != nil {
+		return nil, fmt.Errorf("parse immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if def.Name != id.Workflow || def.Version != id.WorkflowVersion {
+		return nil, fmt.Errorf(
+			"immutable input %q identifies workflow %q version %d, want %q version %d",
+			journal.PinnedWorkflowDefinitionInputName, def.Name, def.Version, id.Workflow, id.WorkflowVersion,
+		)
+	}
+	digest, err := workflow.ComputeDigest(def)
+	if err != nil {
+		return nil, fmt.Errorf("digest immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if digest != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, digest, id.WorkflowDigest,
+		)
+	}
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		return nil, fmt.Errorf("compile immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if machine.Digest() != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"compiled immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, machine.Digest(), id.WorkflowDigest,
+		)
+	}
+	return machine, nil
+}
+
 // refuseResume ends a run whose WF-016 resume verification failed at the
-// canonical PhaseFailed terminal (maintainer ruling on #520, issue comment
-// 2026-07-16T08:45:22Z): the run cannot proceed through no operator's or
-// scheduler's live decision, so the aborted/cancelled family — which implies
-// someone CHOSE to stop it — is the wrong phase; this is a failure of the
-// run, even though the refusal itself is correct behavior WF-016 must keep.
-// Landing on PhaseFailed also gets this path #498/#526's claim-release
-// coverage with zero special-casing, instead of leaving the journal's phase
-// "running" forever the way the pre-#520 bare-error return did — the live
-// failure mode was a config-only daemon restart leaking one held claim per
-// in-flight run.
+// canonical PhaseFailed terminal and releases its claim.
 //
 // Per the ruling, the WF-016 text must survive durably in two places: the
 // run.finished event's own Error field (never a separate preceding error
@@ -1463,7 +1544,17 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
-		n, ok := e.Runner["repassAttempt"].(float64)
+		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeInfra {
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[e.Gate] = 0
+			continue
+		}
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
 		if !ok {
 			continue
 		}
@@ -1471,6 +1562,99 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 			seed = make(map[string]int)
 		}
 		seed[e.Gate] = int(n)
+	}
+	return seed
+}
+
+func gateInfrastructureSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			seed[e.Gate] = 0
+			continue
+		}
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
+		if ok {
+			seed[e.Gate] = int(n)
+		}
+	}
+	return seed
+}
+
+// targetRepassSeed reconstructs the cumulative repass count for each target
+// stage. repassTarget preserves the configured branch when an exhausted
+// evaluation was instead routed to escalation.
+func targetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra {
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && e.Verdict != gate.OutcomePass && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	gateTargets := make(map[string]string)
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			if target := gateTargets[e.Gate]; target != "" && seed != nil {
+				seed[target] = 0
+			}
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		gateTargets[e.Gate] = target
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func stageVisitSeed(events []journal.Event) map[string]bool {
+	seed := make(map[string]bool)
+	for _, e := range events {
+		if e.Type == journal.EventStageFinished && e.Stage != "" {
+			seed[e.Stage] = true
+		}
 	}
 	return seed
 }
@@ -1562,6 +1746,34 @@ func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, a
 		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
 	}
 	return false
+}
+
+func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var attempts int32
+	for _, event := range events {
+		if event.Type != journal.EventStageStarted ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.AttemptClass == journal.AttemptInfra {
+			continue
+		}
+		attempts++
+	}
+	return attempts
+}
+
+func infrastructureFailuresBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var failures int32
+	for _, event := range events {
+		if event.Type != journal.EventError ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.Runner[retryFailureClassKey] != string(journal.AttemptInfra) {
+			continue
+		}
+		failures++
+	}
+	return failures
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

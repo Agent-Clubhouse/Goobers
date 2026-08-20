@@ -381,6 +381,27 @@ export interface RunSummary {
   infraRetryCount: number;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
+  operator?: OperatorRunSummary;
+}
+
+export interface OperatorRunSummary {
+  issue?: { number: string; title?: string };
+  currentStage?: string;
+  lastHeartbeatAt?: string;
+  heartbeatAgeMillis?: number;
+  liveness: string;
+  trajectory: string;
+  pullRequest?: { provider: string; kind: string; id: string; url?: string };
+  prOpenerStage?: string;
+  claim: {
+    leaseStatus: string;
+    expiresAt?: string;
+    providerMarker: string;
+  };
+  latestError?: { code: string; message?: string };
+  review?: { verdict: string; rationale?: string };
+  nextTransition?: string;
+  potentialBlockers: string[];
 }
 
 export interface RunDetail extends RunSummary {
@@ -748,6 +769,7 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costUSD?: number;
   p50CostUSD?: number;
   p95CostUSD?: number;
   retryWasteAttempts: number;

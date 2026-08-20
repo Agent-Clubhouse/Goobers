@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 
+	"strings"
+
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -128,6 +131,15 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 		return nil, err
 	}
 	var opts []func(*providers.GitHubProvider)
+	// Under GitHub App auth the minted installation token cannot self-report
+	// its login (GET /user is PAT-only), so every trusted-comment check —
+	// claim markers first among them — needs the login declared in config
+	// and threaded here (#3343). Best-effort: a missing/unreadable config or
+	// an absent slug leaves the GET /user path in place, which is correct
+	// for PATs and fails with the actionable 403 for undeclared App auth.
+	if login := stageProviderConfiguredLogin(cfg.root, cfg.repo); login != "" {
+		opts = append(opts, providers.WithConfiguredLogin(login))
+	}
 	if !cfg.readOnly && cfg.mutationKind != "" {
 		opts = append(opts, providers.WithMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
 	}
@@ -157,4 +169,24 @@ func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Prov
 		opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
 	}
 	return newGiteaProviderForStage(cfg.root, cfg.repo, token, opts...)
+}
+
+// stageProviderConfiguredLogin resolves the config-declared bot login for the
+// stage's target repository — the repos[] entry matching owner/name whose
+// auth block declares a GitHub App slug (#3343). Best-effort by design: any
+// load failure returns "" and the provider falls back to GET /user.
+func stageProviderConfiguredLogin(root string, repo providers.RepositoryRef) string {
+	if repo.Provider != providers.ProviderGitHub || root == "" {
+		return ""
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return ""
+	}
+	for _, r := range cfg.Repos {
+		if r.Provider == "github" && strings.EqualFold(r.Owner, repo.Owner) && strings.EqualFold(r.Name, repo.Name) {
+			return r.Auth.BotLogin()
+		}
+	}
+	return ""
 }

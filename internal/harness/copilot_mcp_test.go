@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -477,7 +478,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "mcp-secret-test",
 		SpanExporter: exporter,

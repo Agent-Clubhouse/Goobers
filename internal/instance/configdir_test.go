@@ -159,7 +159,7 @@ func TestLoadConfigDirForComparisonReturnsParseableInvalidSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.Replace(string(data), "        pass: local-ci", "        pass: ghost-state", 1))
+	data = []byte(strings.Replace(string(data), "        pass: push-branch", "        pass: ghost-state", 1))
 	if err := os.WriteFile(workflow, data, 0o644); err != nil {
 		t.Fatal(err)
 	}

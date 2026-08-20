@@ -3,14 +3,16 @@ package mcpio
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
-// protocolVersion is the MCP wire version this server speaks. Kept as a
-// literal rather than negotiated — the tools here have no version-
-// sensitive behavior to gate.
-const protocolVersion = "2024-11-05"
+var supportedProtocolVersions = []string{
+	"2025-06-18",
+	"2024-11-05",
+}
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -102,6 +104,10 @@ func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
 	isNotification := len(req.ID) == 0
 	switch req.Method {
 	case "initialize":
+		protocolVersion, rpcErr := negotiateProtocolVersion(req.Params)
+		if rpcErr != nil {
+			return s.reply(req, nil, rpcErr), !isNotification
+		}
 		return s.reply(req, map[string]interface{}{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
@@ -125,6 +131,36 @@ func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
 			return rpcResponse{}, false
 		}
 		return s.reply(req, nil, &rpcError{Code: -32601, Message: "method not found: " + req.Method}), true
+	}
+}
+
+type initializeParams struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
+func negotiateProtocolVersion(raw json.RawMessage) (string, *rpcError) {
+	var params initializeParams
+	if len(raw) == 0 {
+		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return "", &rpcError{Code: -32602, Message: "invalid initialize params: " + err.Error()}
+	}
+	if params.ProtocolVersion == "" {
+		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+	}
+	for _, supported := range supportedProtocolVersions {
+		if params.ProtocolVersion == supported {
+			return supported, nil
+		}
+	}
+	return "", &rpcError{
+		Code: -32602,
+		Message: fmt.Sprintf(
+			"unsupported protocolVersion %q; supported versions: %s",
+			params.ProtocolVersion,
+			strings.Join(supportedProtocolVersions, ", "),
+		),
 	}
 }
 
@@ -165,6 +201,13 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 
 	case "list_inputs":
 		items, err := s.tools.ListInputs()
+		receipt := InputInspectionReceipt{Tool: "list_inputs", Success: err == nil}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -181,9 +224,29 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 			EndLine   int    `json:"endLine"`
 		}
 		if err := unmarshalArgs(params.Arguments, &args); err != nil {
-			return nil, err
+			receiptErr := s.tools.recordInputInspection(InputInspectionReceipt{
+				Tool: "read_input", Success: false, Error: err.Error(),
+			})
+			return nil, errors.Join(err, receiptErr)
 		}
 		result, err := s.tools.ReadInput(args.Name, args.StartLine, args.EndLine)
+		receipt := InputInspectionReceipt{
+			Tool: "read_input", Input: args.Name, Success: err == nil,
+		}
+		if err == nil {
+			receipt.InputDigest, err = s.tools.inputDigest(args.Name)
+			receipt.Success = err == nil
+			receipt.StartLine = result.StartLine
+			receipt.EndLine = result.EndLine
+			receipt.TotalLines = result.TotalLines
+			receipt.Truncated = result.Truncated
+		}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -200,9 +263,30 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 			ContextLines int    `json:"contextLines"`
 		}
 		if err := unmarshalArgs(params.Arguments, &args); err != nil {
-			return nil, err
+			receiptErr := s.tools.recordInputInspection(InputInspectionReceipt{
+				Tool: "grep_input", Success: false, Error: err.Error(),
+			})
+			return nil, errors.Join(err, receiptErr)
 		}
 		result, err := s.tools.GrepInput(args.Name, args.Pattern, args.ContextLines)
+		receipt := InputInspectionReceipt{
+			Tool: "grep_input", Input: args.Name, Pattern: args.Pattern, Success: err == nil,
+		}
+		if err == nil {
+			receipt.InputDigest, err = s.tools.inputDigest(args.Name)
+			receipt.Success = err == nil
+			receipt.Truncated = result.Truncated
+			receipt.MatchLines = make([]int, 0, len(result.Matches))
+			for _, match := range result.Matches {
+				receipt.MatchLines = append(receipt.MatchLines, match.LineNumber)
+			}
+		}
+		if err != nil {
+			receipt.Error = err.Error()
+		}
+		if receiptErr := s.tools.recordInputInspection(receipt); receiptErr != nil {
+			err = errors.Join(err, receiptErr)
+		}
 		if err != nil {
 			return nil, err
 		}

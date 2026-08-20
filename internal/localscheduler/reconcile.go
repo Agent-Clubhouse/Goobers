@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,7 +89,10 @@ func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(jour
 		dir := filepath.Join(runsDir, e.Name())
 		rd, err := journal.OpenRead(dir)
 		if err != nil {
-			continue // not a run directory
+			if errors.Is(err, journal.ErrNotRunDirectory) {
+				continue
+			}
+			return fmt.Errorf("open run journal %q: %w", e.Name(), err)
 		}
 		if err := ctx.Err(); err != nil {
 			return err

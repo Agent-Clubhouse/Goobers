@@ -140,6 +140,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	for _, apply := range setupOpts {
 		apply(&options)
 	}
+	reportStartupProgress(options.startupProgress, "loading instance and workflow configuration")
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return nil, err
@@ -169,6 +170,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 		err = nil
 	}
+	reportStartupProgress(options.startupProgress, fmt.Sprintf(
+		"loaded configuration (%d gaggle(s), %d workflow(s))",
+		len(set.Gaggles), len(set.Workflows),
+	))
 	defer func() {
 		if err != nil {
 			err = &configReportError{report: report, err: err}
@@ -280,6 +285,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}()
 	if cfg.TelemetryEnabled() {
+		reportStartupProgress(options.startupProgress, "opening telemetry state")
 		var otlpConfig instance.OTLPConfig
 		if cfg.Telemetry.OTLP != nil {
 			otlpConfig = *cfg.Telemetry.OTLP
@@ -328,6 +334,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	} else if discarded > 0 {
 		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
 	}
+	reportStartupProgress(options.startupProgress, "opening read-model state")
 	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
 	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
@@ -381,6 +388,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	var recoveredClaims []localscheduler.ClaimEntry
+	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
 	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
@@ -415,11 +423,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress)
 	if err != nil {
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
+	reportStartupProgress(options.startupProgress, "initializing retained legacy runtime")
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
 		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
@@ -467,6 +476,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Interventions:     interventionRegistry,
 		SecretStores:      secretStores,
 	}, nil
+}
+
+func reportStartupProgress(report func(string), message string) {
+	if report != nil {
+		report(message)
+	}
 }
 
 func journalLegacyRuntimeMigration(l instance.Layout, instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
@@ -577,7 +592,9 @@ func buildSchedulerDefinitions(
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
+	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
+	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
@@ -585,6 +602,7 @@ func buildSchedulerDefinitions(
 	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		true,
 	)
 	if err != nil {
 		return nil, err
@@ -639,6 +657,7 @@ func buildSchedulerDefinitions(
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
+		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
@@ -646,10 +665,11 @@ func buildSchedulerDefinitions(
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
 		}
 		wtManagers[gaggle] = manager
 		runners[gaggle] = rn
+		reportStartupProgress(startupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
 	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, gaggleProjects, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
@@ -1026,9 +1046,22 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture, providerQuota,
-	)
+	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               l,
+		Config:               cfg,
+		Goobers:              goobers,
+		InstructionsByGoober: instructions,
+		Telemetry:            tel,
+		SharedRegistry:       sharedReg,
+		WorktreeManager:      manager,
+		BranchNamespaces:     branchNamespaces,
+		GaggleProject:        gaggleProject,
+		AdditionalRepos:      additionalRepos,
+		HarnessInfo:          harnessInfo,
+		CredentialStores:     stores,
+		SandboxPosture:       sandboxPosture,
+		ProviderQuota:        providerQuota,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1238,6 +1271,13 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 }
 
+func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
+	if id.WorkflowDigest != "" && current.Digest() != id.WorkflowDigest {
+		return nil, "pinned-snapshot"
+	}
+	return current, "current-config"
+}
+
 func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -1258,7 +1298,10 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			dir := filepath.Join(runsDir, e.Name())
 			rd, err := journal.OpenRead(dir)
 			if err != nil {
-				continue // not a run directory
+				if errors.Is(err, journal.ErrNotRunDirectory) {
+					continue
+				}
+				return resumed, warned, fmt.Errorf("open run journal %q: %w", e.Name(), err)
 			}
 			id, err := rd.Identity()
 			if err != nil {
@@ -1326,17 +1369,37 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				}
 				continue
 			}
+			// Never reinterpret a historical run under the current workflow
+			// merely because the name still matches.
+			machine, machineSource := interruptedRunMachine(id, machine)
 			repoRef := repoRefs[identity]
 			gooberDigest := gooberDigests[identity]
 
 			resumed = append(resumed, id.RunID)
+			if log != nil {
+				if err := log.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+					Runner: map[string]any{
+						"kind":                     journal.RunnerAnnotationRunRecovery,
+						"reason":                   "daemon_restart",
+						"action":                   journal.RecoveryActionResumed,
+						"workflowDigest":           id.WorkflowDigest,
+						"workflowDefinitionSource": machineSource,
+					},
+				}); err != nil {
+					return resumed, warned, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+				}
+			}
 			wg.Add(1)
 			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
 				defer untrack()
-				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
+				result, err := rn.Resume(ctx, runner.ResumeInput{
+					RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
+					RecoveryReason: "daemon_restart",
+				})
 				ingestRunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:

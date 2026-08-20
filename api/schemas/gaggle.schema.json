@@ -56,6 +56,7 @@
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",
@@ -153,7 +154,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
@@ -178,7 +179,6 @@
           "minLength": 1,
           "description": "CEL predicate over the provider's typed native-field projection. ANDed with labels; unavailable fields are errors."
         },
-        "query": { "type": "string", "description": "Provider-specific query used to narrow candidate work items." },
         "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this backlog." }
       }
     }

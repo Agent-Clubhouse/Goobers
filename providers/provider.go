@@ -154,6 +154,13 @@ type PullRequestReviewThreadProvider interface {
 	ListPullRequestReviewThreads(context.Context, RepositoryRef, string) (PullRequestReviewThreads, error)
 }
 
+// PullRequestReviewThreadMutator replies to and resolves provider-native review
+// threads without widening every RepoProvider backend.
+type PullRequestReviewThreadMutator interface {
+	ReplyPullRequestReviewThread(context.Context, PullRequestReviewThreadReply) (PullRequestInlineComment, error)
+	ResolvePullRequestReviewThread(context.Context, RepositoryRef, string) error
+}
+
 // PullRequestBranchUpdater incorporates a pull request's base branch through
 // the provider API. It is separate from RepoProvider because Azure DevOps does
 // not yet expose the V0 GitHub update-branch primitive.

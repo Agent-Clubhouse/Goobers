@@ -19,6 +19,31 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy | §2, §4, §5 |
 
+## Hand-managed node-pool contract
+
+The reference deployment assumes that the cluster operator creates and manages its node
+pools. It relies on pool properties, not particular VM sizes, node counts, purchase
+models, or scaling limits:
+
+| Pool | Required node properties | Workload placement |
+|---|---|---|
+| Linux (required) | Linux kubelet OS and the standard `kubernetes.io/os=linux` label | Normal Goobers workloads, including the operator, worker, API, and Temporal components, select `kubernetes.io/os: linux`. No Goobers-specific taint or toleration is required. |
+| Windows (optional) | Windows kubelet OS, the standard `kubernetes.io/os=windows` label, and the operator-applied `kubernetes.io/os=windows:NoSchedule` taint | Windows stage workloads select `kubernetes.io/os: windows` and tolerate the matching `NoSchedule` taint. Do not add this toleration to Linux workloads. |
+
+AKS supplies the OS label but does **not** automatically taint Windows pools. Apply the
+taint when creating a Windows pool, and preserve it when replacing or adding nodes:
+
+```sh
+kubectl taint node <windows-node> kubernetes.io/os=windows:NoSchedule
+```
+
+Karpenter and AKS Node Auto Provisioning (NAP) are deliberately deferred. The current
+worker Deployment does not create one unschedulable pod per stage, and Goobers has no
+pod-level scaling signal for an autoprovisioner to observe. Revisit autoprovisioning
+after a pod-level scaler or pod-per-stage execution model exists. Until then, operators
+choose and manage capacity for both pools according to their own workloads; this
+reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
+
 ## Conventions
 
 - **`CHANGE-ME`** marks every value the customer must replace (registry, hosts, CIDRs,
@@ -28,6 +53,8 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
   pull from (§1) — Goobers does not publish images yet (CI publishing is a follow-up).
+  The image includes Node.js, GitHub CLI, and the Copilot CLI default agent harness, so
+  the reference worker can run deterministic and agentic stages.
 - **Mixed-OS safety**: the Linux control-plane workloads are pinned with
   `kubernetes.io/os: linux`. In a cluster with Windows nodes, also taint every Windows
   node so an unpinned Linux workload cannot attach and initialize a Linux volume there:
@@ -58,8 +85,8 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
         kubernetes.io/os: linux
   ```
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
-  you deploy — regenerate from `api/v1alpha1` (`make manifests`) rather than trusting a
-  stale checkout; the committed `config/crd/bases` are not CI-gated.
+  you deploy. The committed `config/crd/bases` are generated from `api/v1alpha1`; update
+  them with `make manifests`. The merge gate regenerates the CRDs and rejects any diff.
 - **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) are stubbed
   with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
   disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
@@ -160,21 +187,15 @@ inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
 
 ### Images
 
-The default image carries the binary, git and ca-certificates — **no agent
-harness** — so deterministic stages run and agentic stages fail at the harness
-preflight (#2849). Build your own from it:
-
-```dockerfile
-FROM <registry>/goobers:<tag>
-RUN npm install -g @github/copilot     # or whichever harness you use
-```
-
-and set the matching `runner.harnessCommand` in `instance.yaml`. Which harness to
-install is deliberately yours: `harnessCommand` is a map keyed by harness name.
+The default image carries the Copilot CLI agent harness. Its home is mounted from
+an `emptyDir` in the reference worker so `$HOME/.copilot` remains writable while
+the container root filesystem stays read-only. To use another harness, derive an
+image that installs it and set the matching `runner.harnessCommand` in
+`instance.yaml`; the map is keyed by harness name.
 
 Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
-pull on a fresh node. Scale a Windows pool to zero when idle, but expect that pull
-on the first run after it scales up.
+pull on a fresh node. If your operator-selected capacity policy scales the Windows
+pool to zero, expect that pull on the first run after it scales up.
 
 ### Timezones
 

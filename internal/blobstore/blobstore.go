@@ -46,12 +46,15 @@ package blobstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // ErrNotFound is returned by Get when the store holds no blob for a digest. It
@@ -125,6 +128,9 @@ func (d *Dir) Get(ctx context.Context, digest string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("blobstore: read %s: %w", digest, err)
 	}
+	if actual := fmt.Sprintf("sha256:%x", sha256.Sum256(data)); actual != digest {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, digest)
+	}
 	return data, nil
 }
 
@@ -152,8 +158,8 @@ func (d *Dir) Has(ctx context.Context, digest string) (bool, error) {
 // The write is staged and renamed rather than written in place. Two workers on
 // two nodes can Put the same digest concurrently — same bytes, by definition —
 // and a reader must never observe a half-written blob whose digest no longer
-// commits to its contents. Rename is atomic within a filesystem, which is the
-// only guarantee this needs and the only one it asks for.
+// commits to its contents. Rename is atomic within a filesystem, and syncing
+// the staged file and parent directory makes the publication crash-durable.
 func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	path, err := d.pathFor(digest)
 	if err != nil {
@@ -162,10 +168,10 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err == nil {
+	if _, err := d.Get(ctx, digest); err == nil {
 		return nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("blobstore: stat %s: %w", digest, err)
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -181,17 +187,24 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 		_ = tmp.Close()
 		return fmt.Errorf("blobstore: write %s: %w", digest, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("blobstore: sync %s: %w", digest, err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("blobstore: close %s: %w", digest, err)
 	}
-	if err := os.Rename(staged, path); err != nil {
+	if err := durability.ReplaceFile(staged, path); err != nil {
 		// A concurrent Put of the same digest already landed. Same bytes, so
 		// this is success, not a conflict — and treating it as one is what
 		// keeps the store lock-free.
-		if _, statErr := os.Stat(path); statErr == nil {
+		if _, getErr := d.Get(ctx, digest); getErr == nil {
 			return nil
 		}
 		return fmt.Errorf("blobstore: publish %s: %w", digest, err)
+	}
+	if err := durability.SyncDir(dir); err != nil {
+		return fmt.Errorf("blobstore: sync directory for %s: %w", digest, err)
 	}
 	return nil
 }

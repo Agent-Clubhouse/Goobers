@@ -6,11 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/goobers/goobers/internal/app"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -111,6 +113,33 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 	}
 	if _, err := app.ParseArgs("operator", []string{"--version=eventually"}, io.Discard, true); err == nil {
 		t.Error("invalid operator flag value was accepted")
+	}
+}
+
+func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+
+	containers := deployment.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+	mounts := containers[0].VolumeMounts
+	if !slices.ContainsFunc(mounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "harness-home" && mount.MountPath == "/home/nonroot"
+	}) {
+		t.Errorf("volume mounts %v do not provide writable harness home /home/nonroot", mounts)
+	}
+	if !slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
+		return volume.Name == "harness-home" && volume.EmptyDir != nil
+	}) {
+		t.Error("harness-home is not backed by an emptyDir")
 	}
 }
 

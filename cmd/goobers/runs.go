@@ -15,6 +15,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
@@ -181,6 +182,7 @@ type runSummary struct {
 	Phase          journal.RunPhase
 	StartedAt      time.Time
 	LastActivityAt time.Time
+	Operator       readservice.OperatorRunSummary
 }
 
 // listRuns scans an instance's runs/ directory for run subdirectories and

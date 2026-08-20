@@ -130,6 +130,32 @@ func TestRequiredCapabilities(t *testing.T) {
 			args:    []string{"--delete"},
 			want:    []capability.Capability{capability.GitHubBranchDelete},
 		},
+		{
+			name:    "publish decomposition batch",
+			command: "publish-batch",
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
+		{
+			name:    "backlog health snapshot",
+			command: "backlog-health",
+			want:    []capability.Capability{capability.GitHubIssuesRead},
+		},
+		{
+			name:    "backlog health feedback",
+			command: "backlog-health",
+			args:    []string{"--feedback"},
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
+		{
+			name:    "finding response validation",
+			command: "respond-to-findings",
+			args:    []string{"--check"},
+		},
+		{
+			name:    "finding response publication",
+			command: "respond-to-findings",
+			want:    []capability.Capability{capability.GitHubIssuesWrite},
+		},
 	}
 
 	for _, test := range tests {
@@ -214,5 +240,8 @@ func TestResultFile(t *testing.T) {
 	}
 	if got, ok := ResultFile("push-branch"); ok || got != "" {
 		t.Fatalf("ResultFile(push-branch) = %q, %v, want empty, false", got, ok)
+	}
+	if got, ok := ResultFile("publish-batch"); !ok || got != "published-batch.json" {
+		t.Fatalf("ResultFile(publish-batch) = %q, %v, want published-batch.json, true", got, ok)
 	}
 }

@@ -124,6 +124,7 @@ Every run — local or cloud — produces:
 
 ```
 gaggles/<gaggle>/runs/<run-id>/
+  schema.json       # journal schema version + minimum compatible binary
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,
@@ -160,6 +161,10 @@ Rules:
 - **Content digests** on inputs and artifacts make runs comparable and make those
   files tamper-evident (the event log itself is trusted-at-rest at tiers 1–2; hash
   chaining is a tier-2+ option, not a baseline claim).
+- A stage may additionally mirror its durable outbox files to a configured local
+  filesystem root. Stage, workflow, then gaggle configuration wins in that order.
+  The mirror is arranged beneath `<root>/<run-id>/`; the journal remains the
+  source of truth, and every source and destination path is containment-checked.
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
 - **Redaction at the boundary:** raw secrets MUST NOT land at rest anywhere under
@@ -265,11 +270,13 @@ Contract rules:
   in `run.yaml` when a run starts, so config reloads cannot retune a run in
   flight. `maxRunDuration` bounds total wall-clock age independently of journal
   activity and is disabled when omitted. An automated or
-  agentic gate may override `maxRepasses` because separate review loops in one
-  definition can legitimately need different budgets. Stall detection does not
-  have a task-level override: task/gate `timeoutSeconds` and retry policies
-  already own per-attempt execution bounds, while the stall watchdog protects
-  the run journal as a whole.
+  agentic gate may override `maxRepasses`. The value bounds cumulative
+  re-entries to a branch's target stage across all gates that route back to
+  that stage; a pass at one gate does not reset that target's live budget.
+  Separate target stages can therefore have independent budgets. Stall
+  detection does not have a task-level override: task/gate `timeoutSeconds`
+  and retry policies already own per-attempt execution bounds, while the stall
+  watchdog protects the run journal as a whole.
 - Retry attempt counts and backoff remain declared on each task or executable
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration
@@ -392,7 +399,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Seam | Tiers 1–2 (local) | Tier 3 (cloud drop-in) |
 |---|---|---|
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
-| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
+| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
 | Config delivery | Startup-loaded local `config/`; opt-in `--watch-config` for direct edits; or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
@@ -431,9 +438,9 @@ and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop: the `reference-workflows/` reference config
-now defines **nine** workflows: backlog curation, docs updater, implementation,
-merge review, PR remediation, quality sprint, self update, Tutor, and work
-nomination. Together they provide the canonical patterns for curating and
+now defines **ten** workflows: backlog curation, docs updater, implementation,
+merge review, PR remediation, quality sprint, self update, test-suite quality,
+Tutor, and work nomination. Together they provide the canonical patterns for curating and
 implementing work, reviewing, remediating, and **merging PRs autonomously**, and
 maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in

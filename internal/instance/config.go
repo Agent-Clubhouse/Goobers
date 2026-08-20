@@ -223,13 +223,29 @@ func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
 // WorkflowSource locates the workflow configuration independently of Repos.
 // A local-dir source reads Path directly. A git source reads a committed Ref
 // from either a local repository Path or a remote HTTPS URL; remote sources
-// require their own token reference.
+// authenticate through their own token reference or a github-app auth block
+// (#3274) — exactly one of the two.
 type WorkflowSource struct {
 	Kind  string    `json:"kind" yaml:"kind"`
 	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
 	URL   string    `json:"url,omitempty" yaml:"url,omitempty"`
 	Ref   string    `json:"ref,omitempty" yaml:"ref,omitempty"`
 	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// Auth selects GitHub App installation-token minting for a REMOTE git
+	// source (#3274), reusing repos[]' RepoAuthConfig shape (kind github-app
+	// with appId/installationId/privateKey) the way DaemonIdentityConfig
+	// reuses the Kind vocabulary — the underlying mechanism is identical.
+	// Mutually exclusive with Token: exactly one identity mechanism per
+	// source, exactly as repos[] treats it. Nil preserves static-token
+	// behavior unchanged.
+	Auth *RepoAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// GitHubAppAuth reports whether the workflow source authenticates through
+// GitHub App installation-token minting (auth kind github-app, #3274) rather
+// than a static token ref.
+func (s WorkflowSource) GitHubAppAuth() bool {
+	return s.Auth != nil && s.Auth.Kind == GitHubAuthApp
 }
 
 // TrackedRef returns the configured git ref, defaulting to main.
@@ -699,12 +715,31 @@ type RepoAuthConfig struct {
 	// inline value (CFG-009). The key only ever signs short-lived App JWTs
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+	// Slug is the App's URL-safe handle (the part before "[bot]" in its
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind github-app.
+	// Installation tokens cannot call GET /user, so the provider identity's
+	// login — which every trusted-comment check (claim markers, verdicts,
+	// handoffs) compares against — must be declared here (#3343). Without it
+	// those checks fail with "Resource not accessible by integration" the
+	// first time they run under App auth.
+	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
+}
+
+// BotLogin returns the GitHub login this auth block authenticates as, when
+// declarable: the App slug plus "[bot]" for kind github-app with Slug set,
+// otherwise empty (a PAT's login is discoverable via GET /user at runtime and
+// needs no declaration).
+func (a *RepoAuthConfig) BotLogin() string {
+	if a == nil || a.Kind != GitHubAuthApp || strings.TrimSpace(a.Slug) == "" {
+		return ""
+	}
+	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
-	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil
+	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil || a.Slug != ""
 }
 
 // GitHubID is a GitHub identifier config field YAML authors may write as a
@@ -1516,7 +1551,7 @@ func (c *Config) Validate() error {
 		func() error { return c.validateDaemonIdentity(stores) },
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
-		func() error { return c.validateWorkflowSourceToken(stores) },
+		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
 	)
 }
@@ -1671,7 +1706,7 @@ func (s WorkflowSource) validate() error {
 		if !hasPath {
 			return fmt.Errorf("path is required for kind %q", s.Kind)
 		}
-		if hasURL || s.Ref != "" || s.Token != nil {
+		if hasURL || s.Ref != "" || s.Token != nil || s.Auth != nil {
 			return fmt.Errorf("kind %q accepts only path", s.Kind)
 		}
 	case WorkflowSourceKindGit:
@@ -1682,11 +1717,20 @@ func (s WorkflowSource) validate() error {
 			if err := validateRemoteGitURL(s.URL); err != nil {
 				return err
 			}
-			if s.Token == nil || s.Token.sourceCount() != 1 {
+			if s.Auth != nil {
+				if err := s.validateAuth(); err != nil {
+					return err
+				}
+			} else if s.Token == nil || s.Token.sourceCount() != 1 {
 				return fmt.Errorf("remote git token must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
-		} else if s.Token != nil {
-			return fmt.Errorf("token is only valid for a remote git url")
+		} else {
+			if s.Token != nil {
+				return fmt.Errorf("token is only valid for a remote git url")
+			}
+			if s.Auth != nil {
+				return fmt.Errorf("auth is only valid for a remote git url")
+			}
 		}
 	default:
 		return fmt.Errorf("unsupported kind %q (supported: \"local-dir\", \"git\")", s.Kind)
@@ -1703,6 +1747,38 @@ func (s WorkflowSource) validate() error {
 		if field.value != "" && strings.TrimSpace(field.value) != field.value {
 			return fmt.Errorf("%s must not contain leading or trailing whitespace", field.name)
 		}
+	}
+	return nil
+}
+
+// validateAuth checks a remote git workflowSource's auth block (#3274). The
+// block reuses RepoAuthConfig, but only github-app is meaningful here: a
+// static credential is spelled token:, never auth kind pat, so the two can
+// never compete for the same fetch. Required-field and mutual-exclusion
+// wording mirrors repos[]' own github-app validation; the stores/envPassthrough
+// checks the Config-level pass owns live in validateWorkflowSourceCredentials.
+func (s WorkflowSource) validateAuth() error {
+	if s.Auth.Kind != GitHubAuthApp {
+		return fmt.Errorf("unsupported auth kind %q (supported: %q; a static credential is configured through token, not auth)", s.Auth.Kind, GitHubAuthApp)
+	}
+	if s.Token != nil {
+		return fmt.Errorf("auth kind %q must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted", GitHubAuthApp)
+	}
+	if s.Auth.Tenant != "" || s.Auth.ClientID != "" {
+		return fmt.Errorf("auth.tenant and auth.clientId are only valid for ADO auth kinds")
+	}
+	if s.Auth.AppID == "" {
+		return fmt.Errorf("auth.appId is required for auth kind %q", GitHubAuthApp)
+	}
+	if s.Auth.InstallationID == "" {
+		return fmt.Errorf("auth.installationId is required for auth kind %q", GitHubAuthApp)
+	}
+	if _, err := strconv.ParseUint(string(s.Auth.InstallationID), 10, 64); err != nil {
+		return fmt.Errorf("auth.installationId %q must be the numeric installation ID", s.Auth.InstallationID)
+	}
+	if s.Auth.PrivateKey == nil || s.Auth.PrivateKey.sourceCount() != 1 {
+		return fmt.Errorf("auth.privateKey must reference exactly one of env, file, keychain, or store — " +
+			"inline secret values are never permitted (CFG-009, SEC-010)")
 	}
 	return nil
 }

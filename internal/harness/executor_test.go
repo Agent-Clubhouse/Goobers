@@ -19,7 +19,9 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -46,6 +48,7 @@ func writeRaw(workspace, relPath, content string) error {
 type fakeRecorder struct {
 	spans     []recordedSpan
 	artifacts []recordedArtifact
+	events    []journal.Event
 	dir       string
 	runsDir   string
 	err       error
@@ -65,6 +68,18 @@ type recordedArtifact struct {
 type metricsFakeAdapter struct {
 	FakeAdapter
 	metrics map[string]float64
+}
+
+type receiptFakeAdapter struct {
+	FakeAdapter
+	receipts []mcpio.InputInspectionReceipt
+}
+
+func (f *receiptFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.InputInspectionReceipts = append([]mcpio.InputInspectionReceipt(nil), f.receipts...)
+	out.InputInspectionReceiptsCollected = true
+	return out, err
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
@@ -87,6 +102,14 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 	}
 	f.artifacts = append(f.artifacts, recordedArtifact{name: name, data: append([]byte(nil), data...)})
 	return journal.Ref{Path: "artifacts/fake/" + name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+}
+
+func (f *fakeRecorder) Append(event journal.Event) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, event)
+	return nil
 }
 
 func (f *fakeRecorder) Dir() string { return f.dir }
@@ -190,8 +213,46 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExecutorJournalsGoobersIOInputInspectionReceipts(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &receiptFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		receipts: []mcpio.InputInspectionReceipt{
+			{Tool: "list_inputs", Success: true},
+			{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{42}, Success: true},
+		},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %+v, want one receipt annotation", rec.events)
+	}
+	event := rec.events[0]
+	if event.Type != journal.EventRunnerAnnotation || event.Stage != "implement" ||
+		event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+		t.Fatalf("receipt annotation = %+v", event)
+	}
+}
+
 func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "harness-provenance-test",
 		SpanExporter: exporter,
@@ -295,7 +356,7 @@ func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-integration-test").Start(context.Background(), "attempt")
@@ -442,7 +503,7 @@ func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-error-test").Start(context.Background(), "attempt")

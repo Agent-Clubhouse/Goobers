@@ -59,6 +59,81 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run end-to-end gate
+        run: make test-e2e
+
+  envtest:
+    name: envtest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Provision envtest and run the integration gate
+        run: make test-envtest
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 12
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Enforce the repository coverage threshold
+        run: make cover-check
+
+      - name: Upload coverage profile
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
+
   # Platform-independent unreachable-production-code report. Ran once (it was a
   # per-OS step of the old monolith; nothing about it is OS-specific).
   deadcode:
@@ -76,6 +151,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -119,6 +195,7 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -132,9 +209,31 @@ jobs:
           exit 1
 
       - name: Install Portal dependencies and pinned Chromium
+        # Retried because these are the repo's dominant CI flake (#3139): npm
+        # and the Chromium download stall on registry/CDN hiccups and eat the
+        # whole timeout, unlike go mod download and golangci-lint which
+        # already retry. Six timeouts in one night on the v0.2.0 wave.
+        timeout-minutes: 20
+        shell: bash
         run: |
-          npm --prefix portal ci --no-audit --no-fund
-          npm --prefix portal exec -- playwright install --with-deps chromium
+          retry_network_command() {
+            local label="$1"
+            shift
+            for attempt in 1 2 3; do
+              if timeout --signal=TERM --kill-after=15s 180s "$@"; then
+                return 0
+              fi
+              echo "::warning::${label} attempt ${attempt}/3 failed or hung; retrying"
+              sleep $((attempt * 10))
+            done
+            echo "::error::${label} failed after 3 bounded attempts"
+            return 1
+          }
+
+          retry_network_command "portal npm install" \
+            npm --prefix portal ci --no-audit --no-fund
+          retry_network_command "Playwright Chromium install" \
+            npm --prefix portal exec -- playwright install --with-deps chromium
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
@@ -183,6 +282,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -196,6 +296,7 @@ jobs:
           exit 1
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        timeout-minutes: 8
         # Explicit bash for pipefail: without it the pipeline reports only sh's
         # status, so a failed curl would feed an empty script to a shell that
         # exits 0 and the step would "succeed" with no linter installed.
@@ -242,6 +343,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -291,6 +393,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -327,6 +430,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -437,6 +541,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -477,6 +582,7 @@ jobs:
           cache: maven
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -492,9 +598,32 @@ jobs:
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
       - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
+        timeout-minutes: 12
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash maven
+          # Hosted runners occasionally leave the Azure mirror connected but
+          # unable to serve package indexes. Use the canonical mirror and bound
+          # every attempt so this setup cannot hold the workflow indefinitely.
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install \
+                 bash bubblewrap coreutils dash maven; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::declared dependency provisioning failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::declared dependency provisioning attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
@@ -518,6 +647,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -593,6 +723,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -629,6 +760,7 @@ jobs:
       # on the Makefile's own cross-platform shell portability rather than a
       # portal build smoke test — that's covered elsewhere.
       - name: Install make (windows)
+        timeout-minutes: 8
         run: choco install make --no-progress -y
 
       - name: make build (windows)
@@ -652,24 +784,15 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials
 
+      - name: Windows self-update
+        run: go test ./internal/selfupdate
+
       # Both are real Windows faults fixed under #2031 whose only coverage
       # lives in an existing test that no gated selection ran:
       # harness/claude.go let an ambient USERPROFILE override an explicitly
       # set HOME; agentkit/bundle.go trusted the OS's reported executable bit,
       # which neither embed.FS nor NTFS can express, so the embedded and
       # from-disk toolkit builders diverged. Both are cheap, so they run whole.
-      #
-      # ./internal/selfupdate is deliberately NOT here, though it carries a
-      # Windows fault of its own (update.go reading a staging-path collision as
-      # "already gone", because Windows answers ERROR_PATH_NOT_FOUND where
-      # POSIX answers ENOTDIR). #2792 added it, and
-      # TestSupervisorPromotesHealthyCandidate promptly began failing on this
-      # gate. #2800 misread that as a slow runner and raised the package's
-      # Windows wait budget 5s -> 30s; the test then failed at 33s, which
-      # establishes it as a genuine hang rather than contention. Both changes
-      # are reverted: an arbitrary large timeout would only convert a fast red
-      # into a slow one while leaving a required gate flaky. The hang is
-      # tracked in #2824, and this package comes back once it is diagnosed.
       - name: Windows harness and toolkit
         run: go test ./internal/harness ./internal/agentkit
 
@@ -683,6 +806,17 @@ jobs:
       # set out to close (#2862, and the junction-resolution fix in this change).
       - name: Windows instance runtime
         run: go test ./internal/instance
+
+      # Named, not the whole package: internal/telemetry/rollup's suite runs
+      # ~15s on Linux and isn't otherwise Windows-sensitive, so only the two
+      # tests that actually exercise canonicalRunsRoot's dependency on
+      # instance.ResolveRuntimeAlias run here. Without this step they only ran
+      # under the Linux unit shards, where ResolveRuntimeAlias takes the
+      # plain-symlink branch and the Windows reparse-point junction parser in
+      # runtime_alias_windows.go — the one this PR's alias-dedup fix depends
+      # on — stayed unexercised on the only platform where it runs (#3280).
+      - name: Windows rollup migration alias dedup
+        run: go test ./internal/telemetry/rollup -run 'TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot|TestCanonicalRunsRootDedupesSymlinkAlias'
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
@@ -735,8 +869,13 @@ jobs:
       # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
       # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
       # Windows must use the CLI's embedded time/tzdata import (#2863).
+      # TestValidatePlanDetectsLiveParentConflict guards the API read cache's
+      # bounded CreateFile fallback, which is only observable on Windows.
+      # TestRunDashboardContextAcceptsNonLoopbackListenWithAuth exercises the
+      # non-loopback contract through the loopback-only test listener, guarding
+      # against firewall prompts for the temporary test executable (#3114).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
@@ -772,13 +911,23 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
+    # e2e, envtest, and coverage joined in #3206 (#3152 added them as jobs
+    # without wiring them here). unit-gate — the pre-parallelization `make ci`
+    # monolith — was retired once every check it ran had a dedicated job; it
+    # duplicated the checks/lint/unit/shipped/deadcode slices wholesale and
+    # doubled the CI-setup network exposure (#3139/#3322) for zero coverage.
+    # four jobs intending to make them required, but never added them here — and
+    # this aggregate is the only context the branch ruleset requires, so all four
+    # could go red while `make ci` reported success and the merge proceeded. That
+    # is the same "runs on every PR, enforces nothing" gap #2019 closed below.
+    #
     # integration, sandbox, and linux-validation joined this list in #2019:
     # all three ran on every PR already (full runner cost) but a red result
     # never blocked merge (zero enforcement) until now — the worst of both
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, e2e, envtest, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -797,6 +946,9 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
           LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          ENVTEST_RESULT: ${{ needs.envtest.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
         run: |
           fail=0
           check() {
@@ -819,11 +971,15 @@ jobs:
           check "declared-dependency integration"    "$INTEGRATION_RESULT"
           check "sandbox confinement"                "$SANDBOX_RESULT"
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
+          check "end-to-end gate"                    "$E2E_RESULT"
+          check "envtest integration gate"           "$ENVTEST_RESULT"
+          check "coverage threshold"                 "$COVERAGE_RESULT"
           exit "$fail"
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
     if: ${{ github.event_name != 'push' }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -841,8 +997,28 @@ jobs:
 
       - name: Install bubblewrap
         if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install bubblewrap; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::bubblewrap installation failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::bubblewrap installation attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
           # namespaces via AppArmor, which bubblewrap needs to set up its
           # uid map. Relax it so the confinement probe can create the

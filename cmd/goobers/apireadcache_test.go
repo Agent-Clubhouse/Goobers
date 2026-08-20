@@ -104,6 +104,90 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	}
 }
 
+func TestAcquireAPIReadCacheLockDeduplicatesBlockedFileOpen(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(2)
+
+	begin := time.Now()
+	for range 3 {
+		handle, err := manager.acquire("blocked.lock", 20*time.Millisecond, acquire)
+		if handle != nil || err == nil {
+			t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
+		}
+	}
+	if elapsed := time.Since(begin); elapsed > time.Second {
+		t.Fatalf("blocked file opens returned after %s, want bounded fallback", elapsed)
+	}
+	<-started
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want one deduplicated attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAcquireAPIReadCacheLockCapsBlockedFileOpens(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		calls.Add(1)
+		close(started)
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(1)
+
+	if _, err := manager.acquire("first.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("first blocked acquisition returned no error")
+	}
+	<-started
+	if _, err := manager.acquire("second.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("acquisition beyond capacity returned no error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want capacity-limited single attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAPIReadCacheLockDeadlineFallsBackToLiveRequest(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"number":420}`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	held, err := lock.TryAcquire(filepath.Join(dir, apiReadCacheLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+
+	cache := newAPIReadCache(dir, "", &http.Client{})
+	begin := time.Now()
+	body := apiReadBody(t, apiReadGet(t, cache, srv.URL+"/repos/acme/widgets/issues/420", ""))
+	if body != `{"number":420}` {
+		t.Fatalf("body = %q, want live provider response", body)
+	}
+	if elapsed := time.Since(begin); elapsed > 3*apiReadCacheLockAcquireTimeout {
+		t.Fatalf("cache contention delayed live request for %s", elapsed)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider requests = %d, want 1 live fallback", got)
+	}
+}
+
 // TestAPIReadCacheReducesQuotaGETs quantifies the #1053 win for a strong ETag:
 // over N identical ticks against an unchanged resource, exactly ONE response is
 // a quota-costing 200 and the other N-1 are 304s (which do not count against

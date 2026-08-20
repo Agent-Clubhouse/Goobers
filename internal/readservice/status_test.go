@@ -2,17 +2,362 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "operator-run", "implementation", "goobers",
+		startedAt, journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"}, true,
+	)
+	clock.now = startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{
+			"id": "3088", "title": "Operator status cannot answer run progress",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "open-pr", Status: "success",
+		Outputs: map[string]any{"id": "4001", "title": "PR title must not replace issue title"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "3088"},
+		Runner:      map[string]any{"operation": "claim"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(3 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(4 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	verdictData, err := json.Marshal(map[string]any{
+		"decision":  "needs-changes",
+		"rationale": "Add operator-facing claim drift.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdictRef, err := run.RecordArtifact("review-verdict.json", verdictData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(5 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &verdictRef,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "local-ci", Verdict: "pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "provider.rate_limit", Message: "quota exhausted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return startedAt.Add(5 * time.Minute) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "3088"},
+		"operator-run", "implementation", time.Hour,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	service.now = func() time.Time { return startedAt.Add(6 * time.Minute) }
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{
+			Title:  "Operator status cannot answer run progress",
+			Labels: []string{providers.LabelClaimed},
+		}, nil
+	}
+
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %+v", runs)
+	}
+	got := runs[0].Operator
+	if got.Issue == nil || got.Issue.Number != "3088" ||
+		got.Issue.Title != "Operator status cannot answer run progress" {
+		t.Fatalf("issue = %+v", got.Issue)
+	}
+	if got.CurrentStage != "implementation" || got.Trajectory != "implementing" ||
+		got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(startedAt.Add(4*time.Minute)) ||
+		got.HeartbeatAgeMillis == nil || *got.HeartbeatAgeMillis != (2*time.Minute).Milliseconds() {
+		t.Fatalf("liveness = %+v", got)
+	}
+	if got.Claim.LeaseStatus != "active" || got.Claim.ProviderMarker != "verified" {
+		t.Fatalf("claim = %+v", got.Claim)
+	}
+	if got.LatestError == nil || got.LatestError.Code != "provider.rate_limit" ||
+		got.Review == nil || got.Review.Verdict != "needs-changes" ||
+		got.Review.Rationale != "Add operator-facing claim drift." {
+		t.Fatalf("error/review = %+v", got)
+	}
+	if got.NextTransition != "finish implementation" || len(got.PotentialBlockers) != 2 {
+		t.Fatalf("next/blockers = %+v", got)
+	}
+
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{}, nil
+	}
+	runs, err = service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runs[0].Operator.Claim.ProviderMarker; got != "drift" {
+		t.Fatalf("provider marker after label removal = %q, want drift", got)
+	}
+
+	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
+		return providers.WorkItem{}, errors.New("provider unavailable")
+	}
+	runs, err = service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runs[0].Operator.Claim.ProviderMarker; got != "unavailable" {
+		t.Fatalf("provider marker after lookup failure = %q, want unavailable", got)
+	}
+}
+
+func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {
+	for _, phase := range []journal.RunPhase{journal.PhaseCompleted, journal.PhaseFailed} {
+		t.Run(string(phase), func(t *testing.T) {
+			service, layout, machine := fixtureService(t)
+			startedAt := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+			run, clock := createFixtureRun(
+				t, layout, machine, "terminal-"+string(phase), "implementation", "goobers",
+				startedAt, journal.Trigger{Kind: journal.TriggerItem, Ref: "3088"}, true,
+			)
+			clock.now = startedAt.Add(time.Minute)
+			if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
+				t.Fatal(err)
+			}
+			clock.now = startedAt.Add(2 * time.Minute)
+			if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type:        journal.EventRefTouched,
+				ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "3088"},
+				Runner:      map[string]any{"operation": "claim"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			verdictData, err := json.Marshal(map[string]string{
+				"decision": "needs-changes", "rationale": "Terminal review blocker.",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdictRef, err := run.RecordArtifact("review-verdict.json", verdictData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &verdictRef,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Append(journal.Event{
+				Type:  journal.EventError,
+				Error: &journal.ErrorDetail{Code: "review.failed", Message: "changes required"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			finishFixtureRun(t, run, clock, phase)
+			service.now = func() time.Time { return startedAt.Add(10 * time.Minute) }
+
+			runs, err := service.ListStatusRuns(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != 1 {
+				t.Fatalf("runs = %+v", runs)
+			}
+			got := runs[0].Operator
+			if got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(startedAt.Add(2*time.Minute)) ||
+				got.HeartbeatAgeMillis == nil || *got.HeartbeatAgeMillis != (8*time.Minute).Milliseconds() ||
+				got.Liveness != "terminal" {
+				t.Fatalf("liveness = %+v", got)
+			}
+			if got.Trajectory != "parked" || got.NextTransition != "" ||
+				got.Claim.ProviderMarker != "recorded" {
+				t.Fatalf("terminal projection = %+v", got)
+			}
+			if len(got.PotentialBlockers) != 2 ||
+				got.PotentialBlockers[0] != "review.failed: changes required" ||
+				got.PotentialBlockers[1] != "review needs-changes: Terminal review blocker." {
+				t.Fatalf("blockers = %+v", got.PotentialBlockers)
+			}
+		})
+	}
+}
+
+func TestOperatorTrajectory(t *testing.T) {
+	for stage, want := range map[string]string{
+		"query-backlog":            "implementing",
+		"gather-implement-context": "implementing",
+		"implementation":           "implementing",
+		"custom-active-stage":      "implementing",
+		"reviewer":                 "review",
+		"local-ci":                 "local CI",
+		"push-branch":              "push",
+		"open-pr":                  "open PR",
+		"ci-poll":                  "CI poll",
+		"issue-close-out":          "close-out",
+	} {
+		if got := operatorTrajectory(stage, journal.PhaseRunning); got != want {
+			t.Errorf("operatorTrajectory(%q) = %q, want %q", stage, got, want)
+		}
+	}
+	if got := operatorTrajectory("implementation", journal.PhaseCompleted); got != "parked" {
+		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
+
+func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	ledgerNow := now.Add(-2 * time.Hour)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return ledgerNow }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "2"},
+		"expired", "implementation", time.Hour,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	ledgerNow = now
+	activeKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "1"}
+	ok, _, err = ledger.ClaimScoped(activeKey, "active", "implementation", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("active claim = %v, %v", ok, err)
+	}
+	releasedKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "3"}
+	ok, _, err = ledger.ClaimScoped(releasedKey, "released", "implementation", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("released claim = %v, %v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(releasedKey, "released"); err != nil {
+		t.Fatal(err)
+	}
+	lookups := 0
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(_ context.Context, _, itemID string) (providers.WorkItem, error) {
+			lookups++
+			if itemID == "1" {
+				return providers.WorkItem{Labels: []string{providers.LabelClaimed}}, nil
+			}
+			return providers.WorkItem{}, nil
+		},
+	}}
+	runs := []RunSummary{
+		{
+			ID: "active", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "1"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "expired", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "2"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "released", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "3"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+		{
+			ID: "historical", Gaggle: "goobers", Phase: journal.PhaseCompleted,
+			Operator: OperatorRunSummary{
+				Issue: &OperatorIssue{Number: "4"},
+				Claim: OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 3 {
+		t.Fatalf("provider lookups = %d, want every running claim", lookups)
+	}
+	if got := runs[0].Operator.Claim; got.LeaseStatus != "active" || got.ProviderMarker != "verified" {
+		t.Fatalf("active claim = %+v", got)
+	}
+	if got := runs[1].Operator.Claim; got.LeaseStatus != "expired" || got.ProviderMarker != "not-present" {
+		t.Fatalf("expired claim = %+v", got)
+	}
+	if got := runs[2].Operator.Claim; got.LeaseStatus != "released" || got.ProviderMarker != "not-present" {
+		t.Fatalf("released claim = %+v", got)
+	}
+	if got := runs[3].Operator.Claim.ProviderMarker; got != "recorded" {
+		t.Fatalf("historical provider marker = %q, want recorded history", got)
+	}
+}
 
 func TestParseProviderQuotaResumeTime(t *testing.T) {
 	resetAt := time.Date(2026, 7, 17, 4, 0, 0, 0, time.UTC)
@@ -68,6 +413,172 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 	if status.ProviderQuotaResumeAt == nil || !status.ProviderQuotaResumeAt.Equal(activeReset) {
 		t.Fatalf("ProviderQuotaResumeAt = %v, want %v", status.ProviderQuotaResumeAt, activeReset)
+	}
+}
+
+func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	startedAt := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	eventTime := startedAt.Add(-time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time {
+		return eventTime
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(-time.Second)
+	if err := log.Append(journal.Event{
+		Type:   journal.EventDaemonDirtyRestart,
+		Reason: "process exited unexpectedly",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt
+	if err := log.Append(journal.Event{
+		Type: journal.EventDaemonStarted,
+		Runner: map[string]any{
+			"pid":          42,
+			"version":      "v1.2.3",
+			"instanceRoot": "/srv/goobers",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = startedAt.Add(time.Second)
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-resumed",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"action": journal.RecoveryActionResumed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: "run-new",
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationTriggerRecovery,
+			"action": journal.RecoveryActionNewClaim,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	old, oldClock := createFixtureRun(
+		t, layout, machine, "run-failed", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	oldClock.now = startedAt.Add(2 * time.Second)
+	if err := old.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": "daemon_restart",
+			"action": journal.RecoveryActionRetried,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Append(journal.Event{
+		Type:    journal.EventStageFinished,
+		Stage:   "implement",
+		Attempt: 1,
+		Status:  string(apiv1.ResultFailure),
+		Error:   &journal.ErrorDetail{Code: "interrupted"},
+		Runner:  map[string]any{"interruptedAttempt": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _ := createFixtureRun(
+		t, layout, machine, "run-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3090"}, false,
+	)
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuine, genuineClock := createFixtureRun(
+		t, layout, machine, "run-genuine-failure", "implementation", "goobers",
+		startedAt.Add(-time.Minute), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	genuineClock.now = startedAt.Add(2 * time.Second)
+	for _, event := range []journal.Event{
+		{
+			Type: journal.EventRunnerAnnotation,
+			Runner: map[string]any{
+				"kind": journal.RunnerAnnotationRunRecovery, "reason": "daemon_restart",
+				"action": journal.RecoveryActionRetried,
+			},
+		},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+			Status: string(apiv1.ResultFailure), Error: &journal.ErrorDetail{Code: "interrupted"},
+			Runner: map[string]any{"interruptedAttempt": true},
+		},
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra},
+		{
+			Type: journal.EventStageFinished, Stage: "implement", Attempt: 2, AttemptClass: journal.AttemptInfra,
+			Status: string(apiv1.ResultFailure),
+			Error:  &journal.ErrorDetail{Code: "external_telemetry_schema_mismatch"},
+		},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)},
+	} {
+		if err := genuine.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := genuine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	genuineReplacement, _ := createFixtureRun(
+		t, layout, machine, "run-genuine-replacement", "implementation", "goobers",
+		startedAt.Add(3*time.Second), journal.Trigger{Kind: journal.TriggerItem, Ref: "3091"}, false,
+	)
+	if err := genuineReplacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := status.DaemonRestart
+	if got == nil ||
+		!got.At.Equal(startedAt) ||
+		got.Reason != "process exited unexpectedly" ||
+		got.PID != 42 ||
+		got.Version != "v1.2.3" ||
+		got.Root != "/srv/goobers" {
+		t.Fatalf("DaemonRestart = %+v", got)
+	}
+	if len(got.RunIDs) != 1 || got.RunIDs[0] != "run-resumed" {
+		t.Fatalf("recovered run IDs = %v, want [run-resumed]", got.RunIDs)
+	}
+	if len(got.Replacements) != 1 ||
+		got.Replacements[0].ItemID != "3090" ||
+		got.Replacements[0].FailedRunID != "run-failed" ||
+		got.Replacements[0].ReplacementRunID != "run-replacement" {
+		t.Fatalf("replacements = %+v", got.Replacements)
 	}
 }
 

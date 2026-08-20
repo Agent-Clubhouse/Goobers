@@ -3,6 +3,7 @@
 package providerstage
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -66,7 +67,7 @@ var commands = map[string]Command{
 	"backlog-dedupe": {
 		ResultFile: "dedupe-candidates.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
 		},
 	},
 	"backlog-assignment": {
@@ -78,7 +79,8 @@ var commands = map[string]Command{
 	"backlog-health": {
 		ResultFile: "backlog-health.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesWrite, []string{"feedback"}, "the write capability-scoped credential is not injected, so implementation feedback fails at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesRead, []string{"feedback"}, "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
 		},
 	},
 	"backlog-query": {
@@ -90,6 +92,12 @@ var commands = map[string]Command{
 		},
 		claimMutationFlags: []string{"claim", "reconcile", "release"},
 	},
+	"publish-batch": {
+		ResultFile: "published-batch.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
+		},
+	},
 	"select-source": {
 		ResultFile:         "selection.json",
 		mutatesClaimLedger: true,
@@ -100,7 +108,7 @@ var commands = map[string]Command{
 	"validate-plan": {
 		ResultFile: "plan-validation.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
+			required(capability.GitHubIssuesRead, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
 		},
 	},
 	"elect-lander": {
@@ -132,7 +140,7 @@ var commands = map[string]Command{
 		ResultFile: "remediation-brief.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
 		},
 	},
 	"gather-pr-context": {
@@ -140,7 +148,6 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation issue routing fails at runtime"),
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediation branch preparation fails at runtime"),
 		},
 	},
@@ -253,7 +260,13 @@ var commands = map[string]Command{
 	"respond-to-findings": {
 		ResultFile: "remediation-response.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+		},
+	},
+	"resolve-review-threads": {
+		ResultFile: "review-thread-resolution.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so review-thread replies and resolutions fail at runtime"),
 		},
 	},
 	"set-milestone": {
@@ -291,6 +304,16 @@ var commands = map[string]Command{
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
 		},
 	},
+}
+
+// Commands returns every command declared by the provider-stage manifest.
+func Commands() []string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Lookup returns the manifest entry for command.

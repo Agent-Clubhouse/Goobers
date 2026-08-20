@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 
@@ -1182,6 +1183,166 @@ func TestReadOnlyReferenceReposValidateCleanly(t *testing.T) {
 	}
 }
 
+func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
+	tests := []struct {
+		name            string
+		additionalRepos []apiv1.RepoRef
+		task            apiv1.Task
+		wantError       bool
+	}{
+		{
+			name:            "deterministic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "agentic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskAgentic, Goal: "Read reference.", Goober: "reader",
+				Workspace: apiv1.WorkspaceScratch, Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "deterministic repo supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name: "scratch without additional repos supported",
+			task: apiv1.Task{
+				Name: "read-provider", Type: apiv1.TaskDeterministic, Goal: "Read provider.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-provider"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name:            "scratch without contents read supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "compute", Type: apiv1.TaskDeterministic, Goal: "Compute.",
+				Run: &apiv1.DeterministicRun{Command: []string{"compute"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{AdditionalRepos: tc.additionalRepos}}
+			ix.goobers["reader"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-reader"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `task "read-reference" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
+	if got, want := errorCapabilityRuntimeSupport, WarningCode("WF019"); got != want {
+		t.Fatalf("errorCapabilityRuntimeSupport = %q, want stable code %q", got, want)
+	}
+	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
+		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		wantError bool
+	}{
+		{name: "scratch rejected", workspace: apiv1.WorkspaceScratch, wantError: true},
+		{name: "repo supported", workspace: apiv1.WorkspaceRepo},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+				AdditionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			}}
+			ix.goobers["reviewer"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Start:  "prepare",
+					Tasks: []apiv1.Task{{
+						Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "Prepare.",
+						Run: &apiv1.DeterministicRun{Command: []string{"prepare"}}, Next: "review",
+					}},
+					Gates: []apiv1.Gate{{
+						Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+						Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Workspace: tc.workspace},
+						Branches: map[string]string{"pass": "", "fail": wf.TargetAbort},
+					}},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `gate "review" reviewer goober "reviewer" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
 // TestReadOnlyReferenceRepoMustNotBeProject asserts the MGV-10 (#1285) coherence
 // check: a repo cannot be both the gaggle's read-write Project and a read-only
 // AdditionalRepos reference, and a reference repo must not be listed twice.
@@ -1272,6 +1433,37 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 	if len(definitions) != 1 || definitions[0].DSLVersion != supportmatrix.NextDSLVersion {
 		t.Fatalf("feature definitions = %+v, want only DSL %q", definitions, supportmatrix.NextDSLVersion)
 	}
+}
+
+// TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion pins the #3297
+// fallback: a gaggle (or goober) with zero workflows must have its features
+// checked at the newest supported DSL version. The pre-#3297 fallback was an
+// unpinned wf.Definition{}, which the version router rewrote to
+// supportmatrix.CurrentDSLVersion ("1.4", deprecated) — so every workflow-less
+// gaggle would fail validation the moment 1.4 turns unsupported (declared for
+// v0.5.0), with an error its author cannot act on because GaggleSpec has no
+// dslVersion field.
+func TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion(t *testing.T) {
+	ix := newIndex()
+
+	assertNewestSupported := func(kind string, definitions []wf.Definition) {
+		t.Helper()
+		if len(definitions) != 1 {
+			t.Fatalf("%s definitions = %+v, want exactly one fallback probe", kind, definitions)
+		}
+		got := definitions[0].DSLVersion
+		if got == "" || got == supportmatrix.CurrentDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q; must not be unpinned or the deprecated %q",
+				kind, got, supportmatrix.CurrentDSLVersion)
+		}
+		if got != supportmatrix.NextDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q, want newest supported %q",
+				kind, got, supportmatrix.NextDSLVersion)
+		}
+	}
+
+	assertNewestSupported("gaggle", ix.featureDefinitionsForGaggle("workflow-less"))
+	assertNewestSupported("goober", ix.featureDefinitionsForGoober(apiv1.GooberSpec{Gaggle: "workflow-less"}))
 }
 
 func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {

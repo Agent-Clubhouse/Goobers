@@ -16,3 +16,22 @@ sha256 and carries an append-only log of every reviewed patch. Changing
 `digests.json` without bumping that pin and appending a describing
 `patches[]` entry fails `TestFrozenGoldenChangeRequiresAcknowledgedPatch` —
 there is no path to a green frozen-golden change that skips recording why.
+
+## Breaking-rejections wave (pre-v0.2.0, PO-ratified)
+
+One deliberate, PO-ratified contract change was applied to this frozen
+interpreter as part of the 1.4 lock's breaking-rejections wave (silent drops
+become loud BEFORE the v0.2.0 tags): constructs this version never
+implemented are now compile ERRORS instead of silently dropping
+(`unknownVersionConstructProblems` in `compile.go`):
+
+- a `parallels:` block (#2738) — it compiled clean but the machine built no
+  parallel states, so the block silently never executed;
+- `task.workspace` — this version's runner contract reads only
+  `run.workspace`, so an author asking for `repo-readonly` silently got the
+  WRITABLE repo default.
+
+Both follow `runScriptProblems`' existing rejection pattern ("… is not part
+of DSL 1.4; available in 2.0"). The three golden fixtures set none of these
+fields, so the compiled digests are unchanged — this narrows what 1.4
+ACCEPTS, it does not change what any accepted 1.4 workflow MEANS.

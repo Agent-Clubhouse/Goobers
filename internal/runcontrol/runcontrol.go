@@ -43,17 +43,49 @@ func Resolve(instance apiv1.RunControls, gaggle, workflow *apiv1.RunControls) (E
 		if err := Validate(scope.name, *scope.controls); err != nil {
 			return Effective{}, err
 		}
-		if scope.controls.MaxRepasses > 0 {
-			effective.MaxRepasses = int(scope.controls.MaxRepasses)
-		}
-		if scope.controls.StalledRunTimeout != "" {
-			effective.StalledRunTimeout, _ = time.ParseDuration(scope.controls.StalledRunTimeout)
-		}
-		if scope.controls.MaxRunDuration != "" {
-			effective.MaxRunDuration, _ = time.ParseDuration(scope.controls.MaxRunDuration)
+		if err := effective.apply(scope.name, *scope.controls); err != nil {
+			return Effective{}, err
 		}
 	}
 	return effective, nil
+}
+
+// apply layers one scope's overrides onto the effective policy. Parse failures
+// propagate: this path used to discard them, so an invalid duration silently
+// resolved to zero — an unlimited run — instead of erroring (fail-open).
+// Validate screens every scope before apply runs, but the watchdog budget must
+// not depend on that call ordering to stay bounded.
+func (effective *Effective) apply(path string, controls apiv1.RunControls) error {
+	if controls.MaxRepasses > 0 {
+		effective.MaxRepasses = int(controls.MaxRepasses)
+	}
+	if controls.StalledRunTimeout != "" {
+		parsed, err := parseDurationField(path, "stalledRunTimeout", controls.StalledRunTimeout)
+		if err != nil {
+			return err
+		}
+		effective.StalledRunTimeout = parsed
+	}
+	if controls.MaxRunDuration != "" {
+		parsed, err := parseDurationField(path, "maxRunDuration", controls.MaxRunDuration)
+		if err != nil {
+			return err
+		}
+		effective.MaxRunDuration = parsed
+	}
+	return nil
+}
+
+// parseDurationField translates a time.ParseDuration failure into an
+// author-facing diagnostic naming the field path, the offending value, and the
+// expected form. The raw Go error ("time: invalid duration ...") is an
+// implementation detail that must not leak into the DSL contract.
+func parseDurationField(path, field, value string) (time.Duration, error) {
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s.%s %q is not a valid duration; use Go duration syntax, e.g. \"45m\" or \"2h\"", path, field, value)
+	}
+	return parsed, nil
 }
 
 // Validate checks one override block independently of its inheritance parent.
@@ -71,9 +103,9 @@ func Validate(path string, controls apiv1.RunControls) error {
 		if duration.value == "" {
 			continue
 		}
-		parsed, err := time.ParseDuration(duration.value)
+		parsed, err := parseDurationField(path, duration.name, duration.value)
 		if err != nil {
-			return fmt.Errorf("%s.%s %q: %w", path, duration.name, duration.value, err)
+			return err
 		}
 		if parsed <= 0 {
 			return fmt.Errorf("%s.%s must be positive, got %s", path, duration.name, parsed)

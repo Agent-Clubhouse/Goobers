@@ -251,6 +251,10 @@
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`. The key only ever signs short-lived App JWTs in this process; stages receive minted installation tokens, never the key, so an env name that stages can see is refused.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
         }
       },
       "allOf": [
@@ -412,11 +416,15 @@
       "properties": {
         "kind": { "type": "string", "enum": ["local-dir", "git"], "description": "How the workflow tree is obtained. `local-dir` accepts only path; `git` accepts exactly one of path or url." },
         "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
-        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref." },
+        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
         "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
         "token": {
           "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "GitHub App installation-token minting for a REMOTE git source: kind `github-app` with appId, installationId, and privateKey, the same shape repos[].auth uses. Mutually exclusive with token — exactly one identity mechanism per source; short-lived minted tokens replace the static ref, and the private key is refused any env name stages can see.",
+          "$ref": "#/$defs/repoAuth"
         }
       },
       "allOf": [
@@ -543,7 +551,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Instance default for consecutive non-pass gate evaluations before a run escalates instead of looping. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
+          "description": "Instance default for how many times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
         },
         "stalledRunTimeout": {
           "description": "How long a running journal may stay silent before the watchdog escalates the run. Empty defaults to 45 minutes. Size it above your slowest single stage, or a healthy long stage looks stalled.",

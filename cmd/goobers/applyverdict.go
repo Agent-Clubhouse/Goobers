@@ -534,6 +534,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 			demoted = nil
 		}
+		// The FIFO lander election (#950) is a GitHub merge-queue concept with
+		// no Gitea equivalent; skip it on other forges rather than fail closed.
+		if githubProvider, githubSelected := provider.(*providers.GitHubProvider); githubSelected {
+			ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+			if ierr != nil {
+				return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
+			}
+			demoted = unionPRSets(demoted, ineligible)
+		}
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)

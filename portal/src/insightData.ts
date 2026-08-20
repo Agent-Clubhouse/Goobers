@@ -437,12 +437,8 @@ function costRollupFromStats(
         (item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle,
       ),
     }))
-    .sort((left, right) => estimatedGaggleSpend(right.usage) - estimatedGaggleSpend(left.usage));
+    .sort((left, right) => (right.usage?.costUSD ?? 0) - (left.usage?.costUSD ?? 0));
   return { filters, totalCostUSD, totalCostSamples, byGaggle, window };
-}
-
-function estimatedGaggleSpend(usage: TelemetryUsageStats | undefined): number {
-  return (usage?.p50CostUSD ?? 0) * (usage?.costSamples ?? 0);
 }
 
 export function useInsightErrorSignatures(

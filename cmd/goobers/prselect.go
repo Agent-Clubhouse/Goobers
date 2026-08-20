@@ -120,11 +120,17 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	// abortedRunLabel is always excluded, never operator-overridable via the
-	// excludeLabels input, same as noMergeReviewLabel: a cancelled run's PR
-	// must stay ineligible for auto-merge until a human removes the label
-	// directly (#2238).
-	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	// abortedRunLabel and LabelNeedsHuman are always excluded, never
+	// operator-overridable via the excludeLabels input, same as
+	// noMergeReviewLabel: a cancelled run's PR must stay ineligible for
+	// auto-merge until a human removes the label directly (#2238).
+	// LabelNeedsHuman mirrors the exclusion pr-remediation's
+	// filterRemediationPullRequests and backlog-query's re-sweep filter
+	// already apply: the #2947 failure-streak circuit breaker applies this
+	// label after repeated terminal failures on the same claimed item, and
+	// until #3262 it wasn't checked here, so pr-select kept reselecting a PR
+	// the breaker had already tried to park (#3262).
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman)
 	identityFilters := providers.ListPullRequestsRequest{
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
@@ -424,7 +430,9 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	// See runPRSelect's matching comment (#3262): LabelNeedsHuman is
+	// always excluded here too, for whenever it applies to an ADO work item.
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman)
 	identityFilters := providers.ListPullRequestsRequest{
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),

@@ -47,6 +47,41 @@ func TestDirRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDirCorruptBlobIsNotFoundAndPutRecovers(t *testing.T) {
+	t.Parallel()
+	store, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDir: %v", err)
+	}
+	ctx := context.Background()
+	data := []byte("correct bytes")
+	d := digestOf(data)
+	path, err := store.pathFor(d)
+	if err != nil {
+		t.Fatalf("pathFor: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir blob directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("corrupt bytes"), 0o644); err != nil {
+		t.Fatalf("plant corrupt blob: %v", err)
+	}
+
+	if _, err := store.Get(ctx, d); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get corrupt blob = %v; want ErrNotFound", err)
+	}
+	if err := store.Put(ctx, d, data); err != nil {
+		t.Fatalf("Put correct bytes: %v", err)
+	}
+	got, err := store.Get(ctx, d)
+	if err != nil {
+		t.Fatalf("Get recovered blob: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("Get recovered blob = %q; want %q", got, data)
+	}
+}
+
 // A repeated Put is the normal case, not the exceptional one: a retried
 // activity re-records the same artifact, and a second worker may record a
 // byte-identical result. It must succeed and must not rewrite.

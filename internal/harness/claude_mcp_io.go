@@ -52,6 +52,7 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 	cfg := mcpio.Config{
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
+		ReceiptFile:  goobersIOReceiptFile(),
 		Inputs:       req.ContextPaths,
 		RunID:        req.Envelope.RunID,
 		WorkflowID:   req.Envelope.WorkflowID,
@@ -62,6 +63,9 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
 	if err != nil {
 		return "", fmt.Errorf("write goobers-io config: %w", err)
+	}
+	if err := mcpio.ResetInputInspectionReceipts(req.Workspace, cfg.ReceiptFile); err != nil {
+		return "", fmt.Errorf("reset goobers-io input inspection receipts: %w", err)
 	}
 
 	server := struct {

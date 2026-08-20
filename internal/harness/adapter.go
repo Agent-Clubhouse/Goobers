@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -158,6 +159,12 @@ type Outcome struct {
 	// Stderr is the separately captured harness subprocess stderr. It is
 	// bounded at MaxTranscriptBytes and recorded as a run artifact on failure.
 	Stderr []byte
+	// InputInspectionReceipts are tool-owned goobers-io records collected
+	// independently of adapter transcript telemetry.
+	InputInspectionReceipts []mcpio.InputInspectionReceipt
+	// InputInspectionReceiptsCollected reports that goobers-io receipt
+	// collection was configured, including when no inspection call occurred.
+	InputInspectionReceiptsCollected bool
 }
 
 // PreflightInfo describes the installed harness verified before agentic work

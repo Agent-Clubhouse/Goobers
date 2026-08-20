@@ -1,3 +1,4 @@
+// Package telemetry provides test support for telemetry producers.
 package telemetry
 
 import (
@@ -7,18 +8,18 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// MemoryExporter stores completed spans for tests and local assertions.
+// MemoryExporter records exported spans in memory.
 type MemoryExporter struct {
 	mu    sync.Mutex
 	spans []sdktrace.ReadOnlySpan
 }
 
-// NewMemoryExporter creates an in-memory span exporter for tests.
+// NewMemoryExporter returns an empty in-memory span exporter.
 func NewMemoryExporter() *MemoryExporter {
 	return &MemoryExporter{}
 }
 
-// ExportSpans stores exported spans in memory.
+// ExportSpans records spans for later inspection.
 func (e *MemoryExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -26,21 +27,19 @@ func (e *MemoryExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnl
 	return nil
 }
 
-// Shutdown is a no-op for the in-memory exporter.
+// Shutdown releases exporter resources.
 func (e *MemoryExporter) Shutdown(context.Context) error {
 	return nil
 }
 
-// Spans returns a snapshot of exported spans.
+// Spans returns a copy of the recorded spans.
 func (e *MemoryExporter) Spans() []sdktrace.ReadOnlySpan {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	spans := make([]sdktrace.ReadOnlySpan, len(e.spans))
-	copy(spans, e.spans)
-	return spans
+	return append([]sdktrace.ReadOnlySpan(nil), e.spans...)
 }
 
-// Reset clears exported spans.
+// Reset clears the recorded spans.
 func (e *MemoryExporter) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()

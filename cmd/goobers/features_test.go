@@ -33,6 +33,7 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	features, code := instanceUsedFeaturesWithResolver(
 		root,
 		&bytes.Buffer{},
+		workflow.FeaturesForGaggle,
 		func(def workflow.Definition, _ apiv1.GooberSpec) ([]workflow.Feature, error) {
 			versions = append(versions, def.DSLVersion)
 			if def.DSLVersion != supportmatrix.NextDSLVersion {
@@ -214,6 +215,28 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 		if !seen[version] {
 			t.Errorf("output missing %s row for DSL %s:\n%s", feature, version, stdout)
 		}
+	}
+}
+
+// TestFeaturesUsedIncludesGaggleScopedFeatures: gaggle-scoped features live on
+// the GaggleSpec, not on any workflow, so --used only sees them through the
+// FeaturesForGaggle fan-out (#3297) — before that wiring, a gaggle declaring a
+// sparse checkout reported nothing gaggle-scoped at all. Sparse checkout is
+// the GA gaggle feature, so the instance loads without a preview
+// acknowledgement.
+func TestFeaturesUsedIncludesGaggleScopedFeatures(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	replaceInFile(t, filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"),
+		"    branch: main",
+		"    branch: main\n    checkout:\n      sparse:\n        - docs")
+
+	code, stdout, stderr := runArgs(t, "features", "--used", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	const feature = "gaggle.spec.project.checkout.sparse"
+	if !strings.Contains(stdout, feature) {
+		t.Fatalf("gaggle-scoped feature %q missing from --used output:\n%s", feature, stdout)
 	}
 }
 

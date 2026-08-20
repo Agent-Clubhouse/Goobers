@@ -69,6 +69,13 @@ type GaggleSpec struct {
 	// this gaggle. A workflow may override either value again.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where workflows in
+	// this gaggle mirror their durable journal outbox. A workflow or task may
+	// override it. The local runner appends the run id and journal outbox layout
+	// beneath this root; the journal remains the source of truth.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Sandbox overrides the instance-wide isolation posture for this gaggle's
 	// agentic stages (#1305). Effective posture is gaggle override, else the
 	// instance.yaml sandbox block, else disabled — sandboxing is strictly

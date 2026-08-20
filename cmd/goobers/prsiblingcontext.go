@@ -91,6 +91,13 @@ type siblingPR struct {
 	Overlap []string `json:"overlap,omitempty"`
 }
 
+type siblingLifecycleOutcome struct {
+	Number          int    `json:"number"`
+	Outcome         string `json:"outcome"`
+	PreviousHeadSHA string `json:"previousHeadSha"`
+	CurrentHeadSHA  string `json:"currentHeadSha"`
+}
+
 // runGatherSiblingContext implements `goobers gather-sibling-context`
 // (issue #359): loads every OTHER open PR's touched files + state as
 // evidence context for the holistic review gate that follows — the
@@ -220,6 +227,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	var selectedLabels []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
+	lifecycleOutcomes := make([]siblingLifecycleOutcome, 0)
+	failCheckState := func(number int, err error) int {
+		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", number), err, "sibling-context.json")
+	}
+siblingLoop:
 	for _, pr := range prs {
 		if pr.Number == selectedNumber {
 			selectedFound = true
@@ -269,31 +281,70 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		key := strconv.Itoa(pr.Number)
 		prior, hit := cached[key]
 		hit = hit && prior.HeadSHA == pr.HeadSHA
-		paths := prior.Files
-		lines := prior.Lines
-		if !hit {
-			files, ferr := provider.PullRequestFiles(ctx, repo, key)
-			if ferr != nil {
-				return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+		retriedAfterHeadMove := false
+		for {
+			paths := prior.Files
+			lines := prior.Lines
+			if !hit {
+				files, ferr := provider.PullRequestFiles(ctx, repo, key)
+				if ferr != nil {
+					return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+				}
+				paths = make([]string, 0, len(files))
+				lines = 0
+				for _, f := range files {
+					paths = append(paths, f.Path)
+					lines += f.Additions + f.Deletions
+				}
 			}
-			paths = make([]string, 0, len(files))
-			lines = 0
-			for _, f := range files {
-				paths = append(paths, f.Path)
-				lines += f.Additions + f.Deletions
+
+			checkState, checkErr := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if checkErr == nil {
+				if hit {
+					reused++
+				}
+				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths, Lines: lines}
+				siblings = append(siblings, siblingPR{
+					Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
+					Labels: pr.Labels, CheckState: string(checkState), Files: paths,
+				})
+				break
 			}
-		} else {
-			reused++
+
+			refreshed, refreshErr := provider.GetPullRequest(ctx, repo, key)
+			if refreshErr != nil || refreshed.Number != pr.Number {
+				return failCheckState(pr.Number, checkErr)
+			}
+
+			outcome := ""
+			switch {
+			case refreshed.Merged:
+				outcome = "merged"
+			case strings.EqualFold(refreshed.State, "closed"):
+				outcome = "closed"
+			case refreshed.HeadSHA != pr.HeadSHA:
+				outcome = "head-moved"
+			default:
+				return failCheckState(pr.Number, checkErr)
+			}
+			lifecycleOutcomes = append(lifecycleOutcomes, siblingLifecycleOutcome{
+				Number:          pr.Number,
+				Outcome:         outcome,
+				PreviousHeadSHA: pr.HeadSHA,
+				CurrentHeadSHA:  refreshed.HeadSHA,
+			})
+			if outcome != "head-moved" {
+				continue siblingLoop
+			}
+			if retriedAfterHeadMove {
+				continue siblingLoop
+			}
+
+			pr = refreshed
+			prior = siblingCacheEntry{}
+			hit = false
+			retriedAfterHeadMove = true
 		}
-		checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
-		}
-		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths, Lines: lines}
-		siblings = append(siblings, siblingPR{
-			Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
-			Labels: pr.Labels, CheckState: string(checkState), Files: paths,
-		})
 	}
 
 	// Persist before the selected-vanished check: sibling evidence gathered
@@ -472,8 +523,9 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 			}
 			return ""
 		}(),
-		"reviewDigest": reviewDigest,
-		"siblings":     siblings,
+		"reviewDigest":             reviewDigest,
+		"siblings":                 siblings,
+		"siblingLifecycleOutcomes": lifecycleOutcomes,
 		// overlappingSiblings: PR numbers whose files intersect the selected
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".

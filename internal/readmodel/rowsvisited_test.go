@@ -170,6 +170,52 @@ func TestEveryCombinationVisitsAtMostLimitPlusOneRows(t *testing.T) {
 	}
 }
 
+func TestActiveRunCountWorkDoesNotGrowWithCompletedHistory(t *testing.T) {
+	registerRowProbe(t)
+	store := openTestStore(t)
+	started := time.Now().UTC().Format(timeFormat)
+
+	insert := func(id, phase string) {
+		t.Helper()
+		if _, err := store.writer.Exec(`
+			INSERT INTO run (run_id, gaggle, workflow, phase, terminal, started_at)
+			VALUES (?, 'gaggle', 'workflow', ?, ?, ?)`,
+			id, phase, boolToInt(phase != "running"), started); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	insert("active-1", "running")
+	insert("active-2", "running")
+
+	visited := func() int64 {
+		t.Helper()
+		probeCount.Store(0)
+		rows, err := store.reader.Query(`
+			SELECT gaggle, workflow, COUNT(*)
+			FROM run
+			WHERE phase = 'running' AND probe(run_id) = 1
+			GROUP BY gaggle, workflow`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return probeCount.Load()
+	}
+
+	before := visited()
+	for i := range 5_000 {
+		insert(fmt.Sprintf("completed-%05d", i), "completed")
+	}
+	after := visited()
+	if before != 2 || after != before {
+		t.Fatalf("rows visited before=%d after=%d; completed retention increased active-count work", before, after)
+	}
+}
+
 // TestProbeCountsExaminedRowsNotReturnedRows is the harness's own test.
 //
 // A rows-visited harness that actually counted RETURNED rows would pass every

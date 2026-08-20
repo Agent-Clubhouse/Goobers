@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,10 +53,50 @@ func newGooberRefusalRun(t *testing.T, runsDir, runID, workflowDigest, gooberDig
 	if err != nil {
 		t.Fatalf("journal.Create: %v", err)
 	}
+
 	jr.SetMachineState("implement")
 	if err := jr.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
+}
+
+func newPinnedDefinitionRun(t *testing.T, runsDir, runID string, machine *workflow.Machine) journal.InputRef {
+	t.Helper()
+	definition, err := json.Marshal(machine.Def)
+	if err != nil {
+		t.Fatalf("marshal definition: %v", err)
+	}
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, map[string][]byte{
+		journal.PinnedWorkflowDefinitionInputName: definition,
+	}, journal.WithInputIntegrity(map[string]apiv1.Integrity{
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}))
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
+		t.Fatalf("append stage.finished: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	id, err := rd.Identity()
+	if err != nil {
+		t.Fatalf("Identity: %v", err)
+	}
+	return id.Inputs[0]
 }
 
 type terminalNotificationCall struct {
@@ -134,6 +176,7 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resume: %v — a handled refusal must not surface an error, or the daemon journals it as a raw status string", err)
 	}
+
 	if res.Phase != journal.PhaseFailed {
 		t.Fatalf("phase = %q, want failed", res.Phase)
 	}
@@ -199,6 +242,77 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	}
 	if !strings.Contains(runFinishedErr.Message, "sha256:pinned-to-the-old-workflow-shape") || !strings.Contains(runFinishedErr.Message, machine.Digest()) {
 		t.Fatalf("run.finished error message %q must name both the pinned and the offered digest", runFinishedErr.Message)
+	}
+}
+
+func TestPinnedWorkflowMachineReconstructsMultipleHistoricalDigests(t *testing.T) {
+	runsDir := t.TempDir()
+	for _, goal := range []string{"historical definition one", "historical definition two"} {
+		machine, err := workflow.Compile(workflow.Definition{
+			Name: "fixture", Version: 1,
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "acme-web", Start: "implement",
+				Tasks: []apiv1.Task{{
+					Name: "implement", Type: apiv1.TaskDeterministic, Goal: goal,
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+				}},
+			},
+		}, workflow.WithPreviewFeatures(true))
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		runID := "run-" + strings.ReplaceAll(goal, " ", "-")
+		newPinnedDefinitionRun(t, runsDir, runID, machine)
+		rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+		if err != nil {
+			t.Fatalf("OpenRead(%s): %v", goal, err)
+		}
+		id, err := rd.Identity()
+		if err != nil {
+			t.Fatalf("Identity(%s): %v", goal, err)
+		}
+		reconstructed, err := pinnedWorkflowMachine(rd, id)
+		if err != nil {
+			t.Fatalf("pinnedWorkflowMachine(%s): %v", goal, err)
+		}
+		if reconstructed.Digest() != machine.Digest() {
+			t.Fatalf("reconstructed digest = %q, want %q", reconstructed.Digest(), machine.Digest())
+		}
+	}
+}
+
+func TestRunnerResumeMissingPinnedDefinitionFailsClosed(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-missing-pinned-definition"
+	newRefusalRun(t, runsDir, runID, machine.Digest())
+
+	r, _, _ := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	res, err := r.Resume(context.Background(), ResumeInput{RunID: runID})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed || res.FailureCode != "resume_refused_pinned_definition" {
+		t.Fatalf("result = %+v, want failed resume_refused_pinned_definition", res)
+	}
+}
+
+func TestRunnerResumeTamperedPinnedDefinitionFailsClosed(t *testing.T) {
+	machine := fixtureMachine(t)
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	const runID = "run-tampered-pinned-definition"
+	ref := newPinnedDefinitionRun(t, runsDir, runID, machine)
+	if err := os.WriteFile(filepath.Join(runsDir, runID, filepath.FromSlash(ref.Ref.Path)), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("tamper definition snapshot: %v", err)
+	}
+
+	r, _, _ := refusalTestRunner(t, runsDir, fixtureRepo, wtMgr, &countingDeterministic{})
+	res, err := r.Resume(context.Background(), ResumeInput{RunID: runID})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.Phase != journal.PhaseFailed || res.FailureCode != "resume_refused_pinned_definition" {
+		t.Fatalf("result = %+v, want failed resume_refused_pinned_definition", res)
 	}
 }
 

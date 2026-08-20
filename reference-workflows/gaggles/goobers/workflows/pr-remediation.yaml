@@ -115,7 +115,6 @@ spec:
         minSeverity: "info"
       capabilities:
         - github:pr:write
-        - github:issues:write
         - repo:push
       expectedOutputs:
         - selectedNumber
@@ -409,7 +408,7 @@ spec:
         resultFile: "remediation-brief.json"
       capabilities:
         - github:pr:write
-        - github:issues:write
+        - github:issues:read
       next: guard-before-implement
 
     # Agentic rework in a worktree provisioned on the PR's own branch (see
@@ -446,6 +445,12 @@ spec:
         respond-to-findings stage validates and publishes it. On a reviewer
         repass, replace the whole array with an updated, complete account of
         the original verdict — do not report only the new reviewer feedback.
+        Also set outputs.threadResponses to a JSON-encoded array with exactly
+        one object for every unresolved, non-outdated native review thread:
+        {"threadId":"<gathered threadId>","disposition":
+        "addressed"|"obsolete"|"blocked","detail":"<what changed or why the
+        thread remains open>"}. Emit "[]" when there are no live threads.
+        Never invent or substitute thread IDs.
         If the rebase
         conflicted, resolving it IS the work. Verify with fast, targeted tests
         for what you changed, and commit to the PR's branch (push is a separate
@@ -465,6 +470,7 @@ spec:
         backoffSeconds: 15
       expectedOutputs:
         - findingResponses
+        - threadResponses
       # Deliberately NO onTimeout: salvage, unlike implementation's otherwise
       # identical implement stage (#724). Salvage decides "was anything
       # produced?" from `git diff <repoRef.branch>...HEAD` being non-empty,
@@ -492,10 +498,6 @@ spec:
         workspace: scratch
       inputs:
         resultFile: "finding-response-validation.json"
-      capabilities:
-        - github:issues:write
-      policyActions:
-        - respond-to-findings
       next: finding-responses-gate
 
     # The merge tier from CONTRIBUTING.md's "Validation tier contract", run on
@@ -573,6 +575,7 @@ spec:
         - selectedNumber
         - published
         - head
+        - localHead
       next: respond-to-findings
 
     # PRR-7 / design doc D3: publish the account only after the branch moved,
@@ -603,7 +606,28 @@ spec:
       retry:
         maxAttempts: 2
         backoffSeconds: 5
-      next: release-claim
+      next: published-remediation-gate
+
+    - name: resolve-review-threads
+      type: deterministic
+      goal: Reply to every gathered live review thread, resolve addressed threads, and verify the published head has no unresolved live feedback.
+      run:
+        command: ["goobers", "resolve-review-threads"]
+        workspace: scratch
+      inputs:
+        resultFile: "review-thread-resolution.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - resolve-review-threads
+      expectedOutputs:
+        - selectedNumber
+        - publishedHeadSha
+        - unresolvedThreadCount
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 5
+      next: review-threads-gate
 
     # Explicit release mirrors backlog-curation's terminal cleanup rather than
     # relying solely on runner finalization. It is idempotent with the early
@@ -731,6 +755,28 @@ spec:
         - escalationReason
       next: release-escalated-claim
 
+    - name: park-unresolved-review-threads
+      type: deterministic
+      goal: Park a remediated PR while native review threads still require attention.
+      run:
+        command:
+          [
+            "goobers",
+            "remediation-checkpoint",
+            "--escalate",
+            "unresolved, non-outdated native review threads remain after the published remediation",
+          ]
+      inputs:
+        resultFile: "review-thread-escalation-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      policyActions:
+        - record-remediation-checkpoint
+        - escalate-pr
+      next: release-escalated-claim
+
   gates:
     # A completed API update is terminal. Every confirmed conflict, substantive
     # finding, failing check, or non-behind candidate enters the existing
@@ -808,6 +854,31 @@ spec:
         pass: guard-before-review
         fail: guard-before-implement
         escalate: park-invalid-finding-responses
+
+    - name: review-threads-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: unresolvedThreadCount
+          equals: "0"
+      branches:
+        pass: release-claim
+        fail: park-unresolved-review-threads
+
+    # respond-to-findings records posted=false when push-remediated discovers
+    # that the PR closed mid-run. Preserve that terminal no-op by releasing the
+    # claim without attempting to reconcile threads on an unpublished head.
+    - name: published-remediation-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: posted
+          equals: "true"
+      branches:
+        pass: resolve-review-threads
+        fail: release-claim
 
     # Agentic reviewer gate, the same shape and the same reviewer goober
     # implementation.yaml uses. The runner computes `git diff base...HEAD` on

@@ -159,9 +159,15 @@ func TestInitQuickstartConfigSourceRejectsSemanticallyInvalidPopulatedDestinatio
 		root,
 		"--json",
 	)
-	if code != 1 || stdout != "" ||
-		!strings.Contains(stderr, `"code": "COMMAND001"`) ||
-		!strings.Contains(stderr, `unknown goobers verb \"missing-command\"`) {
+	// Since the C+D2/#2861 wave the unknown verb is rejected during the
+	// api/validate pass (WF010, the DSL compilers' admission check against
+	// internal/builtincmd) — earlier than the late #650 COMMAND001 pass this
+	// case used to reach, so it surfaces as a seeding-validation error (exit
+	// 2) rather than the late pass's JSON diagnostics (exit 1).
+	if code != 2 || stdout != "" ||
+		!strings.Contains(stderr, "WF010") ||
+		!strings.Contains(stderr, "unknown built-in subcommand") ||
+		!strings.Contains(stderr, "missing-command") {
 		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }

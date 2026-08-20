@@ -188,6 +188,9 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 // AuthenticatedLogin returns the GitHub login represented by the provider's
 // credential.
 func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
+	if p.configuredLogin != "" {
+		return p.configuredLogin, nil
+	}
 	endpoint, err := joinURL(p.BaseURL, "user")
 	if err != nil {
 		return "", err
@@ -383,6 +386,11 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 	if err != nil {
 		return WorkItem{}, err
 	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
 
 	fields := map[string]FieldDigest{}
 	patch := map[string]interface{}{}
@@ -487,7 +495,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 	if winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID); err != nil {
 		return ClaimResult{}, err
 	} else if ok {
-		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
 	}
 
 	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
@@ -500,15 +508,14 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 		return ClaimResult{}, err
 	}
 	if !ok {
-		// Our own breadcrumb must be visible; treat an empty read as us winning.
-		winner = req.RunID
+		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
 	}
 	if winner == req.RunID {
 		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
 			return ClaimResult{}, err
 		}
 	}
-	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its label
@@ -546,12 +553,14 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
+		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
 	}
-	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-		return WorkItem{}, err
+	if before.HasLabel(label) {
+		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
@@ -641,12 +650,15 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
-func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
+func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
 	item, err := p.GetWorkItem(ctx, repo, id)
 	if err != nil {
 		return ClaimResult{}, err
 	}
 	claimed := winner == runID
+	if claimed && !item.HasLabel(label) {
+		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
+	}
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider:  ProviderGitHub,
 		Ref:       issueRef(repo, id),

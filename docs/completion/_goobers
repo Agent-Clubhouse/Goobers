@@ -28,7 +28,7 @@ _goobers_completion()
             'workflow:inspect workflows'
             'status:validate config, show warnings, list runs, or report daemon health'
             'stats:show the instance lifetime summary card'
-            'trace:show a run'\''s journal events, follow a live run, or show transcripts'
+            'trace:show a run'\''s journal events or review verdicts, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
             'completion:generate a shell completion script'
             'help:show command or concept help'
@@ -122,7 +122,7 @@ _goobers_completion()
             flags+=(--instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         dashboard)
-            flags+=(--port --listen --no-open --dev-assets)
+            flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;
         getting-started)
             flags+=(--port --no-open --workdir)
@@ -177,10 +177,13 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=(--json --follow --transcripts --transcript)
+            flags+=(--json --follow --summary --verdicts --transcripts --transcript)
             ;;
         escalations)
             flags+=(--json)
+            case "${words[3]:-}" in
+                show) flags+=(--include-verdict) ;;
+            esac
             ;;
         telemetry)
             case "${words[3]:-}" in
@@ -201,7 +204,7 @@ _goobers_completion()
             flags+=(--feedback)
             ;;
         backlog-query)
-            flags+=(--claim --release --read-only --reconcile)
+            flags+=(--claim --debug --release --read-only --reconcile)
             ;;
         reconcile-branches)
             flags+=(--delete --max --min-age --after)

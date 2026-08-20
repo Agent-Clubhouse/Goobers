@@ -50,6 +50,7 @@
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },
         "start": { "type": "string", "minLength": 1, "examples": ["act"], "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
           "type": "array",
@@ -131,7 +132,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
@@ -248,6 +249,7 @@
           "maxItems": 32,
           "items": { "type": "string" }
         },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Task-level override for the local outbox mirror root. Most specific value wins over workflow and gaggle settings." },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
         "capabilities": {
@@ -329,6 +331,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",
@@ -455,7 +458,7 @@
           }
         },
         "maxRepasses": {
-          "description": "Per-gate override of the inherited repass budget; valid for automated and agentic gates.",
+          "description": "Override of the inherited target-stage re-entry budget when this gate routes to an already-completed stage; valid for automated and agentic gates.",
           "type": "integer",
           "minimum": 1
         },

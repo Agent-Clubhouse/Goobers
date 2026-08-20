@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -69,6 +70,25 @@ func writeStatusInitCompleted(t *testing.T, root string, at time.Time) {
 	}
 	if err := instanceLog.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDaemonRestartStatusLine(t *testing.T) {
+	now := time.Date(2026, 8, 17, 20, 2, 0, 0, time.UTC)
+	got := daemonRestartStatusLine(readservice.SchedulerStatus{
+		DaemonRestart: &readservice.DaemonRestartStatus{
+			At:     now.Add(-2 * time.Minute),
+			Reason: "process exited unexpectedly",
+			RunIDs: []string{"run-a", "run-b"},
+			Replacements: []readservice.RunReplacement{{
+				ItemID: "3090", FailedRunID: "run-old", ReplacementRunID: "run-new",
+			}},
+		},
+	}, now)
+	want := "Daemon restarted 2m0s ago (process exited unexpectedly); runs resumed/reclaimed: run-a, run-b\n" +
+		"Warning: run run-old failed during the daemon restart and was replaced by run-new for item 3090\n"
+	if got != want {
+		t.Fatalf("daemon restart line = %q, want %q", got, want)
 	}
 }
 
@@ -349,6 +369,9 @@ func TestStatusJSON(t *testing.T) {
 	for _, run := range got.Runs {
 		if run.LastActivityAt.IsZero() {
 			t.Fatalf("run %q has no last activity timestamp", run.RunID)
+		}
+		if run.Operator.Trajectory == "" || run.Operator.Claim.LeaseStatus == "" {
+			t.Fatalf("run %q has no operator summary: %+v", run.RunID, run.Operator)
 		}
 	}
 }
@@ -749,6 +772,7 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
+
 	for _, want := range []string{
 		"LAST ACTIVITY",
 		"fixture-run",
@@ -759,6 +783,67 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
 		}
+	}
+}
+
+func TestRenderStatusAnswersLivenessAndPRTrajectory(t *testing.T) {
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	heartbeat := now.Add(-30 * time.Second)
+	age := int64(30_000)
+	runs := []runSummary{{
+		RunID: "run-operator", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Hour), LastActivityAt: heartbeat,
+		Operator: readservice.OperatorRunSummary{
+			Issue:              &readservice.OperatorIssue{Number: "3088", Title: "Operator status"},
+			CurrentStage:       "local-ci",
+			LastHeartbeatAt:    &heartbeat,
+			HeartbeatAgeMillis: &age,
+			Liveness:           "recent",
+			Trajectory:         "local CI",
+			PROpenerStage:      "open-pr",
+			Claim:              readservice.OperatorClaim{LeaseStatus: "active", ProviderMarker: "verified"},
+			Review:             &readservice.OperatorReview{Verdict: "needs-changes", Rationale: "Add drift visibility."},
+			NextTransition:     "finish local-ci",
+			PotentialBlockers:  []string{"review needs-changes: Add drift visibility."},
+		},
+	}}
+	var stdout strings.Builder
+	renderStatus(&stdout, runs, now)
+	for _, want := range []string{
+		"#3088 Operator status",
+		"local-ci / local CI",
+		"recent 30s ago",
+		"via open-pr",
+		"active / verified",
+		"review needs-changes: Add drift visibility.",
+		"blockers: review needs-changes: Add drift visibility.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestTruncateStatusCellPreservesUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "no truncation", value: "修正ログイン", width: 6, want: "修正ログイン"},
+		{name: "ellipsis", value: "修正ログイン", width: 5, want: "修正..."},
+		{name: "narrow", value: "修正ログイン", width: 2, want: "修正"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateStatusCell(tc.value, tc.width)
+			if got != tc.want {
+				t.Fatalf("truncateStatusCell(%q, %d) = %q, want %q", tc.value, tc.width, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateStatusCell(%q, %d) returned invalid UTF-8", tc.value, tc.width)
+			}
+		})
 	}
 }
 

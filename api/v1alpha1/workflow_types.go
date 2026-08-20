@@ -198,7 +198,8 @@ type Task struct {
 	// ContextFrom limits this task's context pointers to artifacts and verdicts
 	// produced by the named tasks or gates. Empty preserves the historical
 	// behavior of receiving every accumulated pointer.
-	// +kubebuilder:validation:UniqueItems=true
+	// Duplicate entries are rejected by api/validate (CTX001) rather than by a
+	// CRD uniqueness marker, which Kubernetes refuses to install.
 	// +optional
 	ContextFrom []string `json:"contextFrom,omitempty" yaml:"contextFrom,omitempty"`
 	// PolicyActions declares the closed vocabulary of externally mutating
@@ -304,6 +305,12 @@ type Task struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	Outbox []string `json:"outbox,omitempty" yaml:"outbox,omitempty"`
+	// OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+	// root for this task. It is used only when Outbox exports at least one file.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
@@ -328,7 +335,8 @@ type RetryPolicy struct {
 // RunControls tunes runner-level safety budgets. An omitted field inherits from
 // the next broader scope: workflow, then gaggle, then instance defaults.
 type RunControls struct {
-	// MaxRepasses bounds consecutive non-pass evaluations before escalation.
+	// MaxRepasses bounds how many times gates may route a run back to the same
+	// already-completed stage before escalation, regardless of gate or outcome.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -460,8 +468,9 @@ type Gate struct {
 	// workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
-	// MaxRepasses overrides the inherited workflow repass budget for this gate.
-	// It is valid only for automated and agentic gates.
+	// MaxRepasses overrides the inherited target-stage re-entry budget when this
+	// gate routes to an already-completed stage. It is valid only for automated
+	// and agentic gates.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -548,6 +557,12 @@ type WorkflowSpec struct {
 	// MaxRepasses.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where this
+	// workflow mirrors durable journal outbox files. A task may override it.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`
@@ -592,6 +607,7 @@ type WorkflowSpec struct {
 	// +optional
 	Requires *WorkflowRequirements `json:"requires,omitempty" yaml:"requires,omitempty"`
 	// Tasks are the work states of the machine.
+	// +kubebuilder:validation:MaxItems=128
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
 	// Gates are the validation/branching states of the machine.

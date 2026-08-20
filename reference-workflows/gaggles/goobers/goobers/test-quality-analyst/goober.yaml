@@ -1,0 +1,21 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: test-quality-analyst
+spec:
+  gaggle: goobers
+  role: test-quality-analyst
+  displayName: Test quality analyst
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - telemetry:read
+    - journal:read
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - test-suite-quality

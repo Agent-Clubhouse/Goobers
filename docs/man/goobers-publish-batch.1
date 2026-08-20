@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PUBLISH BATCH" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers publish-batch \- publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers publish-batch\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers publish-batch [path]
+
+publish-batch is the decomposition workflow's deterministic publication
+stage (docs/design/decomposition-workflow.md §5.2-5.3, DEC-4). It consumes
+a validated decomposition plan, resumes the prepare/publish protocol by
+stable markers, verifies the complete batch, commits eligibility through
+the parent published record, and releases the parent claim.
+
+Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers publish-batch
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

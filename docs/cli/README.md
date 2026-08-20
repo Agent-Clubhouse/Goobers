@@ -23,7 +23,7 @@
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
 | [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
-| [`goobers trace`](#goobers-trace) | show a run's journal events, follow a live run, or show transcripts |
+| [`goobers trace`](#goobers-trace) | show a run's journal events or review verdicts, follow a live run, or show transcripts |
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
@@ -59,7 +59,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
-| [`goobers escalations show`](#goobers-escalations-show) | show escalation cause + per-stage artifact timeline |
+| [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
@@ -136,6 +136,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers post-merge`](#goobers-post-merge) | post-merge fan-out + close the referenced issue (a workflow stage) |
 | [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
+| [`goobers publish-batch`](#goobers-publish-batch) | publish a verified decomposition batch behind one eligibility barrier (a workflow stage) |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
 | [`goobers rebase-pr`](#goobers-rebase-pr) | rebase-first, finding-driven remediation routing (a workflow stage) |
@@ -144,6 +145,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
+| [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
 | [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
@@ -394,7 +396,7 @@ $ goobers backlog-health
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -409,6 +411,10 @@ trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
 and uses only the github:issues:read capability.
+
+--debug writes candidate eligibility, exclusion, and claim-loss details to
+stderr. Diagnostics contain item IDs and selection metadata only; normal
+output and claim behavior are unchanged.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A
@@ -861,11 +867,13 @@ $ goobers connect acme/web --json ./my-instance
 serve and open the local operations portal
 
 ~~~text
-Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]
+Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
 
 Serve the embedded portal against the live daemon when `goobers up` is
 running, or against a standalone read-only service otherwise. The default
 port is 8081; --port=auto increments from there until a port is available.
+--wait-for-daemon optionally waits up to 30s for a concurrently starting
+daemon; use --wait-for-daemon=<duration> to choose another bound.
 --listen overrides the full bind address (host:port) and takes the place
 of --port when given; binding a non-loopback host requires api.auth to be
 configured in instance.yaml (SEC-043) — there is no insecure override.
@@ -1048,7 +1056,7 @@ list escalated runs newest first
 
 ~~~text
 Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] <run-id> [path]
+       goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage.
@@ -1063,18 +1071,20 @@ $ goobers escalations --json
 
 ## `goobers escalations show`
 
-show escalation cause + per-stage artifact timeline
+show escalation cause, verdict, and per-stage artifact timeline
 
 ~~~text
-Usage: goobers escalations show [--json] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
+Use --include-verdict to include reviewer verdict rationale and findings.
 ~~~
 
 **Examples**
 
 ~~~console
 $ goobers escalations show <run-id>
+$ goobers escalations show --include-verdict <run-id>
 ~~~
 
 ## `goobers examples`
@@ -1926,6 +1936,28 @@ $ goobers preflight --distro Ubuntu-24.04
 $ goobers preflight --launch-wsl -- run implementation .
 ~~~
 
+## `goobers publish-batch`
+
+publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+
+~~~text
+Usage: goobers publish-batch [path]
+
+publish-batch is the decomposition workflow's deterministic publication
+stage (docs/design/decomposition-workflow.md §5.2-5.3, DEC-4). It consumes
+a validated decomposition plan, resumes the prepare/publish protocol by
+stable markers, verifies the complete batch, commits eligibility through
+the parent published record, and releases the parent claim.
+
+Exit codes: 0 = batch published / 1 = business or provider error / 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers publish-batch
+~~~
+
 ## `goobers push-branch`
 
 push the worktree's checked-out branch to origin (a workflow stage)
@@ -2180,6 +2212,25 @@ Exit codes: 0 = reset written, 2 = usage/IO error.
 
 ~~~console
 $ goobers reset-rate-limit
+~~~
+
+## `goobers resolve-review-threads`
+
+reply to and resolve remediated native review threads (a workflow stage)
+
+~~~text
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers resolve-review-threads
 ~~~
 
 ## `goobers respond-to-findings`
@@ -2803,6 +2854,7 @@ Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--work
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
+Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
@@ -3003,14 +3055,15 @@ $ goobers telemetry-query --window 24h --format candidate-findings
 
 ## `goobers trace`
 
-show a run's journal events, follow a live run, or show transcripts
+show a run's journal events or review verdicts, follow a live run, or show transcripts
 
 ~~~text
-Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
-or --transcript to select one stage. With --follow, stream a live run's
+or --transcript to select one stage. Use --summary for run metadata and
+review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
 events until it finishes; --json --follow emits JSON Lines (default path
 "."). Remediation escalations include the typed outcome, attempted flag,
 and attempted causes in the text summary and JSON `escalation.remediation`
@@ -3022,6 +3075,8 @@ error, 130 = interrupted while following.
 
 ~~~console
 $ goobers trace <run-id>
+$ goobers trace --summary <run-id>
+$ goobers trace --verdicts <run-id>
 $ goobers trace --follow <run-id>
 $ goobers trace --transcripts <run-id>
 ~~~
@@ -3064,10 +3119,11 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
 
 These five behavior controls are intentionally flag-only: --watch-config
 selects a process-local development watcher, --diagnostics is temporary
@@ -3227,8 +3283,9 @@ polling and let in-flight activities finish within --drain-timeout.
 The tier-3 engine is not on the local (V0) execution path; this command is
 the deployable worker shape for the cloud ladder. Automated gate checks and
 workspace provisioning (git worktrees + scratch dirs under --work-root) are
-wired; agentic and deterministic executor seams arrive with the runtime
-wiring slice, and stages needing them fail closed with a clear error.
+wired. With --instance, the worker also wires the same agentic and
+deterministic executors as the local runner; without it, stages needing
+those executors fail closed with a clear error.
 
 Flags:
   --instance <dir>           instance root; wires the real agentic and

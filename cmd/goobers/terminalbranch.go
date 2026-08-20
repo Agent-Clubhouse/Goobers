@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -196,6 +197,7 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 
 	var branch *journal.ExternalRef
 	var pushed, openedPR, alreadyFinalized, noWork bool
+	var lastGateOutcome string
 	for i := range events {
 		ev := events[i]
 		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
@@ -221,6 +223,9 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		if ev.Type == journal.EventStageFinished && ev.Status == string(apiv1.ResultNoWork) {
 			noWork = true
 		}
+		if ev.Type == journal.EventGateEvaluated {
+			lastGateOutcome = ev.Verdict
+		}
 		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
 			openedPR = true
 		}
@@ -244,6 +249,9 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 	}
 	if openedPR {
 		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "pull-request-opened", nil)
+	}
+	if lastGateOutcome == gate.OutcomeInfra {
+		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "remediable-validation-failure", nil)
 	}
 	if deleteBranch == nil {
 		return appendBranchCleanup(jr, branch, branchCleanupFailed, "", errors.New("branch-delete provider is not configured"))

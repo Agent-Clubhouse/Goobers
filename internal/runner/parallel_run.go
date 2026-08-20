@@ -470,11 +470,18 @@ func (r *Runner) runParallelBranch(
 		},
 	}
 	ex := newExecutors(r.cfg, branchJournal, reg)
+	visitedStages := stageVisitSeed(history)
 	gateEval := &gate.Evaluator{
-		Automated:      r.cfg.Automated,
-		Journal:        branchJournal,
-		MaxRepasses:    int(in.RunControls.MaxRepasses),
-		Attempts:       gateRepassSeed(history),
+		Automated:                    r.cfg.Automated,
+		Journal:                      branchJournal,
+		MaxRepasses:                  int(in.RunControls.MaxRepasses),
+		Attempts:                     gateRepassSeed(history),
+		RepassAttempts:               targetRepassSeed(history),
+		InfrastructureAttempts:       gateInfrastructureSeed(history),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
+		IsReentry: func(target string) bool {
+			return visitedStages[target]
+		},
 		LastDiffDigest: gateDiffSeed(history),
 	}
 	state := branch.machine
@@ -498,6 +505,7 @@ func (r *Runner) runParallelBranch(
 	startAttempt := int32(1)
 	var firstClass journal.AttemptClass
 	var committedWorkOnInfra bool
+	var resumeAccounting *resumeRetryAccounting
 	if boundary, ok := lastParallelBoundary(history); ok {
 		if task, isTask := in.Machine.Task(state); isTask {
 			switch {
@@ -540,6 +548,11 @@ func (r *Runner) runParallelBranch(
 					startAttempt = int32(attempt) + 1
 					firstClass = journal.AttemptInfra
 					committedWorkOnInfra = infraFailedAttemptCommittedWork(history, state, attempt)
+					resumeAccounting = &resumeRetryAccounting{
+						policyAttempts:            policyAttemptsBefore(history, state, attempt),
+						infrastructureFailures:    infrastructureFailuresBefore(history, state, attempt),
+						replacementConsumesPolicy: boundary.AttemptClass != journal.AttemptInfra,
+					}
 				}
 			}
 		} else if _, isGate := in.Machine.Gate(state); isGate &&
@@ -587,10 +600,11 @@ func (r *Runner) runParallelBranch(
 					ctx, branchJournal, in, ex, task, branch.id,
 					branchContextPointers(basePointers, result.pointers),
 					result.lastResult, result.completed, nil, startAttempt, firstClass,
-					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra,
+					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra, resumeAccounting,
 				)
 				startAttempt = 1
 				firstClass = ""
+				resumeAccounting = nil
 			}
 			if err != nil {
 				result.status, result.err = journal.BranchFailed, err
@@ -608,6 +622,7 @@ func (r *Runner) runParallelBranch(
 				}
 			}
 			result.lastStage, result.lastResult = task.Name, stageResult
+			visitedStages[task.Name] = true
 			if stageResult.Status == apiv1.ResultFailure && task.ContinueOnError {
 				result.completed.clear(task.Name)
 			} else {
@@ -689,7 +704,7 @@ func (r *Runner) runParallelBranch(
 				result.err = fmt.Errorf("runner: parallel %q branch %q reached human gate %q", par.spec.Name, branch.name, g.Name)
 				return result
 			}
-			retryClass, knownOutcome, retryable := retryFailureClass(g, result.lastResult)
+			_, knownOutcome, _ := retryFailureClass(g, result.lastResult)
 			replayed := replayGate != nil
 			var gr gate.Result
 			var err, removeErr error
@@ -721,6 +736,7 @@ func (r *Runner) runParallelBranch(
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
+			retryClass, _, retryable := retryFailureClassForGateResult(g, result.lastResult, gr.Outcome)
 			var retryTarget string
 			var retry bool
 			if replayed && replayGateEvent != nil && hasRetryDecisionAfter(history, *replayGateEvent) {
@@ -776,7 +792,7 @@ func (r *Runner) runParallelBranch(
 				return result
 			default:
 				if gr.Escalated {
-					if reason, notify := terminalGateNotificationReason(gr); notify {
+					if reason, notify := terminalGateNotificationReason(in.Machine, gr); notify {
 						if err := r.notifyTerminalGate(stalledAttemptContext(ctx), jr, in.RunID, in.RepoRef, in.Item, gr, reason); err != nil {
 							result.status, result.err = journal.BranchFailed, err
 							return result

@@ -18,9 +18,9 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationIOSSimulatorWorkflowRunsXCUITestGreen(t *testing.T) {

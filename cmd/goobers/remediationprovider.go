@@ -57,7 +57,9 @@ var (
 // the cache is a GitHub HTTPClient decorator (apireadcache.go) and the
 // Gitea arm stays uncached, exactly like open-pr's and backlog-query's
 // Gitea arms today.
-func remediationStageProvider(root string, repo providers.RepositoryRef, token string, cached bool) (remediationProvider, error) {
+var remediationStageProvider = buildRemediationStageProvider
+
+func buildRemediationStageProvider(root string, repo providers.RepositoryRef, token string, cached bool) (remediationProvider, error) {
 	return remediationStageProviderWithRecorder(root, repo, token, cached, nil)
 }
 

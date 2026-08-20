@@ -220,10 +220,11 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
 	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
 	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
-	"forces every list request onto the journal-derived paths for this run,\n" +
-	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
-	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n\n" +
+	"forces every list request to scan the authoritative journals for this\n" +
+	"run, bypassing both read.db and telemetry.db as run-candidate indexes.\n" +
+	"This can be slow on a large history. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of serving\n" +
+	"wrong or incomplete results.\n\n" +
 	"These five behavior controls are intentionally flag-only: --watch-config\n" +
 	"selects a process-local development watcher, --diagnostics is temporary\n" +
 	"debug capture, --drain-timeout applies only after this process receives a\n" +
@@ -276,7 +277,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
-	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -295,6 +296,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 
 	l := instance.NewLayout(root)
+	pf(stdout, "startup: validating instance configuration\n")
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
@@ -302,6 +304,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	pf(stdout, "startup: instance configuration valid\n")
 	startupConfig, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
@@ -353,16 +356,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	setupOptions := []schedulerSetupOption{
+		withDesktopNotifications(notifications, stderr),
+		withStartupProgress(func(message string) {
+			pf(stdout, "startup: %s\n", message)
+		}),
+	}
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
 	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: scheduler initialized\n")
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -406,7 +416,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel: setup.ReadModel,
+		ReadModel:      setup.ReadModel,
+		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -421,7 +432,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// DisableReadModelReads previously had no caller anywhere, so the
 		// documented "a flag flip, never a deploy" rollback did not exist in
 		// practice. read.db itself is untouched — this only forces every list
-		// request back onto the journal-derived paths for this run.
+		// request back onto authoritative journal scans for this run.
 		reads.DisableReadModelReads()
 	}
 	// Move the active-run count off the request path (#1741). Six read routes
@@ -776,6 +787,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	// #3274: a github-app workflowSource mints installation tokens instead of
+	// reading a static token ref. The minter is built once here — the
+	// composition root, since internal/instance cannot import
+	// internal/githubapp — and shared by the apply sweep and the reconcile
+	// loop below, so both draw on one near-expiry-refreshing token cache.
+	var workflowSourceAppTokens instance.GitTokenSource
+	if source := setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
+		minted, mintErr := newWorkflowSourceAppTokenSource(*source, setup.SharedRegistry, setup.SecretStores)
+		if mintErr != nil {
+			pf(stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
+			return 1
+		}
+		workflowSourceAppTokens = minted
+	}
 	var sourceReconcileMu sync.Mutex
 	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
@@ -783,7 +808,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
 			if syncErr != nil {
 				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
 				return resp
@@ -1014,6 +1039,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					root,
 					*source,
 					sourceRevision,
+					workflowSourceAppTokens,
 					setup.SharedRegistry,
 					setup.SecretStores,
 				)

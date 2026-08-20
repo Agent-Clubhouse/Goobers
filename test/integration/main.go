@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 type scanResult struct {
@@ -220,7 +220,7 @@ func inspectIntegrationFile(filePath string, data []byte) ([]string, []string, e
 		switch importPath {
 		case "os/exec":
 			execAliases[alias] = true
-		case "github.com/goobers/goobers/internal/testdep":
+		case "github.com/goobers/goobers/test/testsupport/testdep":
 			testdepAliases[alias] = true
 		}
 	}

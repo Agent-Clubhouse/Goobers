@@ -9,6 +9,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
@@ -74,7 +76,69 @@ func CheckWarnings(def Definition) []string {
 			task.Name,
 		))
 	}
+	for _, task := range def.Spec.Tasks {
+		warnings = append(warnings, overPrivilegeWarnings(task)...)
+	}
 	return warnings
+}
+
+// overPrivilegeWarnings flags a declared capability that STRICTLY subsumes
+// everything the task's invoked built-in actually requires
+// (internal/capability.Subsumes): admission accepts the broader grant — that
+// is the #2386 un-breaking — but the stage is running with more authority
+// than its work needs, and the narrower declaration is available. A warning,
+// never an error: the config is safe to run as-is.
+func overPrivilegeWarnings(task apiv1.Task) []string {
+	if !isShellStage(task) || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
+		return nil
+	}
+	required := providerstage.RequiredCapabilities(task.Run.Command[1], task.Run.Command[2:])
+	if len(required) == 0 {
+		return nil
+	}
+	requiredSet := map[capability.Capability]bool{}
+	var requiredOrder []capability.Capability
+	for _, use := range required {
+		if !requiredSet[use.Capability] {
+			requiredSet[use.Capability] = true
+			requiredOrder = append(requiredOrder, use.Capability)
+		}
+	}
+	var warnings []string
+	for _, declared := range task.Capabilities {
+		held := capability.Capability(declared)
+		if requiredSet[held] {
+			continue
+		}
+		strictlySubsumesAll := true
+		for _, requiredCapability := range requiredOrder {
+			if !capability.Subsumes(held, requiredCapability) {
+				strictlySubsumesAll = false
+				break
+			}
+		}
+		if !strictlySubsumesAll {
+			continue
+		}
+		narrower := make([]string, len(requiredOrder))
+		for i, requiredCapability := range requiredOrder {
+			narrower[i] = fmt.Sprintf("%q", requiredCapability)
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"task %q declares capability %q, which strictly subsumes everything subcommand %q requires (%s); declare the narrower capability instead",
+			task.Name, held, task.Run.Command[1], strings.Join(narrower, ", "),
+		))
+	}
+	return warnings
+}
+
+// CheckPushBoundaries reports provably cross-platform task transitions that
+// hand off unpushed repo workspace state (#2861). gaggleRequiredCapabilities
+// is the workflow's gaggle-level GaggleSpec.RequiredCapabilities, merged into
+// each stage's own requirements to form its effective set; nil evaluates
+// stage-level requirements alone.
+func CheckPushBoundaries(def Definition, gaggleRequiredCapabilities []string) []string {
+	return pushBoundaryProblems(def, gaggleRequiredCapabilities)
 }
 
 // CheckReachability reports unreachable states and loops with no exit. It is a

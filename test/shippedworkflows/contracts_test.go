@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 const (
@@ -150,6 +152,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
 					}
 					scenarios := terminalScenarios(t, machine)
+					if hasCITimeoutRoute(machine) && !hasCITimeoutRecoveryScenario(scenarios) {
+						t.Fatalf("%s: workflow %q has no CI timeout-then-pass recovery scenario", source, key)
+					}
 					for _, scenario := range scenarios {
 						scenario := scenario
 						t.Run(scenario.name, func(t *testing.T) {
@@ -184,6 +189,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 							}
 							assertJournalScenario(t, definition, events, scenario)
 							assertRequiredValueHandoffs(t, definition.Name, events)
+							if isCITimeoutRecoveryScenario(scenario) {
+								assertCITimeoutRecovery(t, events)
+							}
 							state, err := reader.State()
 							if err != nil {
 								t.Fatalf("%s: workflow %q read journal state: %v", source, key, err)
@@ -198,6 +206,148 @@ func TestShippedWorkflowContracts(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func hasCITimeoutRoute(machine *workflow.Machine) bool {
+	ciGate, ok := machine.Gate("ci-gate")
+	if !ok {
+		return false
+	}
+	_, ok = workflow.BranchTarget(ciGate, gate.OutcomeTimeout)
+	return ok
+}
+
+func hasCITimeoutRecoveryScenario(scenarios []terminalScenario) bool {
+	for _, scenario := range scenarios {
+		if isCITimeoutRecoveryScenario(scenario) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCITimeoutRecoveryScenario(scenario terminalScenario) bool {
+	return reflect.DeepEqual(
+		scenario.gateOutcomes["ci-gate"],
+		[]string{gate.OutcomeTimeout, gate.OutcomePass},
+	)
+}
+
+func assertCITimeoutRecovery(t *testing.T, events []journal.Event) {
+	t.Helper()
+	stageStarts := map[string]int{}
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			stageStarts[event.Stage]++
+		}
+	}
+	if got := stageStarts["ci-poll"]; got != 2 {
+		t.Errorf("ci-poll starts = %d, want 2 for timeout then pass", got)
+	}
+	if got := stageStarts["implement"]; got != 1 {
+		t.Errorf("implement starts = %d, want 1; pending CI must not consume an implementation repass", got)
+	}
+	if got := stageStarts["park-escalated"]; got != 0 {
+		t.Errorf("park-escalated starts = %d, want 0 for pending CI", got)
+	}
+}
+
+func TestImplementationInfrastructureRetryPreservesReviewedCheckpoint(t *testing.T) {
+	root := repositoryRoot(t)
+	configPath := filepath.Join(root, "reference-workflows")
+	set, report, err := instance.LoadConfigDir(configPath)
+	if err != nil {
+		t.Fatalf("load shipped config: %v\n%v", err, report)
+	}
+	var definition apiv1.Workflow
+	for _, candidate := range set.Workflows {
+		if candidate.Spec.Gaggle == "goobers" && candidate.Name == "implementation" {
+			definition = candidate
+			break
+		}
+	}
+	if definition.Name == "" {
+		t.Fatal("reference implementation workflow not found")
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{
+			Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		},
+		workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{
+			"review":       {string(apiv1.VerdictPass)},
+			"local-gate":   {gate.OutcomeInfra, gate.OutcomePass},
+			"open-pr-gate": {gate.OutcomePass},
+			"ci-gate":      {gate.OutcomePass},
+		},
+		wantPhase: journal.PhaseCompleted,
+	})
+	localRunner, runsDir := newContractRunner(t, script, gooberCapabilities(set.Goobers))
+	const runID = "implementation-infra-retry-preserves-checkpoint"
+	if _, err := localRunner.Start(context.Background(), runner.StartInput{
+		RunID: runID, Machine: machine, Gaggle: definition.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "fixture", Name: "repository", Branch: "main",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := map[string]int{}
+	gateEvaluations := map[string]int{}
+	var sequence []string
+	var infraDecision bool
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageStarted:
+			starts[event.Stage]++
+			sequence = append(sequence, event.Stage)
+		case journal.EventGateEvaluated:
+			gateEvaluations[event.Gate]++
+		case journal.EventRunnerAnnotation:
+			if event.Stage == "local-ci" &&
+				event.Runner["kind"] == "stage.retry.decision" &&
+				event.Runner["retryFailureClass"] == string(journal.AttemptInfra) {
+				infraDecision = true
+			}
+		}
+	}
+	for stage, want := range map[string]int{
+		"implement":   1,
+		"push-branch": 1,
+		"local-ci":    2,
+		"open-pr":     1,
+	} {
+		if got := starts[stage]; got != want {
+			t.Errorf("%s starts = %d, want %d; sequence=%v", stage, got, want, sequence)
+		}
+	}
+	if gateEvaluations["review"] != 1 || gateEvaluations["local-gate"] != 2 {
+		t.Errorf("gate evaluations = %v, want review=1 local-gate=2", gateEvaluations)
+	}
+	if starts["park-escalated"] != 0 {
+		t.Fatalf("park-escalated starts = %d, want 0", starts["park-escalated"])
+	}
+	if !infraDecision {
+		t.Fatal("local-ci retry was not journaled as infrastructure")
+	}
+	pushIndex, firstCIIndex := slices.Index(sequence, "push-branch"), slices.Index(sequence, "local-ci")
+	if pushIndex < 0 || firstCIIndex < 0 || pushIndex > firstCIIndex {
+		t.Fatalf("execution sequence = %v, want push-branch before local-ci", sequence)
 	}
 }
 
@@ -1002,7 +1152,11 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 			continue
 		}
 		path := append([]workflow.GraphEdge(nil), prefix...)
-		for range contractMaxRepasses {
+		repasses := contractMaxRepasses
+		if candidate.Outcome == gate.OutcomeInfra {
+			repasses = gate.DefaultMaxInfrastructureRepasses
+		}
+		for range repasses {
 			path = append(path, candidate)
 			path = append(path, loopback...)
 		}
@@ -1717,7 +1871,7 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 			return err
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, result)
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
 		outcome, ok := s.nextGateOutcome(stage)
 		if !ok {
@@ -1734,7 +1888,7 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		default:
 			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
 			Rationale: "scripted fake-harness verdict",
 		})
@@ -1791,7 +1945,10 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "scripted CI timeout",
-				Outputs: map[string]any{executor.OutputCIStatus: executor.CIStatusTimeout},
+				Outputs: map[string]any{
+					executor.OutputCIStatus: executor.CIStatusTimeout,
+					executor.OutputPRNumber: env.Inputs[executor.InputPRNumber],
+				},
 				Error: &apiv1.ErrorInfo{
 					Code: "poll_timeout", Message: "scripted CI timeout", Retryable: true,
 				},
@@ -1912,7 +2069,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if !ok {
 				return nil, fmt.Errorf("secret registrar %T is not a journal scrubber", registrar)
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Act:        script.harnessAct,
 				Transcript: []byte("scripted shipped-workflow contract harness\n"),
 			}

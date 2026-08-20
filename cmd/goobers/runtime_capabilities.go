@@ -433,16 +433,16 @@ func init() {
 		).withHelp("inspect and force-release claim leases", claimsHelp),
 		coreCommand("trace", apicontract.ActionReadOnlyNavigation, runTrace).
 			withSynopsis(synopsisByID["trace"]).
-			withHelp("show a run's journal events, follow a live run, or show transcripts", traceHelp).
-			withExamples("goobers trace <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+			withHelp("show a run's journal events or review verdicts, follow a live run, or show transcripts", traceHelp).
+			withExamples("goobers trace <run-id>", "goobers trace --summary <run-id>", "goobers trace --verdicts <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
 		coreCommandWithSubcommands(
 			"escalations",
 			apicontract.ActionReadOnlyNavigation,
 			runEscalations,
 			subcommand("escalations show", "show", apicontract.ActionReadOnlyNavigation, runEscalationShow).
 				withSynopsis(synopsisByID["escalations show"]).
-				withHelp("show escalation cause + per-stage artifact timeline", escalationsShowHelp).
-				withExamples("goobers escalations show <run-id>"),
+				withHelp("show escalation cause, verdict, and per-stage artifact timeline", escalationsShowHelp).
+				withExamples("goobers escalations show <run-id>", "goobers escalations show --include-verdict <run-id>"),
 		).
 			withSynopsis(synopsisByID["escalations"]).
 			withHelp("list escalated runs newest first", escalationsHelp).
@@ -547,6 +547,10 @@ func init() {
 			withSynopsis(synopsisByID["validate-plan"]).
 			withHelp("validate a decomposition plan against its selector artifact and the live parent (a workflow stage)", validatePlanHelp).
 			withExamples("goobers validate-plan"),
+		stageCommand("publish-batch", apicontract.ActionWorkflowExecution, runPublishBatch).
+			withSynopsis(synopsisByID["publish-batch"]).
+			withHelp("publish a verified decomposition batch behind one eligibility barrier (a workflow stage)", publishBatchHelp).
+			withExamples("goobers publish-batch"),
 		stageCommand("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).
@@ -651,6 +655,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-review-threads"]).
 			withHelp("add native reviews and anchored inline threads to a remediation brief (a workflow stage)", gatherReviewThreadsHelp).
 			withExamples("goobers gather-review-threads"),
+		stageCommand("resolve-review-threads", apicontract.ActionWorkflowExecution, runResolveReviewThreads).
+			withSynopsis(synopsisByID["resolve-review-threads"]).
+			withHelp("reply to and resolve remediated native review threads (a workflow stage)", resolveReviewThreadsHelp).
+			withExamples("goobers resolve-review-threads"),
 		stageCommand("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).

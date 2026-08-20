@@ -191,6 +191,9 @@ func highestSeqInChunk(buf []byte, atFileStart bool) (found bool, highest uint64
 		if unmarshalErr := json.Unmarshal(line, &ev); unmarshalErr != nil {
 			return false, 0, fmt.Errorf("journal: corrupt event at seq boundary: %w", unmarshalErr)
 		}
+		if ev.Schema != EventSchema {
+			return false, 0, unsupportedPayloadSchema("event", ev.Schema, EventSchema)
+		}
 		if ev.Seq == 0 {
 			continue
 		}

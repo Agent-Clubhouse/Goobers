@@ -170,10 +170,12 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 
 func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfig) (string, error) {
 	inputs := map[string][]byte{
-		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
+		journal.PinnedWorkflowGraphInputName:      []byte(proj.Graph),
+		journal.PinnedWorkflowDefinitionInputName: []byte(proj.Definition),
 	}
 	inputIntegrity := map[string]apiv1.Integrity{
-		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
 	}
 	if proj.Item != nil {
 		item := normalizeItemIntegrity(proj.Item)
@@ -337,6 +339,9 @@ func validateProjection(proj JournalProjection) error {
 	}
 	if len(proj.Graph) == 0 {
 		return fmt.Errorf("%w: projection carries no pinned workflow graph", ErrUnprojectable)
+	}
+	if len(proj.Definition) == 0 {
+		return fmt.Errorf("%w: projection carries no pinned workflow definition", ErrUnprojectable)
 	}
 	if len(proj.Ops) == 0 {
 		return fmt.Errorf("%w: history produced no journal ops", ErrUnprojectable)

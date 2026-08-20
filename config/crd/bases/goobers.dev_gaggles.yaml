@@ -150,7 +150,7 @@ spec:
                     type: string
                   labels:
                     description: |-
-                      Query/labels narrow which items this gaggle considers work. Routing of an
+                      Labels narrow which items this gaggle considers work. Routing of an
                       item to a specific workflow is handled by workflow selectors (SCH-010).
                     items:
                       type: string
@@ -167,8 +167,6 @@ spec:
                     - github
                     - ado
                     - gitea
-                    type: string
-                  query:
                     type: string
                 required:
                 - project
@@ -222,6 +220,14 @@ spec:
                 required:
                 - namespace
                 type: object
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where workflows in
+                  this gaggle mirror their durable journal outbox. A workflow or task may
+                  override it. The local runner appends the run id and journal outbox layout
+                  beneath this root; the journal remains the source of truth.
+                minLength: 1
+                type: string
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
@@ -320,8 +326,9 @@ spec:
                   this gaggle. A workflow may override either value again.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer

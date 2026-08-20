@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestConvertCopilotSessionEventsFixture(t *testing.T) {
@@ -163,7 +164,7 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 				t.Fatalf("NewExecutor: %v", err)
 			}
 
-			exporter := telemetry.NewMemoryExporter()
+			exporter := telemetrytest.NewMemoryExporter()
 			client, err := telemetry.New(context.Background(), telemetry.Config{
 				ServiceName:  "copilot-usage-test",
 				SpanExporter: exporter,

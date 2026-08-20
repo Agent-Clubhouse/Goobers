@@ -394,7 +394,7 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 9 goober(s), 9 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 11 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)

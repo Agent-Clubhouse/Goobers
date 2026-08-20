@@ -257,9 +257,10 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	// ContextPointers — the only channel through which a stage consumes prior
 	// work (§2.4) — exactly as the local runner's walk does.
 	var pointers []apiv1.ContextPointer
-	// gateAttempts holds each gate's consecutive non-pass count — the same
-	// per-run repass state gate.Evaluator.Attempts tracks locally.
+	// Gate attempts recover interrupted evaluators; repass attempts enforce the
+	// run budget cumulatively by completed target stage.
 	gateAttempts := map[string]int{}
+	repassAttempts := map[string]int{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
@@ -325,7 +326,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
-			gr, rerr := resolveGateOutcome(g, outcome, gateAttempts, maxRepassesFor(in))
+			_, reentry := upstream[wfTarget(g, outcome)]
+			gr, rerr := resolveGateOutcome(g, outcome, reentry, gateAttempts, repassAttempts, maxRepassesFor(in))
 			if rerr != nil {
 				return RunResult{}, rerr
 			}

@@ -12,8 +12,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestPRRemediationLifecycleReleasesTerminalPRClaim(t *testing.T) {
-	st := &remediationCheckpointServerState{number: 77, state: "closed", merged: true}
+func TestPRRemediationLifecycleRechecksAndReleasesTerminalPRClaim(t *testing.T) {
+	st := &remediationCheckpointServerState{number: 77, state: "open"}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	root := remediationCheckpointEnv(t, server.URL, false)
 	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
@@ -24,13 +24,34 @@ func TestPRRemediationLifecycleReleasesTerminalPRClaim(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "pr-claim", root)
 	if code != 0 {
-		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		t.Fatalf("initial guard: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "no longer open") {
-		t.Fatalf("stdout = %q, want terminal PR reason", stdout)
+	var initial prRemediationLifecycleResult
+	raw, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read initial result: %v", err)
+	}
+	if err := json.Unmarshal(raw, &initial); err != nil {
+		t.Fatalf("unmarshal initial result: %v", err)
+	}
+	if !initial.Open || initial.NoWork || initial.Released {
+		t.Fatalf("initial result = %+v, want open PR with retained claim", initial)
+	}
+
+	st.mu.Lock()
+	st.state = "closed"
+	st.merged = true
+	st.mu.Unlock()
+
+	code, stdout, stderr = runArgs(t, "pr-claim", root)
+	if code != 0 {
+		t.Fatalf("recheck: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "this run's claimed PR #77 is no longer open") {
+		t.Fatalf("stdout = %q, want entry-guard terminal PR reason", stdout)
 	}
 	var result prRemediationLifecycleResult
-	raw, err := os.ReadFile(resultFile)
+	raw, err = os.ReadFile(resultFile)
 	if err != nil {
 		t.Fatalf("read result: %v", err)
 	}

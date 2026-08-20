@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 const (
@@ -267,7 +268,7 @@ func newDocsDryRunRunner(
 			if !ok {
 				return nil, fmt.Errorf("secret registrar %T is not a journal scrubber", registrar)
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("docs updater dry-run fixture\n"),
 				Act: func(_ context.Context, request harness.RunRequest) error {
 					if request.Mode != harness.ModeInvoke {
@@ -292,7 +293,7 @@ func newDocsDryRunRunner(
 						)
 						summary = "updated fixture documentation"
 					}
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
 						Status:  agentStatus,
 						Summary: summary,
 					})

@@ -84,11 +84,11 @@ const (
 	ErrorUnsupportedDSLVersion WarningCode = "DVL030"
 	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
 	// (MIRC-2, #1901) targets the same repo and has an effective
-	// requireLabels scope that is not disjoint from this gaggle's own — the
-	// likely-dominant misconfiguration case for independently-configured
-	// teams sharing one repo. Non-fatal: it does not change any two
-	// instances' actual runtime behavior by itself, it only surfaces the
-	// misconfiguration risk before it produces a live claim collision.
+	// requireLabels scope that is not disjoint from this gaggle's own, or this
+	// gaggle has no effective requireLabels partition at all. Non-fatal: it
+	// does not change any two instances' actual runtime behavior by itself,
+	// it only surfaces the misconfiguration risk before it produces a live
+	// claim collision.
 	WarningSiblingLabelOverlap WarningCode = "SIB001"
 	// WarningMissingSkillPackage identifies a declared goober skill whose
 	// package directory is absent.
@@ -171,6 +171,7 @@ const (
 	errorGateEvaluatorMismatch    WarningCode = "WF015"
 	errorRunControls              WarningCode = "WF016"
 	errorPathSimulation           WarningCode = "WF017"
+	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -183,6 +184,7 @@ const (
 	errorFieldOrderTask           WarningCode = "FLD004"
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
+	errorContextFromDuplicate     WarningCode = "CTX001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -888,6 +890,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
 	ix.checkLabelPredicates(r)
+	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
 	for name, g := range ix.gaggles {
 		for _, def := range ix.featureDefinitionsForGaggle(name) {
@@ -969,57 +972,37 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkMissingSkillPackages(r, configRoot)
 }
 
+// featureDefinitionsForGaggle adapts the indexed workflows to the shared
+// per-DSL-pin fan-out (wf.FeatureDefinitionsByDSLVersion, #3297) so the
+// validator and `goobers features --used` cannot drift on version-resolution
+// policy — including the workflow-less fallback.
 func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
-	byVersion := map[string]wf.Definition{}
+	var definitions []wf.Definition
 	for identity, indexed := range ix.workflows {
 		if identity.gaggle != gaggle {
 			continue
 		}
 		definition := indexed.definition
-		byVersion[definition.DSLVersion] = wf.Definition{
+		definitions = append(definitions, wf.Definition{
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
-		}
+		})
 	}
-	if len(byVersion) == 0 {
-		return []wf.Definition{{}}
-	}
-	versions := make([]string, 0, len(byVersion))
-	for version := range byVersion {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	definitions := make([]wf.Definition, 0, len(versions))
-	for _, version := range versions {
-		definitions = append(definitions, byVersion[version])
-	}
-	return definitions
+	return wf.FeatureDefinitionsByDSLVersion(definitions)
 }
 
 func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
-	byVersion := map[string]wf.Definition{}
+	var definitions []wf.Definition
 	for _, name := range spec.Workflows {
 		indexed, ok := ix.workflows[workflowIdentity{gaggle: spec.Gaggle, name: name}]
 		if !ok {
 			continue
 		}
 		definition := indexed.definition
-		byVersion[definition.DSLVersion] = wf.Definition{
+		definitions = append(definitions, wf.Definition{
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
-		}
+		})
 	}
-	if len(byVersion) == 0 {
-		return []wf.Definition{{}}
-	}
-	versions := make([]string, 0, len(byVersion))
-	for version := range byVersion {
-		versions = append(versions, version)
-	}
-	sort.Strings(versions)
-	definitions := make([]wf.Definition, 0, len(versions))
-	for _, version := range versions {
-		definitions = append(definitions, byVersion[version])
-	}
-	return definitions
+	return wf.FeatureDefinitionsByDSLVersion(definitions)
 }
 
 func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
@@ -1171,6 +1154,29 @@ func (ix *index) checkLabelPredicates(r *Report) {
 			); err != nil {
 				r.add(errorLabelPredicateTask, Error, indexed.file, "Workflow", workflow.Name,
 					"spec.tasks[%d].inputs.labelPredicate is invalid: %v", i, err)
+			}
+		}
+	}
+}
+
+// checkContextFromUniqueness rejects duplicate entries in a task's contextFrom.
+//
+// This lived on the Go type as +kubebuilder:validation:UniqueItems=true until
+// that marker was found to make the generated CRD un-installable: Kubernetes
+// forbids uniqueItems in a structural schema because the runtime complexity is
+// quadratic. The constraint is still worth enforcing, just not there.
+func (ix *index) checkContextFromUniqueness(r *Report) {
+	for _, indexed := range ix.workflows {
+		workflow := indexed.definition
+		for i, task := range workflow.Spec.Tasks {
+			seen := make(map[string]struct{}, len(task.ContextFrom))
+			for _, source := range task.ContextFrom {
+				if _, duplicate := seen[source]; duplicate {
+					r.add(errorContextFromDuplicate, Error, indexed.file, "Workflow", workflow.Name,
+						"spec.tasks[%d].contextFrom lists %q more than once", i, source)
+					continue
+				}
+				seen[source] = struct{}{}
 			}
 		}
 	}
@@ -1435,10 +1441,6 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				continue
 			}
 			for _, sc := range scopes {
-				overlap := intersectLabels(sc.labels, sib.RequireLabels)
-				if len(overlap) == 0 {
-					continue
-				}
 				siblingDesc := sib.Label
 				if siblingDesc == "" {
 					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
@@ -1446,6 +1448,16 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				where := "spec.requireLabels"
 				if sc.workflow != "" {
 					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+				}
+				if len(sc.labels) == 0 {
+					r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+						"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
+						where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+					continue
+				}
+				overlap := intersectLabels(sc.labels, sib.RequireLabels)
+				if len(overlap) == 0 {
+					continue
 				}
 				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
 					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
@@ -1779,6 +1791,18 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckWorkflowAdmission(def, ix.gooberSpecs()) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	// Push-boundary admission (#2861) needs the gaggle-level runner
+	// requirements to form each stage's effective set — a gaggle-level os=
+	// token is a platform every stage shares, which can prove a transition
+	// same-platform that stage-level tokens alone would flag.
+	var gaggleRequiredCapabilities []string
+	if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+		gaggleRequiredCapabilities = gaggle.Spec.RequiredCapabilities
+	}
+	for _, msg := range wf.CheckPushBoundaries(def, gaggleRequiredCapabilities) {
+		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
 	// runtime — a stage promising outputs it has no channel to emit, or
@@ -1819,6 +1843,52 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+func (ix *index) checkCapabilityRuntimeSupport(r *Report, w apiv1.Workflow, file string) {
+	gaggle, ok := ix.gaggles[w.Spec.Gaggle]
+	if !ok || len(gaggle.Spec.AdditionalRepos) == 0 {
+		return
+	}
+	for _, task := range w.Spec.Tasks {
+		if !hasCapability(task.Capabilities, capability.ContentsRead) || effectiveTaskWorkspace(task) != apiv1.WorkspaceScratch {
+			continue
+		}
+		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
+			"task %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
+			task.Name, capability.ContentsRead, w.Spec.Gaggle)
+	}
+	for _, gate := range w.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.Agentic.Workspace != apiv1.WorkspaceScratch {
+			continue
+		}
+		goober, ok := ix.goobers[gate.Agentic.Goober]
+		if !ok || !hasCapability(goober.Spec.Capabilities, capability.ContentsRead) {
+			continue
+		}
+		r.add(errorCapabilityRuntimeSupport, Error, file, "Workflow", w.Name,
+			"gate %q reviewer goober %q declares capability %q in a scratch workspace, but Gaggle/%s additionalRepos are only provisioned for repo-backed workspaces",
+			gate.Name, gate.Agentic.Goober, capability.ContentsRead, w.Spec.Gaggle)
+	}
+}
+
+func hasCapability(declared []string, wanted capability.Capability) bool {
+	for _, value := range declared {
+		if value == string(wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveTaskWorkspace(task apiv1.Task) apiv1.WorkspaceMode {
+	if task.Run != nil && task.Run.Workspace != "" {
+		return task.Run.Workspace
+	}
+	if task.Workspace != "" {
+		return task.Workspace
+	}
+	return apiv1.WorkspaceRepo
 }
 
 func (ix *index) acknowledgesManualOnly(w apiv1.Workflow, warning string) bool {

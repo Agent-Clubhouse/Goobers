@@ -2,6 +2,7 @@
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
 # Public API and compatibility surfaces.
+github.com/goobers/goobers/internal/workflow/v_next.dslVersionLevel # Per-version level lookup reachable only through the release-gate evolution validation (#3307 wave), which the tagged-baseline tests drive; the admission path never calls it.
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
@@ -45,6 +46,7 @@ github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-con
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
+github.com/goobers/goobers/internal/builtincmd.Names # Built-in subcommand inventory accessor, exercised by cmd/goobers/builtincmd_parity_test.go's CLI-registry parity check (#2861 admission hardening).
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory, exercised by telemetry_test.go and otlp_test.go's attribute-coverage checks (#2044 audit).
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
@@ -68,22 +70,8 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public 
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
 
-# Build-time generators exercised by drift tests and make docs.
-github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
-github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delta helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderCapabilityMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.writeCapabilityMatrix # Capability-matrix writer invoked by make docs through the drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.formatMatrixCell # Capability-matrix cell formatter invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllCapabilities # Capability-matrix row source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllProviderKinds # Capability-matrix column source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
+# Cross-surface contract invariants exercised by drift tests.
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.WorkflowRequiredCapabilities # Blessed-tier CI gate's required-capability set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.classify # Capability-matrix cell classifier invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.gapIssueFor # Capability-matrix gap-registry lookup invoked through classify (CONF-2, #2075).
-github.com/goobers/goobers/providers.BuildMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
 github.com/goobers/goobers/providers.ValidateBlessedTier # Blessed-tier CI gate invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
@@ -91,24 +79,9 @@ github.com/goobers/goobers/internal/apicontract.validSurface # Contract generato
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/flake.Quarantine # Issue-backed quarantine API (#664) intentionally ships with zero occupants until a flake is diagnosed.
 github.com/goobers/goobers/internal/flake.quarantine # Clock-injected quarantine helper exercised by expiry and validation tests.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
 github.com/goobers/goobers/internal/harness.ConformanceCoveredAdapterNames # Cross-package registry-completeness contract (#2776), exercised by cmd/goobers's TestBuildHarnessRegistryAdaptersAreConformanceCovered.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Utterances # Sound-free speech adapter accessor retained for deterministic cross-package notification assertions.
-github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
+github.com/goobers/goobers/internal/providerstage.Commands # Cross-package provider-stage inventory exercised by cmd/goobers's blessed-tier dispatch conformance gate (CONF-10, #2499).
 github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
-github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
 github.com/goobers/goobers/internal/supportmatrix.validateSupportMatrixEvolution # Support-matrix evolution guard (DVL-7) exercised by release-history tests.
@@ -134,18 +107,6 @@ github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-wo
 github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # Object-cache lock-timeout test seam (#2905), used only from objectcachelock_test.go — mirrors internal/journal.SetLockTimeoutForTest.
 
 # Quarantined, reserved, and extension seams required by the architecture.
-github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # DEC-3 shared target lease implementation ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.MarkerConflictError.Error # DEC-3 conflict surface ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.CreateChild # DEC-3 idempotent child primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and concurrent-create tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AppendMarkerComment # DEC-3 idempotent record primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and conflict tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AttachChild # DEC-3 hierarchy primitive ships ahead of its DEC-4 publisher caller and is exercised by hierarchy and revision-guard tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.validate # DEC-3 primitive validation helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.guardedItem # DEC-3 revision-guard helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findChild # DEC-3 exact child-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findComment # DEC-3 exact comment-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markedBody # DEC-3 stable marker renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markerKeyLine # DEC-3 exact marker-key renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.containsLine # DEC-3 exact marker matcher is reachable through the reserved DEC-4 entrypoints (#2245).
 # Notification output boundary (#1451) ships ahead of its mission-control
 # workflow caller (#1450); each entry is exercised by notification package tests.
 github.com/goobers/goobers/internal/notification.NewJournalRecorder # Durable notification journal adapter reserved for the mission-control workflow caller (#1450).
@@ -201,6 +162,7 @@ github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch con
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
+github.com/goobers/goobers/internal/journal.Reader.Schema # Journal schema inspection accessor required by the persisted-schema compatibility contract and exercised by migration tests.
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
@@ -272,3 +234,19 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+
+# FakeAdapter is the shared harness test double, promoted to a non-test file so
+# tests in other packages (cmd/goobers) can import it (#2886). Only *_test.go
+# reference it and its helpers, which this gate does not count.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Name # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Run # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.WriteCompletion # shared harness completion-file test helper (#2886); only _test.go callers.
+
+# testdep is a cross-package test-dependency guard (skips a test when a required
+# CLI/env is absent); it must be an importable package rather than a _test.go
+# helper so other packages' tests can call it (#2886). Only *_test.go reference it.
+github.com/goobers/goobers/internal/testdep.Dependencies # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.Require # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.RequireEnv # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.require # cross-package test-dep guard (#2886); only _test.go callers.
