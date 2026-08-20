@@ -7370,8 +7370,19 @@ func TestRunnerEmptyDiffDoesNotDispatchNeedsHumanDisposition(t *testing.T) {
 	}
 	for _, event := range events {
 		if event.Type == journal.EventGateEvaluated && event.Gate == "review" {
-			if event.Target != "park-remediation" || event.Name == "" {
+			if event.Target != "park-remediation" || event.Name == "" || event.Ref == nil {
 				t.Fatalf("review gate event = %+v, want remediation target with preserved verdict artifact", event)
+			}
+			verdictBytes, err := rd.ArtifactBytes(*event.Ref)
+			if err != nil {
+				t.Fatalf("read preserved verdict artifact: %v", err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(verdictBytes, &verdict); err != nil {
+				t.Fatalf("decode preserved verdict artifact: %v", err)
+			}
+			if verdict.Decision != apiv1.VerdictFail || !strings.Contains(verdict.Rationale, "no committed changes") {
+				t.Fatalf("preserved verdict = %+v, want synthesized fail evidence", verdict)
 			}
 			return
 		}
