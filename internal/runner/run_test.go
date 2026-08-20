@@ -8133,8 +8133,8 @@ func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T
 	if !environmentalFailure || !infrastructureAnnotation {
 		t.Fatalf("environmental failure evidence missing: failure=%v infrastructure=%v", environmentalFailure, infrastructureAnnotation)
 	}
-	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 3 {
-		t.Fatalf("review escalation repassAttempt = %v, want 3 (unchanged result must not consume another implementation repass)", escalation.Runner["repassAttempt"])
+	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 2 {
+		t.Fatalf("review escalation repassAttempt = %v, want 2 (infrastructure retries must not consume implementation repasses)", escalation.Runner["repassAttempt"])
 	}
 }
 
