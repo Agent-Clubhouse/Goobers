@@ -47,6 +47,11 @@ const fallbackToDefaultOption = "fallback-to-default"
 
 const copilotModelDiscoveryTimeout = 30 * time.Second
 
+// errModelDiscoveryDeferred reports that DeferDiscovery skipped a cold-cache
+// model discovery. It flows into resolveConfig's existing discovery-error
+// branch, so the model is accepted unverified with a warning (#3336).
+var errModelDiscoveryDeferred = errors.New("model discovery deferred at daemon startup (#3336); the harness verifies the model at run time")
+
 const copilotModelPolicyDisabled = "disabled"
 
 // Shipped goobers declare harness-neutral tool groups. Copilot filters the
@@ -182,9 +187,29 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+	// DeferDiscovery makes a cold-cache ResolveConfig skip model discovery
+	// entirely instead of spawning the Copilot CLI and waiting on its JSON-RPC
+	// handshake. The daemon sets this for startup admission (#3336): in an
+	// environment where the CLI cannot complete its handshake, the spawned
+	// child can exhaust the pod's memory cgroup before the discovery timeout
+	// fires, and the OOM killer takes the daemon down with it — a boot loop no
+	// in-process deadline can prevent. Deferred resolution takes the existing
+	// accept-unverified path (a warning, not an error); a warm cache is still
+	// served. Interactive callers (validate, status) keep discovery on, where
+	// verifying model names against the live CLI is the point.
+	DeferDiscovery bool
 
 	modelsMu        sync.Mutex
 	availableModels map[string]copilotModelCapabilities
+	// modelsErr negative-caches a failed discovery for this adapter's lifetime.
+	// Admission resolves every goober through one adapter, and without this a
+	// single unreachable CLI is re-spawned once PER GOOBER: measured in #3336
+	// as a fresh ~295MB CLI process every ~2.5s (the SDK's ForceStop kills the
+	// node wrapper but not the copilot binary it spawned, so each attempt's
+	// grandchild survives) — 14 goobers were enough to OOM a 4Gi pod before
+	// the single-attempt timeout ever fired. One spawn per adapter instance;
+	// registries are rebuilt per admission pass, so a reload retries cleanly.
+	modelsErr error
 }
 
 // Name returns the adapter's registry name.
@@ -282,6 +307,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.availableModels != nil {
 		return c.availableModels, nil
 	}
+	if c.DeferDiscovery {
+		return nil, errModelDiscoveryDeferred
+	}
+	if c.modelsErr != nil {
+		return nil, c.modelsErr
+	}
 	command := resolveStdioHarnessCommand(c.Command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
@@ -294,10 +325,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	defer cancel()
 	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
 	if err != nil {
+		c.modelsErr = err
 		return nil, err
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+		c.modelsErr = fmt.Errorf("authenticated Copilot runtime returned no available models")
+		return nil, c.modelsErr
 	}
 	available := make(map[string]copilotModelCapabilities, len(models)+1)
 	autoDisabled := false

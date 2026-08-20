@@ -269,3 +269,60 @@ func TestCombineFeatureNotesRequiresFeatureDelta(t *testing.T) {
 		t.Fatal("combineFeatureNotes should reject notes without a feature delta")
 	}
 }
+
+// TestBoundReleaseNotes covers the #3341 class: GitHub rejects release bodies
+// over 125k characters at PUBLISH time (v0.2.0's publish died there after the
+// #3292 backfill grew the delta tables). The bound must trim delta table rows
+// at build time, leave short notes byte-identical, keep every heading the
+// smoke checks grep for, and error loudly when the overflow is untrimmable.
+func TestBoundReleaseNotes(t *testing.T) {
+	row := "| `workflow.spec.example.field` | 2.0 | ga | supported | dev |\n"
+	head := "# v9.9.9\n\ncurated prose\n\n## DSL feature-support delta\n\n| Feature | DSL version | Feature support | Version support | Since |\n| --- | --- | --- | --- | --- |\n"
+	tail := "\n## DSL support-matrix delta\n\n| Version | Change |\n| --- | --- |\n| 2.0 | supported |\n\n## Support policy for external consumers\n\npolicy text\n"
+
+	t.Run("short notes pass unchanged", func(t *testing.T) {
+		notes := head + row + tail
+		got, err := boundReleaseNotes(notes)
+		if err != nil {
+			t.Fatalf("boundReleaseNotes = %v, want nil", err)
+		}
+		if got != notes {
+			t.Fatal("short notes must be byte-identical")
+		}
+	})
+
+	t.Run("oversized notes trim delta rows and keep headings", func(t *testing.T) {
+		var sb strings.Builder
+		sb.WriteString(head)
+		for sb.Len() < maxReleaseNotesLen+40000 {
+			sb.WriteString(row)
+		}
+		sb.WriteString(tail)
+		got, err := boundReleaseNotes(sb.String())
+		if err != nil {
+			t.Fatalf("boundReleaseNotes = %v, want nil", err)
+		}
+		if len(got) > maxReleaseNotesLen {
+			t.Fatalf("len = %d, want <= %d", len(got), maxReleaseNotesLen)
+		}
+		for _, heading := range []string{"## DSL feature-support delta", "## DSL support-matrix delta", "## Support policy for external consumers"} {
+			if !strings.Contains(got, heading) {
+				t.Fatalf("heading %q lost in trim", heading)
+			}
+		}
+		if !strings.Contains(got, "rows omitted to fit GitHub's release-body limit") {
+			t.Fatal("omission line missing")
+		}
+		if !strings.Contains(got, "docs/feature-matrix.md") {
+			t.Fatal("omission line must point at the complete matrix")
+		}
+	})
+
+	t.Run("untrimmable overflow errors at build time", func(t *testing.T) {
+		notes := "# v9.9.9\n\n" + strings.Repeat("authored prose overflow ", 8000) +
+			"\n\n## DSL feature-support delta\n\n(no table)\n"
+		if _, err := boundReleaseNotes(notes); err == nil {
+			t.Fatal("want an error when the overflow is outside trimmable delta tables")
+		}
+	})
+}
