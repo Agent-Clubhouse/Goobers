@@ -2130,6 +2130,50 @@ func TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential(t *testing.T) 
 	}
 }
 
+// TestCopilotAdapterPreflightFailsOnModelCredentialError is the operator-facing
+// half of the #3341 fix: a misconfigured agent:model tokenRef (bad path,
+// unreadable file, empty secret) must fail Preflight with an actionable error,
+// not be swallowed and silently fall back to the CLI's own cached login — the
+// exact wrong-account confusion ModelCredential exists to prevent. Before this,
+// the resolution error was discarded and the probe proceeded as if
+// ModelCredential were unset.
+func TestCopilotAdapterPreflightFailsOnModelCredentialError(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	authProbeRan := false
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeRan = true
+				}
+			}
+			return nil
+		},
+	}
+	credentialErr := errors.New("credentials: token ref \"agent-model\": read \"/nonexistent/copilot.pat\": no such file or directory")
+	adapter := &CopilotAdapter{
+		Command:       []string{"echo"},
+		AuthCheckArgs: []string{"auth", "status"},
+		Runner:        runner,
+		ModelCredential: func(context.Context) (string, error) {
+			return "", credentialErr
+		},
+	}
+	_, err := adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected Preflight to fail closed when ModelCredential resolution errors")
+	}
+	if !errors.Is(err, credentialErr) {
+		t.Fatalf("err = %v, want it to wrap the ModelCredential resolution error", err)
+	}
+	if authProbeRan {
+		t.Fatal("the auth probe should never run with an unresolved agent:model credential")
+	}
+}
+
 // TestCopilotAdapterPreflightFallsBackToGHToken confirms the ambient-token probe
 // also honors GH_TOKEN/GITHUB_TOKEN, the conventional fallbacks the Copilot CLI
 // accepts, when COPILOT_GITHUB_TOKEN itself is unset.
