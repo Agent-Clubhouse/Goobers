@@ -270,3 +270,16 @@ func TestResetFailureCommentResetsExistingMarker(t *testing.T) {
 		t.Fatalf("comments = %d, want one rolling comment", len(poster.comments))
 	}
 }
+
+func TestResetFailureCommentNoopsWithoutMarker(t *testing.T) {
+	poster := &fakeCommenter{}
+	if err := ResetFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", "run-ok", "http://run-ok"); err != nil {
+		t.Fatal(err)
+	}
+	if poster.calls != 0 {
+		t.Fatalf("calls = %d, want 0 when no failure marker exists", poster.calls)
+	}
+	if len(poster.comments) != 0 {
+		t.Fatalf("comments = %d, want no comments", len(poster.comments))
+	}
+}
