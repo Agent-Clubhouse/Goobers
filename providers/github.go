@@ -44,10 +44,27 @@ type GitHubProvider struct {
 	// maxRateLimitWait bounds the total time one request spends sleeping on
 	// rate-limit backoff before giving up with a typed RateLimitError (#614).
 	maxRateLimitWait time.Duration
+	// configuredLogin, when set, is the provider identity's GitHub login,
+	// declared in config rather than fetched. GitHub App installation tokens
+	// cannot call GET /user ("Resource not accessible by integration"), so a
+	// provider authenticating as an App CANNOT self-report its login — which
+	// broke every trusted-comment check (claim markers, verdicts, handoffs)
+	// the first time claiming ran under App auth (#3343). Bot logins are the
+	// App slug plus "[bot]".
+	configuredLogin string
 	// now and sleep are injectable for deterministic rate-limit tests.
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
 	jitter func(time.Duration) time.Duration
+}
+
+// WithConfiguredLogin declares the login AuthenticatedLogin returns instead
+// of calling GET /user — required when the credential is a GitHub App
+// installation token, which cannot self-report (#3343).
+func WithConfiguredLogin(login string) func(*GitHubProvider) {
+	return func(p *GitHubProvider) {
+		p.configuredLogin = strings.TrimSpace(login)
+	}
 }
 
 // NewGitHubProvider constructs a GitHub provider with optional overrides.

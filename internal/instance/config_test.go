@@ -2956,3 +2956,27 @@ func TestValidateRejectsMalformedDefaultStageTimeout(t *testing.T) {
 		t.Fatalf("Validate() error = %q, want it to name runner.defaultStageTimeout", err)
 	}
 }
+
+// TestRepoAuthBotLogin (#3343): the declared App slug derives the "[bot]"
+// login trusted-comment checks compare against; non-App kinds and absent
+// slugs return empty so the GET /user path stays in place for PATs.
+func TestRepoAuthBotLogin(t *testing.T) {
+	cases := []struct {
+		name string
+		auth *RepoAuthConfig
+		want string
+	}{
+		{"app with slug", &RepoAuthConfig{Kind: GitHubAuthApp, Slug: "goobersbot"}, "goobersbot[bot]"},
+		{"app with padded slug", &RepoAuthConfig{Kind: GitHubAuthApp, Slug: " goobersbot "}, "goobersbot[bot]"},
+		{"app without slug", &RepoAuthConfig{Kind: GitHubAuthApp}, ""},
+		{"pat kind never derives", &RepoAuthConfig{Kind: GitHubAuthPAT, Slug: "goobersbot"}, ""},
+		{"nil auth", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.auth.BotLogin(); got != tc.want {
+				t.Fatalf("BotLogin() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

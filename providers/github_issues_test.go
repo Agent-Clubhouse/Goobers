@@ -1399,3 +1399,28 @@ func TestGitHubTokenSourceResolvesPerRequest(t *testing.T) {
 		t.Fatalf("expected token-source token in Authorization header, got %q", m.authSeen)
 	}
 }
+
+// TestAuthenticatedLoginConfigured (#3343): a configured login is returned
+// without any HTTP call — GitHub App installation tokens cannot call
+// GET /user, so the network path must not be touched when config declares
+// the identity. The failing client proves no request is attempted.
+func TestAuthenticatedLoginConfigured(t *testing.T) {
+	provider := NewGitHubProvider("installation-token",
+		WithConfiguredLogin("goobersbot[bot]"),
+		WithHTTPClient(failingHTTPClient{t: t}),
+	)
+	login, err := provider.AuthenticatedLogin(context.Background())
+	if err != nil {
+		t.Fatalf("AuthenticatedLogin = %v, want nil", err)
+	}
+	if login != "goobersbot[bot]" {
+		t.Fatalf("login = %q, want configured identity", login)
+	}
+}
+
+type failingHTTPClient struct{ t *testing.T }
+
+func (c failingHTTPClient) Do(*http.Request) (*http.Response, error) {
+	c.t.Fatal("configured login must not trigger any HTTP request")
+	return nil, nil
+}

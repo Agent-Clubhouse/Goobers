@@ -251,6 +251,10 @@
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`. The key only ever signs short-lived App JWTs in this process; stages receive minted installation tokens, never the key, so an env name that stages can see is refused.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
         }
       },
       "allOf": [
