@@ -127,7 +127,6 @@ export const goWireFixtures = {
           "labels": [
             "goobers:ready"
           ],
-          "query": "is:issue",
           "connectionRef": "github"
         },
         "gooberCount": 1,

@@ -28,6 +28,21 @@ const goobersIORuntimeSubdir = ".goobers/mcp-io"
 
 const copilotMCPRegistrationFileName = "copilot-mcp-config.json"
 
+func goobersIOReceiptFile() string {
+	return filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ReceiptFileName)
+}
+
+func collectGoobersIOReceipts(req RunRequest, selfBin string) ([]mcpio.InputInspectionReceipt, bool, error) {
+	if selfBin == "" || !autoGoobersIOEligible(req) {
+		return nil, false, nil
+	}
+	receipts, err := mcpio.ReadInputInspectionReceipts(req.Workspace, goobersIOReceiptFile())
+	if err != nil {
+		return nil, true, err
+	}
+	return receipts, true, nil
+}
+
 // goobersIOTools are goobers-io's own tool names, as the server itself
 // reports them in its tools/list response — used for the per-server "tools"
 // field inside the --additional-mcp-config registration. They carry no
@@ -109,6 +124,7 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 	cfg := mcpio.Config{
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
+		ReceiptFile:  goobersIOReceiptFile(),
 		Inputs:       req.ContextPaths,
 		RunID:        req.Envelope.RunID,
 		WorkflowID:   req.Envelope.WorkflowID,
@@ -119,6 +135,9 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
 	if err != nil {
 		return "", fmt.Errorf("write goobers-io config: %w", err)
+	}
+	if err := mcpio.ResetInputInspectionReceipts(req.Workspace, cfg.ReceiptFile); err != nil {
+		return "", fmt.Errorf("reset goobers-io input inspection receipts: %w", err)
 	}
 
 	server := struct {

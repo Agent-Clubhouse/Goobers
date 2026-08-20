@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -3002,6 +3003,293 @@ func TestValidateDependencyNotMetAllowsPointerSpecificInputReadFailure(t *testin
 	if validationErr != nil {
 		t.Fatalf("validateDependencyNotMet = %+v, want nil for a genuine pointer-specific read failure", validationErr)
 	}
+}
+
+func TestValidateRemediationEvidenceRejectsUninspectedUnchangedSuccess(t *testing.T) {
+	jr := newRunnerTestJournal(t, "run-remediation-evidence-validation")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+
+	transcript := recordTranscriptSpanPointer(t, jr, "implement", []map[string]any{
+		{"role": "assistant", "content": "The existing change appears complete."},
+	})
+	validationErr := (&Runner{}).validateRemediationEvidence(jr, "implement", apiv1.ResultEnvelope{
+		Status:     apiv1.ResultSuccess,
+		Summary:    "no changes needed",
+		Transcript: transcript,
+	}, []apiv1.ContextPointer{
+		{Name: "local-ci.artifact[0]"},
+		{Name: "review.verdict"},
+	})
+	if validationErr == nil {
+		t.Fatal("validateRemediationEvidence returned nil, want stable rejection")
+	}
+	if validationErr.Code != "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+		t.Fatalf("validation code = %q, want REMEDIATION_EVIDENCE_NOT_INSPECTED", validationErr.Code)
+	}
+	for _, pointer := range []string{"local-ci.artifact[0]", "review.verdict"} {
+		if !strings.Contains(validationErr.Message, pointer) {
+			t.Fatalf("validation message = %q, want unread pointer %q", validationErr.Message, pointer)
+		}
+	}
+	if !strings.Contains(validationErr.Message, "accepting unchanged remediation") {
+		t.Fatalf("validation message = %q, want unchanged-remediation classification", validationErr.Message)
+	}
+}
+
+func TestValidateRemediationEvidenceUsesTrustedReceiptsNotTranscript(t *testing.T) {
+	t.Run("receipt annotation passes without transcript tool events", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-receipt-validation")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type:  journal.EventRunnerAnnotation,
+			Stage: "remediation-receipt-validation:implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{42}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Outputs: map[string]interface{}{"remediationClassification": "environmental"},
+			Summary: "the failure is caused by an unavailable external dependency",
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}}); validationErr != nil {
+			t.Fatalf("validateRemediationEvidence = %+v, want trusted receipts to pass", validationErr)
+		}
+	})
+
+	t.Run("transcript-only tool claims are rejected", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-transcript-rejected")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		transcript := recordTranscriptSpanPointer(t, run, "implement", []map[string]any{
+			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-list_inputs", "arguments": map[string]any{}}},
+			{"role": "assistant", "tool_call": map[string]any{"name": "goobers-io-read_input", "arguments": map[string]any{"name": "local-ci.artifact[0]"}}},
+		})
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess, Transcript: transcript,
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}})
+		if validationErr == nil || validationErr.Code != "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+			t.Fatalf("validateRemediationEvidence = %+v, want transcript-only evidence rejection", validationErr)
+		}
+	})
+
+	t.Run("inspected unchanged success requires classification", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-classification-required")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{1}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		}, []apiv1.ContextPointer{{Name: "local-ci.artifact[0]"}})
+		if validationErr == nil || !strings.Contains(validationErr.Message, "remediationClassification") {
+			t.Fatalf("validateRemediationEvidence = %+v, want classification rejection", validationErr)
+		}
+	})
+
+	t.Run("actionable evidence rejects unrelated receipt", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "remediation-actionable-evidence")
+		defer func() { _ = run.Close() }()
+		if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "remediation-evidence-required",
+				"actionableEvidence": []actionableEvidence{{
+					Pointer:    "local-ci.artifact[0]",
+					Ranges:     []receiptLineRange{{Start: 42, End: 42}},
+					Signatures: []string{"unit widget panic"},
+				}},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Stage: "implement",
+			Runner: map[string]any{
+				"kind": "goobers-io-input-inspection-receipts",
+				"receipts": []mcpio.InputInspectionReceipt{
+					{Tool: "list_inputs", Success: true},
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", MatchLines: []int{7}, Success: true},
+				},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		}, []apiv1.ContextPointer{{
+			Name:     "local-ci.artifact[0]",
+			Artifact: &apiv1.ArtifactPointer{Digest: "sha256:evidence"},
+		}})
+		if validationErr == nil {
+			t.Fatal("validateRemediationEvidence passed unrelated actionable receipt")
+		}
+	})
+
+	t.Run("receipts must match the exact input and relevant range", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			receipts []mcpio.InputInspectionReceipt
+			wantPass bool
+		}{
+			{
+				name: "wrong digest",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:other", Success: true, StartLine: 1, EndLine: 10, TotalLines: 10},
+				},
+			},
+			{
+				name: "unrelated prefix",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 1, EndLine: 2, TotalLines: 10},
+				},
+			},
+			{
+				name: "complete paginated read",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 1, EndLine: 5, TotalLines: 10},
+					{Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Success: true, StartLine: 6, EndLine: 10, TotalLines: 10},
+				},
+				wantPass: true,
+			},
+			{
+				name: "grep without match",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", Success: true},
+				},
+			},
+			{
+				name: "grep with match",
+				receipts: []mcpio.InputInspectionReceipt{
+					{Tool: "grep_input", Input: "local-ci.artifact[0]", InputDigest: "sha256:evidence", Pattern: "FAIL", MatchLines: []int{7}, Success: true},
+				},
+				wantPass: true,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				run := newRunnerTestJournal(t, "remediation-receipt-"+strings.ReplaceAll(tt.name, " ", "-"))
+				defer func() { _ = run.Close() }()
+				if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement"}); err != nil {
+					t.Fatal(err)
+				}
+				receipts := append([]mcpio.InputInspectionReceipt{{Tool: "list_inputs", Success: true}}, tt.receipts...)
+				if err := run.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Stage: "run:implement",
+					Runner: map[string]any{"kind": "goobers-io-input-inspection-receipts", "receipts": receipts},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				validationErr := (&Runner{}).validateRemediationEvidence(run, "implement", apiv1.ResultEnvelope{
+					Status:  apiv1.ResultSuccess,
+					Outputs: map[string]interface{}{"remediationClassification": "flaky"},
+					Summary: "the failure is a transient flaky test with no source correction",
+				}, []apiv1.ContextPointer{{
+					Name: "local-ci.artifact[0]",
+					Artifact: &apiv1.ArtifactPointer{
+						Digest: "sha256:evidence",
+					},
+				}})
+				if tt.wantPass && validationErr != nil {
+					t.Fatalf("validateRemediationEvidence = %+v, want pass", validationErr)
+				}
+				if !tt.wantPass && validationErr == nil {
+					t.Fatal("validateRemediationEvidence passed irrelevant receipt")
+				}
+			})
+		}
+	})
+}
+
+func TestRemediationEvidenceRequirementRecordsTriggerAndPointers(t *testing.T) {
+	run := newRunnerTestJournal(t, "remediation-evidence-requirement")
+	defer func() { _ = run.Close() }()
+
+	cause := &gate.RepassCause{Kind: "stage-failure", Gate: "local-gate", Stage: "local-ci"}
+	required := []apiv1.ContextPointer{
+		{Name: "local-ci.artifact[0]"},
+		{Name: "local-ci.artifact[1]"},
+	}
+	if err := appendRemediationEvidenceRequirement(run, "implement", "review", cause, required); err != nil {
+		t.Fatalf("appendRemediationEvidenceRequirement: %v", err)
+	}
+	rd, err := journal.OpenRead(run.Dir())
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 2 || events[1].Type != journal.EventRunnerAnnotation {
+		t.Fatalf("events = %+v, want one remediation requirement annotation", events)
+	}
+	annotation := events[1]
+	if annotation.Stage != "implement" || annotation.Gate != "review" ||
+		annotation.Runner["triggeringGate"] != "local-gate" ||
+		annotation.Runner["triggeringStage"] != "local-ci" {
+		t.Fatalf("annotation = %+v, want triggering stage and gate", annotation)
+	}
+	if !reflect.DeepEqual(annotation.Runner["requiredFailureEvidencePointers"], []interface{}{
+		"local-ci.artifact[0]", "local-ci.artifact[1]",
+	}) {
+		t.Fatalf("required pointers = %#v, want exact failure evidence pointers", annotation.Runner["requiredFailureEvidencePointers"])
+	}
+}
+
+func TestRemediationFailureEvidencePointersSelectTriggeringEvidence(t *testing.T) {
+	pointers := []apiv1.ContextPointer{
+		{Name: "query-backlog.artifact[0]"},
+		{Name: "local-ci.artifact[0]"},
+		{Name: "local-ci.artifact[1]"},
+		{Name: "review.verdict"},
+		{Name: "review.diff"},
+	}
+	t.Run("CI failure", func(t *testing.T) {
+		got := remediationFailureEvidencePointers(&gate.RepassCause{
+			Kind: "stage-failure", Stage: "local-ci",
+		}, pointers)
+		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{
+			"local-ci.artifact[0]", "local-ci.artifact[1]",
+		}) {
+			t.Fatalf("failure evidence = %v, want only local-ci artifacts", names)
+		}
+	})
+	t.Run("review", func(t *testing.T) {
+		got := remediationFailureEvidencePointers(&gate.RepassCause{
+			Kind: "reviewer", Gate: "review",
+		}, pointers)
+		if names := requiredContextPointerNames(got); !reflect.DeepEqual(names, []string{"review.verdict"}) {
+			t.Fatalf("failure evidence = %v, want only review verdict", names)
+		}
+	})
 }
 
 func TestValidateDependencyResultUsesOnlyInvocationPointers(t *testing.T) {
@@ -7517,6 +7805,194 @@ func environmentalCIMachine(t *testing.T) *workflow.Machine {
 		t.Fatalf("compile environmental CI machine: %v", err)
 	}
 	return machine
+}
+
+type remediationEvidenceDeterministic struct {
+	t       *testing.T
+	rec     ArtifactRecorder
+	ciCalls int
+}
+
+func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.t.Helper()
+	if !strings.HasSuffix(env.TaskID, ":local-ci") {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	d.ciCalls++
+	if d.ciCalls != 2 {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	ref, err := d.rec.RecordArtifact("failure.txt", []byte("internal/example.go:42: actionable failure\n"))
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "test_failure", Message: "actionable local CI failure"},
+		Artifacts: []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+		}},
+	}, nil
+}
+
+type remediationEvidenceGoober struct {
+	t           *testing.T
+	rec         ArtifactRecorder
+	implement   int
+	reviewCalls *int
+}
+
+func (g *remediationEvidenceGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.t.Helper()
+	if env.Goal == "review" {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	g.implement++
+	if g.implement == 1 {
+		if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("implementation\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(g.t, env.Workspace, "add", "-A")
+		runGit(g.t, env.Workspace, "commit", "-m", "implementation")
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}
+	if g.implement == 2 {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "no changes needed"}, nil
+	}
+	appender, ok := g.rec.(interface {
+		Append(journal.Event) error
+	})
+	if !ok {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("receipt journal appender unavailable")
+	}
+	var inputDigest string
+	for _, pointer := range env.ContextPointers {
+		if pointer.Name == "local-ci.artifact[0]" && pointer.Artifact != nil {
+			inputDigest = pointer.Artifact.Digest
+			break
+		}
+	}
+	if err := appender.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: env.TaskID,
+		Runner: map[string]any{
+			"kind": "goobers-io-input-inspection-receipts",
+			"receipts": []mcpio.InputInspectionReceipt{
+				{Tool: "list_inputs", Success: true},
+				{
+					Tool: "read_input", Input: "local-ci.artifact[0]", InputDigest: inputDigest,
+					Success: true, StartLine: 1, EndLine: 1, TotalLines: 1,
+				},
+			},
+		},
+	}); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: "failure is non-actionable",
+		Outputs: map[string]interface{}{"remediationClassification": "environmental"},
+	}, nil
+}
+
+func (g *remediationEvidenceGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	*g.reviewCalls++
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationEvidenceMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Start: "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Next: "local-ci"},
+			{Name: "remediate", Type: apiv1.TaskAgentic, Goober: "coder", Next: "review"},
+			{Name: "local-ci", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "local-gate"},
+		},
+		Gates: []apiv1.Gate{
+			{Name: "local-gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+				Branches: map[string]string{gate.OutcomePass: "review", gate.OutcomeFail: "remediate", gate.OutcomeInfra: "remediate"}},
+			{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+				Branches: map[string]string{"pass": "local-ci", "needs-changes": "implement", "fail": workflow.TargetAbort}},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-evidence-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation evidence machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerRejectsUninspectedRemediationBeforeReview(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	var reviewCalls int
+	var coder *remediationEvidenceGoober
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &remediationEvidenceDeterministic{t: t, rec: rec}, nil
+		},
+		NewAgentic: func(name string, rec ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				if coder == nil {
+					coder = &remediationEvidenceGoober{t: t, rec: rec, reviewCalls: &reviewCalls}
+				}
+				return coder, nil
+			}
+			return &remediationEvidenceGoober{t: t, rec: rec, reviewCalls: &reviewCalls}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: runsDir,
+		MaxSteps:     20,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-evidence", Machine: remediationEvidenceMachine(t),
+		Gaggle: "acme-web", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated after inspected unchanged remediation", result.Phase)
+	}
+	if reviewCalls != 1 {
+		t.Fatalf("review calls = %d, want 1 (evidence rejection and duplicate diff must not re-invoke review)", reviewCalls)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-remediation-evidence"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var rejected, escalated bool
+	remediationAttempts := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["code"] == "REMEDIATION_EVIDENCE_NOT_INSPECTED" {
+			rejected = true
+			if event.Runner["triggeringStage"] != "local-ci" || event.Runner["requiredFailureEvidencePointers"] == nil {
+				t.Fatalf("evidence annotation = %+v, want local-ci pointer provenance", event.Runner)
+			}
+		}
+		if event.Type == journal.EventStageStarted && event.Stage == "remediate" {
+			remediationAttempts++
+		}
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" && event.Escalated {
+			escalated = true
+		}
+	}
+	if !rejected || remediationAttempts < 2 || !escalated {
+		t.Fatalf("evidence routing = rejected:%v remediationAttempts:%d escalated:%v, want rejection, same-stage retry, and escalation", rejected, remediationAttempts, escalated)
+	}
 }
 
 func TestInfrastructureGateRetryIsCrashResumable(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -74,6 +76,121 @@ const StalledTerminalizationGrace = 30 * time.Second
 type heartbeatTicker interface {
 	Ticks() <-chan time.Time
 	Stop()
+}
+
+func remediationFailureEvidencePointers(cause *gate.RepassCause, pointers []apiv1.ContextPointer) []apiv1.ContextPointer {
+	if cause == nil {
+		return nil
+	}
+	var prefix string
+	switch cause.Kind {
+	case "reviewer":
+		if cause.Gate == "" {
+			return nil
+		}
+		prefix = cause.Gate + ".verdict"
+	case "stage-failure":
+		if cause.Stage == "" {
+			return nil
+		}
+		prefix = cause.Stage + ".artifact["
+	default:
+		return nil
+	}
+	var required []apiv1.ContextPointer
+	for _, pointer := range pointers {
+		if pointer.Name == prefix || (strings.HasSuffix(prefix, "[") && strings.HasPrefix(pointer.Name, prefix)) {
+			required = append(required, pointer)
+		}
+	}
+	return required
+}
+
+func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName string, cause *gate.RepassCause, pointers []apiv1.ContextPointer) error {
+	requirements := remediationEvidenceRequirements(jr, pointers)
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
+		Runner: map[string]any{
+			"kind":                            "remediation-evidence-required",
+			"triggeringGate":                  cause.Gate,
+			"triggeringStage":                 cause.Stage,
+			"requiredFailureEvidencePointers": requiredContextPointerNames(pointers),
+			"actionableEvidence":              requirements,
+		},
+	})
+}
+
+type actionableEvidence struct {
+	Pointer    string             `json:"pointer"`
+	Ranges     []receiptLineRange `json:"ranges,omitempty"`
+	Signatures []string           `json:"signatures,omitempty"`
+}
+
+func remediationEvidenceRequirements(jr executionJournal, pointers []apiv1.ContextPointer) []actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	requirements := make([]actionableEvidence, 0, len(pointers))
+	for _, pointer := range pointers {
+		requirement := actionableEvidence{Pointer: pointer.Name}
+		if pointer.Artifact == nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		data, err := rd.ArtifactBytes(journal.Ref{
+			Path:      pointer.Artifact.Path,
+			Digest:    pointer.Artifact.Digest,
+			Size:      pointer.Artifact.Size,
+			Integrity: pointer.Artifact.Integrity,
+		})
+		if err != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		var evidence struct {
+			Checks []struct {
+				Annotations []struct {
+					Path      string `json:"path"`
+					StartLine int    `json:"startLine"`
+					EndLine   int    `json:"endLine"`
+					Title     string `json:"title"`
+					Message   string `json:"message"`
+				} `json:"annotations"`
+			} `json:"checks"`
+		}
+		if json.Unmarshal(data, &evidence) != nil {
+			requirements = append(requirements, requirement)
+			continue
+		}
+		for _, check := range evidence.Checks {
+			for _, annotation := range check.Annotations {
+				signature := normalizeEvidenceSignature(annotation.Path, annotation.Title, annotation.Message)
+				if signature == "" {
+					continue
+				}
+				requirement.Signatures = append(requirement.Signatures, signature)
+				start := bytes.Index(data, []byte(annotation.Message))
+				if start >= 0 {
+					line := bytes.Count(data[:start], []byte{'\n'}) + 1
+					requirement.Ranges = append(requirement.Ranges, receiptLineRange{Start: line, End: line})
+				}
+			}
+		}
+		requirements = append(requirements, requirement)
+	}
+	return requirements
+}
+
+func normalizeEvidenceSignature(parts ...string) string {
+	words := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.Join(strings.Fields(strings.ToLower(part)), " ")
+		if part != "" {
+			words = append(words, part)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 type wallHeartbeatTicker struct {
@@ -1572,6 +1689,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	_, knownOutcome, _ := retryFailureClass(g, ws.lastResult)
 	var gr gate.Result
 	var err, removeErr error
+	var gatePointers []apiv1.ContextPointer
 	if g.Evaluator == apiv1.EvaluatorHuman {
 		if ws.humanDecision.Gate != g.Name {
 			return gate.Result{}, false, Result{}, true, fmt.Errorf("runner: human decision for gate %q reached gate %q", ws.humanDecision.Gate, g.Name)
@@ -1579,9 +1697,28 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		gr, err = ws.gateEval.EvaluateHuman(g, ws.humanDecision.Decision, ws.humanDecision.Actor)
 		ws.humanDecision = nil
 	} else {
-		gatePointers := ws.pointers
+		gatePointers = ws.pointers
 		if ws.parallel != nil {
 			gatePointers = ws.parallel.currentPointers(ws.parallelRootPointers)
+		}
+		if g.Evaluator == apiv1.EvaluatorAgentic {
+			if subjectTask, ok := ws.in.Machine.Task(ws.lastStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+				instructionAddendum == "" {
+				cause, causeErr := priorRepassCause(ws.jr, ws.lastStage)
+				if causeErr != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+						fmt.Errorf("runner: resolve remediation evidence cause for gate %q: %w", g.Name, causeErr))
+					return gr, false, terminal, true, failErr
+				}
+				required := remediationFailureEvidencePointers(cause, gatePointers)
+				if cause != nil && len(required) > 0 {
+					if appendErr := appendRemediationEvidenceRequirement(ws.jr, ws.lastStage, g.Name, cause, required); appendErr != nil {
+						terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+							fmt.Errorf("runner: journal remediation evidence requirement for %q: %w", ws.lastStage, appendErr))
+						return gr, false, terminal, true, failErr
+					}
+				}
+			}
 		}
 		gateSubject := ws.lastResult
 		if ws.fanIn != nil && g.Name == ws.fanIn.spec.Join {
@@ -1606,6 +1743,14 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		}
 	}
 	if err != nil {
+		var evidenceErr *remediationEvidenceInspectionError
+		if errors.As(err, &evidenceErr) {
+			ws.retryInstructionAddendum = "Your unchanged remediation result was rejected by the runner: " +
+				evidenceErr.info.Message +
+				". Inspect every required failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the failure is non-actionable if no source change is needed."
+			ws.state = ws.lastStage
+			return gr, true, Result{}, false, nil
+		}
 		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, err)
 		return gr, false, terminal, true, failErr
 	}
@@ -2206,6 +2351,17 @@ type transcriptEvent struct {
 	ToolCall *transcriptToolCall `json:"tool_call,omitempty"`
 }
 
+type remediationEvidenceInspectionError struct {
+	info *apiv1.ErrorInfo
+}
+
+func (e *remediationEvidenceInspectionError) Error() string {
+	if e == nil || e.info == nil {
+		return "remediation failure evidence was not inspected"
+	}
+	return e.info.Message
+}
+
 func normalizeInputToolName(name string) string {
 	return strings.TrimPrefix(name, "functions.")
 }
@@ -2351,6 +2507,242 @@ func (r *Runner) validateDependencyResult(jr executionJournal, stage string, res
 		result.Artifacts = nil
 	}
 	return result
+}
+
+type receiptLineRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return false, nil, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, nil, err
+	}
+	start := -1
+	for i, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == stage {
+			start = i
+		}
+	}
+	if start < 0 {
+		return false, nil, fmt.Errorf("stage %q has no invocation boundary", stage)
+	}
+	inspected := make(map[string]bool, len(required))
+	readRanges := make(map[string][]receiptLineRange, len(required))
+	readTotals := make(map[string]int, len(required))
+	invalidReadTotals := make(map[string]bool, len(required))
+	var collected, sawListInputs bool
+	for _, event := range events[start+1:] {
+		// Harness annotations use the invocation-qualified task ID rather than
+		// the bare workflow stage. The latest stage.started boundary above is
+		// the authoritative invocation scope.
+		if event.Type != journal.EventRunnerAnnotation ||
+			event.Stage != stage && !strings.HasSuffix(event.Stage, ":"+stage) ||
+			event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+			continue
+		}
+		collected = true
+		data, err := json.Marshal(event.Runner["receipts"])
+		if err != nil {
+			return true, nil, fmt.Errorf("encode receipt annotation: %w", err)
+		}
+		var receipts []mcpio.InputInspectionReceipt
+		if err := json.Unmarshal(data, &receipts); err != nil {
+			return true, nil, fmt.Errorf("decode receipt annotation: %w", err)
+		}
+		for _, receipt := range receipts {
+			if !receipt.Success {
+				continue
+			}
+			switch receipt.Tool {
+			case "list_inputs":
+				sawListInputs = true
+			case "read_input":
+				expectedDigest, ok := required[receipt.Input]
+				if !ok || expectedDigest != "" && receipt.InputDigest != expectedDigest {
+					continue
+				}
+				if receipt.TotalLines == 0 {
+					inspected[receipt.Input] = true
+					continue
+				}
+				if receipt.StartLine < 1 || receipt.EndLine < receipt.StartLine || receipt.EndLine > receipt.TotalLines {
+					continue
+				}
+				if total, exists := readTotals[receipt.Input]; exists && total != receipt.TotalLines {
+					invalidReadTotals[receipt.Input] = true
+					continue
+				}
+				readTotals[receipt.Input] = receipt.TotalLines
+				readRanges[receipt.Input] = append(readRanges[receipt.Input], receiptLineRange{
+					Start: receipt.StartLine,
+					End:   receipt.EndLine,
+				})
+			case "grep_input":
+				expectedDigest, ok := required[receipt.Input]
+				if ok && (expectedDigest == "" || receipt.InputDigest == expectedDigest) && len(receipt.MatchLines) > 0 &&
+					receiptMatchesActionableEvidence(receipt.Pattern, actionable[receipt.Input]) {
+					inspected[receipt.Input] = true
+				}
+			}
+		}
+	}
+	for input, ranges := range readRanges {
+		if inspected[input] || invalidReadTotals[input] {
+			continue
+		}
+		slices.SortFunc(ranges, func(a, b receiptLineRange) int {
+			return a.Start - b.Start
+		})
+		coveredThrough := 0
+		for _, lineRange := range ranges {
+			if lineRange.Start > coveredThrough+1 {
+				break
+			}
+			if lineRange.End > coveredThrough {
+				coveredThrough = lineRange.End
+			}
+		}
+		if coveredThrough >= readTotals[input] {
+			inspected[input] = true
+			continue
+		}
+		if requirement, ok := actionable[input]; ok && receiptRangesOverlap(readRanges[input], requirement.Ranges) {
+			inspected[input] = true
+		}
+	}
+	return collected && sawListInputs, inspected, nil
+}
+
+func receiptRangesOverlap(received, required []receiptLineRange) bool {
+	for _, got := range received {
+		for _, want := range required {
+			if got.Start <= want.End && want.Start <= got.End {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func receiptMatchesActionableEvidence(pattern string, requirement actionableEvidence) bool {
+	if len(requirement.Signatures) == 0 {
+		return true
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	for _, signature := range requirement.Signatures {
+		if re.MatchString(signature) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
+	requiredNames := requiredContextPointerNames(requiredPointers)
+	requiredSet := make(map[string]string, len(requiredPointers))
+	for _, pointer := range requiredPointers {
+		if pointer.Artifact != nil {
+			requiredSet[pointer.Name] = pointer.Artifact.Digest
+		} else {
+			requiredSet[pointer.Name] = ""
+		}
+	}
+	actionable := remediationEvidenceRequirementsFromJournal(jr, stage)
+	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet, actionable)
+	if err != nil {
+		return &apiv1.ErrorInfo{
+			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+			Message: dependencyValidationMessage(
+				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
+				result,
+			),
+		}
+	}
+	missing := make([]string, 0, len(requiredNames))
+	for _, name := range requiredNames {
+		if !inspected[name] {
+			missing = append(missing, name)
+		}
+	}
+	if sawListInputs && len(missing) == 0 {
+		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
+			return &apiv1.ErrorInfo{
+				Code:    "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+				Message: dependencyValidationMessage(classificationErr, result),
+			}
+		}
+		return nil
+	}
+	return &apiv1.ErrorInfo{
+		Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+		Message: dependencyValidationMessage(
+			strings.Replace(
+				pointerValidationErrorMessage(missing, sawListInputs),
+				"before DEPENDENCY_NOT_MET",
+				"before accepting unchanged remediation",
+				1,
+			),
+			result,
+		),
+	}
+}
+
+func remediationEvidenceRequirementsFromJournal(jr executionJournal, stage string) map[string]actionableEvidence {
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return nil
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return nil
+	}
+	requirements := make(map[string]actionableEvidence)
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "remediation-evidence-required" ||
+			event.Stage != stage {
+			continue
+		}
+		data, err := json.Marshal(event.Runner["actionableEvidence"])
+		if err != nil {
+			continue
+		}
+		var entries []actionableEvidence
+		if json.Unmarshal(data, &entries) == nil {
+			for _, entry := range entries {
+				requirements[entry.Pointer] = entry
+			}
+		}
+	}
+	return requirements
+}
+
+const remediationClassificationOutput = "remediationClassification"
+
+func validateUnchangedRemediationClassification(result apiv1.ResultEnvelope) string {
+	raw, ok := result.Outputs[remediationClassificationOutput]
+	classification, valid := raw.(string)
+	if !ok || !valid {
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	switch strings.ToLower(strings.TrimSpace(classification)) {
+	case "environmental", "flaky", "obsolete", "non-actionable":
+		// accepted classification
+	default:
+		return fmt.Sprintf("unchanged remediation must set outputs.%s to environmental, flaky, obsolete, or non-actionable", remediationClassificationOutput)
+	}
+	if strings.TrimSpace(result.Summary) == "" {
+		return "unchanged remediation must explain why the inspected failure is non-actionable in summary"
+	}
+	return ""
 }
 
 func requiredContextPointerNames(pointers []apiv1.ContextPointer) []string {
@@ -3904,6 +4296,36 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		err = fmt.Errorf("runner: resolve prior repass cause for gate %q: %w", g.Name, err)
 		span.Fail(err)
 		return gate.Result{}, err, nil
+	}
+	if instructionAddendum == "" && diffDigest != "" &&
+		gateEval.LastDiffDigest != nil && gateEval.LastDiffDigest[g.Name] == diffDigest {
+		if subjectTask, ok := in.Machine.Task(subjectStage); ok && subjectTask.Type == apiv1.TaskAgentic &&
+			gateEval.RepassCause != nil && len(upstream) > 0 {
+			requiredPointers := remediationFailureEvidencePointers(gateEval.RepassCause, upstream)
+			if len(requiredPointers) > 0 {
+				if validationErr := r.validateRemediationEvidence(jr, subjectStage, subjectResult, requiredPointers); validationErr != nil {
+					required := requiredContextPointerNames(requiredPointers)
+					if appendErr := jr.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
+						Runner: map[string]any{
+							"kind":                            "remediation-evidence-validation",
+							"code":                            validationErr.Code,
+							"triggeringGate":                  gateEval.RepassCause.Gate,
+							"triggeringStage":                 gateEval.RepassCause.Stage,
+							"requiredFailureEvidencePointers": required,
+							"message":                         validationErr.Message,
+						},
+					}); appendErr != nil {
+						err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
+						span.Fail(err)
+						return gate.Result{}, err, nil
+					}
+					err = &remediationEvidenceInspectionError{info: validationErr}
+					span.Fail(err)
+					return gate.Result{}, err, nil
+				}
+			}
+		}
 	}
 	if instructionAddendum != "" {
 		// An explicit operator rerun must invoke the reviewer it targets, even

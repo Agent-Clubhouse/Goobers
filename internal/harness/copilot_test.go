@@ -2126,6 +2126,82 @@ func TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable(t *testing.T) 
 	}
 }
 
+// TestCopilotResolveConfigDeferredDiscoveryNeverSpawns (#3336): with
+// DeferDiscovery set — the daemon's startup admission mode — a cold-cache
+// resolve must not invoke the lister at all (in production that invocation
+// spawns the Copilot CLI, and in a memory-capped pod the spawned children can
+// OOM the daemon before any timeout fires). Models are accepted unverified; a
+// cache warmed before deferral was enabled is still served.
+func TestCopilotResolveConfigDeferredDiscoveryNeverSpawns(t *testing.T) {
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:        []string{"copilot"},
+		ModelLister:    lister,
+		DeferDiscovery: true,
+	}
+
+	for _, model := range []string{"claude-fable-5", "gpt-5.4"} {
+		resolution, err := adapter.ResolveConfig(model, nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig(%q) deferred = %v, want nil", model, err)
+		}
+		if resolution.Model != model {
+			t.Fatalf("Model = %q, want %q preserved", resolution.Model, model)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings = %+v, want one %s warning", resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 0 {
+		t.Fatalf("lister.calls = %d, want 0 — deferred admission must never spawn the CLI", lister.calls)
+	}
+
+	// A warm cache is still authoritative under deferral: warm it with
+	// deferral off, flip deferral on, and an unknown model must still be
+	// REJECTED from the cache rather than accepted unverified.
+	warm := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: lister}
+	if _, err := warm.ResolveConfig("claude-fable-5", nil); err != nil {
+		t.Fatalf("warm-up ResolveConfig = %v, want nil", err)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls after warm-up = %d, want 1", lister.calls)
+	}
+	warm.DeferDiscovery = true
+	if _, err := warm.ResolveConfig("no-such-model", nil); err == nil {
+		t.Fatal("ResolveConfig(no-such-model) with a warm cache = nil, want unknown-model error")
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want 1 — the warm cache must serve without a new spawn", lister.calls)
+	}
+}
+
+// TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober (#3336): one
+// adapter resolves every goober in an admission pass, and a failing discovery
+// used to be re-attempted for each — measured in-cluster as a fresh ~295MB CLI
+// process per goober, OOMing the pod. A failed discovery is negative-cached
+// for the adapter's lifetime: exactly one lister call no matter how many
+// goobers resolve through it.
+func TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober(t *testing.T) {
+	lister := &fakeCopilotModelLister{err: errors.New("protocol handshake never completed")}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+	}
+
+	for i := 0; i < 14; i++ {
+		resolution, err := adapter.ResolveConfig("claude-fable-5", nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig #%d = %v, want nil (unverified acceptance)", i, err)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings #%d = %+v, want one %s warning", i, resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want exactly 1 — a failed discovery must not be retried per goober", lister.calls)
+	}
+}
+
 // TestCopilotResolveConfigUnverifiedStillRejectsMalformedOptions guards the
 // other half: skipping the model check must not skip option validation. Only
 // the capability-dependent checks are unknowable when discovery fails; option

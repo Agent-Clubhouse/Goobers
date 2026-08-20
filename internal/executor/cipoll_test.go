@@ -111,6 +111,9 @@ func TestCIPollExecutor_Pass(t *testing.T) {
 	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
 		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
 	}
+	if result.Outputs[OutputPRNumber] != "42" {
+		t.Fatalf("outputs[%s] = %v, want 42", OutputPRNumber, result.Outputs[OutputPRNumber])
+	}
 	if poller.calls != 0 {
 		t.Fatalf("expected exactly one poll call, got %d", poller.calls+1)
 	}
@@ -433,6 +436,9 @@ func TestCIPollExecutor_TimesOutIsAFailure(t *testing.T) {
 	// it to escalation instead of the "fail" branch's implement repass.
 	if result.Outputs[OutputCIStatus] != CIStatusTimeout {
 		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], CIStatusTimeout)
+	}
+	if result.Outputs[OutputPRNumber] != "42" {
+		t.Fatalf("outputs[%s] = %v, want 42", OutputPRNumber, result.Outputs[OutputPRNumber])
 	}
 }
 
