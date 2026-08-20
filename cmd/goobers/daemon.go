@@ -140,6 +140,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	for _, apply := range setupOpts {
 		apply(&options)
 	}
+	reportStartupProgress(options.startupProgress, "loading instance and workflow configuration")
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return nil, err
@@ -169,6 +170,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 		err = nil
 	}
+	reportStartupProgress(options.startupProgress, fmt.Sprintf(
+		"loaded configuration (%d gaggle(s), %d workflow(s))",
+		len(set.Gaggles), len(set.Workflows),
+	))
 	defer func() {
 		if err != nil {
 			err = &configReportError{report: report, err: err}
@@ -280,6 +285,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}()
 	if cfg.TelemetryEnabled() {
+		reportStartupProgress(options.startupProgress, "opening telemetry state")
 		var otlpConfig instance.OTLPConfig
 		if cfg.Telemetry.OTLP != nil {
 			otlpConfig = *cfg.Telemetry.OTLP
@@ -328,6 +334,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	} else if discarded > 0 {
 		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
 	}
+	reportStartupProgress(options.startupProgress, "opening read-model state")
 	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
 	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
@@ -381,6 +388,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	var recoveredClaims []localscheduler.ClaimEntry
+	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
 	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
@@ -415,11 +423,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress)
 	if err != nil {
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
+	reportStartupProgress(options.startupProgress, "initializing retained legacy runtime")
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
 		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
@@ -467,6 +476,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Interventions:     interventionRegistry,
 		SecretStores:      secretStores,
 	}, nil
+}
+
+func reportStartupProgress(report func(string), message string) {
+	if report != nil {
+		report(message)
+	}
 }
 
 func journalLegacyRuntimeMigration(l instance.Layout, instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
@@ -577,6 +592,7 @@ func buildSchedulerDefinitions(
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
+	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
@@ -641,6 +657,7 @@ func buildSchedulerDefinitions(
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
+		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
@@ -648,10 +665,11 @@ func buildSchedulerDefinitions(
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
 		}
 		wtManagers[gaggle] = manager
 		runners[gaggle] = rn
+		reportStartupProgress(startupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
 	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, gaggleProjects, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
