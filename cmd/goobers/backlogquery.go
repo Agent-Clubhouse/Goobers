@@ -1386,6 +1386,17 @@ func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int 
 			pf(env.stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
+		// #233 parity for list/scan pumps: a stage that declares a resultFile is
+		// a scheduled pump feeding a downstream stage, not an interactive
+		// listing. An empty scan must then report ResultNoWork so the runner
+		// short-circuits to a clean PhaseCompleted before any downstream agentic
+		// stage runs — otherwise a scan-then-act workflow invokes its
+		// model-backed stage every tick only to rediscover there is nothing to
+		// act on, burning tokens on every empty poll. Interactive `backlog-query`
+		// (no declared resultFile) keeps its human-readable "no eligible items".
+		if providerInput("resultFile", "") != "" {
+			return writeNoWorkResult(env.stdout, env.stderr, "no eligible items")
+		}
 		pln(env.stdout, "no eligible items")
 		return 0
 	}
