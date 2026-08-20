@@ -2040,6 +2040,96 @@ func TestCopilotAdapterPreflightCarriesAmbientModelToken(t *testing.T) {
 	}
 }
 
+// TestCopilotAdapterPreflightUsesModelCredentialWhenNoAmbient is the #3341 fix:
+// a file/keychain/store-sourced agent:model tokenRef never reaches the ambient
+// process environment, so without ModelCredential the sign-in probe silently
+// fell back to whatever the copilot CLI has cached from its own prior
+// interactive login — a different, possibly wrong, account. With
+// ModelCredential configured and no ambient env var set, the probe must
+// resolve and carry that credential instead.
+func TestCopilotAdapterPreflightUsesModelCredentialWhenNoAmbient(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	var authProbeEnv []string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:       []string{"echo"},
+		AuthCheckArgs: []string{"auth", "status"},
+		Runner:        runner,
+		ModelCredential: func(context.Context) (string, error) {
+			return "pat-from-file-ref", nil
+		},
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass with a resolved ModelCredential: %v", err)
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should carry the resolved ModelCredential; got %v", authProbeEnv)
+	}
+}
+
+// TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential confirms an
+// explicit ambient env var still takes precedence over ModelCredential — the
+// more explicit, headless-friendly signal wins, matching the existing
+// ambient-token behavior this field is layered behind.
+func TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-from-ambient-env")
+	var authProbeEnv []string
+	credentialCalled := false
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			for _, a := range req.Command {
+				if a == "auth" {
+					authProbeEnv = append([]string(nil), req.Env...)
+				}
+			}
+			return nil
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:       []string{"echo"},
+		AuthCheckArgs: []string{"auth", "status"},
+		Runner:        runner,
+		ModelCredential: func(context.Context) (string, error) {
+			credentialCalled = true
+			return "pat-from-file-ref", nil
+		},
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should pass: %v", err)
+	}
+	if credentialCalled {
+		t.Fatal("ModelCredential should not be consulted when an ambient env var is already set")
+	}
+	found := false
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auth probe env should carry the ambient token, not ModelCredential's; got %v", authProbeEnv)
+	}
+}
+
 // TestCopilotAdapterPreflightFallsBackToGHToken confirms the ambient-token probe
 // also honors GH_TOKEN/GITHUB_TOKEN, the conventional fallbacks the Copilot CLI
 // accepts, when COPILOT_GITHUB_TOKEN itself is unset.

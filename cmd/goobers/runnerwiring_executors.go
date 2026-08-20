@@ -119,7 +119,7 @@ var copilotModelLister harness.CopilotModelLister
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
@@ -133,6 +133,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		DeferDiscovery:    deferModelDiscovery,
+		ModelCredential:   modelCredential,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)

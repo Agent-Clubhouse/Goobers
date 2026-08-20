@@ -366,9 +366,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 
 	if options.checkHarness {
+		harnessStores, err := secretstore.NewRegistry(cfg.SecretStores)
+		if err != nil {
+			pf(stdout, "INVALID secretStores:\n  %v\n", err)
+			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
+			return 1
+		}
+		modelCredential, err := agentModelCredentialResolver(cfg, harnessStores)
+		if err != nil {
+			pf(stdout, "INVALID credentials:\n  %v\n", err)
+			diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
+			return 1
+		}
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential, diagnostics) {
 			return 1
 		}
 	}
@@ -1177,6 +1189,7 @@ func checkHarnessesAtSources(
 	sourceFile func(apiv1.Goober) string,
 	envPassthrough []string,
 	harnessCommand map[string][]string,
+	modelCredential func(ctx context.Context) (string, error),
 	collectors ...*diagnosticCollector,
 ) bool {
 	seen := map[apiv1.Harness]bool{}
@@ -1192,7 +1205,7 @@ func checkHarnessesAtSources(
 			file = sourceFile(g)
 		}
 
-		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand, modelCredential)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -1233,8 +1246,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // presence (#238). Both look the harness up through here, so wiring the probe
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
-func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false)
+func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harness.Adapter, error) {
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false, modelCredential)
 	if err != nil {
 		return nil, err
 	}

@@ -431,7 +431,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override, nil)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
