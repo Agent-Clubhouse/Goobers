@@ -335,6 +335,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			cacheHit = true
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
+			if e.invalidNeedsHumanVerdict(g, *verdict) {
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit)
+			}
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
 			// so there is nothing for the reviewer to evaluate or a repass to
@@ -574,6 +577,14 @@ func validNeedsHumanRationale(rationale string) bool {
 	return question != "" && strings.HasSuffix(rationale, "?")
 }
 
+func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict) bool {
+	target, hasTarget := wf.BranchTarget(g, string(verdict.Decision))
+	return e.IsNeedsHumanTarget != nil &&
+		hasTarget &&
+		e.IsNeedsHumanTarget(target) &&
+		!validNeedsHumanRationale(verdict.Rationale)
+}
+
 func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
 	maxAttempts, backoff := retryBounds(policy)
 	for attempt := 1; ; attempt++ {
@@ -598,8 +609,7 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			}
 		} else {
 			*verdict = current
-			target, hasTarget := wf.BranchTarget(g, string(current.Decision))
-			if e.IsNeedsHumanTarget == nil || !hasTarget || !e.IsNeedsHumanTarget(target) || validNeedsHumanRationale(current.Rationale) {
+			if !e.invalidNeedsHumanVerdict(g, current) {
 				return false, nil
 			}
 			invalidErr := fmt.Errorf("%s", needsHumanRationaleFeedback)
