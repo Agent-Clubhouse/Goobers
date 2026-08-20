@@ -83,6 +83,7 @@ func TestUpPreflightRejectsElectLanderDefectBeforeSchedulerState(t *testing.T) {
 }
 
 func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "up-preflight-fixture-token")
 	root := initDeterministicDemo(t)
 	installInvalidElectLanderWorkflow(t, root)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -99,6 +100,17 @@ func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("up stderr missing %q: %q", want, stderr.String())
+		}
+	}
+	for _, want := range []string{
+		"startup: validating instance configuration",
+		"startup: instance configuration valid",
+		"startup: loading instance and workflow configuration",
+		`startup: initializing gaggle "example" runtime`,
+		"startup: scheduler initialized",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("up stdout missing %q: %q", want, stdout.String())
 		}
 	}
 }

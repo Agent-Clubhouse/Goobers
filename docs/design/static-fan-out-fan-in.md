@@ -1,6 +1,6 @@
 # Design: Static fan-out/fan-in — bounded parallel branches and a real join
 
-> Status: **Implemented — GA in #1939** · Area prefix: `FO` · Milestone:
+> Status: **implemented — GA in #1939** · Area prefix: `FO` · Milestone:
 > **Versioning & Releases — DSL compatibility + tagged builds** (#12)
 > Resolves the **static half** of #1310 — the explicit parallel failure policy and the
 > bounded `parallel` construct, spec'd against the conformance surface. #1310's
@@ -10,7 +10,7 @@
 > [`gaggle.md`](../requirements/gaggle.md) (`GAG-010`),
 > [`workflow.md`](../requirements/workflow.md) (`WF-002`, `WF-015`, `WF-020`, `WF-051`)
 > Architecture: [`ARCHITECTURE.md`](../ARCHITECTURE.md) §3.2, §3.3, §4
-> Companion: [`dsl-version-lifecycle.md`](./dsl-version-lifecycle.md) (`DVL` — the
+> Companion: [`dsl-version-lifecycle.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dsl-version-lifecycle.md) (`DVL` — the
 > version treatment in §8; note that doc still reads "not implemented", but the
 > machinery has since shipped — see §3 row 8)
 > References: `internal/workflow/internal/model/machine.go`,
@@ -565,7 +565,7 @@ parallel, unknown branch, unknown output key where statically knowable) fail com
 ## 8. DSL version treatment
 
 Two independent axes govern this, and they compose exactly as
-[`dsl-version-lifecycle.md`](./dsl-version-lifecycle.md) §2 describes.
+[`dsl-version-lifecycle.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dsl-version-lifecycle.md) §2 describes.
 
 **Axis 1 — interpreter version.** New constructs land in the **copy-forward
 interpreter** (`internal/workflow/v_next/`, DSL `2.0`), never by editing `v_current`

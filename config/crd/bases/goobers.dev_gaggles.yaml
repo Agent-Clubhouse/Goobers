@@ -150,7 +150,7 @@ spec:
                     type: string
                   labels:
                     description: |-
-                      Query/labels narrow which items this gaggle considers work. Routing of an
+                      Labels narrow which items this gaggle considers work. Routing of an
                       item to a specific workflow is handled by workflow selectors (SCH-010).
                     items:
                       type: string
@@ -167,8 +167,6 @@ spec:
                     - github
                     - ado
                     - gitea
-                    type: string
-                  query:
                     type: string
                 required:
                 - project
@@ -222,6 +220,14 @@ spec:
                 required:
                 - namespace
                 type: object
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where workflows in
+                  this gaggle mirror their durable journal outbox. A workflow or task may
+                  override it. The local runner appends the run id and journal outbox layout
+                  beneath this root; the journal remains the source of truth.
+                minLength: 1
+                type: string
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
@@ -320,8 +326,9 @@ spec:
                   this gaggle. A workflow may override either value again.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer
@@ -341,14 +348,14 @@ spec:
               sandbox:
                 description: |-
                   Sandbox overrides the instance-wide isolation posture for this gaggle's
-                  agentic stages (#1305). Agentic stages are sandboxed by default. A gaggle
-                  may strengthen an operator's trusted-local opt-out to enforced, but may
-                  not weaken the instance posture.
+                  agentic stages (#1305). Effective posture is gaggle override, else the
+                  instance.yaml sandbox block, else disabled — sandboxing is strictly
+                  opt-in, so a gaggle that omits this behaves exactly as before.
                 properties:
                   agentic:
                     description: |-
                       Agentic is the posture for agentic stages: "disabled" or "enforced".
-                      Empty inherits the instance-wide posture or the enforced default.
+                      Empty inherits the instance-wide posture.
                     enum:
                     - disabled
                     - enforced

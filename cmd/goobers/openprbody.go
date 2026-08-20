@@ -278,7 +278,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 		}
 		fmt.Fprintf(&b, "%s: `%s`", label, html.EscapeString(digest))
 	}
-	if pin := formatIssueSpecPin(issueID, issueUpdatedAt); pin != "" {
+	if pin := formatIssueSpecPin(issueID, issueUpdatedAt, issueTitle, issueBody); pin != "" {
 		b.WriteString("\n")
 		b.WriteString(pin)
 	}

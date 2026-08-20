@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -29,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "7a1f2732053c6b29bd2955a03718786e911989f2851d4c40dafc684f2a741be1"
+	recordedAuthoringPathSHA256 = "9a35a19f30828b23c176eaf944fddcd1a3a6f9194d6b4b53754a49cc0a411b18"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
@@ -749,7 +750,14 @@ func buildSelectedBinary(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "goobers")
+	name := "goobers"
+	if runtime.GOOS == "windows" {
+		// go build -o writes exactly this name; unlike a bare `go build`, it
+		// never appends the platform exe suffix on its own, and exec.Command
+		// below can't resolve an extensionless path on Windows.
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
 	command := exec.Command("go", "build", "-o", path, "./cmd/goobers")
 	command.Dir = repositoryRoot
 	if output, err := command.CombinedOutput(); err != nil {
@@ -796,16 +804,55 @@ func (b *selectedBinary) run(t *testing.T, args ...string) []byte {
 	return nil
 }
 
-func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
+// installTestCopilot places a fake "copilot" binary on PATH that re-enters
+// this same test binary (see TestMain). On Windows a hard link to the
+// running test binary shares its inode, and Windows refuses to delete a
+// file that is still mapped as an executing image — which breaks
+// t.TempDir's cleanup even after the copilot subprocess itself has exited.
+// Copying instead avoids sharing that inode.
+func installTestCopilot(t *testing.T, destination string) {
 	t.Helper()
 	testExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperDir := t.TempDir()
-	if err := os.Link(testExecutable, filepath.Join(helperDir, "copilot")); err != nil {
+	if runtime.GOOS != "windows" {
+		if err := os.Link(testExecutable, destination); err != nil {
+			t.Fatalf("install test Copilot model server: %v", err)
+		}
+		return
+	}
+	input, err := os.Open(testExecutable)
+	if err != nil {
 		t.Fatalf("install test Copilot model server: %v", err)
 	}
+	defer func() {
+		if err := input.Close(); err != nil {
+			t.Errorf("close test executable: %v", err)
+		}
+	}()
+	info, err := input.Stat()
+	if err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+	defer func() {
+		if err := output.Close(); err != nil {
+			t.Errorf("close installed copilot binary: %v", err)
+		}
+	}()
+	if _, err := io.Copy(output, input); err != nil {
+		t.Fatalf("install test Copilot model server: %v", err)
+	}
+}
+
+func (b *selectedBinary) validate(t *testing.T, root string, existing, wantOK bool) {
+	t.Helper()
+	helperDir := t.TempDir()
+	installTestCopilot(t, filepath.Join(helperDir, "copilot"))
 	t.Setenv("PATH", helperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	args := []string{"validate", "--json", "--source-tree", root}
@@ -928,9 +975,13 @@ func loadPackagedAuthoringPath(t *testing.T, root string) ([]string, string) {
 		".goobers/agent-toolkit/skills/goobers-dsl-author/SKILL.md",
 		".goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-authoring.md",
 	}
+	digestPaths := append(append([]string(nil), paths...),
+		".goobers/agent-toolkit/skills/goobers-dsl-author/references/dsl-reference.md",
+		".goobers/agent-toolkit/skills/goobers-dsl-author/references/terminology.md",
+	)
 	hash := sha256.New()
 	bodies := map[string]string{}
-	for _, path := range paths {
+	for _, path := range digestPaths {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil {
 			t.Fatalf("read installed authoring path %s: %v", path, err)
@@ -994,19 +1045,37 @@ func expandCapture(
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The placeholders are substituted into an already-JSON-encoded string, so
+	// each replacement must itself be JSON-string-escaped first. Raw
+	// substitution works by coincidence on POSIX (forward slashes need no
+	// escaping) but corrupts the JSON on Windows, where workspace/binary/target
+	// paths contain backslashes (e.g. "C:\Users\..." decodes "\U" as an
+	// invalid unicode escape).
 	text := strings.NewReplacer(
-		"{workspace}", workspace,
-		"{workspaceCommit}", workspaceCommit,
-		"{binaryPath}", binary.path,
-		"{targetRoot}", target.Root,
-		"{targetCommit}", target.Commit,
-		"{home}", os.Getenv("HOME"),
+		"{workspace}", jsonStringBody(t, workspace),
+		"{workspaceCommit}", jsonStringBody(t, workspaceCommit),
+		"{binaryPath}", jsonStringBody(t, binary.path),
+		"{targetRoot}", jsonStringBody(t, target.Root),
+		"{targetCommit}", jsonStringBody(t, target.Commit),
+		"{home}", jsonStringBody(t, os.Getenv("HOME")),
 	).Replace(string(data))
 	var expanded invocationCapture
 	if err := json.Unmarshal([]byte(text), &expanded); err != nil {
 		t.Fatalf("expand captured invocation: %v", err)
 	}
 	return expanded
+}
+
+// jsonStringBody returns s encoded as a JSON string, with the surrounding
+// quotes stripped, so it can be substituted directly into the body of an
+// existing JSON string literal.
+func jsonStringBody(t *testing.T, s string) string {
+	t.Helper()
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded[1 : len(encoded)-1])
 }
 
 func capturedPrompt(events []json.RawMessage) string {

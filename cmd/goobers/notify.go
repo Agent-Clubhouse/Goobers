@@ -79,6 +79,7 @@ type schedulerSetupOptions struct {
 	desktopNotifications bool
 	notifyOverride       notifyFlag
 	notificationWarnings io.Writer
+	startupProgress      func(string)
 }
 
 type schedulerSetupOption func(*schedulerSetupOptions)
@@ -88,6 +89,12 @@ func withDesktopNotifications(override notifyFlag, warnings io.Writer) scheduler
 		options.desktopNotifications = true
 		options.notifyOverride = override
 		options.notificationWarnings = warnings
+	}
+}
+
+func withStartupProgress(report func(string)) schedulerSetupOption {
+	return func(options *schedulerSetupOptions) {
+		options.startupProgress = report
 	}
 }
 

@@ -9,8 +9,10 @@ import (
 )
 
 // syntheticDSLMatrix registers every lifecycle level so checkWorkflowDSLVersion
-// can be exercised end to end — the live, compiled-in supportmatrix only ever
-// carries "supported" entries (DVL-3, #863).
+// can be exercised end to end regardless of what lifecycle levels the live,
+// compiled-in supportmatrix happens to carry at the moment (DVL-3, #863).
+// TestLiveMatrixDeprecates14AndKeeps20Silent below pins the live matrix's
+// current behavior on top of these synthetic-level tests.
 func syntheticDSLMatrix(t *testing.T) {
 	t.Helper()
 	original := dslSupportMatrix
@@ -153,5 +155,39 @@ func TestCheckWorkflowDSLVersionPreviewOptedInWarnsOnly(t *testing.T) {
 	warnings := r.Warnings()
 	if len(warnings) != 1 || warnings[0].Code != WarningPreviewDSLVersionOptedIn {
 		t.Fatalf("warnings = %+v, want a single DVL010", warnings)
+	}
+}
+
+// TestLiveMatrixDeprecates14AndKeeps20Silent pins the compiled-in support
+// matrix's lifecycle behavior after #2700: a workflow pinned to DSL 1.4 gets
+// exactly one DVL020 deprecation warning (never an error) that names the 2.0
+// replacement and the `goobers fix` migration path, while a 2.0 pin validates
+// with no diagnostics at all. Unlike the syntheticDSLMatrix tests above, this
+// deliberately uses the live supportmatrix.GetDSL registry.
+func TestLiveMatrixDeprecates14AndKeeps20Silent(t *testing.T) {
+	r := &Report{}
+	checkWorkflowDSLVersion(r, dslWorkflow("w", "1.4"), "w.yaml", false)
+	if r.HasErrors() {
+		t.Fatalf("a deprecated 1.4 pin must stay a warning, not an error: %v", r.Issues)
+	}
+	warnings := r.Warnings()
+	if len(warnings) != 1 || warnings[0].Code != WarningDeprecatedDSLVersion {
+		t.Fatalf("warnings = %+v, want a single DVL020", warnings)
+	}
+	for _, want := range []string{
+		`dslVersion "1.4" is deprecated`,
+		`replacement "2.0"`,
+		"unsupported after v0.5.0",
+		"goobers fix --to 2.0",
+	} {
+		if !strings.Contains(warnings[0].Explanation, want) {
+			t.Errorf("explanation = %q, want it to contain %q", warnings[0].Explanation, want)
+		}
+	}
+
+	r = &Report{}
+	checkWorkflowDSLVersion(r, dslWorkflow("w", "2.0"), "w.yaml", false)
+	if len(r.Issues) != 0 {
+		t.Fatalf("issues = %+v, want none for a 2.0 pin against the live matrix", r.Issues)
 	}
 }

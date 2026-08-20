@@ -220,8 +220,9 @@ spec:
                       type: object
                     maxRepasses:
                       description: |-
-                        MaxRepasses overrides the inherited workflow repass budget for this gate.
-                        It is valid only for automated and agentic gates.
+                        MaxRepasses overrides the inherited target-stage re-entry budget when this
+                        gate routes to an already-completed stage. It is valid only for automated
+                        and agentic gates.
                       format: int32
                       minimum: 1
                       type: integer
@@ -238,6 +239,13 @@ spec:
                   - message: maxRepasses is only valid for automated or agentic gates
                     rule: '!has(self.maxRepasses) || self.evaluator != ''human'''
                 type: array
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where this
+                  workflow mirrors durable journal outbox files. A task may override it.
+                  The configured path must be absolute, or start with "~/".
+                minLength: 1
+                type: string
               parallels:
                 description: |-
                   Parallels are the fan-out/fan-in states of the machine: a parallel forks
@@ -415,8 +423,9 @@ spec:
                   MaxRepasses.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer
@@ -458,10 +467,11 @@ spec:
                         ContextFrom limits this task's context pointers to artifacts and verdicts
                         produced by the named tasks or gates. Empty preserves the historical
                         behavior of receiving every accumulated pointer.
+                        Duplicate entries are rejected by api/validate (CTX001) rather than by a
+                        CRD uniqueness marker, which Kubernetes refuses to install.
                       items:
                         type: string
                       type: array
-                      uniqueItems: true
                     continueOnError:
                       description: |-
                         ContinueOnError makes a ResultFailure best-effort: the failed status is
@@ -585,6 +595,13 @@ spec:
                         type: string
                       maxItems: 32
                       type: array
+                    outboxMirrorPath:
+                      description: |-
+                        OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+                        root for this task. It is used only when Outbox exports at least one file.
+                        The configured path must be absolute, or start with "~/".
+                      minLength: 1
+                      type: string
                     policyActions:
                       description: |-
                         PolicyActions declares the closed vocabulary of externally mutating
@@ -723,6 +740,7 @@ spec:
                   - name
                   - type
                   type: object
+                maxItems: 128
                 type: array
               triggers:
                 description: |-
@@ -748,6 +766,21 @@ spec:
                         unavailable.
                       minLength: 1
                       type: string
+                    idleBackoff:
+                      description: |-
+                        IdleBackoff reduces no-work polling while preserving the configured
+                        schedule whenever work is available. Omitted uses the default policy.
+                      properties:
+                        ceiling:
+                          description: Ceiling defaults to fifteen minutes.
+                          type: string
+                        enabled:
+                          description: Enabled defaults to true.
+                          type: boolean
+                        floor:
+                          description: Floor defaults to one minute.
+                          type: string
+                      type: object
                     labelPredicate:
                       description: |-
                         LabelPredicate is a CEL expression over the item's label set. The only
@@ -802,6 +835,8 @@ spec:
                   x-kubernetes-validations:
                   - message: trustLabel is supported only for type=backlog-item
                     rule: '!has(self.trustLabel) || self.type == ''backlog-item'''
+                  - message: idleBackoff is supported only for type=schedule
+                    rule: '!has(self.idleBackoff) || self.type == ''schedule'''
                 minItems: 1
                 type: array
                 x-kubernetes-validations:

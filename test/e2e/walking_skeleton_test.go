@@ -45,6 +45,8 @@ import (
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 const (
@@ -204,7 +206,7 @@ func (e skeletonSpanExporter) Shutdown(ctx context.Context) error {
 func newSkeletonRunnerWithSpanCapture(
 	t *testing.T,
 	coderAct, reviewerAct func(callNum int) interface{},
-	capture *telemetry.MemoryExporter,
+	capture *telemetrytest.MemoryExporter,
 ) (*runner.Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
@@ -250,7 +252,7 @@ func newSkeletonRunnerWithSpanCapture(
 				return nil, ierr
 			}
 			calls := 0
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("fake harness session transcript for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
 					calls++
@@ -278,7 +280,7 @@ func newSkeletonRunnerWithSpanCapture(
 							runSkeletonGit(t, req.Workspace, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", fmt.Sprintf("coder impl %d", calls))
 						}
 					}
-					return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
+					return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 				},
 			}
 			// The runner always constructs executors against the run's own
@@ -388,7 +390,7 @@ func TestConformanceWalkingSkeletonLocalRunnerCompletesWithRepass(t *testing.T) 
 		}
 		return verdictPayload(apiv1.VerdictPass, "looks good")
 	}
-	liveSpans := telemetry.NewMemoryExporter()
+	liveSpans := telemetrytest.NewMemoryExporter()
 	r, runsDir := newSkeletonRunnerWithSpanCapture(t, coderAct, reviewerAct, liveSpans)
 
 	runID, err := telemetry.NewRunID()

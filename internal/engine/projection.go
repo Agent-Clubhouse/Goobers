@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // ErrUnprojectable marks a history whose journal projection failed closed
@@ -32,6 +35,35 @@ var projectableEventTypes = map[journal.EventType]bool{
 	journal.EventGateEvaluated: true,
 	journal.EventRefTouched:    true,
 	journal.EventError:         true,
+	journal.EventSpanRecorded:  true,
+}
+
+// spanUnavailableErrorCode marks the EventError a projection appends in place
+// of a span.recorded event it could not adopt (#2907) — see writeProjectedRun's
+// opSpan case for why this is a soft failure rather than ErrUnprojectable.
+const spanUnavailableErrorCode = "span_unavailable"
+
+// SpanSource fetches a previously-recorded span's bytes by content digest, so
+// the projection writer can adopt an executor-produced span (a harness
+// transcript, JournalSpanOp) it cannot itself recompute — the workflow only
+// ever carries the pointer (#2907). Satisfied by internal/blobstore.Store.
+type SpanSource interface {
+	Get(ctx context.Context, digest string) ([]byte, error)
+}
+
+// ProjectOption configures optional ProjectRun behavior.
+type ProjectOption func(*projectConfig)
+
+type projectConfig struct {
+	spanSource SpanSource
+}
+
+// WithSpanSource configures ProjectRun to adopt recorded spans (harness
+// transcripts) from src by digest. Without it — the default — a span op is
+// recorded as a spanUnavailableErrorCode error event instead of dropped
+// silently: see writeProjectedRun.
+func WithSpanSource(src SpanSource) ProjectOption {
+	return func(c *projectConfig) { c.spanSource = src }
 }
 
 var projectableAttemptClasses = map[journal.AttemptClass]bool{
@@ -68,16 +100,82 @@ func (c *projectionClock) now() time.Time {
 // from internal/journal, so there is no engine-specific journal dialect.
 // It fails closed (ErrUnprojectable) on anything it does not recognize.
 // Returns the run directory.
-func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
+//
+// opts is additive: WithSpanSource lets a caller that has a fleet-wide blob
+// store adopt recorded spans (harness transcripts) by digest. Without it, a
+// span op is recorded as a spanUnavailableErrorCode error event rather than
+// silently dropped or failing the whole run's projection — see
+// writeProjectedRun's opSpan case for why availability must not be
+// fail-closed like an unrecognized op.
+func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (string, error) {
 	if err := validateProjection(proj); err != nil {
 		return "", err
 	}
+	cfg := &projectConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 
+	finalDir := filepath.Join(runsDir, proj.Identity.RunID)
+	replacePartial := false
+	if journal.Recorded(finalDir) {
+		complete, err := projectedJournalComplete(finalDir)
+		if err != nil {
+			return "", fmt.Errorf("engine: inspect existing projected journal for run %q: %w", proj.Identity.RunID, err)
+		}
+		if complete {
+			return finalDir, nil
+		}
+		replacePartial = true
+	}
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		return "", fmt.Errorf("engine: create projected runs directory: %w", err)
+	}
+	stagingRoot := journal.RunCreationStagingDir(runsDir)
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		return "", fmt.Errorf("engine: create projection staging root: %w", err)
+	}
+	stagingDir, err := os.MkdirTemp(stagingRoot, proj.Identity.RunID+"-projection-")
+	if err != nil {
+		return "", fmt.Errorf("engine: create projection staging directory: %w", err)
+	}
+	defer func() {
+		_ = os.RemoveAll(stagingDir)
+		_ = os.RemoveAll(journal.RunCreationStagingDir(stagingDir))
+	}()
+
+	projectedDir, err := writeProjectedRun(stagingDir, proj, cfg)
+	if err != nil {
+		return "", err
+	}
+	if replacePartial {
+		if err := os.RemoveAll(finalDir); err != nil {
+			return "", fmt.Errorf("engine: remove partial projection for run %q: %w", proj.Identity.RunID, err)
+		}
+	}
+	if err := os.Rename(projectedDir, finalDir); err != nil {
+		if journal.Recorded(finalDir) {
+			complete, inspectErr := projectedJournalComplete(finalDir)
+			if inspectErr == nil && complete {
+				return finalDir, nil
+			}
+		}
+		return "", fmt.Errorf("engine: publish projected journal for run %q: %w", proj.Identity.RunID, err)
+	}
+	if err := durability.SyncDir(runsDir); err != nil {
+		return "", fmt.Errorf("engine: sync projected runs directory: %w", err)
+	}
+	return finalDir, nil
+}
+
+func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfig) (string, error) {
 	inputs := map[string][]byte{
-		journal.PinnedWorkflowGraphInputName: []byte(proj.Graph),
+		journal.PinnedWorkflowGraphInputName:      []byte(proj.Graph),
+		journal.PinnedWorkflowDefinitionInputName: []byte(proj.Definition),
 	}
 	inputIntegrity := map[string]apiv1.Integrity{
-		journal.PinnedWorkflowGraphInputName: apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
+		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
 	}
 	if proj.Item != nil {
 		item := normalizeItemIntegrity(proj.Item)
@@ -125,6 +223,14 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 				return "", fmt.Errorf("engine: project artifact %q (op %d): %w", a.Name, i+1, recErr)
 			}
 			artifactRefs[a.Name] = ref
+		case opSpan:
+			s := op.Span
+			if s == nil {
+				return "", fmt.Errorf("%w: span op %d carries no payload", ErrUnprojectable, i+1)
+			}
+			if err := adoptSpan(jr, cfg.spanSource, *s); err != nil {
+				return "", fmt.Errorf("engine: project span %q (op %d): %w", s.Name, i+1, err)
+			}
 		case opAppend:
 			ev := *op.Event
 			if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
@@ -142,7 +248,86 @@ func ProjectRun(runsDir string, proj JournalProjection) (string, error) {
 			}
 		}
 	}
+	if err := jr.Close(); err != nil {
+		return "", fmt.Errorf("engine: close projected journal for run %q: %w", id.RunID, err)
+	}
 	return jr.Dir(), nil
+}
+
+// adoptSpan writes op into jr: fetched-and-recorded as span.recorded when src
+// can supply the bytes, or a spanUnavailableErrorCode error event otherwise.
+//
+// A span's byte availability is a property of THIS projection attempt (blob
+// store reachability), not of the workflow history it replays — re-running
+// the same history against the same src should adopt the same span, but a
+// caller with no src configured, or a store that is briefly unreachable,
+// must not be indistinguishable from ErrUnprojectable's "an op or event this
+// projection does not recognize." That is the case validateOp's structural
+// checks reject unconditionally; this is a runtime availability gap in an op
+// this projection DOES recognize, for a value already documented as
+// diagnostic evidence rather than a stage output (apiv1.ResultEnvelope.
+// Transcript). Downgrading it to a visible EventError — rather than either
+// failing the whole run's projection or dropping it silently — keeps the run
+// itself projectable and visible in every product surface (the #2895
+// problem this must not reintroduce) while still surfacing the gap (#2907).
+func adoptSpan(jr *journal.Run, src SpanSource, op JournalSpanOp) error {
+	data, err := fetchSpan(src, op.Ref.Digest)
+	if err != nil {
+		return jr.Append(journal.Event{
+			Type: journal.EventError, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
+			Error: &journal.ErrorDetail{
+				Code:    spanUnavailableErrorCode,
+				Message: fmt.Sprintf("span %q (%s): %v", op.Name, op.Ref.Digest, err),
+			},
+		})
+	}
+	_, err = jr.RecordSpanWithSchema(op.Stage, op.Name, op.DataSchema, data)
+	return err
+}
+
+// fetchSpan fetches digest from src and confirms the bytes returned actually
+// hash to it — src is an external dependency (a fleet blob store), and a
+// wrong-content bug there must surface as an unavailable span, never a
+// silently mismatched one.
+func fetchSpan(src SpanSource, digest string) ([]byte, error) {
+	if src == nil {
+		return nil, errors.New("no span source configured")
+	}
+	if digest == "" {
+		return nil, errors.New("span op has no digest")
+	}
+	data, err := src.Get(context.Background(), digest)
+	if err != nil {
+		return nil, err
+	}
+	if got := journal.Digest(data); got != digest {
+		return nil, fmt.Errorf("fetched bytes hash to %s, want %s", got, digest)
+	}
+	return data, nil
+}
+
+func projectedJournalComplete(dir string) (bool, error) {
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		return false, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return false, err
+	}
+	if len(events) == 0 {
+		return false, nil
+	}
+	last := events[len(events)-1]
+	if last.Type != journal.EventRunFinished {
+		return false, nil
+	}
+	switch journal.RunPhase(last.Status) {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // validateProjection is the fail-closed gate: every op must be a shape the
@@ -154,6 +339,9 @@ func validateProjection(proj JournalProjection) error {
 	}
 	if len(proj.Graph) == 0 {
 		return fmt.Errorf("%w: projection carries no pinned workflow graph", ErrUnprojectable)
+	}
+	if len(proj.Definition) == 0 {
+		return fmt.Errorf("%w: projection carries no pinned workflow definition", ErrUnprojectable)
 	}
 	if len(proj.Ops) == 0 {
 		return fmt.Errorf("%w: history produced no journal ops", ErrUnprojectable)
@@ -224,6 +412,20 @@ func validateOp(op JournalOp, i, total int) error {
 		}
 		if !projectableAttemptClasses[a.Class] {
 			return fmt.Errorf("%w: artifact op %d has unknown attempt class %q", ErrUnprojectable, i, a.Class)
+		}
+	case opSpan:
+		s := op.Span
+		if s == nil {
+			return fmt.Errorf("%w: span op %d carries no payload", ErrUnprojectable, i)
+		}
+		if s.Name == "" {
+			return fmt.Errorf("%w: span op %d has no name", ErrUnprojectable, i)
+		}
+		if s.Ref.Digest == "" {
+			return fmt.Errorf("%w: span op %d has no digest", ErrUnprojectable, i)
+		}
+		if !projectableAttemptClasses[s.Class] {
+			return fmt.Errorf("%w: span op %d has unknown attempt class %q", ErrUnprojectable, i, s.Class)
 		}
 	default:
 		return fmt.Errorf("%w: op %d has unknown kind %q", ErrUnprojectable, i, op.Kind)

@@ -1,7 +1,9 @@
 package vcurrent
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +25,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"close-issues":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"close-pr":                      {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"comment-on-issue":              {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"create-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"delete-branch":                 {requiredCapabilities: []capability.Capability{capability.GitHubBranchDelete}},
@@ -36,7 +38,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"label-issue":                   {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"merge-pr":                      {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -44,9 +46,12 @@ var policyActionContracts = map[string]policyActionContract{
 	"record-merge-refusal":          {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"record-remediation-checkpoint": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"resolve-review-threads":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"route-provider-verdict":        {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -55,14 +60,16 @@ var policyActionContracts = map[string]policyActionContract{
 }
 
 var commandPolicyActions = map[string][]string{
-	"apply-verdict":          {"publish-review", "route-verdict", "close-pr"},
+	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
+	"check-issue-staleness":  {"route-verdict"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
 	"merge-queue-poll":       {"watch-merge-queue", "route-queue-outcome", "delete-branch"},
 	"open-pr":                {"open-or-update-pr"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
+	"pr-claim":               {"release-pr-claim"},
 	"pr-comment-watch":       {"label-issue"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
@@ -72,6 +79,7 @@ var commandPolicyActions = map[string][]string{
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
+	"resolve-review-threads": {"resolve-review-threads"},
 	"set-milestone":          {"assign-milestone"},
 	"update-behind-pr":       {"update-pr-branch", "clear-remediation"},
 }
@@ -88,6 +96,10 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
 	},
+}
+
+var readOnlyCommandArguments = map[string]string{
+	"respond-to-findings": "check",
 }
 
 var commandArgumentPolicyActionInputs = map[string]map[string]string{
@@ -121,7 +133,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 		}
 
 		command := policyCommand(task)
-		for _, action := range prescribedCommandPolicyActions(task, def.Name) {
+		for _, action := range prescribedCommandPolicyActions(task) {
 			if !declared[action] {
 				problems = append(problems, fmt.Sprintf(
 					"task %q command %q prescribes policy action %q but policyActions does not declare it",
@@ -245,8 +257,14 @@ func policyCommand(task apiv1.Task) string {
 	return task.Run.Command[1]
 }
 
-func prescribedCommandPolicyActions(task apiv1.Task, workflowName string) []string {
+func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
+	if task.Run != nil {
+		readOnlyArgument := readOnlyCommandArguments[command]
+		if readOnlyArgument != "" && booleanCommandArgument(task.Run.Command[2:], readOnlyArgument) {
+			return nil
+		}
+	}
 	actions := append([]string(nil), commandPolicyActions[command]...)
 	argumentActions := commandArgumentPolicyActions[command]
 	if task.Run == nil || len(argumentActions) == 0 {
@@ -295,10 +313,25 @@ func prescribedCommandPolicyActions(task apiv1.Task, workflowName string) []stri
 			actions = append(actions, argumentActions[name]...)
 		}
 	}
-	if command == "backlog-query" && enabled["claim"] && workflowName == "backlog-curation" {
+	if command == "backlog-query" && enabled["claim"] && isCurationBacklogClaim(task) {
 		actions = append(actions, "close-issue")
 	}
 	return actions
+}
+
+func booleanCommandArgument(args []string, name string) bool {
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	enabled := flags.Bool(name, false, "")
+	return flags.Parse(args) == nil && *enabled
+}
+
+func isCurationBacklogClaim(task apiv1.Task) bool {
+	if _, dynamic := task.InputsFrom["curation"]; dynamic {
+		return true
+	}
+	curation, err := strconv.ParseBool(task.Inputs["curation"])
+	return err == nil && curation
 }
 
 func knownPolicyActions() []string {

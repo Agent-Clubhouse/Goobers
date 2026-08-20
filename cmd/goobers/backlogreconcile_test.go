@@ -134,29 +134,63 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 }
 
 func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testing.T) {
+	for _, maxItems := range []string{"", "1"} {
+		t.Run("maxItems="+maxItems, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
+			server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+			server.addIssue(8, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+			t.Setenv("GOOBERS_WORKFLOW", "widget-backlog-curation")
+			t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+			t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman)
+			t.Setenv("GOOBERS_INPUT_CURATION", "true")
+			t.Setenv("GOOBERS_INPUT_MAXITEMS", maxItems)
+			t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+			t.Chdir(t.TempDir())
+
+			code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+			if code != 0 {
+				t.Fatalf("backlog-query: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "no work") {
+				t.Fatalf("stdout = %q, want no work after reconciliation", stdout)
+			}
+			assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelClaimed})
+			assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+		})
+	}
+}
+
+func TestRenamedCurationClaimWithDefaultCardinalityWritesEnrichedObject(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
-	server.addIssue(8, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(7, "Curation candidate", "goobers:approved")
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
-	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_WORKFLOW", "widget-backlog-curation")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
-	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman)
-	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
-	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
-	t.Chdir(t.TempDir())
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
+	resultFile := filepath.Join(t.TempDir(), "claimed-item.json")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 {
 		t.Fatalf("backlog-query: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "no work") {
-		t.Fatalf("stdout = %q, want no work after reconciliation", stdout)
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelClaimed})
-	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	var item curationClaimedItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("unmarshal single curation item: %v", err)
+	}
+	if item.ID != "7" || item.Staleness.ThresholdDays != 90 {
+		t.Fatalf("curation item = %+v, want enriched item 7", item)
+	}
 }
 
 func TestReconcileBacklogMetadataAutoClosesOptedInTrackingParent(t *testing.T) {
@@ -658,6 +692,39 @@ func TestTrackingChecklistIssueIDs(t *testing.T) {
 	got := trackingChecklistIssueIDs("- [ ] #12 first\n* [x] done in #13\n- ordinary ref #14\n- [ ] duplicate #12")
 	if strings.Join(got, ",") != "12,13" {
 		t.Fatalf("trackingChecklistIssueIDs = %v, want [12 13]", got)
+	}
+}
+
+// TestParseBacklogReconcileRunIDRoundTripsFormat pins the shape
+// reserveBacklogClaimReconciliation persists into the claim ledger:
+// claims.go's claimHolderTerminal must keep parsing it to recover the
+// owning run, so the format/parse pair must stay inverses, and anything
+// that only superficially resembles the shape (wrong segment count, a
+// non-numeric pid/seq, or an empty owner) must not parse.
+func TestParseBacklogReconcileRunIDRoundTripsFormat(t *testing.T) {
+	got := formatBacklogReconcileRunID("run-123", 4242, 7)
+	want := "run-123/backlog-reconcile/4242/7"
+	if got != want {
+		t.Fatalf("formatBacklogReconcileRunID = %q, want %q", got, want)
+	}
+	owner, ok := parseBacklogReconcileRunID(got)
+	if !ok || owner != "run-123" {
+		t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, %v), want (\"run-123\", true)", got, owner, ok)
+	}
+
+	for _, malformed := range []string{
+		"",
+		"run-123",
+		"run-123/backlog-reconcile/4242",
+		"run-123/backlog-reconcile/not-a-pid/7",
+		"run-123/backlog-reconcile/4242/not-a-seq",
+		"/backlog-reconcile/4242/7",
+		"run-123/backlog-reconcile/4242/7/extra",
+		"run-123/some-other-kind/4242/7",
+	} {
+		if owner, ok := parseBacklogReconcileRunID(malformed); ok {
+			t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, true), want ok=false", malformed, owner)
+		}
 	}
 }
 

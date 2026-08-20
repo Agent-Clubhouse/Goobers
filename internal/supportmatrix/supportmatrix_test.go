@@ -36,20 +36,71 @@ func TestDSLMatrixLookupAndOrder(t *testing.T) {
 	}
 }
 
+func TestNewestSupported(t *testing.T) {
+	// The live matrix: 2.0 is the only LevelSupported version, so anything that
+	// resolves an unpinned object (#3297) must land there — not on the
+	// deprecated CurrentDSLVersion.
+	got, ok := GetDSL().NewestSupported()
+	if !ok || got != NextDSLVersion {
+		t.Fatalf("GetDSL().NewestSupported() = %q, %v, want %q, true", got, ok, NextDSLVersion)
+	}
+
+	// Numeric major/minor order, not lexicographic: "10.0" beats "9.0" even
+	// though it sorts first as a string, and a newer-but-deprecated version
+	// never wins.
+	matrix := SupportMatrix{
+		"9.0":  {Level: LevelSupported},
+		"10.0": {Level: LevelSupported},
+		"11.0": {Level: LevelDeprecated},
+	}
+	if got, ok := matrix.NewestSupported(); !ok || got != "10.0" {
+		t.Fatalf("NewestSupported() = %q, %v, want %q, true", got, ok, "10.0")
+	}
+
+	// No supported version at all must report ok=false, not guess.
+	matrix = SupportMatrix{
+		"1.4": {Level: LevelDeprecated},
+		"2.0": {Level: LevelPreview},
+	}
+	if got, ok := matrix.NewestSupported(); ok || got != "" {
+		t.Fatalf("NewestSupported() = %q, %v, want empty, false", got, ok)
+	}
+}
+
 func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	matrix := GetDSL()
-	for _, version := range []string{CurrentDSLVersion, NextDSLVersion} {
-		support, ok := matrix.Lookup(version)
-		if !ok {
-			t.Fatalf("DSL version %q is missing", version)
-		}
-		if support.Level != LevelSupported {
-			t.Fatalf("DSL version %q level = %q, want %q", version, support.Level, LevelSupported)
-		}
-		if len(support.History) != 1 ||
-			support.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) {
-			t.Fatalf("DSL version %q history = %+v", version, support.History)
-		}
+
+	// DSL 1.4 is deprecated (#2700): still loadable, replacement 2.0, with a
+	// declared unsupported-after release and a two-step lifecycle history.
+	current, ok := matrix.Lookup(CurrentDSLVersion)
+	if !ok {
+		t.Fatalf("DSL version %q is missing", CurrentDSLVersion)
+	}
+	if current.Level != LevelDeprecated {
+		t.Fatalf("DSL version %q level = %q, want %q", CurrentDSLVersion, current.Level, LevelDeprecated)
+	}
+	if current.Replacement != NextDSLVersion {
+		t.Fatalf("DSL version %q replacement = %q, want %q", CurrentDSLVersion, current.Replacement, NextDSLVersion)
+	}
+	if current.UnsupportedAfter == "" {
+		t.Fatalf("DSL version %q declares no unsupported-after release", CurrentDSLVersion)
+	}
+	if len(current.History) != 2 ||
+		current.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) ||
+		current.History[1].Level != LevelDeprecated {
+		t.Fatalf("DSL version %q history = %+v", CurrentDSLVersion, current.History)
+	}
+
+	next, ok := matrix.Lookup(NextDSLVersion)
+	if !ok {
+		t.Fatalf("DSL version %q is missing", NextDSLVersion)
+	}
+	if next.Level != LevelSupported {
+		t.Fatalf("DSL version %q level = %q, want %q", NextDSLVersion, next.Level, LevelSupported)
+	}
+	if len(next.History) != 1 ||
+		next.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) {
+		t.Fatalf("DSL version %q history = %+v", NextDSLVersion, next.History)
 	}
 	for version, support := range matrix {
 		if _, _, ok := parseDSLVersion(version); !ok {
@@ -63,7 +114,7 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	}
 
 	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelUnsupported}
-	if GetDSL()[CurrentDSLVersion].Level != LevelSupported {
+	if GetDSL()[CurrentDSLVersion].Level != LevelDeprecated {
 		t.Fatal("GetDSL exposed the package's backing map")
 	}
 

@@ -20,8 +20,10 @@ import (
 // allowlisting all exist precisely so a stage's behavior doesn't depend on
 // host dotfiles).
 const (
-	botGitUserName  = "goobers-bot"
-	botGitUserEmail = "goobers-bot@users.noreply.github.com"
+	botGitUserName           = "goobers-bot"
+	botGitUserEmail          = "goobers-bot@users.noreply.github.com"
+	botIdentityRetryAttempts = 4
+	botIdentityRetryBackoff  = 50 * time.Millisecond
 )
 
 // CreateOptions configures a single per-run worktree.
@@ -63,6 +65,11 @@ type CreateOptions struct {
 	// stage in this same run fetched it. Anything that clears the mirror
 	// between stages reaches this path.
 	RequireExistingBranch bool
+	// AcquireRemoteBranch fetches Branch explicitly from origin once per
+	// OwnerRunID before requiring it. A durable metadata marker makes a retry or
+	// process restart reuse the same logical branch without resetting commits
+	// made by earlier stages in the run.
+	AcquireRemoteBranch bool
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
@@ -166,6 +173,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if opts.SyncBase && opts.Branch == "" {
 		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
 	}
+	if opts.AcquireRemoteBranch && !opts.RequireExistingBranch {
+		return nil, fmt.Errorf("worktree: AcquireRemoteBranch requires RequireExistingBranch")
+	}
 
 	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
 	if err != nil {
@@ -187,6 +197,24 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
+	if opts.AcquireRemoteBranch {
+		acquisitionPath := m.branchAcquisitionPath(key, opts.OwnerRunID, opts.Branch)
+		if _, err := os.Stat(acquisitionPath); os.IsNotExist(err) {
+			ref := "refs/heads/" + opts.Branch
+			if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, "fetch", "origin", "+"+ref+":"+ref); err != nil {
+				return nil, fmt.Errorf("worktree: acquire branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+			if err := writeBranchAcquisition(acquisitionPath, branchAcquisition{
+				OwnerRunID: opts.OwnerRunID,
+				Branch:     opts.Branch,
+			}); err != nil {
+				return nil, fmt.Errorf("worktree: record acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+		} else if err != nil {
+			return nil, fmt.Errorf("worktree: inspect acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+		}
+	}
+
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
 		refs := []string{opts.BaseRef}
@@ -205,15 +233,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
-		// worktree at this exact key can only be a previous attempt of the
-		// SAME (run, stage) that never got torn down — a crash mid-attempt
-		// (this key survives until the daemon resumes the same stage), or a
-		// same-process retry whose own Remove call failed (RemoveOptions
-		// errors were being silently discarded). Both cases are always
-		// sequential with whatever is calling Create now — a genuinely
-		// concurrent second attempt of the same (run, stage) never happens
-		// — so it is always safe to clear it and start fresh rather than
-		// refusing forever until an operator does disk surgery.
+		// worktree at this exact key is a previous attempt of the SAME
+		// (run, stage) that never got torn down. This is safe only within
+		// one manager ownership domain; worker startup enforces a pod-private
+		// root before distributed attempts can reach this path.
 		if err := m.forceClear(ctx, key, path, opts.RunID); err != nil {
 			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
 		}
@@ -256,7 +279,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		return nil, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
 		// First stage of the run: create the run branch off BaseRef.
-		args = append(args, "-b", opts.Branch, path, opts.BaseRef)
+		// Run continuity comes from the local branch tip, so avoid creating
+		// persistent tracking config that branch retention cannot reap.
+		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
 		checkoutTarget = opts.Branch
 	}
 
@@ -267,6 +292,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		OwnerRunID:   opts.OwnerRunID,
 		Directory:    directory,
 		Branch:       opts.Branch,
+		Writer:       m.writerIdentity,
 		PID:          pid,
 		PIDStartedAt: startedAt,
 		CreatedAt:    time.Now(),
@@ -313,10 +339,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// with no --global, so it never touches the managed working copy or the
 	// host's ambient git config) — an agentic stage's commit must not depend
 	// on the daemon host happening to have user.name/user.email set (#237).
-	if err := runGit(ctx, path, "config", "user.name", botGitUserName); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.name", botGitUserName)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
-	if err := runGit(ctx, path, "config", "user.email", botGitUserEmail); err != nil {
+	if err := retryBotIdentityConfig(ctx, func() error {
+		return runGit(ctx, path, "config", "user.email", botGitUserEmail)
+	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if sparse {
@@ -390,6 +420,33 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+func retryBotIdentityConfig(ctx context.Context, op func() error) error {
+	var err error
+	for attempt := 0; attempt < botIdentityRetryAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(botIdentityRetryBackoff):
+			}
+		}
+		if err = op(); err == nil || !isGitConfigLockContention(err) {
+			return err
+		}
+	}
+	return err
+}
+
+func isGitConfigLockContention(err error) bool {
+	var gitErr *gitCommandError
+	if !errors.As(err, &gitErr) {
+		return false
+	}
+	message := strings.ToLower(string(gitErr.output))
+	return strings.Contains(message, "could not lock config file") &&
+		strings.Contains(message, "file exists")
 }
 
 func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string, limit PathLengthLimit) error {

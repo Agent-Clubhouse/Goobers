@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,9 +24,9 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// newFakeCluster returns a fake clientset shaped like a conformant cluster:
-// current version, NetworkPolicy API served, an RWX-capable StorageClass, and
-// every SelfSubjectAccessReview allowed.
+// newFakeCluster returns a fake clientset shaped like an otherwise conformant
+// cluster: current version, NetworkPolicy API served, an inferred RWX-capable
+// StorageClass, and every SelfSubjectAccessReview allowed.
 func newFakeCluster(t *testing.T) *fake.Clientset {
 	t.Helper()
 	client := fake.NewClientset(
@@ -98,8 +101,12 @@ func TestRunConformantClusterPasses(t *testing.T) {
 		t.Fatalf("conformant cluster reported non-conformant: %+v", report.Results)
 	}
 	for _, result := range report.Results {
-		if result.Status != StatusPass {
-			t.Errorf("check %s = %s (%s), want pass", result.ID, result.Status, result.Detail)
+		want := StatusPass
+		if result.ID == "storage-rwx" {
+			want = StatusWarn
+		}
+		if result.Status != want {
+			t.Errorf("check %s = %s (%s), want %s", result.ID, result.Status, result.Detail, want)
 		}
 	}
 }
@@ -176,9 +183,10 @@ func TestRBACProbeErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestStorageWithoutRWXClassFails(t *testing.T) {
+func TestStorageWithoutRWXClassRecommendsSingleNodeRWO(t *testing.T) {
 	client := newFakeCluster(t)
-	// Replace the RWX class with a block-only one.
+	// Replace the RWX class with a block-only one — RWO-only is the
+	// documented safe topology (§4), so this must not fail.
 	if err := client.StorageV1().StorageClasses().Delete(context.Background(), "goobers-files", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -191,17 +199,172 @@ func TestStorageWithoutRWXClassFails(t *testing.T) {
 
 	report := Run(context.Background(), client, Options{})
 	result := resultByID(t, report, "storage-rwx")
+	if result.Status != StatusPass {
+		t.Fatalf("storage-rwx = %s, want pass", result.Status)
+	}
+	if !strings.Contains(result.Hint, "single node") {
+		t.Fatalf("hint %q does not recommend single-node RWO mounting", result.Hint)
+	}
+	if !report.Conformant {
+		t.Fatal("RWO-only storage is the recommended safe topology and must be conformant (§4)")
+	}
+}
+
+func TestStorageWithNoClassesFails(t *testing.T) {
+	client := newFakeCluster(t)
+	if err := client.StorageV1().StorageClasses().Delete(context.Background(), "goobers-files", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "storage-rwx")
 	if result.Status != StatusFail {
 		t.Fatalf("storage-rwx = %s, want fail", result.Status)
 	}
-	if !strings.Contains(result.Detail, "managed-disk") {
-		t.Fatalf("detail %q does not name the non-RWX classes", result.Detail)
+	if !strings.Contains(result.Detail, "no StorageClasses") {
+		t.Fatalf("detail %q does not name the absence of StorageClasses", result.Detail)
 	}
 	if result.Hint == "" {
 		t.Fatal("storage failure must carry a remediation hint")
 	}
 	if report.Conformant {
-		t.Fatal("no RWX storage must not be conformant (§4)")
+		t.Fatal("no StorageClasses at all must not be conformant (§4)")
+	}
+}
+
+func TestStorageInferredRWXWarnsAboutCoordinationSafety(t *testing.T) {
+	report := Run(context.Background(), newFakeCluster(t), Options{})
+	result := resultByID(t, report, "storage-rwx")
+
+	if result.Status != StatusWarn || result.Severity != SeverityRequired {
+		t.Fatalf("storage-rwx = %s/%s, want required warn", result.Status, result.Severity)
+	}
+	for _, caveat := range []string{"flock", "SQLite WAL"} {
+		if !strings.Contains(result.Detail, caveat) {
+			t.Errorf("detail %q does not name %s safety", result.Detail, caveat)
+		}
+	}
+	if !strings.Contains(result.Hint, "RWO") || !strings.Contains(result.Hint, "single node") {
+		t.Errorf("hint %q does not recommend safe storage topology", result.Hint)
+	}
+	if !report.Conformant {
+		t.Fatal("inferred RWX capability must warn, not break conformance")
+	}
+}
+
+func TestMixedOSPlacementRejectsUntaintedWindowsNode(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "windows-1") || !strings.Contains(result.Detail, "NoSchedule") {
+		t.Fatalf("detail %q does not identify the unsafe Windows node", result.Detail)
+	}
+	if report.Conformant {
+		t.Fatal("an untainted Windows node must make the cluster non-conformant")
+	}
+}
+
+func TestMixedOSPlacementRejectsUnpinnedControlPlaneWorkload(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.AppsV1().Deployments(controlPlaneNamespace).Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers-api", Namespace: controlPlaneNamespace},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "Deployment/goobers-api") {
+		t.Fatalf("detail %q does not identify the unpinned workload", result.Detail)
+	}
+}
+
+func TestMixedOSPlacementRejectsUnpinnedTemporalJob(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.BatchV1().Jobs(temporalNamespace).Create(context.Background(), &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "temporal-schema-setup", Namespace: temporalNamespace},
+		Spec:       batchv1.JobSpec{Template: corev1.PodTemplateSpec{}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusFail {
+		t.Fatalf("mixed-os-placement = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "goobers-temporal/Job/temporal-schema-setup") {
+		t.Fatalf("detail %q does not identify the unpinned Temporal job", result.Detail)
+	}
+}
+
+func TestMixedOSPlacementAcceptsTaintedNodesAndPinnedWorkloads(t *testing.T) {
+	client := newFakeCluster(t)
+	if _, err := client.CoreV1().Nodes().Create(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "windows-1",
+			Labels: map[string]string{corev1.LabelOSStable: "windows"},
+		},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key: corev1.LabelOSStable, Value: "windows", Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.AppsV1().Deployments(controlPlaneNamespace).Create(context.Background(), &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "goobers-api", Namespace: controlPlaneNamespace},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{NodeSelector: map[string]string{corev1.LabelOSStable: "linux"}},
+		}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "mixed-os-placement")
+	if result.Status != StatusPass {
+		t.Fatalf("mixed-os-placement = %s (%s), want pass", result.Status, result.Detail)
+	}
+	if !report.Conformant {
+		t.Fatal("tainted Windows nodes and pinned Linux workloads must be conformant")
 	}
 }
 

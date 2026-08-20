@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -17,7 +18,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	configexamples "github.com/goobers/goobers/config-examples"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 const (
@@ -67,9 +70,16 @@ type GuidedOptions struct {
 	WorkTrackingTokenEnv string
 	PullRequestTokenEnv  string
 	RepoPushTokenEnv     string
+	// Harness selects the agent harness every generated agentic goober uses
+	// (apiv1.HarnessCopilot or apiv1.HarnessClaudeCode). Empty defaults to
+	// copilot (normalizeGuidedOptions), preserving prior guided-init
+	// behavior byte-for-byte for callers that don't set it (#2777).
+	Harness              string
 	CopilotTokenEnv      string
+	ClaudeTokenEnv       string
 	Workflows            []string
 	CICommand            []string
+	RequiredCapabilities []string
 }
 
 // SeedGuidedConfigSource applies prompt-selected guided configuration through
@@ -393,7 +403,18 @@ func copyGuidedSourcePath(destination, source, name string) error {
 func CheckGuidedInitTarget(root string) error {
 	layout := NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err == nil {
-		return fmt.Errorf("guided setup requires an unconfigured target: %s already exists; choose an empty path", ConfigFileName)
+		events, readErr := journal.ReadInstanceLog(layout.SchedulerDir())
+		if readErr != nil {
+			return fmt.Errorf("inspect guided init completion journal: %w", readErr)
+		}
+		if !slices.ContainsFunc(events, func(event journal.Event) bool {
+			return event.Type == journal.EventInitCompleted
+		}) {
+			abs := absPath(root)
+			quoted := strconv.Quote(abs)
+			return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s, but its instance journal has no %s marker; this may be an incomplete guided setup. To replace it, delete %s and rerun `goobers init --guided %s`. To recover the existing setup, run `goobers validate %s` and then `goobers config materialize %s`", ConfigFileName, abs, journal.EventInitCompleted, quoted, quoted, quoted, quoted)
+		}
+		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigFileName, absPath(root))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
 	}
@@ -403,7 +424,11 @@ func CheckGuidedInitTarget(root string) error {
 		return fmt.Errorf("inspect %s: %w", ConfigDirName, err)
 	}
 	if populated {
-		return fmt.Errorf("guided setup requires an unconfigured target: %s already contains files; choose an empty path", ConfigDirName)
+		detail := ""
+		if hasManifest, probeErr := configDirHasManifest(layout.ConfigDir()); probeErr == nil && !hasManifest {
+			detail = ", and none is Goobers config (no `kind: Manifest` document) — the target looks like an unrelated project, for example a Goobers source checkout whose config/ holds CRD manifests"
+		}
+		return targetConflictf("guided setup requires an unconfigured target: %s in %s already contains files%s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigDirName, absPath(root), detail)
 	}
 	return nil
 }
@@ -419,6 +444,11 @@ func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {
 	opts.PullRequestTokenEnv = strings.TrimSpace(opts.PullRequestTokenEnv)
 	opts.RepoPushTokenEnv = strings.TrimSpace(opts.RepoPushTokenEnv)
 	opts.CopilotTokenEnv = strings.TrimSpace(opts.CopilotTokenEnv)
+	opts.ClaudeTokenEnv = strings.TrimSpace(opts.ClaudeTokenEnv)
+	opts.Harness = strings.TrimSpace(opts.Harness)
+	if opts.Harness == "" {
+		opts.Harness = string(apiv1.HarnessCopilot)
+	}
 	if opts.DisplayName == "" {
 		opts.DisplayName = opts.RepoOwner + "/" + opts.RepoName
 	}
@@ -442,6 +472,11 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	if !guidedObjectName(opts.GaggleName) {
 		return fmt.Errorf("gaggle name %q must contain lowercase letters, numbers, or hyphens and start and end with a letter or number", opts.GaggleName)
 	}
+	switch apiv1.Harness(opts.Harness) {
+	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+	default:
+		return fmt.Errorf("harness must be %q or %q", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode)
+	}
 	if len(opts.Workflows) == 0 {
 		return fmt.Errorf("select at least one workflow")
 	}
@@ -464,8 +499,16 @@ func validateGuidedOptions(opts GuidedOptions) error {
 				return fmt.Errorf("local CI command arguments must not be empty")
 			}
 		}
-	} else if len(opts.CICommand) > 0 {
-		return fmt.Errorf("local CI command requires the implementation workflow")
+		if len(opts.RequiredCapabilities) == 0 {
+			return fmt.Errorf("at least one required toolchain capability is required when selecting the implementation workflow")
+		}
+		for i, required := range opts.RequiredCapabilities {
+			if err := runnercap.ValidateToken(required); err != nil {
+				return fmt.Errorf("required toolchain capability %d: %w", i, err)
+			}
+		}
+	} else if len(opts.CICommand) > 0 || len(opts.RequiredCapabilities) > 0 {
+		return fmt.Errorf("local CI command and required toolchain capabilities require the implementation workflow")
 	}
 	type guidedTokenEnv struct {
 		label string
@@ -491,6 +534,12 @@ func validateGuidedOptions(opts GuidedOptions) error {
 		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
 			label: "Copilot token environment variable",
 			value: opts.CopilotTokenEnv,
+		})
+	}
+	if opts.ClaudeTokenEnv != "" {
+		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+			label: "Claude Code token environment variable",
+			value: opts.ClaudeTokenEnv,
 		})
 	}
 	for _, tokenEnv := range tokenEnvs {
@@ -551,6 +600,12 @@ func guidedConfig(opts GuidedOptions) *Config {
 			Token:      TokenRef{Env: opts.CopilotTokenEnv},
 		})
 	}
+	if opts.ClaudeTokenEnv != "" {
+		credentials = append(credentials, CredentialGrant{
+			Capability: string(capability.AgentModel),
+			Token:      TokenRef{Env: opts.ClaudeTokenEnv},
+		})
+	}
 	cfg := &Config{
 		APIVersion: ConfigAPIVersion,
 		Kind:       ConfigKind,
@@ -562,6 +617,7 @@ func guidedConfig(opts GuidedOptions) *Config {
 		}},
 		Credentials:   credentials,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
+		Runner:        RunnerConfig{Capabilities: append([]string(nil), opts.RequiredCapabilities...)},
 	}
 	return cfg
 }
@@ -686,6 +742,12 @@ func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions
 		return nil, fmt.Errorf("decode canonical goober %s: %w", name, err)
 	}
 	goober.Spec.Gaggle = opts.GaggleName
+	// The canonical acme-web template mixes harnesses goober-by-goober
+	// (implementer ships claude-code, the rest copilot — #2548); guided init
+	// offers one harness choice for the whole generated fleet (#2777), so
+	// every selected goober is normalized to it here regardless of what the
+	// template itself declares.
+	goober.Spec.Harness = apiv1.Harness(opts.Harness)
 	goober.Spec.Capabilities = prependCapability(goober.Spec.Capabilities, string(capability.AgentModel))
 	workflows := goober.Spec.Workflows[:0]
 	for _, workflow := range goober.Spec.Workflows {
@@ -730,9 +792,6 @@ func guidedManifest(opts GuidedOptions) []byte {
 kind: Manifest
 metadata:
   name: %s
-  # The pre-GA DSL is preview and must be acknowledged at instance scope.
-  annotations:
-    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: %s
@@ -756,6 +815,7 @@ spec:
 
 func guidedGaggle(opts GuidedOptions) []byte {
 	ciCommand := ""
+	requiredCapabilities := ""
 	if len(opts.CICommand) > 0 {
 		// #2071: this line and the `local-ci` stage in this gaggle's
 		// implementation.yaml (MGV-1/#1009) must be edited together — the
@@ -764,6 +824,9 @@ func guidedGaggle(opts GuidedOptions) []byte {
 		ciCommand = "  # Overrides the `local-ci` stage's declared command in this gaggle's\n" +
 			"  # implementation.yaml (MGV-1/#1009); edit both together.\n" +
 			"  ciCommand: " + yamlStringList(opts.CICommand) + "\n"
+	}
+	if len(opts.RequiredCapabilities) > 0 {
+		requiredCapabilities = "  requiredCapabilities: " + yamlStringList(opts.RequiredCapabilities) + "\n"
 	}
 	return []byte(fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
@@ -783,11 +846,11 @@ spec:
     labels:
       - goobers
     connectionRef: %s
-%s  isolation:
+%s%s  isolation:
     namespace: %s
 `, yamlScalar(opts.GaggleName), yamlScalar(opts.DisplayName), yamlScalar(opts.RepoOwner),
 		yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch), guidedRepositoryConnectionName,
-		yamlScalar(opts.RepoOwner+"/"+opts.RepoName), guidedBacklogConnectionName, ciCommand,
+		yamlScalar(opts.RepoOwner+"/"+opts.RepoName), guidedBacklogConnectionName, ciCommand, requiredCapabilities,
 		yamlScalar("gaggle-"+opts.GaggleName)))
 }
 

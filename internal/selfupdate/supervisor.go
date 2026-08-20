@@ -12,9 +12,12 @@ import (
 	"strings"
 	"time"
 
+	hashiversion "github.com/hashicorp/go-version"
+
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/version"
 )
 
 const defaultDrainTimeout = 40 * time.Second
@@ -39,6 +42,9 @@ type SupervisorOptions struct {
 	Stdout, Stderr io.Writer
 	PollInterval   time.Duration
 	DrainTimeout   time.Duration
+	runner         commandRunner
+	executable     string
+	supervisor     versionInfo
 }
 type execLauncher struct{}
 type execProcess struct {
@@ -374,21 +380,74 @@ func defaultSupervisorOptions(opts SupervisorOptions) SupervisorOptions {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
+	if opts.runner == nil {
+		opts.runner = execRunner{}
+	}
+	if opts.supervisor == (versionInfo{}) {
+		info := version.Get()
+		opts.supervisor = versionInfo{Version: info.Version, Commit: info.Commit}
+	}
 	return opts
 }
 
 func ensureCurrentBinary(opts SupervisorOptions) error {
 	current := currentBinary(opts.Root, opts.GOOS)
-	if _, err := os.Stat(current); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	executable := opts.executable
+	if executable == "" {
+		var err error
+		executable, err = os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve supervisor executable: %w", err)
+		}
+	}
+	if _, err := os.Stat(current); errors.Is(err, os.ErrNotExist) {
+		return copyExecutable(executable, current)
+	} else if err != nil {
 		return err
 	}
-	executable, err := os.Executable()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	active, err := readVersion(ctx, opts.runner, opts.Root, current)
 	if err != nil {
-		return fmt.Errorf("resolve supervisor executable: %w", err)
+		_, reportErr := fmt.Fprintf(opts.Stderr,
+			"self-update skew: cannot read supervised daemon version at %s: %v; keeping existing binary\n",
+			current, err)
+		return reportErr
 	}
-	return copyExecutable(executable, current)
+	if sameVersionInfo(opts.supervisor, active) {
+		return nil
+	}
+	installedVersion, installedErr := hashiversion.NewVersion(opts.supervisor.Version)
+	activeVersion, activeErr := hashiversion.NewVersion(active.Version)
+	if installedErr != nil || activeErr != nil {
+		_, reportErr := fmt.Fprintf(opts.Stderr,
+			"self-update skew: installed supervisor is %s, supervised daemon is %s; versions are not orderable, keeping existing binary\n",
+			formatVersionInfo(opts.supervisor), formatVersionInfo(active))
+		return reportErr
+	}
+	if installedVersion.GreaterThan(activeVersion) {
+		if err := copyExecutable(executable, current); err != nil {
+			return fmt.Errorf("refresh supervised daemon from installed %s: %w", formatVersionInfo(opts.supervisor), err)
+		}
+		_, reportErr := fmt.Fprintf(opts.Stderr,
+			"self-update: refreshed supervised daemon from %s to installed %s\n",
+			formatVersionInfo(active), formatVersionInfo(opts.supervisor))
+		return reportErr
+	}
+	_, reportErr := fmt.Fprintf(opts.Stderr,
+		"self-update skew: installed supervisor is %s, supervised daemon is %s; keeping existing binary\n",
+		formatVersionInfo(opts.supervisor), formatVersionInfo(active))
+	return reportErr
+}
+
+func sameVersionInfo(left, right versionInfo) bool {
+	return left.Version == right.Version &&
+		(commitsEqual(left.Commit, right.Commit) || strings.TrimSpace(left.Commit) == strings.TrimSpace(right.Commit))
+}
+
+func formatVersionInfo(info versionInfo) string {
+	return fmt.Sprintf("%s (commit %s)", info.Version, info.Commit)
 }
 
 func pendingRequest(root string) (Request, bool, error) {

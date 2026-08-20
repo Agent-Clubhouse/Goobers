@@ -30,12 +30,11 @@ type Sandbox interface {
 	Mechanism() string
 }
 
-// Policy declares the stage workspace, isolated runtime-state directories the
-// harness may write, and host profile roots that must not be readable.
+// Policy declares the stage workspace and any isolated per-run runtime-state
+// directories the harness must also write.
 type Policy struct {
 	Workspace     string
 	WritableRoots []string
-	PrivateRoots  []string
 }
 
 // New returns the native sandbox for the current operating system.
@@ -46,7 +45,6 @@ func New() (Sandbox, error) {
 type validatedPolicy struct {
 	workspace     string
 	writableRoots []string
-	privateRoots  []string
 }
 
 func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
@@ -96,19 +94,6 @@ func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
 		}
 		validated.writableRoots = append(validated.writableRoots, resolved)
 	}
-	for _, root := range policy.PrivateRoots {
-		if root == "" {
-			return validatedPolicy{}, fmt.Errorf("sandbox: private root is empty")
-		}
-		resolved, err := resolveDirectory(root)
-		if err != nil {
-			return validatedPolicy{}, fmt.Errorf("sandbox: resolve private root %q: %w", root, err)
-		}
-		if resolved == filepath.VolumeName(resolved)+string(filepath.Separator) {
-			return validatedPolicy{}, fmt.Errorf("sandbox: private root %q cannot be a filesystem root", root)
-		}
-		validated.privateRoots = append(validated.privateRoots, resolved)
-	}
 	return validated, nil
 }
 
@@ -129,23 +114,4 @@ func resolveDirectory(path string) (string, error) {
 		return "", fmt.Errorf("%q is not a directory", resolved)
 	}
 	return resolved, nil
-}
-
-func privateCommandPaths(commandPath string, privateRoots []string) []string {
-	paths := []string{commandPath}
-	if resolved, err := filepath.EvalSymlinks(commandPath); err == nil && resolved != commandPath {
-		paths = append(paths, resolved)
-	}
-	var private []string
-	for _, path := range paths {
-		for _, root := range privateRoots {
-			relative, err := filepath.Rel(root, path)
-			if err == nil && relative != ".." &&
-				!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				private = append(private, path)
-				break
-			}
-		}
-	}
-	return private
 }

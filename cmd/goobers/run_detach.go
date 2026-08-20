@@ -135,6 +135,11 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 		return 2
 	}
 	name, root := args[0], args[1]
+	target, err := parseRunTarget(name, "")
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
@@ -147,9 +152,9 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, name, root, true, stdout, stderr)
+		return runDelegatedTrigger(ctx, l, target, root, true, stdout, stderr)
 	}
-	return runStandaloneTrigger(ctx, l, name, root, true, true, release, stdout, stderr)
+	return runStandaloneTrigger(ctx, l, target, root, true, true, release, stdout, stderr)
 }
 
 func detachedRunCreated(data []byte) (line, runID string, warnings []string, ok bool) {

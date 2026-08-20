@@ -1,4 +1,4 @@
-// Command flakewatch scans GitHub checks and Actions job logs for flake-shaped failures.
+// Command flakewatch scans GitHub checks and Actions job logs for test failures.
 package main
 
 import (
@@ -30,7 +30,6 @@ const (
 var (
 	testNamePattern = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
 	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
-	flakeShape      = regexp.MustCompile(`(?i)(WARNING: DATA RACE|test timed out|timed out waiting|deadline exceeded|lock contention|deadlock|concurrent map|order[- ]dependent|eventually condition)`)
 	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	ledgerPackage   = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
 	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
@@ -158,12 +157,37 @@ type failuresReport struct {
 		StartedAt  time.Time `json:"started_at"`
 		FinishedAt time.Time `json:"finished_at"`
 	} `json:"run"`
-	Failures []failure `json:"failures"`
+	Failures     []failure     `json:"failures"`
+	LogOmissions []logOmission `json:"log_omissions,omitempty"`
 }
 
 type scanResult struct {
 	KnownDispatched int
 	Novel           []failure
+	LogOmissions    []logOmission
+}
+
+type failureScan struct {
+	Failures     []failure
+	LogOmissions []logOmission
+}
+
+type logOmission struct {
+	JobID   int64  `json:"job_id"`
+	JobName string `json:"job_name"`
+	JobURL  string `json:"job_url,omitempty"`
+	Reason  string `json:"reason"`
+}
+
+type httpStatusError struct {
+	Method   string
+	Endpoint string
+	Status   int
+	Message  string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s %s: status %d: %s", e.Method, e.Endpoint, e.Status, e.Message)
 }
 
 func main() {
@@ -199,7 +223,11 @@ func run(
 		_, _ = fmt.Fprintf(stderr, "flakewatch: %v\n", err)
 		return 1
 	}
-	report := failuresReport{SchemaVersion: reportSchema, Failures: result.Novel}
+	report := failuresReport{
+		SchemaVersion: reportSchema,
+		Failures:      result.Novel,
+		LogOmissions:  result.LogOmissions,
+	}
 	report.Run.RunID = getenv("GITHUB_RUN_ID")
 	report.Run.RunAttempt = getenv("GITHUB_RUN_ATTEMPT")
 	report.Run.URL = runURL(getenv)
@@ -210,7 +238,13 @@ func run(
 		_, _ = fmt.Fprintf(stderr, "flakewatch: write report: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "flake watch: %d known dispatched, %d novel candidate(s)\n", result.KnownDispatched, len(result.Novel))
+	_, _ = fmt.Fprintf(
+		stdout,
+		"flake watch: %d known dispatched, %d novel candidate(s), %d unavailable job log(s)\n",
+		result.KnownDispatched,
+		len(result.Novel),
+		len(result.LogOmissions),
+	)
 	return 0
 }
 
@@ -261,11 +295,12 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 	seen := make(map[string]bool)
 	novelIndex := make(map[string]int)
 	for _, failureSource := range sources {
-		candidates, err := client.failures(ctx, failureSource, observed)
+		scanned, err := client.failures(ctx, failureSource, observed)
 		if err != nil {
 			return result, fmt.Errorf("scan %s: %w", failureSource.SHA, err)
 		}
-		for _, candidate := range candidates {
+		result.LogOmissions = append(result.LogOmissions, scanned.LogOmissions...)
+		for _, candidate := range scanned.Failures {
 			key := candidate.Occurrence
 			if key == "" {
 				key = candidate.Fingerprint + "\x00" + failureSource.URL
@@ -295,15 +330,13 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 				result.KnownDispatched++
 				continue
 			}
-			if flakeShape.MatchString(candidate.FailureText) {
-				if index, found := novelIndex[candidate.Fingerprint]; found {
-					result.Novel[index].Occurrences++
-					result.Novel[index].LastSeenRun = candidate.LastSeenRun
-					result.Novel[index].LastSeenAt = candidate.LastSeenAt
-				} else {
-					novelIndex[candidate.Fingerprint] = len(result.Novel)
-					result.Novel = append(result.Novel, candidate)
-				}
+			if index, found := novelIndex[candidate.Fingerprint]; found {
+				result.Novel[index].Occurrences++
+				result.Novel[index].LastSeenRun = candidate.LastSeenRun
+				result.Novel[index].LastSeenAt = candidate.LastSeenAt
+			} else {
+				novelIndex[candidate.Fingerprint] = len(result.Novel)
+				result.Novel = append(result.Novel, candidate)
 			}
 		}
 	}
@@ -416,21 +449,21 @@ func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bo
 	return result, nil
 }
 
-func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) ([]failure, error) {
+func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) (failureScan, error) {
 	checks, err := c.sourceChecks(ctx, source)
 	if err != nil {
-		return nil, err
+		return failureScan{}, err
 	}
-	var failures []failure
+	var result failureScan
 	for _, check := range checks {
-		if check.Conclusion == "success" || check.Conclusion == "neutral" || check.Conclusion == "skipped" {
+		if ignoresFlakeSignals(check.Conclusion) {
 			continue
 		}
 		annotations, err := getAll[annotation](ctx, c, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
 			"per_page": {"100"},
 		})
 		if err != nil {
-			return nil, err
+			return failureScan{}, err
 		}
 		for _, annotation := range annotations {
 			text := strings.TrimSpace(strings.Join([]string{
@@ -449,7 +482,7 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 			}
 			signature := flake.NormalizeSignature(signatureText)
 			fingerprint := flake.Fingerprint(pkg, testMatch[1], signature)
-			failures = append(failures, failure{
+			result.Failures = append(result.Failures, failure{
 				Fingerprint:      fingerprint,
 				Package:          pkg,
 				Test:             testMatch[1],
@@ -467,14 +500,33 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		}
 		log, err := c.jobLog(ctx, check.JobID)
 		if err != nil {
-			return nil, fmt.Errorf("read job %d log: %w", check.JobID, err)
+			var statusErr *httpStatusError
+			if errors.As(err, &statusErr) && statusErr.Status == http.StatusNotFound {
+				result.LogOmissions = append(result.LogOmissions, logOmission{
+					JobID:   check.JobID,
+					JobName: check.Name,
+					JobURL:  check.HTMLURL,
+					Reason:  "job log unavailable (HTTP 404)",
+				})
+				continue
+			}
+			return failureScan{}, fmt.Errorf("read job %d log: %w", check.JobID, err)
 		}
 		for _, candidate := range parseGoTestFailures(log, source.URL, observed) {
 			candidate.Occurrence = occurrenceID(check.ID, candidate.Package, candidate.Test)
-			failures = append(failures, candidate)
+			result.Failures = append(result.Failures, candidate)
 		}
 	}
-	return failures, nil
+	return result, nil
+}
+
+func ignoresFlakeSignals(conclusion string) bool {
+	switch conclusion {
+	case "success", "neutral", "skipped", "cancelled", "stale", "action_required":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *githubClient) jobLog(ctx context.Context, jobID int64) (string, error) {
@@ -858,7 +910,12 @@ func (c *githubClient) getBytes(ctx context.Context, endpoint string) ([]byte, e
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("GET %s: status %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
+		return nil, &httpStatusError{
+			Method:   http.MethodGet,
+			Endpoint: endpoint,
+			Status:   resp.StatusCode,
+			Message:  strings.TrimSpace(string(message)),
+		}
 	}
 	return io.ReadAll(resp.Body)
 }

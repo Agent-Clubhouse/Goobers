@@ -46,7 +46,7 @@ const onboardingHelp = "Usage: goobers onboarding <command> [flags]\n\n" +
 	"  stub-sample              materialize the disposable Getting Started target\n\n" +
 	"Run `goobers onboarding <command> -h` for action flags.\n"
 
-const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instructions --source-tree <path> [flags]\n\n" +
+const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instructions --source-tree <path> [--harness <name>] [--json]\n\n" +
 	"Install the release-matched Goobers agent toolkit and the selected harness\n" +
 	"instruction reference into a checked-in config source repository. This action\n" +
 	"delegates to `agent-kit install`: product-owned toolkit files are installed\n" +
@@ -59,7 +59,7 @@ const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instruct
 	"Exit codes: 0 = installed or already current, 1 = unsafe target, collision,\n" +
 	"drift, or write error, 2 = usage error.\n"
 
-const stubSampleHelp = "Usage: goobers onboarding stub-sample --destination <path> [flags]\n\n" +
+const stubSampleHelp = "Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]\n\n" +
 	"Materialize the embedded getting-started-task-api sample at an explicitly\n" +
 	"named destination. Existing matching files are skipped. A conflicting file\n" +
 	"fails the complete preflight without changing the destination unless --force\n" +
@@ -80,6 +80,7 @@ type onboardingActionResult struct {
 	Action      string   `json:"action"`
 	Version     int      `json:"version"`
 	Created     []string `json:"created"`
+	Updated     []string `json:"updated,omitempty"`
 	Skipped     []string `json:"skipped"`
 	Path        string   `json:"path"`
 	NextCommand string   `json:"nextCommand"`
@@ -172,7 +173,7 @@ func runOnboarding(args []string, stdout, stderr io.Writer) int {
 }
 
 func runOnboardingStubAgentInstructions(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("onboarding stub-agent-instructions", flag.ContinueOnError)
+	flags := newCLIFlagSet("onboarding stub-agent-instructions", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	sourceTree := flags.String("source-tree", "", "config source repository root")
 	harness := flags.String("harness", "", "harness adapter: copilot, claude, or generic")
@@ -283,7 +284,7 @@ func executeAgentToolkitInstallAction(
 }
 
 func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("onboarding stub-sample", flag.ContinueOnError)
+	flags := newCLIFlagSet("onboarding stub-sample", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	destination := flags.String("destination", "", "sample destination")
 	workTracking := flags.String("work-tracking", "", "GitHub owner/repo to seed")
@@ -771,6 +772,20 @@ func seedOnboardingIssues(
 	catalog onboardingSeedCatalog,
 	result *onboardingActionResult,
 ) error {
+	return seedOnboardingIssuesAs(ctx, seeder, repository, catalog, stubSampleAction, result)
+}
+
+// seedOnboardingIssuesAs is seedOnboardingIssues with the action segment of
+// the dedupe run-id made explicit, so `goobers connect --seed` reuses the
+// same idempotent machinery under its own marker namespace.
+func seedOnboardingIssuesAs(
+	ctx context.Context,
+	seeder onboardingIssueSeeder,
+	repository providers.RepositoryRef,
+	catalog onboardingSeedCatalog,
+	action string,
+	result *onboardingActionResult,
+) error {
 	labels, err := seeder.EnsureWorkItemLabels(ctx, repository, catalog.Labels)
 	if err != nil {
 		return err
@@ -790,7 +805,7 @@ func seedOnboardingIssues(
 		return err
 	}
 	for _, issue := range catalog.Issues {
-		runID := onboardingSeedRunID(catalog, issue)
+		runID := onboardingSeedRunID(catalog, issue, action)
 		marker := "goobers run-id: " + runID
 		found := false
 		for _, item := range existing {
@@ -817,10 +832,10 @@ func seedOnboardingIssues(
 	return nil
 }
 
-func onboardingSeedRunID(catalog onboardingSeedCatalog, issue onboardingSeedIssue) string {
+func onboardingSeedRunID(catalog onboardingSeedCatalog, issue onboardingSeedIssue, action string) string {
 	return fmt.Sprintf(
 		"onboarding/%s/v%d/%s@%s/%s",
-		stubSampleAction,
+		action,
 		onboardingIssueSeedVersion,
 		catalog.Sample.ID,
 		catalog.Sample.Version,

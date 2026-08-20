@@ -75,8 +75,9 @@ func TestCompletionDiscoveryExposesHelpTiers(t *testing.T) {
 	model := buildCompletionModel()
 	for _, command := range model.commands {
 		if command.id == "help" {
-			if got := strings.Join(command.argValues, " "); got != "all stages" {
-				t.Fatalf("help completion candidates = %q, want %q", got, "all stages")
+			want := "all stages instance gaggle goober workflow stage gate harness capability"
+			if got := strings.Join(command.argValues, " "); got != want {
+				t.Fatalf("help completion candidates = %q, want %q", got, want)
 			}
 			return
 		}

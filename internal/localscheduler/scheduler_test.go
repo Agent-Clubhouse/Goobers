@@ -155,6 +155,102 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	}
 }
 
+func TestReserveContinuationHoldsConcurrencyUntilReleased(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	release, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	sameRunRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("same run could not retain its reservation: %s", reason)
+	}
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok || reason != ReasonMaxParallel {
+		t.Fatalf("second reservation = (%v, %q), want max-parallel refusal", ok, reason)
+	}
+	sameRunRelease()
+	release()
+	release()
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); !ok {
+		t.Fatalf("reservation after release refused: %s", reason)
+	}
+}
+
+func TestReserveContinuationRetainsSlotAfterDispatchRelease(t *testing.T) {
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseEscalated}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	runID, err := scheduler.Trigger(context.Background(), "implement", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, starter.count, 1)
+	releaseContinuation, ok, reason := scheduler.ReserveContinuation(runID, "alpha", "implement")
+	if !ok {
+		t.Fatalf("continuation reservation refused: %s", reason)
+	}
+
+	close(block)
+	scheduler.Wait()
+	if release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement"); ok {
+		release()
+		t.Fatal("dispatch release removed the continuation reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	releaseContinuation()
+	release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after continuation release refused: %s", reason)
+	}
+	release()
+}
+
+func TestStaleContinuationReleaseDoesNotReleaseNewGeneration(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	staleRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	scheduler.ReleaseRun("run-a", "implement")
+	currentRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("replacement reservation refused: %s", reason)
+	}
+
+	staleRelease()
+	if release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok {
+		release()
+		t.Fatal("stale release removed the replacement reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	currentRelease()
+	release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after current release refused: %s", reason)
+	}
+	release()
+}
+
 func TestTickDispatchesWhenTriggerStatePersistenceFails(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
@@ -290,6 +386,7 @@ func TestStalledDemandPollDoesNotIndefinitelyDelayReload(t *testing.T) {
 
 func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	block := make(chan struct{})
+	blockClosed := false
 	alpha := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, dir := newTestScheduler(t, []WorkflowEntry{
@@ -297,7 +394,9 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Starter: beta},
 	})
 	t.Cleanup(func() {
-		close(block)
+		if !blockClosed {
+			close(block)
+		}
 		sched.Wait()
 	})
 
@@ -322,8 +421,30 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		t.Fatalf("trigger.fired gaggle scopes = %v, want alpha and beta", firedGaggles)
 	}
 	if _, err := sched.Trigger(context.Background(), "deploy", time.Now()); err == nil ||
-		!strings.Contains(err.Error(), "ambiguous across gaggles") {
+		!strings.Contains(err.Error(), "candidate gaggles: alpha, beta") ||
+		!strings.Contains(err.Error(), "goobers run alpha/deploy") ||
+		!strings.Contains(err.Error(), "goobers run beta/deploy") {
 		t.Fatalf("ambiguous manual trigger error = %v", err)
+	}
+
+	close(block)
+	blockClosed = true
+	sched.Wait()
+	runID, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}, time.Now())
+	if err != nil {
+		t.Fatalf("TriggerExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerExact returned an empty run ID")
+	}
+	waitForCount(t, beta.count, 2)
+	if alpha.count() != 1 {
+		t.Fatalf("alpha starts = %d, want 1", alpha.count())
+	}
+
+	if _, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "gamma", Workflow: "deploy"}, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), `unknown workflow "deploy" in gaggle "gamma"`) {
+		t.Fatalf("unknown exact manual trigger error = %v", err)
 	}
 }
 

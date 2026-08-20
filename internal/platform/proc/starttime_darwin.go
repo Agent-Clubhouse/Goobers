@@ -8,6 +8,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const startTimeSupported = true
+
 func startTime(pid int) (time.Time, bool) {
 	if pid <= 0 {
 		return time.Time{}, false

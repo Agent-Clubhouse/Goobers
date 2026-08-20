@@ -1,6 +1,6 @@
 # Design: Tutor v2 — version-aware, instance-scoped process self-improvement
 
-> Status: **Accepted (PO-ratified 2026-07-21) — not yet implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
+> Status: **implemented — shipped except TUT-A8** (TUT-P1..P3 #1192–#1194 and TUT-A1..A7 #1213–#1219 closed; #1220 configrepo:write remains open; header refreshed 2026-08-07) · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
 > Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)

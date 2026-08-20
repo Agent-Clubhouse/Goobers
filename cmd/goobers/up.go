@@ -220,10 +220,18 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
 	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
 	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
-	"forces every list request onto the journal-derived paths for this run,\n" +
-	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
-	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n"
+	"forces every list request to scan the authoritative journals for this\n" +
+	"run, bypassing both read.db and telemetry.db as run-candidate indexes.\n" +
+	"This can be slow on a large history. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of serving\n" +
+	"wrong or incomplete results.\n\n" +
+	"These five behavior controls are intentionally flag-only: --watch-config\n" +
+	"selects a process-local development watcher, --diagnostics is temporary\n" +
+	"debug capture, --drain-timeout applies only after this process receives a\n" +
+	"shutdown signal, --skip-preflight is an unsafe startup escape hatch, and\n" +
+	"--disable-read-model-reads is an emergency rollback. Keeping them out of\n" +
+	"instance.yaml prevents temporary operational overrides from becoming\n" +
+	"durable policy. `goobers status --daemon` reports their effective values.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -258,7 +266,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		<-parentBridgeDone
 	}()
 
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs := newCLIFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
@@ -269,7 +277,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
-	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -288,6 +296,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 
 	l := instance.NewLayout(root)
+	pf(stdout, "startup: validating instance configuration\n")
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
@@ -295,6 +304,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	pf(stdout, "startup: instance configuration valid\n")
 	startupConfig, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
@@ -321,7 +331,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, &daemonBehavior{
+		WatchConfig:           *watchConfig,
+		Diagnostics:           *diagnostics,
+		DrainTimeoutNanos:     int64(*drainTimeout),
+		SkipPreflight:         *skipPreflight,
+		DisableReadModelReads: *disableReadModelReads,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -340,16 +356,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	setupOptions := []schedulerSetupOption{
+		withDesktopNotifications(notifications, stderr),
+		withStartupProgress(func(message string) {
+			pf(stdout, "startup: %s\n", message)
+		}),
+	}
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
 	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: scheduler initialized\n")
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -359,6 +382,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
+	if err != nil {
+		pf(stderr, "error: start engine projection reconciler: %v\n", err)
+		return 1
+	}
+	defer stopEngineProjection()
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
@@ -387,7 +416,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel: setup.ReadModel,
+		ReadModel:      setup.ReadModel,
+		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -402,7 +432,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// DisableReadModelReads previously had no caller anywhere, so the
 		// documented "a flag flip, never a deploy" rollback did not exist in
 		// practice. read.db itself is untouched — this only forces every list
-		// request back onto the journal-derived paths for this run.
+		// request back onto authoritative journal scans for this run.
 		reads.DisableReadModelReads()
 	}
 	// Move the active-run count off the request path (#1741). Six read routes
@@ -411,7 +441,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The daemon is the only construction that is long-lived enough for a
 	// background sample to be warm, so it is the only one that starts it.
 	stopActiveSampler := reads.StartActiveRunSampler(0)
-	defer stopActiveSampler()
+	defer func() {
+		if err := stopActiveSampler(); err != nil {
+			pf(stderr, "error: stop active-run sampler: %v\n", err)
+		}
+	}()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
@@ -434,6 +468,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if setup.ReadModel != nil {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
+	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	apiHandlerOpts = append(apiHandlerOpts,
+		httpapi.WithInterventions(interventions),
+		httpapi.WithInterventionContext(ctx),
+	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
@@ -480,7 +519,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -589,6 +628,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		default:
 		}
 	}
+	interventions.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -622,7 +662,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry, setup.SecretStores)
+				// The stalled run's gaggle is only knowable from its runs-tree
+				// scope; cleanup must target that gaggle's own repo (#2692).
+				project, err := terminalGaggleProject(runLayout)
+				if err != nil {
+					return nil, err
+				}
+				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -741,6 +787,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	// #3274: a github-app workflowSource mints installation tokens instead of
+	// reading a static token ref. The minter is built once here — the
+	// composition root, since internal/instance cannot import
+	// internal/githubapp — and shared by the apply sweep and the reconcile
+	// loop below, so both draw on one near-expiry-refreshing token cache.
+	var workflowSourceAppTokens instance.GitTokenSource
+	if source := setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
+		minted, mintErr := newWorkflowSourceAppTokenSource(*source, setup.SharedRegistry, setup.SecretStores)
+		if mintErr != nil {
+			pf(stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
+			return 1
+		}
+		workflowSourceAppTokens = minted
+	}
 	var sourceReconcileMu sync.Mutex
 	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
@@ -748,7 +808,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
 			if syncErr != nil {
 				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
 				return resp
@@ -979,6 +1039,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					root,
 					*source,
 					sourceRevision,
+					workflowSourceAppTokens,
 					setup.SharedRegistry,
 					setup.SecretStores,
 				)
@@ -1026,13 +1087,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
-		lastSeq := uint64(0)
-		if events, err := journal.ReadInstanceLog(l.SchedulerDir()); err == nil && len(events) > 0 {
-			lastSeq = events[len(events)-1].Seq
-		}
+		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -1313,11 +1371,13 @@ func emitHeartbeats(
 	stdout io.Writer,
 	schedulerDir string,
 	workflowCount int,
-	lastSeq uint64,
+	tail *journal.InstanceLogTail,
+	err error,
 	interval time.Duration,
 	done chan<- struct{},
 ) {
 	defer close(done)
+	defer func() { _ = tail.Close() }()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -1326,15 +1386,25 @@ func emitHeartbeats(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			events, err := journal.ReadInstanceLog(schedulerDir)
+			if tail == nil {
+				tail, err = journal.OpenInstanceLogTail(schedulerDir)
+			}
+			if err == nil {
+				var events []journal.Event
+				events, err = tail.Events()
+				if err == nil {
+					activity, _ := summarizeHeartbeat(events, 0)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					continue
+				}
+				_ = tail.Close()
+				tail = nil
+			}
 			if err != nil {
 				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
 				continue
 			}
-			activity, nextSeq := summarizeHeartbeat(events, lastSeq)
-			lastSeq = nextSeq
-			pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-				now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
 		}
 	}
 }

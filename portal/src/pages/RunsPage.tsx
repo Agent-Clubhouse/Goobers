@@ -1,7 +1,10 @@
 import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { RecoveryCommand } from "../components/RecoveryAction";
+import { ScopeStrip } from "../components/ScopeStrip";
 import { routeHash, type RunRouteFilters } from "../routing";
+import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
@@ -47,7 +50,7 @@ export function RunsPage({
         <h1>Runs</h1>
         <p>
           {filters
-            ? `Executions behind the selected Insight scope${formatWindow(filters)}.`
+            ? `Executions behind the selected Insight scope${scopeWindowLabel(filters)}.`
             : standalone
               ? "Every execution recorded in this instance, filtered and paginated by the read service."
               : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
@@ -55,10 +58,12 @@ export function RunsPage({
       </header>
 
       {filters && (
-        <div aria-label="Insight drill-through scope" className="run-scope-strip">
-          <strong>{formatScope(filters)}</strong>
-          <a href={routeHash({ page: "runs" })}>Clear Insight scope</a>
-        </div>
+        <ScopeStrip
+          ariaLabel="Insight drill-through scope"
+          clearHref={routeHash({ page: "runs" })}
+          filters={filters}
+          suffix={formatPopulation(filters)}
+        />
       )}
 
       <div aria-label="Filter runs" className="filter-bar" role="group">
@@ -97,7 +102,29 @@ export function RunsPage({
 
       <section className="content-section">
         {history.runs.length === 0 ? (
-          <p className="inline-empty">No runs match this filter.</p>
+          history.hasAnyRuns ? (
+            <div className="inline-empty inline-empty-recovery">
+              <strong>Filters exclude existing runs</strong>
+              <span>Clear the current filters to return to the complete run history.</span>
+              <a
+                className="text-button"
+                href={routeHash({ page: "runs" })}
+                onClick={() => {
+                  setFilter("all");
+                  setShowNoWork(true);
+                }}
+              >
+                Clear all filters
+              </a>
+              <RecoveryCommand command="goobers status <instance>" />
+            </div>
+          ) : (
+            <div className="inline-empty inline-empty-recovery">
+              <strong>No runs recorded</strong>
+              <span>Start a configured workflow to create the first run journal.</span>
+              <RecoveryCommand command="goobers run <workflow> <instance>" />
+            </div>
+          )
         ) : (
           <>
             <DataList
@@ -128,18 +155,6 @@ export function RunsPage({
   );
 }
 
-function formatScope(filters: RunRouteFilters): string {
-  let scope: string;
-  if (filters.stage) {
-    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
-  } else if (filters.workflow) {
-    scope = `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
-  } else {
-    scope = filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
-  }
-  return `${scope}${formatPopulation(filters)}`;
-}
-
 function formatPopulation(filters: RunRouteFilters): string {
   switch (filters.population) {
     case "measured":
@@ -167,19 +182,6 @@ function formatPopulation(filters: RunRouteFilters): string {
   }
 }
 
-function formatWindow(filters: RunRouteFilters): string {
-  if (filters.since && filters.until) {
-    return ` from ${formatTimestamp(filters.since)} to ${formatTimestamp(filters.until)}`;
-  }
-  if (filters.since) {
-    return ` since ${formatTimestamp(filters.since)}`;
-  }
-  if (filters.until) {
-    return ` through ${formatTimestamp(filters.until)}`;
-  }
-  return "";
-}
-
 function RunHistoryRow({ run }: { run: RunSummary }) {
   return (
     <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
@@ -190,7 +192,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
         </span>
       </span>
-      <StatusBadge status={run.phase} />
+      <StatusBadge stale={run.stale} status={run.phase} />
       <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
       <span>
         <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>

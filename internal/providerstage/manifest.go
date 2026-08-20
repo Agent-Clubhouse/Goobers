@@ -3,6 +3,7 @@
 package providerstage
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,9 @@ type CapabilityUse struct {
 type Command struct {
 	ResultFile   string
 	Capabilities []CapabilityUse
+
+	mutatesClaimLedger bool
+	claimMutationFlags []string
 }
 
 func required(cap capability.Capability, consequence string) CapabilityUse {
@@ -63,7 +67,7 @@ var commands = map[string]Command{
 	"backlog-dedupe": {
 		ResultFile: "dedupe-candidates.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
 		},
 	},
 	"backlog-assignment": {
@@ -75,7 +79,8 @@ var commands = map[string]Command{
 	"backlog-health": {
 		ResultFile: "backlog-health.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesWrite, []string{"feedback"}, "the write capability-scoped credential is not injected, so implementation feedback fails at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesRead, []string{"feedback"}, "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
 		},
 	},
 	"backlog-query": {
@@ -85,9 +90,17 @@ var commands = map[string]Command{
 			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"read-only"}, "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime"),
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
 		},
+		claimMutationFlags: []string{"claim", "reconcile", "release"},
+	},
+	"publish-batch": {
+		ResultFile: "published-batch.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
+		},
 	},
 	"select-source": {
-		ResultFile: "selection.json",
+		ResultFile:         "selection.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"),
 		},
@@ -95,7 +108,7 @@ var commands = map[string]Command{
 	"validate-plan": {
 		ResultFile: "plan-validation.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
+			required(capability.GitHubIssuesRead, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
 		},
 	},
 	"elect-lander": {
@@ -127,14 +140,14 @@ var commands = map[string]Command{
 		ResultFile: "remediation-brief.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
+			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
 		},
 	},
 	"gather-pr-context": {
-		ResultFile: "remediation-brief.json",
+		ResultFile:         "remediation-brief.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"),
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so remediation issue routing fails at runtime"),
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so remediation branch preparation fails at runtime"),
 		},
 	},
@@ -151,7 +164,8 @@ var commands = map[string]Command{
 		},
 	},
 	"issue-close-out": {
-		ResultFile: "issue-close-out-result.json",
+		ResultFile:         "issue-close-out-result.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so issue close-out fails at runtime"),
 		},
@@ -161,6 +175,13 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so pull-request merge fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so merged-branch cleanup fails at runtime"),
+			// Azure DevOps land: the ADO branch resolves ado:pr:complete (the ADO
+			// counterpart to github:pr:merge) via providerToken to preserve the
+			// decider≠executor grant isolation. Marked optional — it is
+			// provider-conditional (used only when repo.Provider is ADO), so it
+			// must NOT be auto-derived onto GitHub merge-pr tasks; the ADO
+			// merge-review workflow declares it explicitly on this stage instead.
+			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps pull-request completion fails at runtime"),
 		},
 	},
 	"merge-queue-poll": {
@@ -169,6 +190,7 @@ var commands = map[string]Command{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so merge-queue polling fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so eviction remediation fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so queue-merged branch cleanup fails at runtime"),
+			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps queue completion fails at runtime"),
 		},
 	},
 	"open-pr": {
@@ -191,13 +213,15 @@ var commands = map[string]Command{
 		},
 	},
 	"pr-select": {
-		ResultFile: "selected-pr.json",
+		ResultFile:         "selected-pr.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request selection fails at runtime"),
 		},
 	},
 	"pr-claim": {
-		ResultFile: "pr-remediation-lifecycle.json",
+		ResultFile:         "pr-remediation-lifecycle.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"),
 		},
@@ -242,7 +266,13 @@ var commands = map[string]Command{
 	"respond-to-findings": {
 		ResultFile: "remediation-response.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so finding responses cannot be published at runtime"),
+		},
+	},
+	"resolve-review-threads": {
+		ResultFile: "review-thread-resolution.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so review-thread replies and resolutions fail at runtime"),
 		},
 	},
 	"set-milestone": {
@@ -252,7 +282,8 @@ var commands = map[string]Command{
 		},
 	},
 	"update-behind-pr": {
-		ResultFile: "update-behind-result.json",
+		ResultFile:         "update-behind-result.json",
+		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so behind-base pull-request update fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so behind-base remediation routing fails at runtime"),
@@ -279,6 +310,16 @@ var commands = map[string]Command{
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
 		},
 	},
+}
+
+// Commands returns every command declared by the provider-stage manifest.
+func Commands() []string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // Lookup returns the manifest entry for command.
@@ -313,6 +354,15 @@ func ResultFile(command string) (string, bool) {
 		return "", false
 	}
 	return entry.ResultFile, true
+}
+
+// MutatesClaimLedger reports whether a built-in invocation can write claims.json.
+func MutatesClaimLedger(command string, args []string) bool {
+	entry, ok := Lookup(command)
+	if !ok {
+		return false
+	}
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
 }
 
 func (u CapabilityUse) required(args []string) bool {

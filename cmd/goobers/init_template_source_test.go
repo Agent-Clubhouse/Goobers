@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -78,7 +79,9 @@ func TestInitQuickstartConfigSourceJSONGoldens(t *testing.T) {
 			if test.check != nil {
 				test.check(t, root)
 			}
-			createDeclaredSkillPackages(t, filepath.Dir(root), "implement", "review", "run-tests")
+			// The quickstart-v1 template ships its own gaggle-scoped
+			// implement/run-tests/review skill packages (SKILL002 fix); a
+			// shared-level stand-in here would collide with them (SKILL001).
 
 			var envelope onboardingActionResult
 			if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
@@ -156,9 +159,15 @@ func TestInitQuickstartConfigSourceRejectsSemanticallyInvalidPopulatedDestinatio
 		root,
 		"--json",
 	)
-	if code != 1 || stdout != "" ||
-		!strings.Contains(stderr, `"code": "COMMAND001"`) ||
-		!strings.Contains(stderr, `unknown goobers verb \"missing-command\"`) {
+	// Since the C+D2/#2861 wave the unknown verb is rejected during the
+	// api/validate pass (WF010, the DSL compilers' admission check against
+	// internal/builtincmd) — earlier than the late #650 COMMAND001 pass this
+	// case used to reach, so it surfaces as a seeding-validation error (exit
+	// 2) rather than the late pass's JSON diagnostics (exit 1).
+	if code != 2 || stdout != "" ||
+		!strings.Contains(stderr, "WF010") ||
+		!strings.Contains(stderr, "unknown built-in subcommand") ||
+		!strings.Contains(stderr, "missing-command") {
 		t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
@@ -181,7 +190,19 @@ func TestInitQuickstartConfigSourceQuotesNextCommandPath(t *testing.T) {
 		t.Fatalf("decode result: %v\n%s", err, stdout)
 	}
 	abs := absolutePath(root)
+	// nextCommand's quoting matches the host shell: quoteShellArg branches on
+	// runtime.GOOS, using PowerShell ''-doubling on Windows (that command is
+	// meant to be pasted into the user's actual shell — PowerShell on
+	// Windows, POSIX sh/bash elsewhere) and POSIX '"'"'-escaping everywhere
+	// else. This test runs with the real host GOOS via runArgs/runInit (no
+	// forced OS), so its expectation must follow the same branch;
+	// TestInitQuickstartConfigSourceQuotesWindowsNextCommandPath covers the
+	// Windows-quoting behavior explicitly (forced goos="windows") regardless
+	// of host.
 	quotedAbs := "'" + strings.ReplaceAll(abs, "'", `'"'"'`) + "'"
+	if runtime.GOOS == "windows" {
+		quotedAbs = "'" + strings.ReplaceAll(abs, "'", "''") + "'"
+	}
 	want := "goobers validate --source-tree --json " + quotedAbs
 	if envelope.NextCommand != want {
 		t.Fatalf("nextCommand = %q, want %q", envelope.NextCommand, want)
@@ -289,13 +310,18 @@ func assertQuickstartSourceValid(t *testing.T, root string) {
 		t.Fatalf("validate source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	var result struct {
-		OK       bool              `json:"ok"`
-		Findings []json.RawMessage `json:"findings"`
+		OK       bool                `json:"ok"`
+		Findings []diagnosticFinding `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode validation result: %v\n%s", err, stdout)
 	}
-	if !result.OK || len(result.Findings) != 0 {
+	if !result.OK || len(result.Findings) != 2 {
 		t.Fatalf("validation result = %s", stdout)
+	}
+	for _, finding := range result.Findings {
+		if finding.Code != placeholderFindingCode || finding.Severity != "warning" {
+			t.Fatalf("quickstart source has non-placeholder finding %+v", finding)
+		}
 	}
 }

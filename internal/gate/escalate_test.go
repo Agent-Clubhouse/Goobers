@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,6 +32,16 @@ func (f *fakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWo
 
 func (f *fakeCommenter) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
 	return append([]providers.Comment(nil), f.comments...), nil
+}
+
+func (f *fakeCommenter) UpdateComment(_ context.Context, _ providers.RepositoryRef, commentID, body string) error {
+	for i, c := range f.comments {
+		if c.ID == commentID {
+			f.comments[i].Body = body
+			return nil
+		}
+	}
+	return fmt.Errorf("comment %s not found", commentID)
 }
 
 func TestNotifyEscalatedPostsComment(t *testing.T) {
@@ -138,5 +149,70 @@ func TestPostRunCommentReconcilesMarkerWithDifferentVisibleText(t *testing.T) {
 	}
 	if poster.calls != 0 {
 		t.Fatalf("POST calls = %d, want 0 when the run+seq marker already exists", poster.calls)
+	}
+}
+
+func TestCountFailureStreakZeroWhenNoMarker(t *testing.T) {
+	poster := &fakeCommenter{}
+	count, id, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 || id != "" {
+		t.Fatalf("want (0, \"\"), got (%d, %q)", count, id)
+	}
+}
+
+func TestCountFailureStreakReadsExistingMarker(t *testing.T) {
+	poster := &fakeCommenter{
+		comments: []providers.Comment{
+			{ID: "99", Body: failureStreakBody(5, "implement", "run-abc", "http://127.0.0.1:8080/#/run/run-abc")},
+		},
+	}
+	count, id, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 5 {
+		t.Fatalf("count = %d, want 5", count)
+	}
+	if id != "99" {
+		t.Fatalf("commentID = %q, want %q", id, "99")
+	}
+}
+
+func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
+	poster := &fakeCommenter{}
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1", "http://127.0.0.1:8080/#/run/run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if poster.calls != 1 {
+		t.Fatalf("calls = %d, want 1", poster.calls)
+	}
+	if !strings.Contains(poster.comments[0].Body, failureStreakMarker) {
+		t.Fatal("posted comment missing streak marker")
+	}
+	if !strings.Contains(poster.comments[0].Body, "[`run-1`](http://127.0.0.1:8080/#/run/run-1)") {
+		t.Fatalf("posted comment missing run-details link: %s", poster.comments[0].Body)
+	}
+}
+
+func TestUpsertFailureCommentEditsExisting(t *testing.T) {
+	poster := &fakeCommenter{
+		comments: []providers.Comment{
+			{ID: "42", Body: failureStreakBody(1, "implement", "run-old", "http://127.0.0.1:8080/#/run/run-old")},
+		},
+	}
+	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 2, "implement", "run-new", "http://127.0.0.1:8080/#/run/run-new"); err != nil {
+		t.Fatal(err)
+	}
+	if poster.calls != 0 {
+		t.Fatalf("calls = %d, want 0 (should edit, not post)", poster.calls)
+	}
+	if !strings.Contains(poster.comments[0].Body, `data-count="2"`) {
+		t.Fatalf("edited comment has wrong count: %s", poster.comments[0].Body)
+	}
+	if !strings.Contains(poster.comments[0].Body, "[`run-new`](http://127.0.0.1:8080/#/run/run-new)") {
+		t.Fatalf("edited comment has stale run-details link: %s", poster.comments[0].Body)
 	}
 }

@@ -605,6 +605,260 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
   };
 }
 
+// --- Gaggle list (sidebar nav / switcher) --------------------------------
+//
+// A small, definition-only projection of the gaggle inventory: just enough to
+// render "which gaggles exist" chrome (sidebar nav, in-page switcher) without
+// paying for every gaggle's goobers/workflows/connections the way the
+// unscoped OperationalSnapshot does.
+
+export interface GaggleSummary {
+  name: string;
+  displayName: string;
+  status: Gaggle["status"];
+}
+
+export interface GaggleListQuery {
+  retry: () => void;
+  state: QueryState<GaggleSummary[]>;
+}
+
+const GAGGLE_LIST_CACHE_KEY = dataCacheKey("gaggle-list");
+const GAGGLE_LIST_DEPENDENCIES: readonly DataCacheDependency[] = [
+  { model: "instance" },
+  { model: "workflow" },
+];
+
+export function useGaggleList(client: DaemonClient): GaggleListQuery {
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cached = cache.get<GaggleSummary[]>(GAGGLE_LIST_CACHE_KEY);
+  const [state, setState] = useState<QueryState<GaggleSummary[]>>(() =>
+    cached ? { status: "ready", data: cached } : { status: "loading" },
+  );
+  const data = useRef<GaggleSummary[] | undefined>(cached);
+
+  const performLoad = useCallback(
+    async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(GAGGLE_LIST_CACHE_KEY, GAGGLE_LIST_DEPENDENCIES);
+      setState((current) =>
+        current.status === "ready" || current.status === "stale"
+          ? { status: "stale", data: current.data }
+          : { status: "loading" },
+      );
+
+      try {
+        const gaggles = await loadGaggleDefinitions(client, cache, signal);
+        const loaded = gaggles.map((gaggle) => ({
+          name: gaggle.name,
+          displayName: gaggle.displayName,
+          status: gaggle.status,
+        }));
+        if (signal.aborted) {
+          return false;
+        }
+        data.current = loaded;
+        cache.set(GAGGLE_LIST_CACHE_KEY, loaded, GAGGLE_LIST_DEPENDENCIES, cacheRevision);
+        setState(isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded });
+        return true;
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          return false;
+        }
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read daemon data.");
+        setState((current) =>
+          current.status === "ready" || current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
+        return false;
+      }
+    },
+    [cache, client, isFresh],
+  );
+  const load = useCoalescedOperationalRefresh(performLoad);
+
+  useEffect(
+    () =>
+      subscribe(["instance", "workflow"], (models, reason) => {
+        const cached =
+          reason === "initial" ? cache.get<GaggleSummary[]>(GAGGLE_LIST_CACHE_KEY) : undefined;
+        if (cached) {
+          data.current = cached;
+          setState(
+            isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+          );
+          return true;
+        }
+        return load(models);
+      }),
+    [cache, isFresh, load, subscribe],
+  );
+
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  return {
+    retry: () => {
+      cache.remove(GAGGLE_LIST_CACHE_KEY);
+      void load();
+    },
+    state,
+  };
+}
+
+// --- Gaggle-scoped activity (GagglePage "what's happening now") ----------
+//
+// GagglePage's OperationalSnapshot only carries the latest run per workflow
+// (enough for a per-workflow status badge). Surfacing "what's running now"
+// and "recent outcomes" for the gaggle as a whole needs the same
+// active/attention/recent grouping the Overview uses, scoped to one gaggle
+// instead of the whole instance.
+
+export interface GaggleActivity {
+  active: RunSummary[];
+  recent: RunSummary[];
+}
+
+export interface GaggleActivityQuery {
+  retry: () => void;
+  state: QueryState<GaggleActivity>;
+}
+
+const GAGGLE_ACTIVE_RUN_LIMIT = 20;
+const GAGGLE_RECENT_OUTCOME_LIMIT = 10;
+
+function gaggleActivityCacheKey(gaggleName: string): string {
+  return dataCacheKey("gaggle-activity", gaggleName);
+}
+
+export function useGaggleActivity(client: DaemonClient, gaggleName: string): GaggleActivityQuery {
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
+  const cacheKey = gaggleActivityCacheKey(gaggleName);
+  const cached = cache.get<GaggleActivity>(cacheKey);
+  const [state, setState] = useState<QueryState<GaggleActivity>>(() =>
+    cached ? { status: "ready", data: cached } : { status: "loading" },
+  );
+  const data = useRef<GaggleActivity | undefined>(cached);
+
+  const performLoad = useCallback(
+    async (_models: ReadonlySet<UpdateModel> | undefined, signal: AbortSignal) => {
+      const cacheRevision = cache.beginWrite(cacheKey, GAGGLE_ACTIVITY_DEPENDENCIES);
+      setState((current) =>
+        current.status === "ready" || current.status === "stale"
+          ? { status: "stale", data: current.data }
+          : { status: "loading" },
+      );
+
+      try {
+        const loaded = await loadGaggleActivity(client, gaggleName, signal);
+        if (signal.aborted) {
+          return false;
+        }
+        data.current = loaded;
+        cache.set(cacheKey, loaded, GAGGLE_ACTIVITY_DEPENDENCIES, cacheRevision);
+        setState(isFresh() ? { status: "ready", data: loaded } : { status: "stale", data: loaded });
+        return true;
+      } catch (error: unknown) {
+        if (signal.aborted) {
+          return false;
+        }
+        const queryError =
+          error instanceof Error ? error : new Error("Unable to read daemon data.");
+        setState((current) =>
+          current.status === "ready" || current.status === "stale"
+            ? { status: "stale", data: current.data, error: queryError }
+            : { status: "error", error: queryError },
+        );
+        return false;
+      }
+    },
+    [cache, cacheKey, client, gaggleName, isFresh],
+  );
+  const load = useCoalescedOperationalRefresh(performLoad);
+
+  useEffect(
+    () =>
+      subscribe(
+        ["instance", "workflow", "run"],
+        (models, reason) => {
+          const cached = reason === "initial" ? cache.get<GaggleActivity>(cacheKey) : undefined;
+          if (cached) {
+            data.current = cached;
+            setState(
+              isFresh() ? { status: "ready", data: cached } : { status: "stale", data: cached },
+            );
+            return true;
+          }
+          return load(models);
+        },
+        { gaggle: gaggleName },
+      ),
+    [cache, cacheKey, gaggleName, isFresh, load, subscribe],
+  );
+
+  useEffect(() => {
+    setState((current) => {
+      if (freshness !== "connected" && current.status === "ready") {
+        return { status: "stale", data: current.data };
+      }
+      if (freshness === "connected" && current.status === "stale" && !current.error) {
+        return { status: "ready", data: current.data };
+      }
+      return current;
+    });
+  }, [freshness]);
+
+  return {
+    retry: () => {
+      cache.remove(cacheKey);
+      void load();
+    },
+    state,
+  };
+}
+
+async function loadGaggleActivity(
+  client: DaemonClient,
+  gaggleName: string,
+  signal?: AbortSignal,
+): Promise<GaggleActivity> {
+  const byPhase = (phase: RunPhase, limit: number) =>
+    client.listRuns({ gaggle: gaggleName, phase, limit }, { signal });
+  // Mirrors loadOverviewRunGroups' per-phase settling (#1709): one slow phase
+  // must not blank the other groups on this gaggle's page.
+  const settled = await Promise.allSettled([
+    byPhase("running", GAGGLE_ACTIVE_RUN_LIMIT),
+    byPhase("escalated", GAGGLE_RECENT_OUTCOME_LIMIT),
+    byPhase("failed", GAGGLE_RECENT_OUTCOME_LIMIT),
+    byPhase("completed", GAGGLE_RECENT_OUTCOME_LIMIT),
+    byPhase("aborted", GAGGLE_RECENT_OUTCOME_LIMIT),
+  ]);
+  const firstError = settled.find((result) => result.status === "rejected");
+  if (firstError && settled.every((result) => result.status === "rejected")) {
+    throw settledError(firstError) ?? new Error("Unable to read runs.");
+  }
+  const [running, escalated, failed, completed, aborted] = settled.map((result) =>
+    settledValue(result)?.runs ?? [],
+  );
+  return {
+    active: sortRuns(running),
+    recent: sortRuns([...escalated, ...failed, ...completed, ...aborted]).slice(
+      0,
+      GAGGLE_RECENT_OUTCOME_LIMIT,
+    ),
+  };
+}
+
 function usePeriodicHealth<T extends { health: Health }>(
   client: DaemonClient,
   freshness: LiveFreshness,

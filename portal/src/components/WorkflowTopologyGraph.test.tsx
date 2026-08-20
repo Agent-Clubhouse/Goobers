@@ -90,6 +90,24 @@ describe("workflow topology graph", () => {
     expect(within(topology).getByText(/approve to Complete terminal/)).toBeInTheDocument();
   });
 
+  it("shapes gate nodes as decision points and keeps every kind separable by class (#2693)", () => {
+    render(<Harness graph={cyclicGraph} />);
+
+    const gate = screen.getByRole("button", { name: /^review, Gate/ });
+    const shape = gate.querySelector(".workflow-node-shape");
+    expect(shape).not.toBeNull();
+    // The shape is decoration: the kind stays readable as text and as a class.
+    expect(shape).toHaveAttribute("aria-hidden", "true");
+    expect(gate).toHaveClass("workflow-node-gate");
+
+    const deterministic = screen.getByRole("button", { name: /^query, Deterministic task/ });
+    const agentic = screen.getByRole("button", { name: /^implement, Agentic task/ });
+    expect(deterministic.querySelector(".workflow-node-shape")).toBeNull();
+    expect(agentic.querySelector(".workflow-node-shape")).toBeNull();
+    expect(deterministic).toHaveClass("workflow-node-deterministic");
+    expect(agentic).toHaveClass("workflow-node-agentic");
+  });
+
   it("scrolls the next stage into view before moving keyboard focus", () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {

@@ -78,6 +78,33 @@ func TestCompactInstanceEventsDropsAgedRecords(t *testing.T) {
 	}
 }
 
+func TestCompactInstanceEventsPreservesInitCompletion(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	initCompleted := strings.Replace(eventLine(1, old, ""), string(EventTriggerFired), string(EventInitCompleted), 1)
+	writeRawInstanceLog(t, dir,
+		initCompleted,
+		eventLine(2, old, ""),
+		eventLine(3, recent, ""),
+	)
+
+	result, err := CompactInstanceEvents(dir, recent.Add(-time.Hour), recent.Add(-time.Hour), false)
+	if err != nil {
+		t.Fatalf("CompactInstanceEvents: %v", err)
+	}
+	if result.Dropped != 1 || result.Kept != 2 {
+		t.Fatalf("compaction = %+v, want Dropped 1 Kept 2", result)
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != EventInitCompleted || events[1].Seq != 3 {
+		t.Fatalf("events after compaction = %#v, want init.completed and recent event", events)
+	}
+}
+
 func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	dir := t.TempDir()
 	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -86,6 +113,7 @@ func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	result, err := CompactInstanceEvents(dir, cutoff, cutoff, true)
@@ -101,6 +129,28 @@ func TestCompactInstanceEventsDryRunLeavesFile(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatalf("dry-run modified the journal")
+	}
+}
+
+func TestCompactInstanceEventsRejectsUnsupportedSchemaWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	future := `{"schema":"goobers.dev/journal/event/v2","seq":1,"time":"2026-01-01T00:00:00Z","type":"future.event"}`
+	writeRawInstanceLog(t, dir, future)
+	path := filepath.Join(dir, fileEvents)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CompactInstanceEvents(dir, time.Now(), time.Time{}, false); err == nil {
+		t.Fatal("CompactInstanceEvents accepted an unsupported event schema")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("CompactInstanceEvents mutated the journal before rejecting its schema")
 	}
 }
 

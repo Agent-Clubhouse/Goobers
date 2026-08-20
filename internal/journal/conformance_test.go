@@ -24,11 +24,14 @@ func baseNormativeEvent() Event {
 		Attempt:             1,
 		AttemptClass:        AttemptPolicy,
 		Actor:               "maintainer@example.com",
+		Action:              "override",
+		Decision:            "pass",
+		Rationale:           "accepted risk",
 		InstructionAddendum: "Reuse the existing parser.",
-		Rationale:           "The gate result was nondeterministic.",
 		Gate:                "review",
 		Verdict:             "pass",
 		Target:              "local-ci",
+		Complete:            true,
 		Escalated:           true,
 		Status:              "success",
 		WorkflowVersion:     3,
@@ -74,11 +77,15 @@ func TestConformanceViewCapturesFullNormativeFieldSet(t *testing.T) {
 		{"Attempt", func(e Event) Event { e.Attempt = 2; return e }},
 		{"AttemptClass", func(e Event) Event { e.AttemptClass = ""; return e }},
 		{"Actor", func(e Event) Event { e.Actor = "other@example.com"; return e }},
+		{"Action", func(e Event) Event { e.Action = "approve"; return e }},
+		{"Decision", func(e Event) Event { e.Decision = "needs-changes"; return e }},
+		{"Rationale", func(e Event) Event { e.Rationale = "different reason"; return e }},
 		{"InstructionAddendum", func(e Event) Event { e.InstructionAddendum = "Use another approach."; return e }},
 		{"Rationale", func(e Event) Event { e.Rationale = "The maintainer approved the result."; return e }},
 		{"Gate", func(e Event) Event { e.Gate = "other-gate"; return e }},
 		{"Verdict", func(e Event) Event { e.Verdict = "needs-changes"; return e }},
 		{"Target", func(e Event) Event { e.Target = "implement"; return e }},
+		{"Complete", func(e Event) Event { e.Complete = false; return e }},
 		{"Escalated", func(e Event) Event { e.Escalated = false; return e }},
 		{"Status", func(e Event) Event { e.Status = "failure"; return e }},
 		{"WorkflowVersion", func(e Event) Event { e.WorkflowVersion = 4; return e }},
@@ -249,6 +256,8 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		// Isolation posture is runner-substrate bookkeeping (#1305): the same
 		// definition must produce the same conformance view sandboxed or not.
 		{Type: EventRunnerIsolationPosture, Stage: "implement", Runner: map[string]any{"posture": "enforced"}},
+		{Type: EventNotificationRequested, NotificationRequest: &apiv1.NotificationRequest{NotificationID: "notice-1"}},
+		{Type: EventNotificationReceipt, NotificationReceipt: &apiv1.NotificationReceipt{NotificationID: "notice-1"}},
 	}
 	view := ConformanceView(events)
 	if len(view) != 4 {

@@ -16,6 +16,7 @@ import (
 const (
 	diagnosticsSchemaVersion = "goobers.dev/diagnostics/v1"
 	featuresSchemaVersion    = "goobers.dev/features/v1"
+	diagnosticSeverityInfo   = "info"
 )
 
 type diagnosticFinding struct {
@@ -31,6 +32,7 @@ type diagnosticFinding struct {
 type diagnosticCounts struct {
 	Errors   int `json:"errors"`
 	Warnings int `json:"warnings"`
+	Infos    int `json:"infos,omitempty"`
 }
 
 type diagnosticsEnvelope struct {
@@ -109,6 +111,8 @@ func (c *diagnosticCollector) envelope(ok bool) diagnosticsEnvelope {
 			envelope.Counts.Errors++
 		case string(validate.Warning):
 			envelope.Counts.Warnings++
+		case diagnosticSeverityInfo:
+			envelope.Counts.Infos++
 		}
 	}
 	return envelope
@@ -128,9 +132,12 @@ func emitGitHubAnnotations(w io.Writer, diagnostics *diagnosticCollector) {
 		return
 	}
 	for _, finding := range diagnostics.findings {
-		command := "warning"
-		if finding.Severity == string(validate.Error) {
+		command := "notice"
+		switch finding.Severity {
+		case string(validate.Error):
 			command = "error"
+		case string(validate.Warning):
+			command = "warning"
 		}
 		properties := "file=" + githubAnnotationEscapeProperty(finding.File)
 		if finding.Line > 0 {

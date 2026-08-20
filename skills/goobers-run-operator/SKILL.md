@@ -48,9 +48,11 @@ content.
 
    Add `--workflow=<name>` or `--phase=<phase>` when the question supplies that
    scope. The default recent window is 20 runs. State that window in the
-   answer. Expand it, up to the CLI maximum of 200, only when the user requests
-   a wider search or the first window identifies a specific reason to expand.
-   Never omit `--limit` and never trace every discovered run.
+   answer. Expand it with a larger explicit positive limit only when the user
+   requests a wider search or the first window identifies a specific reason to
+   expand. The CLI does not impose a maximum, so keep the selected window as
+   small as the question allows. Never omit `--limit` and never trace every
+   discovered run.
 
 2. Inspect each selected run with:
 

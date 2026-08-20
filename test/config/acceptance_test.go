@@ -55,6 +55,8 @@ spec:
   gaggle: web
   role: coder
   instructions: instructions.md
+  capabilities:
+    - agent:model
   workflows:
     - flow
 `
@@ -80,6 +82,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the item.
+      capabilities:
+        - agent:model
       next: review
     - name: finalize
       type: deterministic

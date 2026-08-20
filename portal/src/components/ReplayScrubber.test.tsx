@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { RunEvent } from "../api/types";
+import type { RunEvent, WorkflowGraph } from "../api/types";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
 import { ReplayScrubber } from "./ReplayScrubber";
@@ -26,19 +26,24 @@ function ev(
 
 function Harness({
   events,
+  graph,
   initial,
   terminal,
   onSeek,
+  workflow,
 }: {
   events: RunEvent[];
+  graph?: WorkflowGraph;
   initial: number;
   terminal: boolean;
   onSeek?: (seq: number) => void;
+  workflow?: string;
 }) {
   const [seq, setSeq] = useState(initial);
   return (
     <ReplayScrubber
       events={events}
+      graph={graph}
       onSeek={(next) => {
         onSeek?.(next);
         setSeq(next);
@@ -46,6 +51,7 @@ function Harness({
       runId="run-1"
       selectedSeq={seq}
       terminal={terminal}
+      workflow={workflow}
     />
   );
 }
@@ -173,6 +179,48 @@ describe("replay scrubber", () => {
     chapter.focus();
     expect(chapter).toHaveFocus();
     expect(chapter).toHaveAttribute("aria-current", "step");
+  });
+
+  it("labels chapters and stage segments with the run's own stage and goober (#2538)", () => {
+    const graph: WorkflowGraph = {
+      name: "implementation",
+      version: 1,
+      digest: "sha256:graph",
+      start: "implement",
+      nodes: [{ id: "implement", kind: "agentic", owner: "builder-goober" }],
+      edges: [],
+    };
+    render(
+      <Harness
+        events={[
+          ev(1, "2026-01-01T00:00:00Z", {
+            type: "stage.started",
+            stage: "implement",
+            category: "transition",
+            replayChapter: true,
+          }),
+        ]}
+        graph={graph}
+        initial={1}
+        terminal
+        workflow="implementation"
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", {
+        name: /Go to Workflow transition chapter at event 1: .*implement · builder-goober\./,
+      }),
+    ).toBeInTheDocument();
+
+    const scope = screen.getByRole("group", { name: "Workflow, stage, and goober" });
+    expect(within(scope).getByText("implementation")).toBeInTheDocument();
+    expect(within(scope).getByText("implement")).toBeInTheDocument();
+    expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("note", { name: "Stage implement, owned by builder-goober" }),
+    ).toBeInTheDocument();
   });
 
   it("clusters a dense idle-compressed timeline and exposes every chapter", () => {

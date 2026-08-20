@@ -1,6 +1,6 @@
 # Design: Claim visibility - local by default, shared by opt-in
 
-> Status: **Approved decision record - contract only, not implemented**
+> Status: **approved — decision record; contract only, not implemented**
 > Requirements: [`docs/requirements/scheduler.md`](../requirements/scheduler.md)
 > (`SCH-020`-`SCH-022`),
 > [`docs/requirements/backlog-providers.md`](../requirements/backlog-providers.md)

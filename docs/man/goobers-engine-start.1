@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ENGINE START" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers engine-start \- dispatch one run onto the tier-3 engine via Temporal (experimental)
+.SH SYNOPSIS
+\fBgoobers engine-start\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers engine-start [flags] <workflow> [path]
+
+Dispatch one run onto the tier-3 engine (experimental). The run id is
+derived from gaggle, workflow, and --dedupe-key.
+
+Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
+.fi
+.SH EXAMPLES
+.nf
+goobers engine-start default-implement
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

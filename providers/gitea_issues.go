@@ -320,6 +320,25 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
 }
 
+// DeleteComment removes an issue/PR comment. A missing comment is already in
+// the desired state, so retries treat 404 as success.
+func (p *GiteaProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if err := p.ready(); err != nil {
+		return err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
+}
+
 // CreateWorkItemComment appends one issue comment and returns its identity.
 func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
 	if err := p.ready(); err != nil {
@@ -447,6 +466,11 @@ func (p *GiteaProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRe
 	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
+	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
 	}
 
 	fields := map[string]FieldDigest{}
@@ -659,12 +683,14 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
+		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
 	}
-	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-		return WorkItem{}, err
+	if before.HasLabel(label) {
+		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {

@@ -5,7 +5,7 @@
 > across three deployment tiers** — local-first, cloud as a drop-in — per
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), which is the architecture of record.
 > Snapshot date: 2026-07-12. For shipped behavior, see the
-> [feature matrix](feature-matrix.md); harness references in this snapshot have
+> [feature matrix](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/feature-matrix.md); harness references in this snapshot have
 > been corrected to match that matrix.
 
 ## 1. One-liner

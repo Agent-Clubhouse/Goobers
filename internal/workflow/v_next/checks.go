@@ -9,6 +9,9 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/providerstage"
+	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
 // These exported checks let the config validator (api/validate) reuse the
@@ -73,7 +76,69 @@ func CheckWarnings(def Definition) []string {
 			task.Name,
 		))
 	}
+	for _, task := range def.Spec.Tasks {
+		warnings = append(warnings, overPrivilegeWarnings(task)...)
+	}
 	return warnings
+}
+
+// overPrivilegeWarnings flags a declared capability that STRICTLY subsumes
+// everything the task's invoked built-in actually requires
+// (internal/capability.Subsumes): admission accepts the broader grant — that
+// is the #2386 un-breaking — but the stage is running with more authority
+// than its work needs, and the narrower declaration is available. A warning,
+// never an error: the config is safe to run as-is.
+func overPrivilegeWarnings(task apiv1.Task) []string {
+	if !isShellStage(task) || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
+		return nil
+	}
+	required := providerstage.RequiredCapabilities(task.Run.Command[1], task.Run.Command[2:])
+	if len(required) == 0 {
+		return nil
+	}
+	requiredSet := map[capability.Capability]bool{}
+	var requiredOrder []capability.Capability
+	for _, use := range required {
+		if !requiredSet[use.Capability] {
+			requiredSet[use.Capability] = true
+			requiredOrder = append(requiredOrder, use.Capability)
+		}
+	}
+	var warnings []string
+	for _, declared := range task.Capabilities {
+		held := capability.Capability(declared)
+		if requiredSet[held] {
+			continue
+		}
+		strictlySubsumesAll := true
+		for _, requiredCapability := range requiredOrder {
+			if !capability.Subsumes(held, requiredCapability) {
+				strictlySubsumesAll = false
+				break
+			}
+		}
+		if !strictlySubsumesAll {
+			continue
+		}
+		narrower := make([]string, len(requiredOrder))
+		for i, requiredCapability := range requiredOrder {
+			narrower[i] = fmt.Sprintf("%q", requiredCapability)
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"task %q declares capability %q, which strictly subsumes everything subcommand %q requires (%s); declare the narrower capability instead",
+			task.Name, held, task.Run.Command[1], strings.Join(narrower, ", "),
+		))
+	}
+	return warnings
+}
+
+// CheckPushBoundaries reports provably cross-platform task transitions that
+// hand off unpushed repo workspace state (#2861). gaggleRequiredCapabilities
+// is the workflow's gaggle-level GaggleSpec.RequiredCapabilities, merged into
+// each stage's own requirements to form its effective set; nil evaluates
+// stage-level requirements alone.
+func CheckPushBoundaries(def Definition, gaggleRequiredCapabilities []string) []string {
+	return pushBoundaryProblems(def, gaggleRequiredCapabilities)
 }
 
 // CheckReachability reports unreachable states and loops with no exit. It is a
@@ -298,6 +363,9 @@ func triggerFieldProblems(def Definition) []string {
 		if tr.Type != apiv1.TriggerBacklogItem && tr.TrustLabel != "" {
 			problems = append(problems, fmt.Sprintf("trigger[%d] type=%s does not support trustLabel", i, tr.Type))
 		}
+		if tr.Type != apiv1.TriggerSchedule && tr.IdleBackoff != nil {
+			problems = append(problems, fmt.Sprintf("trigger[%d] type=%s does not support idleBackoff", i, tr.Type))
+		}
 		switch tr.Type {
 		case apiv1.TriggerManual:
 			manualIndex = i
@@ -359,51 +427,49 @@ func scheduleProblems(def Definition) []string {
 		if err := validateSchedule(tr.Schedule); err != nil {
 			problems = append(problems, fmt.Sprintf("trigger[%d] invalid schedule %q: %v", i, tr.Schedule, err))
 		}
+		problems = append(problems, idleBackoffProblems(i, tr.IdleBackoff)...)
 	}
 	return problems
 }
 
-// descriptors are the named cron shorthands the scheduler accepts.
-var descriptors = map[string]bool{
-	"@yearly": true, "@annually": true, "@monthly": true, "@weekly": true,
-	"@daily": true, "@midnight": true, "@hourly": true,
-}
-
-// validateSchedule structurally validates a cron/interval expression. It accepts
-// the named descriptors, "@every <duration>", and 5- or 6-field cron
-// expressions. It is intentionally a structural gate (not a full cron engine):
-// it catches malformed expressions at compile time; the scheduler owns firing.
-func validateSchedule(expr string) error {
-	expr = strings.TrimSpace(expr)
-	if strings.HasPrefix(expr, "@every ") {
-		dur := strings.TrimSpace(strings.TrimPrefix(expr, "@every "))
-		if _, err := time.ParseDuration(dur); err != nil {
-			return fmt.Errorf("bad @every duration: %w", err)
-		}
+func idleBackoffProblems(index int, backoff *apiv1.IdleBackoff) []string {
+	if backoff == nil {
 		return nil
 	}
-	if strings.HasPrefix(expr, "@") {
-		if descriptors[expr] {
-			return nil
-		}
-		return fmt.Errorf("unknown descriptor (want one of @yearly @monthly @weekly @daily @hourly or @every <dur>)")
+	floor, err := parsePositiveDuration(backoff.Floor, time.Minute)
+	if err != nil {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff floor: %v", index, err)}
 	}
-	fields := strings.Fields(expr)
-	if len(fields) != 5 && len(fields) != 6 {
-		return fmt.Errorf("expected 5 or 6 space-separated fields, got %d", len(fields))
+	ceiling, err := parsePositiveDuration(backoff.Ceiling, 15*time.Minute)
+	if err != nil {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff ceiling: %v", index, err)}
 	}
-	const allowed = "0123456789*/,-?LW#"
-	for i, f := range fields {
-		if f == "" {
-			return fmt.Errorf("field %d is empty", i)
-		}
-		for _, r := range f {
-			if !strings.ContainsRune(allowed, r) {
-				return fmt.Errorf("field %d %q has illegal character %q", i, f, r)
-			}
-		}
+	if ceiling < floor {
+		return []string{fmt.Sprintf("trigger[%d] idleBackoff ceiling %s must not be below floor %s", index, ceiling, floor)}
 	}
 	return nil
+}
+
+func parsePositiveDuration(value string, defaultValue time.Duration) (time.Duration, error) {
+	if value == "" {
+		return defaultValue, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a valid duration", value)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("%q must be positive", value)
+	}
+	return duration, nil
+}
+
+// validateSchedule validates cron/interval expressions accepted by workflow
+// definitions, including 6-field cron expressions that the V0 scheduler rejects
+// later with its version-specific diagnostic.
+func validateSchedule(expr string) error {
+	_, err := scheduleexpr.ParseDefinition(expr)
+	return err
 }
 
 // stateNames returns every defined state name in definition order (tasks then

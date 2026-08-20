@@ -39,10 +39,19 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
+
+These five behavior controls are intentionally flag-only: --watch-config
+selects a process-local development watcher, --diagnostics is temporary
+debug capture, --drain-timeout applies only after this process receives a
+shutdown signal, --skip-preflight is an unsafe startup escape hatch, and
+--disable-read-model-reads is an emergency rollback. Keeping them out of
+instance.yaml prevents temporary operational overrides from becoming
+durable policy. `goobers status --daemon` reports their effective values.
 .fi
 .SH EXAMPLES
 .nf

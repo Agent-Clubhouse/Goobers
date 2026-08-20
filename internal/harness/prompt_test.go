@@ -129,6 +129,40 @@ func TestRenderPromptOmitsInputsSectionWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestRenderPromptDirectsScratchFilesToTheWorkspace is a regression test for
+// #2419: a goober denied writing to a hardcoded /tmp path self-misdiagnosed
+// the cause as a GitHub permission gap. The fix must be unconditional — not
+// gated on req.Sandbox, which is nil for the overwhelming majority of real
+// invocations (sandbox enforcement is opt-in per instance) and was nil for
+// the exact run #2419 traced. Covers both the sandboxed and unsandboxed case
+// getting identical guidance, and both completion-contract prompt variants.
+func TestRenderPromptDirectsScratchFilesToTheWorkspace(t *testing.T) {
+	base := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "process the data"},
+		CompletionPath: DefaultResultPath,
+	}
+
+	for _, req := range []RunRequest{base, func() RunRequest { r := base; r.Sandbox = &stubSandbox{}; return r }()} {
+		for name, render := range map[string]func(RunRequest) string{
+			"file completion":     renderPrompt,
+			"response completion": renderResponseCompletionPrompt,
+		} {
+			t.Run(name, func(t *testing.T) {
+				prompt := render(req)
+				if !strings.Contains(prompt, "## Scratch files") {
+					t.Fatalf("prompt missing scratch-file guidance: %q", prompt)
+				}
+				if !strings.Contains(prompt, "write it as a relative path inside your current workspace") {
+					t.Fatalf("prompt missing relative-workspace-path guidance: %q", prompt)
+				}
+				if strings.Contains(prompt, "TMPDIR") {
+					t.Fatalf("prompt still references TMPDIR, a Goobers-internal confinement detail the model shouldn't need to know: %q", prompt)
+				}
+			})
+		}
+	}
+}
+
 func TestRenderPromptSurfacesNonJSONInvocationInputs(t *testing.T) {
 	req := RunRequest{
 		Envelope: apiv1.InvocationEnvelope{
@@ -192,6 +226,30 @@ func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "failure") || !strings.Contains(prompt, "blocked") {
 		t.Fatalf("result hint should scope error to failure/blocked: %q", prompt)
+	}
+}
+
+// TestResultShapeHintRequiresNumericMetrics guards the producer-side contract:
+// metrics is optional and must not invite freeform labels or references that
+// the numeric-only result schema rejects.
+func TestResultShapeHintRequiresNumericMetrics(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "nominate flaky tests"},
+		CompletionPath: DefaultResultPath,
+		Mode:           ModeInvoke,
+	}
+	prompt := renderPrompt(req)
+	if strings.Contains(prompt, `"metrics": {...}`) {
+		t.Fatalf("result shape still presents optional metrics as always present: %q", prompt)
+	}
+	for _, want := range []string{
+		`Do not populate "metrics" unless you have numeric measurements`,
+		"Every metrics value must be a JSON number",
+		`issue references belong in "summary" or scalar "outputs", not in metrics`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("result hint missing numeric-metrics guidance %q: %q", want, prompt)
+		}
 	}
 }
 

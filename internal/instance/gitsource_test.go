@@ -88,7 +88,7 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 		URL:   repositoryURL,
 		Ref:   "main",
 		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
-	}, registrar, nil)
+	}, nil, registrar, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -138,6 +138,45 @@ func TestGitSourceRemoteClonesManagedMirrorAndFetchesMain(t *testing.T) {
 	}
 }
 
+// TestGitSourceRemoteAuthenticatesWithRelativeInstanceRoot pins the
+// gitsource half of the askpass-relative-residual finding: NewGitSource
+// resolves InstanceRoot to an absolute path before deriving managedRoot,
+// repositoryDir, and the askpass script path from it, so a relative
+// InstanceRoot (e.g. "." — the default `goobers up`/`goobers apply`
+// instance root) must still authenticate even though this source's git
+// subprocesses set no cmd.Dir override at all (gitOutputWithEnv), relying
+// entirely on the paths baked into GIT_ASKPASS and its --git-dir/-C
+// arguments already being absolute at construction time.
+func TestGitSourceRemoteAuthenticatesWithRelativeInstanceRoot(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "relative-root-v1\n")
+	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "workflow-source-token")
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "workflow-source-token")
+	registrar := &gitSourceTestRegistrar{}
+
+	instanceRoot := t.TempDir()
+	t.Chdir(instanceRoot)
+
+	source, err := NewWorkflowGitSource(".", WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   repositoryURL,
+		Ref:   "main",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, nil, registrar, nil)
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+	if !filepath.IsAbs(source.askpass) {
+		t.Fatalf("askpass path %q is not absolute for relative instance root %q", source.askpass, ".")
+	}
+
+	if _, err := source.Resolve(context.Background()); err != nil {
+		t.Fatalf("Resolve with relative instance root: %v", err)
+	}
+	if auth.accepted.Load() == 0 {
+		t.Fatal("authenticated Git server did not receive the workflow-source token")
+	}
+}
+
 func TestWorkflowGitSourceFailsWhenDedicatedTokenIsWrong(t *testing.T) {
 	repo := newGitSourceTestRepo(t, "remote\n")
 	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "correct-workflow-token")
@@ -156,7 +195,7 @@ func TestWorkflowGitSourceFailsWhenDedicatedTokenIsWrong(t *testing.T) {
 		Kind:  WorkflowSourceKindGit,
 		URL:   repositoryURL,
 		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
-	}, &gitSourceTestRegistrar{}, nil)
+	}, nil, &gitSourceTestRegistrar{}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -178,7 +217,7 @@ func TestWorkflowGitSourceFailsClosedWhenTokenDoesNotResolve(t *testing.T) {
 		Kind:  WorkflowSourceKindGit,
 		URL:   "https://example.invalid/workflows.git",
 		Token: &TokenRef{Env: "EMPTY_WORKFLOW_SOURCE_TOKEN"},
-	}, &gitSourceTestRegistrar{}, nil)
+	}, nil, &gitSourceTestRegistrar{}, nil)
 	if err != nil {
 		t.Fatalf("NewWorkflowGitSource: %v", err)
 	}
@@ -200,9 +239,126 @@ func TestWorkflowGitSourceStoreBackedTokenFailsClosedWithoutStores(t *testing.T)
 		Kind:  WorkflowSourceKindGit,
 		URL:   "https://example.invalid/workflows.git",
 		Token: &TokenRef{Store: "prod-kv/workflow-source-token"},
-	}, &gitSourceTestRegistrar{}, nil)
+	}, nil, &gitSourceTestRegistrar{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "no secret store resolver is configured") {
 		t.Fatalf("NewWorkflowGitSource error = %v, want fail-closed store-resolver error", err)
+	}
+}
+
+// gitSourceTestAppTokens fakes the composition root's installation-token
+// minting seam (#3274): NewWorkflowGitSource receives a GitTokenSource because
+// this package cannot import internal/githubapp, so a test double standing in
+// for the real minter exercises exactly the seam production uses.
+type gitSourceTestAppTokens struct {
+	token string
+	mints atomic.Int32
+}
+
+func (s *gitSourceTestAppTokens) Token(context.Context) (string, error) {
+	s.mints.Add(1)
+	return s.token, nil
+}
+
+// TestWorkflowGitSourceGitHubAppAuthUsesMintedInstallationToken pins #3274's
+// credential flow: with auth kind github-app the remote fetch authenticates
+// with the minted installation token — consulted through the minting seam per
+// remote operation, so near-expiry refresh in the real minter is picked up —
+// and every used token still reaches the journal scrubber via the injector,
+// exactly like the static-token path.
+func TestWorkflowGitSourceGitHubAppAuthUsesMintedInstallationToken(t *testing.T) {
+	repo := newGitSourceTestRepo(t, "app-auth-v1\n")
+	repositoryURL, _, auth := newAuthenticatedGitSourceTestServer(t, repo, "minted-installation-token")
+	registrar := &gitSourceTestRegistrar{}
+	appTokens := &gitSourceTestAppTokens{token: "minted-installation-token"}
+
+	source, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind: WorkflowSourceKindGit,
+		URL:  repositoryURL,
+		Ref:  "main",
+		Auth: &RepoAuthConfig{
+			Kind:           GitHubAuthApp,
+			AppID:          "123456",
+			InstallationID: "654321",
+			// Never read here: minting happens behind the fake seam. Only the
+			// ref shape must validate.
+			PrivateKey: &TokenRef{File: filepath.Join(t.TempDir(), "app-key.pem")},
+		},
+	}, appTokens, registrar, nil)
+	if err != nil {
+		t.Fatalf("NewWorkflowGitSource: %v", err)
+	}
+
+	snapshot, err := source.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	assertGitSourceTestFile(t, snapshot, "config.txt", "app-auth-v1\n")
+	if auth.accepted.Load() == 0 {
+		t.Fatal("authenticated Git server did not receive the minted installation token")
+	}
+	if appTokens.mints.Load() == 0 {
+		t.Fatal("minting seam was never consulted for the remote fetch")
+	}
+	if len(registrar.values) == 0 || registrar.values[0] != "minted-installation-token" {
+		t.Fatalf("registered secrets = %q, want the minted installation token registered with the journal scrubber", registrar.values)
+	}
+}
+
+// TestWorkflowGitSourceGitHubAppAuthRequiresMintingSource pins the fail-closed
+// half of #3274's composition-root wiring: an auth kind github-app source with
+// no installation-token source is a construction error, never a source that
+// silently fetches unauthenticated or falls back to a static ref.
+func TestWorkflowGitSourceGitHubAppAuthRequiresMintingSource(t *testing.T) {
+	_, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind: WorkflowSourceKindGit,
+		URL:  "https://example.invalid/workflows.git",
+		Auth: &RepoAuthConfig{
+			Kind:           GitHubAuthApp,
+			AppID:          "123456",
+			InstallationID: "654321",
+			PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+		},
+	}, nil, &gitSourceTestRegistrar{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires an installation-token source") {
+		t.Fatalf("NewWorkflowGitSource error = %v, want fail-closed missing-minter error", err)
+	}
+}
+
+// TestWorkflowGitSourceRejectsMintingSourceWithoutGitHubAppAuth pins the other
+// direction of the same wiring guard: handing a minting source to a
+// static-token (or local) source is a composition-root bug that must fail
+// loudly rather than leave it ambiguous which credential reads the config repo.
+func TestWorkflowGitSourceRejectsMintingSourceWithoutGitHubAppAuth(t *testing.T) {
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "static-token")
+	_, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   "https://example.invalid/workflows.git",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+	}, &gitSourceTestAppTokens{token: "minted"}, &gitSourceTestRegistrar{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "only valid for workflowSource auth kind") {
+		t.Fatalf("NewWorkflowGitSource error = %v, want minting-source-without-app-auth rejection", err)
+	}
+}
+
+// TestWorkflowGitSourceRejectsGitHubAppAuthWithStaticToken pins #3274's
+// mutual-exclusion rule at the seam that actually fetches: auth and token
+// declared together are refused at construction with the same diagnostic the
+// config loader gives, mirroring how repos[] treats the pair.
+func TestWorkflowGitSourceRejectsGitHubAppAuthWithStaticToken(t *testing.T) {
+	t.Setenv("WORKFLOW_SOURCE_TOKEN", "static-token")
+	_, err := NewWorkflowGitSource(t.TempDir(), WorkflowSource{
+		Kind:  WorkflowSourceKindGit,
+		URL:   "https://example.invalid/workflows.git",
+		Token: &TokenRef{Env: "WORKFLOW_SOURCE_TOKEN"},
+		Auth: &RepoAuthConfig{
+			Kind:           GitHubAuthApp,
+			AppID:          "123456",
+			InstallationID: "654321",
+			PrivateKey:     &TokenRef{File: "/run/secrets/app-key.pem"},
+		},
+	}, &gitSourceTestAppTokens{token: "minted"}, &gitSourceTestRegistrar{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "must not configure token") {
+		t.Fatalf("NewWorkflowGitSource error = %v, want token/auth mutual-exclusion rejection", err)
 	}
 }
 

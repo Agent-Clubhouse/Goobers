@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -10,9 +10,33 @@ import {
   largeJournalFixtures,
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
+import styles from "../styles.css?inline";
+
+const storedValues = new Map<string, string>();
+const originalLocalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
 
 beforeEach(() => {
   window.location.hash = "#/overview";
+  storedValues.clear();
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: {
+      clear: () => storedValues.clear(),
+      getItem: (key: string) => storedValues.get(key) ?? null,
+      key: (index: number) => [...storedValues.keys()][index] ?? null,
+      get length() {
+        return storedValues.size;
+      },
+      removeItem: (key: string) => storedValues.delete(key),
+      setItem: (key: string, value: string) => storedValues.set(key, value),
+    } satisfies Storage,
+  });
+});
+
+afterEach(() => {
+  if (originalLocalStorage) {
+    Object.defineProperty(window, "localStorage", originalLocalStorage);
+  }
 });
 
 describe("operational overview", () => {
@@ -23,6 +47,11 @@ describe("operational overview", () => {
       await screen.findByRole("heading", { name: "Daemon is ready." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
+    // The guided walkthrough leads as the recommended newcomer path, with the
+    // manual init command kept alongside it.
+    expect(screen.getByText(/The guided walkthrough builds a working instance/)).toBeInTheDocument();
+    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
@@ -107,20 +136,62 @@ describe("operational overview", () => {
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
   });
 
+  it("top-aligns attention row controls", () => {
+    expect(styles).toMatch(/\.attention-row\s*\{[^}]*align-items:\s*start;/s);
+  });
+
+  it("keeps scope pivots visible while long workflow names truncate", () => {
+    expect(styles).toMatch(
+      /\.scope-pivot\s*\{[^}]*flex-shrink:\s*0;[^}]*white-space:\s*nowrap;/s,
+    );
+  });
+
+  it("pivots an attention row's workflow into a pre-scoped Insight view without triggering the run link (#2529)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    // Sanity: the row's own "open this run" link is present alongside the
+    // pivot, confirming the pivot is additive rather than replacing it.
+    const failedRunLink = within(attentionSection).getByRole("link", {
+      name: "Open run 01JZ400FAILED",
+    });
+    const failedRow = failedRunLink.closest(".attention-row");
+    if (!failedRow) {
+      throw new Error("Attention row was not rendered.");
+    }
+    const pivotLink = within(failedRow as HTMLElement).getByRole("link", {
+      name: /View .* in Insight/,
+    });
+
+    await user.click(pivotLink);
+
+    // Clicking the pivot lands on Insight, not the row's own run-detail
+    // link — the stretched overlay link underneath the pivot did not
+    // intercept the click (#2529's DataRow interactiveChildren contract).
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+  });
+
   it("labels a failed attention row with its coded telemetry reason", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    const failedRow = await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
+    // The row link (#2529: now a stretched overlay, not the row's content
+    // container, so the failed run's reason is a document-unique text node
+    // rather than a descendant of the "Open run ..." link) still resolves
+    // first, confirming the row itself rendered before checking its content.
+    await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
     expect(
-      await within(failedRow).findByText(
+      await screen.findByText(
         "harness.crash · Harness exited before producing a result envelope.",
       ),
     ).toBeInTheDocument();
 
-    const escalatedRow = screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
-    expect(
-      within(escalatedRow).getByText("Run escalated and needs human review."),
-    ).toBeInTheDocument();
+    screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
+    expect(screen.getByText("Run escalated and needs human review.")).toBeInTheDocument();
   });
 
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
@@ -129,8 +200,13 @@ describe("operational overview", () => {
     render(<App client={client} />);
 
     const recent = await screen.findByRole("region", { name: "Recent outcomes" });
-    // "Recent outcomes" is capped regardless of the 60+ terminal runs in the journal.
-    expect(within(recent).getAllByRole("link").length).toBeLessThanOrEqual(20);
+    // "Recent outcomes" is capped regardless of the 60+ terminal runs in the
+    // journal. Count only the row-opening links ("Open run ...") — each row
+    // also carries a Runs/Insight scope pivot (#2529), so an unfiltered link
+    // count would triple-count rows instead of bounding them.
+    expect(
+      within(recent).getAllByRole("link", { name: /^Open run/ }).length,
+    ).toBeLessThanOrEqual(20);
 
     // Active runs come from the server-side phase=running filter, not a client sweep.
     expect(listRuns).toHaveBeenCalledWith(
@@ -219,6 +295,43 @@ describe("workflow and gaggle inventory", () => {
     );
   });
 
+  it("pivots a gaggle and a workflow row into pre-scoped Runs/Insight views without colliding with the detail links (#2529)", async () => {
+    window.location.hash = "#/workflows";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Core product" });
+
+    // The gaggle-detail link keeps its bare display name as its accessible
+    // name — the pivot links carry distinct names so this stays unique.
+    expect(screen.getByRole("link", { name: "Core product" })).toHaveAttribute(
+      "href",
+      "#/gaggle/core",
+    );
+    expect(screen.getByRole("link", { name: "View Core product in Runs" })).toHaveAttribute(
+      "href",
+      "#/runs?gaggle=core",
+    );
+    expect(screen.getByRole("link", { name: "View Core product in Insight" })).toHaveAttribute(
+      "href",
+      "#/insight?gaggle=core",
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "View Core product / Implementation in Insight",
+      }),
+    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(
+      screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
+      "core / implementation",
+    );
+  });
+
   it("renders the ready-empty workflow state", async () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
@@ -226,7 +339,26 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/The daemon is ready/)).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+  });
+
+  it("distinguishes a configured gaggle with no workflows", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.counts.workflows = 0;
+    fixtures.gaggles.items = fixtures.gaggles.items.slice(0, 1).map((gaggle) => ({
+      ...gaggle,
+      workflowCount: 0,
+    }));
+    fixtures.workflows = {
+      core: { items: [], page: { limit: 100, total: 0, hasMore: false, nextCursor: "" } },
+    };
+    window.location.hash = "#/workflows";
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(
+      await screen.findByText("No workflows are configured for this gaggle."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("goobers validate <instance>")).toBeInTheDocument();
   });
 
   it("shows one gaggle's workflows as topology boxes with workflow drill-through", async () => {
@@ -263,6 +395,33 @@ describe("workflow and gaggle inventory", () => {
     );
   });
 
+  it("pivots the gaggle heading and a workflow card into pre-scoped Runs/Insight views (#2529)", async () => {
+    window.location.hash = "#/gaggle/core";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Core product" });
+    expect(screen.getByRole("link", { name: "View Core product in Runs" })).toHaveAttribute(
+      "href",
+      "#/runs?gaggle=core",
+    );
+
+    const topology = screen.getByRole("list", { name: "Core product workflows" });
+    const openWorkflowLink = within(topology).getByRole("link", {
+      name: "Open workflow Implementation for gaggle Core product",
+    });
+    const pivotLink = within(topology).getByRole("link", {
+      name: "View Core product / Implementation in Insight",
+    });
+    expect(pivotLink).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
+
+    await user.click(pivotLink);
+    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+    // The card's own detail link is untouched by the pivot click.
+    expect(openWorkflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
+  });
+
   it("shows an empty topology for a gaggle without workflows", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.gaggles.items = fixtures.gaggles.items.map((gaggle) =>
@@ -290,6 +449,131 @@ describe("workflow and gaggle inventory", () => {
     expect(within(connections).getByText("Agent-Clubhouse/Clubhouse")).toBeInTheDocument();
     expect(
       within(connections).queryByText(/Connected from the configured workflows/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses an attention run durably across remounts (#2535)", async () => {
+    const user = userEvent.setup();
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const rendered = render(<App client={client} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Dismiss run 01JZ400FAILED" }),
+    );
+
+    expect(
+      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const reattentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const reattentionSection = reattentionHeading.closest("section");
+    if (!reattentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("bulk-dismisses selected attention runs and offers show dismissed / undo (#2535)", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select run 01JZ400FAILED for bulk actions",
+      }),
+    );
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select run 01JZ402DASHBOARD for bulk actions",
+      }),
+    );
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Dismiss 2 selected" }),
+    );
+
+    expect(within(attentionSection).getByText("Nothing needs attention right now.")).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Show dismissed (2)" }),
+    );
+    expect(
+      within(attentionSection).getByRole("button", {
+        name: "Undo dismiss for run 01JZ400FAILED",
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(attentionSection).getByRole("button", {
+        name: "Undo dismiss for run 01JZ400FAILED",
+      }),
+    );
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+  });
+
+  it("collapses the attention section and persists that durably across remounts (#2660)", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    const toggle = within(attentionSection).getByRole("button", {
+      name: "Collapse needs attention",
+    });
+    // Defaults to expanded for a first-time visitor with no stored preference.
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(attentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const reattentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const reattentionSection = reattentionHeading.closest("section");
+    if (!reattentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(reattentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
     ).not.toBeInTheDocument();
   });
 

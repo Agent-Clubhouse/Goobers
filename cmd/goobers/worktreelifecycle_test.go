@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 type liveAgenticAttempt struct {
@@ -22,6 +23,27 @@ type liveAgenticAttempt struct {
 	returned  chan struct{}
 }
 
+// The trigger is `manual`, matching how this test actually dispatches (it
+// writes a trigger request and polls for the response) rather than the
+// backlog-item trigger it used to declare.
+//
+// That was not cosmetic. initAcceptanceDemo injects a deliberately fake
+// GOOBERS_GITHUB_TOKEN, so a backlog-item trigger made the scheduler
+// demand-poll GitHub with a token that necessarily 401s. Since #2687 that
+// authentication failure opens the workflow's auth circuit, and an open
+// circuit rejects every subsequent trigger — including a manual one, which
+// TestAuthFailureCircuitStopsRunRedispatch pins as deliberate. The dispatch
+// below then failed with "provider-auth-failed: operator must repair
+// credentials and reload configuration", but only when the poll won the race
+// against the trigger, which is why it read as a flake before becoming
+// reliable on loaded CI runners.
+//
+// A manual trigger produces no demand poll at all (pollDemandCounters only
+// builds polls for backlogPollDue/schedulePollDue candidates), so there is no
+// authentication attempt to fail and no circuit to open. This test is about
+// worktree finalization when the daemon drains mid-agentic-stage; the trigger
+// type was incidental to that, and declaring it accurately also stops the
+// poller from dispatching runs this test never asked for.
 const abortAgenticWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 metadata:
@@ -29,9 +51,7 @@ metadata:
 spec:
   gaggle: example
   triggers:
-    - type: backlog-item
-      selector:
-        goobers: "true"
+    - type: manual
   readiness:
     maxConcurrentRuns: 1
   start: implement
@@ -42,6 +62,7 @@ spec:
       goal: Wait until the daemon begins draining, then finish into the abort target.
       capabilities:
         - repo:push
+        - agent:model
       next: "@abort"
 `
 
@@ -71,11 +92,11 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 	}
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			returned := make(chan struct{})
 			started <- liveAgenticAttempt{workspace: req.Workspace, returned: returned}
 			<-proceed
-			err := harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			err := harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "fixture agent completed during daemon drain",
 			})
@@ -115,7 +136,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequest(l.SchedulerDir(), "acceptance")
+		requestID, err := writeTriggerRequest(l.SchedulerDir(), "", "acceptance")
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}

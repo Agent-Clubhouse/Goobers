@@ -8,12 +8,14 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -88,6 +90,7 @@ const (
 	telemetryAggregateAll                 telemetryAggregate = "all"
 	telemetryAggregateStageFailureRate    telemetryAggregate = "stage-failure-rate"
 	telemetryAggregateErrorSignature      telemetryAggregate = "error-signature"
+	telemetryAggregateCICheckFailure      telemetryAggregate = "ci-check-failure"
 	telemetryAggregateGateNoise           telemetryAggregate = "gate-noise"
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
@@ -112,6 +115,8 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateStageFailureRate
 	case string(telemetryAggregateErrorSignature), "error-signatures":
 		aggregate = telemetryAggregateErrorSignature
+	case string(telemetryAggregateCICheckFailure):
+		aggregate = telemetryAggregateCICheckFailure
 	case string(telemetryAggregateGateNoise):
 		aggregate = telemetryAggregateGateNoise
 	case string(telemetryAggregateWorkflowUntriggered):
@@ -119,7 +124,7 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 	case string(telemetryAggregateStageUnreached):
 		aggregate = telemetryAggregateStageUnreached
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -144,6 +149,10 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateErrorSignature:
 			if kind == rollup.FindingErrorSignature {
+				return true
+			}
+		case telemetryAggregateCICheckFailure:
+			if kind == rollup.FindingCICheckFailure {
 				return true
 			}
 		case telemetryAggregateGateNoise:
@@ -213,6 +222,12 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MinErrorSignatureCount = n
+	case "min-ci-check-failure-runs", "minCICheckFailureRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCICheckFailureRuns = n
 	case "min-gate-evaluations", "minGateEvaluations":
 		n, err := parsePositiveInt()
 		if err != nil {
@@ -237,7 +252,7 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--workflow <name>] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
@@ -259,16 +274,17 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 // It locates the instance through GOOBERS_INSTANCE_ROOT because the stage's
 // working directory is its isolated worktree, not the instance root.
 func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry-query", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry-query", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	window := fs.Duration("window", 24*time.Hour, "lookback window (for example 24h or 168h)")
 	format := fs.String("format", telemetryQueryCandidateFormat, "artifact format (candidate-findings, effective-version-efficacy, tutor-live-verification)")
+	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -303,8 +319,20 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 
 	since := time.Now().UTC().Add(-*window)
 	root := providerStageRoot(pathArg)
+	queryGaggle := strings.TrimSpace(*gaggle)
+	if queryGaggle == "" {
+		queryGaggle = strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
+	}
+	if queryGaggle == "" && strings.TrimSpace(*workflow) != "" {
+		var err error
+		queryGaggle, err = resolveTelemetryQueryGaggle(root, *workflow)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 	if *format == telemetryQueryTutorHoldoutsFormat {
-		if err := refreshTutorHoldoutMergeStateFromProvider(root, os.Getenv("GOOBERS_GAGGLE")); err != nil {
+		if err := refreshTutorHoldoutMergeStateFromProvider(root, queryGaggle); err != nil {
 			pf(stderr, "error: refresh Tutor live holdout merge state: %v\n", err)
 			return 1
 		}
@@ -329,7 +357,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 			efficacyThresholds.MinSamples = thresholds.MinSamples
 			result, verifyErr := verifyTutorHoldouts(
 				root,
-				os.Getenv("GOOBERS_GAGGLE"),
+				queryGaggle,
 				nil,
 				*window,
 				since,
@@ -358,7 +386,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	if *format == telemetryQueryEffectiveVersionEfficacyFormat {
 		efficacyThresholds := rollup.DefaultEfficacyThresholds()
 		efficacyThresholds.MinSamples = thresholds.MinSamples
-		assessment, err := db.AssessLatestEfficacyByEffectiveVersion(context.Background(), *workflow, since, efficacyThresholds)
+		assessment, err := db.AssessLatestEfficacyByEffectiveVersionForGaggle(context.Background(), queryGaggle, *workflow, since, efficacyThresholds)
 		if err != nil {
 			pf(stderr, "error: assess effective-version efficacy: %v\n", err)
 			return 1
@@ -370,7 +398,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		efficacyThresholds.MinSamples = thresholds.MinSamples
 		result, err := verifyTutorHoldouts(
 			root,
-			os.Getenv("GOOBERS_GAGGLE"),
+			queryGaggle,
 			db,
 			*window,
 			since,
@@ -384,12 +412,36 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		return writeJSONArtifact(result, stdout, stderr)
 	}
 
-	result, err := detectCandidateFindings(db, *window, since, os.Getenv("GOOBERS_GAGGLE"), aggregates, thresholds)
+	result, err := detectCandidateFindings(db, *window, since, queryGaggle, aggregates, thresholds)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
 	}
 	return writeCandidateFindingsArtifact(result, stdout, stderr)
+}
+
+func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return "", fmt.Errorf("load configuration: %w (report: %+v)", err, report)
+	}
+	var candidates []string
+	for _, workflow := range set.Workflows {
+		if workflow.Name == workflowName {
+			candidates = append(candidates, workflow.Spec.Gaggle)
+		}
+	}
+	sort.Strings(candidates)
+	if len(candidates) > 1 {
+		return "", fmt.Errorf(
+			"workflow %q is ambiguous; candidate gaggles: %s; retry with --gaggle <name>",
+			workflowName, strings.Join(candidates, ", "),
+		)
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return "", nil
 }
 
 func detectCandidateFindings(

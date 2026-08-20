@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
@@ -22,9 +23,10 @@ import (
 //
 //   - env.Inputs[InputKeyStatus] = string(subject.Status)  ("success"/"failure"/"blocked")
 //   - env.Inputs[InputKeyErrorCode] = subject.Error.Code (empty when absent)
+//   - env.Inputs[InputKeyErrorMessage] = subject.Error.Message (empty when absent)
 //   - env.Inputs[InputKeyErrorRetryable] = subject.Error.Retryable (false when absent)
-//   - every k/v in subject.Outputs copied into env.Inputs as-is (Outputs are
-//     already documented as "small, named scalar values downstream
+//   - every non-reserved k/v in subject.Outputs copied into env.Inputs as-is
+//     (Outputs are already documented as "small, named scalar values downstream
 //     stages/gates can consume directly" — api/v1alpha1.ResultEnvelope)
 //
 // This keeps the checker registry pure (no journal/filesystem access) and
@@ -33,6 +35,7 @@ import (
 const (
 	InputKeyStatus         = "status"
 	InputKeyErrorCode      = "errorCode"
+	InputKeyErrorMessage   = "errorMessage"
 	InputKeyErrorRetryable = "errorRetryable"
 )
 
@@ -91,19 +94,31 @@ type CheckFunc func(inputs map[string]interface{}, params map[string]string) (ou
 
 // AutomatedInputs flattens the subject result into the scalar input contract
 // shared by every runner.
-func AutomatedInputs(subject apiv1.ResultEnvelope) map[string]interface{} {
-	inputs := make(map[string]interface{}, 3+len(subject.Outputs))
-	inputs[InputKeyStatus] = string(subject.Status)
+func AutomatedInputs(subject apiv1.ResultEnvelope) (map[string]interface{}, error) {
+	inputs := make(map[string]interface{}, 4+len(subject.Outputs))
 	for k, v := range subject.Outputs {
 		inputs[k] = v
 	}
+	var collisions []string
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if _, ok := subject.Outputs[key]; ok {
+			collisions = append(collisions, key)
+		}
+	}
+
+	inputs[InputKeyStatus] = string(subject.Status)
 	inputs[InputKeyErrorCode] = ""
+	inputs[InputKeyErrorMessage] = ""
 	inputs[InputKeyErrorRetryable] = false
 	if subject.Error != nil {
 		inputs[InputKeyErrorCode] = subject.Error.Code
+		inputs[InputKeyErrorMessage] = subject.Error.Message
 		inputs[InputKeyErrorRetryable] = subject.Error.Retryable
 	}
-	return inputs
+	if len(collisions) > 0 {
+		return inputs, fmt.Errorf("gate: subject outputs use reserved automated input keys: %s", strings.Join(collisions, ", "))
+	}
+	return inputs, nil
 }
 
 // DefaultChecks is the minimal, documented set of automated checks available
@@ -120,14 +135,17 @@ func DefaultChecks() map[string]CheckFunc {
 			}
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
 		},
-		// "failure-class": pass for success, infra for a retryable failure,
+		// "failure-class": pass for success, infra for a retryable failure or
+		// a generic command failure carrying a known host-contention or
+		// dependency-transport signature,
 		// and fail for every other status. No params.
 		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			status := stringField(inputs, InputKeyStatus)
 			if status == string(apiv1.ResultSuccess) {
 				return OutcomePass, nil
 			}
-			if retryable, _ := inputs[InputKeyErrorRetryable].(bool); status == string(apiv1.ResultFailure) && retryable {
+			retryable, _ := inputs[InputKeyErrorRetryable].(bool)
+			if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
 				return OutcomeInfra, nil
 			}
 			return OutcomeFail, nil
@@ -310,6 +328,25 @@ func DefaultChecks() map[string]CheckFunc {
 			}
 		},
 	}
+}
+
+func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
+	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
+		return false
+	}
+	message := strings.ToLower(stringField(inputs, InputKeyErrorMessage))
+	for _, signature := range []string{
+		"parallel golangci-lint is running",
+		"resource temporarily unavailable",
+		"failed to create new os thread",
+		"cannot allocate memory",
+	} {
+		if strings.Contains(message, signature) {
+			return true
+		}
+	}
+	return strings.Contains(message, "npm error openssl/") &&
+		strings.Contains(message, "tls alert handshake failure")
 }
 
 func boolOutcome(pass bool) string {

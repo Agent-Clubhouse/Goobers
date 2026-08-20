@@ -435,7 +435,7 @@ func TestWorkNominationNeverGrantsPushCapability(t *testing.T) {
 	if got := byName["gather-signals"]; len(got) != 1 || got[0] != "telemetry:read" {
 		t.Errorf("gather-signals capabilities = %v, want exactly [telemetry:read]", got)
 	}
-	wantNominate := map[string]bool{"repo:read": true, "telemetry:read": true, "github:issues:write": true}
+	wantNominate := map[string]bool{"repo:read": true, "telemetry:read": true, "github:issues:write": true, "agent:model": true}
 	if got := byName["nominate"]; len(got) != len(wantNominate) {
 		t.Errorf("nominate capabilities = %v, want exactly %v", got, wantNominate)
 	} else {

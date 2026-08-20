@@ -37,13 +37,13 @@ type openPRLoop struct {
 	done   chan struct{}
 }
 
-func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresher) *openPRLoop {
+func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresherSet) *openPRLoop {
 	loop := &openPRLoop{ctx: ctx}
 	loop.Replace(refresher)
 	return loop
 }
 
-func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresher) {
+func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresherSet) {
 	l.stopCurrent()
 	if refresher == nil || l.ctx.Err() != nil {
 		return
@@ -195,6 +195,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.ProviderQuota,
 		r.setup.TerminalNotifier,
 		r.setup.SecretStores,
+		nil,
 	)
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: err})
@@ -214,8 +215,16 @@ func (r *configReloader) poll(now time.Time) error {
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
+	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
+	r.setup.Definitions = definitions.Set
+	r.setup.Validation = definitions.Validation
+	r.setup.Entries = definitions.Entries
+	r.setup.Machines = definitions.Machines
+	r.setup.GooberDigests = definitions.GooberDigests
+	r.setup.RepoRefs = definitions.RepoRefs
+	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)

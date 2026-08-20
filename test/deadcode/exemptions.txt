@@ -2,24 +2,62 @@
 # test/deadcode rejects broad matching, duplicate entries, and stale exemptions.
 
 # Public API and compatibility surfaces.
+github.com/goobers/goobers/internal/workflow/v_next.dslVersionLevel # Per-version level lookup reachable only through the release-gate evolution validation (#3307 wave), which the tagged-baseline tests drive; the admission path never calls it.
 github.com/goobers/goobers/api/v1alpha1.WriteArtifact # Documented stage-contract helper retained for external stage implementations.
 github.com/goobers/goobers/api/v1alpha1.Resource # Conventional Kubernetes API helper retained for external CRD consumers.
 github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory retained for config and tooling consumers.
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
+github.com/goobers/goobers/internal/missioncontrol.EvaluateMetric # Versioned mission-control metric contract entry point retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-control artifact builder retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
+github.com/goobers/goobers/internal/missioncontrol.compare # Mission-control criterion evaluator reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.Artifact.Validate # Versioned mission-control artifact validator retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateArtifactMetadata # Mission-control artifact metadata validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateEvidence # Mission-control evidence validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateSubsystemDefinitions # Mission-control subsystem-definition validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetrics # Mission-control metrics-section validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateSubsystems # Mission-control subsystem-section validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateOverall # Mission-control overall-section validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetric # Mission-control metric validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricMetadata # Mission-control metric metadata validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricCriterion # Mission-control metric criterion validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricValue # Mission-control metric value validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricTiming # Mission-control metric timing validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricStatus # Mission-control metric status validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validMetricReason # Mission-control metric verdict-reason guard reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricObservation # Mission-control metric observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateConclusiveMetricObservation # Mission-control conclusive-observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateStaleMetricObservation # Mission-control stale-observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMetricWithoutCanonicalValue # Mission-control canonical-value validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateMissingMetricObservation # Mission-control missing-observation validator reachable through the retained artifact validator (#3038).
+github.com/goobers/goobers/internal/missioncontrol.validateAggregation # Mission-control aggregate validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validateMembers # Mission-control membership validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.uniqueID # Mission-control identifier validator reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.criterionFinite # Mission-control finite-criterion guard reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validCriterionShape # Mission-control criterion-shape guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.finite # Mission-control finite-number guard reachable through retained contract entry points (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validVerdict # Mission-control verdict enum guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.validReasonCode # Mission-control reason-code enum guard reachable through the retained artifact validator (#1449).
+github.com/goobers/goobers/internal/missioncontrol.canonicalize # Mission-control deterministic ordering helper reachable through the retained artifact builder (#1449).
+github.com/goobers/goobers/internal/missioncontrol.RenderFacts # Exact mission-control facts renderer retained for workflow consumers (#1449).
+github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-control criterion renderer reachable through the retained exact-facts renderer (#1449).
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
+github.com/goobers/goobers/internal/builtincmd.Names # Built-in subcommand inventory accessor, exercised by cmd/goobers/builtincmd_parity_test.go's CLI-registry parity check (#2861 admission hardening).
 github.com/goobers/goobers/internal/telemetry.AllAttributes # Telemetry schema inventory, exercised by telemetry_test.go and otlp_test.go's attribute-coverage checks (#2044 audit).
 github.com/goobers/goobers/internal/telemetry.KnownAttribute # Telemetry schema validator, exercised by telemetry_test.go's legacy-attribute-rejection case (#2044 audit).
 github.com/goobers/goobers/internal/webhook.ValidSignature # Webhook signature helper, exercised by webhook_test.go's valid/invalid-signature cases (#2044 audit).
-github.com/goobers/goobers/internal/workflow.CheckFeatureSupport # Workflow feature-policy facade, exercised by api/validate/validate_test.go and both interpreters' features_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow.FeatureRegistry.Lookup # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.All for immutable lookup parity (#2981).
+github.com/goobers/goobers/internal/workflow.FeatureRegistry.All # Version-routed registry API exercised by coexistence tests and retained with FeatureRegistry.Lookup for immutable lookup parity (#2981).
 github.com/goobers/goobers/internal/workflow.LookupFeature # Workflow feature-lookup facade, exercised by coexistence_test.go and test/workflowupgrade/advisor_test.go (#2044 audit).
 github.com/goobers/goobers/internal/workflow.CheckStageContractWarnings # Stage-contract advisory facade, exercised by test/shippedworkflows/contracts_test.go (#2044 audit).
+github.com/goobers/goobers/internal/workflow/v_current.CheckGaggleFeatureSupport # Current-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2981).
 github.com/goobers/goobers/internal/workflow/v_current.LookupFeature # Current-interpreter implementation behind the retained workflow feature lookup facade.
+github.com/goobers/goobers/internal/workflow/v_next.CheckGaggleFeatureSupport # Next-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#2046).
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
-github.com/goobers/goobers/internal/workflow/v_next.FeaturesAtDSLVersion # Next-interpreter feature projection retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
 github.com/goobers/goobers/providers.WithGiteaTokenSource # Public Gitea per-request token-source option retained for the credentialed construction path and external provider consumers; mirrors the ADO credential-source option and is exercised by provider tests.
@@ -33,22 +71,8 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public 
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
 
-# Build-time generators exercised by drift tests and make docs.
-github.com/goobers/goobers/cmd/goobers.docSlugsUnique # CLI documentation collision guard invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderFeatureMatrix # Feature-matrix generator invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.writeFeatureMatrix # Feature-matrix writer invoked by make docs through the drift test.
-github.com/goobers/goobers/cmd/goobers.featureVersionDelta # Feature-matrix delta helper invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.markdownFeatureList # Feature-matrix delta formatter invoked by the checked-in drift test.
-github.com/goobers/goobers/cmd/goobers.renderCapabilityMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.writeCapabilityMatrix # Capability-matrix writer invoked by make docs through the drift test (CONF-2, #2075).
-github.com/goobers/goobers/cmd/goobers.formatMatrixCell # Capability-matrix cell formatter invoked by the checked-in drift test (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllCapabilities # Capability-matrix row source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.AllProviderKinds # Capability-matrix column source invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
+# Cross-surface contract invariants exercised by drift tests.
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.WorkflowRequiredCapabilities # Blessed-tier CI gate's required-capability set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
-github.com/goobers/goobers/providers.classify # Capability-matrix cell classifier invoked by the checked-in drift test and the blessed-tier CI gate (CONF-2, #2075).
-github.com/goobers/goobers/providers.gapIssueFor # Capability-matrix gap-registry lookup invoked through classify (CONF-2, #2075).
-github.com/goobers/goobers/providers.BuildMatrix # Capability-matrix generator invoked by the checked-in drift test (CONF-2, #2075).
 github.com/goobers/goobers/providers.ValidateBlessedTier # Blessed-tier CI gate invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
@@ -56,23 +80,9 @@ github.com/goobers/goobers/internal/apicontract.validSurface # Contract generato
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/flake.Quarantine # Issue-backed quarantine API (#664) intentionally ships with zero occupants until a flake is diagnosed.
 github.com/goobers/goobers/internal/flake.quarantine # Clock-injected quarantine helper exercised by expiry and validation tests.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Name # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.FakeAdapter.Run # Scripted conformance harness method retained for deterministic fixtures.
-github.com/goobers/goobers/internal/harness.WriteCompletion # Scripted harness completion helper retained for deterministic fixtures.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Name # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Preflight # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Synthesize # Sound-free speech adapter method retained for deterministic cross-package notification tests.
-github.com/goobers/goobers/internal/speechnotify.FakeSynthesizer.Utterances # Sound-free speech adapter accessor retained for deterministic cross-package notification assertions.
-github.com/goobers/goobers/internal/telemetry.NewMemoryExporter # In-memory telemetry exporter retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.ExportSpans # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Shutdown # In-memory telemetry exporter method retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Spans # In-memory telemetry exporter accessor retained for cross-package assertions.
-github.com/goobers/goobers/internal/telemetry.MemoryExporter.Reset # In-memory telemetry exporter reset retained for cross-package assertions.
+github.com/goobers/goobers/internal/harness.ConformanceCoveredAdapterNames # Cross-package registry-completeness contract (#2776), exercised by cmd/goobers's TestBuildHarnessRegistryAdaptersAreConformanceCovered.
+github.com/goobers/goobers/internal/providerstage.Commands # Cross-package provider-stage inventory exercised by cmd/goobers's blessed-tier dispatch conformance gate (CONF-10, #2499).
 github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
-github.com/goobers/goobers/internal/testdep.Require # Test-only dependency guard called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.require # Test-only dependency guard helper called from integration-tagged test files.
-github.com/goobers/goobers/internal/testdep.RequireEnv # Test-only environment-variable guard called from integration-tagged live-smoke and envtest files.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
 github.com/goobers/goobers/internal/supportmatrix.validateSupportMatrixEvolution # Support-matrix evolution guard (DVL-7) exercised by release-history tests.
@@ -87,7 +97,6 @@ github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-recor
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
 github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
 github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
-github.com/goobers/goobers/cmd/goobers.runtimeCommand # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
@@ -96,39 +105,50 @@ github.com/goobers/goobers/internal/harness.WithTranscriptLimit # Harness transc
 github.com/goobers/goobers/internal/localscheduler.WithClock # Scheduler clock option retained for deterministic trigger tests.
 github.com/goobers/goobers/internal/platform/shutdown.DrainWithEscalation # Shutdown drain helper retained for bounded lifecycle tests.
 github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-workspace process-termination injection seam retained for the lock-aware reset lifecycle test.
+github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # Object-cache lock-timeout test seam (#2905), used only from objectcachelock_test.go — mirrors internal/journal.SetLockTimeoutForTest.
 
 # Quarantined, reserved, and extension seams required by the architecture.
-github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # DEC-3 shared target lease implementation ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.MarkerConflictError.Error # DEC-3 conflict surface ships ahead of its DEC-4 publisher caller and is exercised by decomposition tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.CreateChild # DEC-3 idempotent child primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and concurrent-create tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AppendMarkerComment # DEC-3 idempotent record primitive ships ahead of its DEC-4 publisher caller and is exercised by lost-response and conflict tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.AttachChild # DEC-3 hierarchy primitive ships ahead of its DEC-4 publisher caller and is exercised by hierarchy and revision-guard tests (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.validate # DEC-3 primitive validation helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.guardedItem # DEC-3 revision-guard helper is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findChild # DEC-3 exact child-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.Primitives.findComment # DEC-3 exact comment-marker lookup is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markedBody # DEC-3 stable marker renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.markerKeyLine # DEC-3 exact marker-key renderer is reachable through the reserved DEC-4 entrypoints (#2245).
-github.com/goobers/goobers/internal/decomposition.containsLine # DEC-3 exact marker matcher is reachable through the reserved DEC-4 entrypoints (#2245).
+# Notification output boundary (#1451) ships ahead of its mission-control
+# workflow caller (#1450); each entry is exercised by notification package tests.
+github.com/goobers/goobers/internal/notification.NewJournalRecorder # Durable notification journal adapter reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.RecordRequest # Notification request persistence method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.RecordReceipt # Notification receipt persistence method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.recordReceipt # Locked receipt append helper reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.JournalRecorder.ClaimDelivery # Atomic delivery-claim method reached through the reserved recorder boundary (#1450).
+github.com/goobers/goobers/internal/notification.Policy.normalized # Notification policy validator reached through the reserved dispatcher constructor (#1450).
+github.com/goobers/goobers/internal/notification.NewDispatcher # Notification dispatcher constructor reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.Dispatch # Notification dispatch entrypoint reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.dispatchSink # Per-sink delivery helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.persist # Durable receipt helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.startDelivery # Bounded asynchronous sink helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.deliveryAttempt.wait # Delivery timeout helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.resolvePending # Timed-out delivery resolution helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.receipt # Delivery receipt builder reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.idempotencyDigest # Receipt idempotency helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.sinkRef # Provider-neutral sink reference helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.ValidateRequest # Notification contract validator reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.validSHA256Digest # Evidence digest validator reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.Dispatcher.sanitizeError # Credential-aware error sanitizer reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.NewRegistry # Notification sink registry constructor reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Registry.Register # Notification sink registration entrypoint reserved for the mission-control workflow caller (#1450).
+github.com/goobers/goobers/internal/notification.Registry.lookup # Sink lookup helper reached through the reserved dispatch entrypoint (#1450).
+github.com/goobers/goobers/internal/notification.RecordingSink.Kind # Hermetic sink contract method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Version # Hermetic sink contract method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Deliver # Hermetic sink delivery method retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.RecordingSink.Requests # Hermetic sink assertion accessor retained for shared notification tests (#1451).
+github.com/goobers/goobers/internal/notification.NewTerminalSink # Development terminal sink constructor reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development terminal sink contract method reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
+github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
-github.com/goobers/goobers/internal/engine.Registry.Register # Name+spec registration convenience wrapper over RegisterDefinition (#1251 moved production callers to RegisterDefinition for DSL-version plumbing), retained for tier 3 and exercised by registry package tests.
-github.com/goobers/goobers/internal/engine.Registry.Get # Version-pinned Temporal engine registry seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.Registry.StartInput # Temporal engine run-start seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.Registry.StartInputVersion # Version-pinned Temporal engine run-start seam retained for tier 3.
-github.com/goobers/goobers/internal/engine.ProjectRun # Temporal history->journal projection (#629) retained for tier 3, exercised by the dual-runner conformance harness.
-github.com/goobers/goobers/internal/engine.ProjectCompletedRun # Temporal history->journal projection entrypoint (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
-github.com/goobers/goobers/internal/engine.queryProjection # Temporal projection query helper shared by quarantined tier-3 entrypoints, exercised by projection and schedule tests.
-github.com/goobers/goobers/internal/engine.validateProjection # Projection fail-closed validator (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.validateOp # Projection op validator (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.projectionClock.set # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
-github.com/goobers/goobers/internal/engine.projectionClock.now # Deterministic projection clock seam (#629) retained for tier 3, exercised by projection tests.
 github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
+github.com/goobers/goobers/internal/engine.WithSpanSource # Span-adoption seam (#2907) shipped ahead of its caller: no process wires a fleet blob store into the projection driver yet, so only projection tests configure a SpanSource today. Exercised by spanprojection_test.go; goes stale when a production caller (e.g. cmd/goobers's projection driver) lands.
 github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
 github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
@@ -143,6 +163,7 @@ github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch con
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
+github.com/goobers/goobers/internal/journal.Reader.Schema # Journal schema inspection accessor required by the persisted-schema compatibility contract and exercised by migration tests.
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
@@ -157,6 +178,7 @@ github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-even
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
+github.com/goobers/goobers/internal/temporaltest.ProjectionQuerier.QueryWorkflow # Adapts the test environment to engine's projectionQuerier shape so ProjectCompletedRun* can run hermetically (#2903); used by test/e2e's engine-start/engine-project round trip.
 github.com/goobers/goobers/internal/testgit.Command # Isolated git command constructor used across repository fixture tests (#1811).
 github.com/goobers/goobers/internal/testgit.AmbientCommand # Explicit ambient git command constructor used by environment-boundary tests (#1811).
 
@@ -212,6 +234,4 @@ github.com/goobers/goobers/internal/httpapi.requireSourceApplied # If-Source-App
 github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit detection for definition edits (#1934).
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
-github.com/goobers/goobers/internal/httpapi.idempotencyKey # Validates a durably-recorded key (#1934).
-github.com/goobers/goobers/internal/httpapi.requireIdempotencyKey # Idempotency precondition, wired when mutations become real (#1934); its test is _test.go, which this gate does not count.
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.

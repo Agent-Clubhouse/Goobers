@@ -19,6 +19,37 @@ const (
 	runStatusRunning   = "running"
 )
 
+// runErrorCodeDurationExceeded mirrors runner.RunDurationExceededErrorCode's
+// on-disk string (not imported — same decoupling rationale as the run status
+// constants above). It identifies a run the watchdog aborted because it
+// exceeded its configured maximum wall-clock duration (internal/runner's
+// ExpireRun, which also fires during daemon startup before a stale run is
+// resumed) — a run that hung and was later aborted, as opposed to one that
+// reached a designed terminal on its own (#2534).
+//
+// runner.RunCanceledErrorCode (an operator's live `goobers run cancel`) is
+// deliberately excluded from stuck-aborted classification: a cancel is an
+// explicit action, not automatic stall detection, and folding it in would
+// infer "stuck" from something other than the run's actual finalization
+// reason. runner.RunStalledErrorCode is also excluded because the watchdog's
+// stall path terminalizes to PhaseEscalated, not PhaseAborted — it never
+// reaches the duration aggregates this excludes from.
+//
+// This reuses the error code already captured per-run in run_errors rather
+// than adding new journal/producer plumbing, composing a minimal read-side
+// slice of #1429's canonical terminal-outcome projection (and the typed
+// terminal-cause record #463 defines, once it lands) instead of duplicating
+// producer work — consistent with #1429's own design note to do exactly that.
+const runErrorCodeDurationExceeded = "run_duration_exceeded"
+
+// stuckAbortedRunsSubquery is a literal (no bind params — the code value is a
+// package constant, not user input) subquery selecting the run_id of every
+// run whose recorded terminal cause is runErrorCodeDurationExceeded. Joined
+// against runs/stage_attempts to exclude stuck-then-aborted duration samples
+// from percentiles/min/max while still counting them for denominator
+// transparency (#1439's principle).
+const stuckAbortedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE code = '` + runErrorCodeDurationExceeded + `'`
+
 // Stage attempt status values, mirroring api/v1alpha1.ResultStatus's wire
 // strings (a stable, long-merged contract package — safe to reference by
 // value here without importing it, keeping this package free of the api/
@@ -91,6 +122,11 @@ type RunStats struct {
 	MinDurationMs int64   `json:"minDurationMs"`
 	MaxDurationMs int64   `json:"maxDurationMs"`
 	HasDuration   bool    `json:"-"`
+	// StuckAbortedRuns is how many of TotalRuns were excluded from
+	// Avg/Min/MaxDurationMs because their recorded terminal cause is
+	// runErrorCodeDurationExceeded (hung, then aborted) rather than a designed
+	// terminal — disclosed rather than silently dropped (#2534, #1439).
+	StuckAbortedRuns int `json:"stuckAbortedRuns"`
 }
 
 // StageStats is the success/failure/duration aggregate for one stage identity.
@@ -112,6 +148,11 @@ type StageStats struct {
 	MinDurationMs int64   `json:"minDurationMs"`
 	MaxDurationMs int64   `json:"maxDurationMs"`
 	HasDuration   bool    `json:"-"`
+	// StuckAbortedAttempts is how many of TotalAttempts belong to a run whose
+	// recorded terminal cause is runErrorCodeDurationExceeded, excluded from
+	// Avg/Min/MaxDurationMs and from the percentile samples below — disclosed
+	// rather than silently dropped (#2534, #1439).
+	StuckAbortedAttempts int `json:"stuckAbortedAttempts"`
 
 	DurationSamples int   `json:"durationSamples"`
 	P50DurationMs   int64 `json:"p50DurationMs"`
@@ -159,6 +200,7 @@ type UsageStats struct {
 	HasPremiumRequests        bool    `json:"-"`
 
 	CostSamples int     `json:"costSamples"`
+	CostUSD     float64 `json:"costUSD"`
 	P50CostUSD  float64 `json:"p50CostUSD"`
 	P95CostUSD  float64 `json:"p95CostUSD"`
 	HasCost     bool    `json:"-"`
@@ -466,12 +508,16 @@ func (db *DB) runStats(ctx context.Context, req StatsRequest) ([]RunStats, error
 			COUNT(*) AS total,
 			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS completed,
 			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS failed,
-			AVG(r.duration_ms), MIN(r.duration_ms), MAX(r.duration_ms)
+			AVG(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
+			MIN(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
+			MAX(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
+			COUNT(CASE WHEN sar.run_id IS NOT NULL THEN 1 END)
 		FROM runs r
+		LEFT JOIN (%s) sar ON sar.run_id = r.run_id
 		%s
 		%s
 		GROUP BY r.gaggle, r.workflow%s ORDER BY r.gaggle, r.workflow%s`,
-		selectDimensions, join, where, groupDimensions, groupDimensions)
+		selectDimensions, stuckAbortedRunsSubquery, join, where, groupDimensions, groupDimensions)
 	args := append([]any{runStatusCompleted, runStatusFailed}, joinArgs...)
 	args = append(args, whereArgs...)
 
@@ -488,7 +534,7 @@ func (db *DB) runStats(ctx context.Context, req StatsRequest) ([]RunStats, error
 		var min, max sql.NullInt64
 		scan := []any{&s.Gaggle, &s.Workflow}
 		scan = appendAgentDimensionScan(scan, req, &s.Model, &s.HarnessVersion)
-		scan = append(scan, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max)
+		scan = append(scan, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max, &s.StuckAbortedRuns)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan run stats: %w", err)
 		}
@@ -530,13 +576,17 @@ func (db *DB) stageStats(ctx context.Context, req StatsRequest) ([]StageStats, e
 			COUNT(*) AS total,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN sa.status = ? THEN 1 ELSE 0 END) AS failed,
-			AVG(sa.duration_ms), MIN(sa.duration_ms), MAX(sa.duration_ms)
+			AVG(CASE WHEN sar.run_id IS NULL THEN sa.duration_ms END),
+			MIN(CASE WHEN sar.run_id IS NULL THEN sa.duration_ms END),
+			MAX(CASE WHEN sar.run_id IS NULL THEN sa.duration_ms END),
+			COUNT(CASE WHEN sar.run_id IS NOT NULL THEN 1 END)
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
+		LEFT JOIN (%s) sar ON sar.run_id = r.run_id
 		%s
 		%s
 		GROUP BY r.gaggle, r.workflow, sa.stage%s
-		ORDER BY r.gaggle, r.workflow, sa.stage%s`, selectDimensions, join, joinWhere, groupDimensions, groupDimensions)
+		ORDER BY r.gaggle, r.workflow, sa.stage%s`, selectDimensions, stuckAbortedRunsSubquery, join, joinWhere, groupDimensions, groupDimensions)
 	args = append([]any{stageStatusSuccess, stageStatusFailure}, args...)
 
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
@@ -553,7 +603,7 @@ func (db *DB) stageStats(ctx context.Context, req StatsRequest) ([]StageStats, e
 		var branch sql.NullInt64
 		scan := []any{&s.Gaggle, &s.Workflow, &s.Stage}
 		scan = appendStageDimensionScan(scan, req, &branch, &s.Model, &s.HarnessVersion)
-		scan = append(scan, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max)
+		scan = append(scan, &s.TotalAttempts, &s.SucceededAttempts, &s.FailedAttempts, &avg, &min, &max, &s.StuckAbortedAttempts)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage stats: %w", err)
 		}

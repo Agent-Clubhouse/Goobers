@@ -50,20 +50,27 @@ throwaway repository. An offline flow can read and display the same catalog
 without contacting GitHub. The issue order is stable; the first entry is the
 shortest happy-path implementation.
 
-## Quickstart compatibility
+## Workflow coverage
 
 ```text
 go test ./cmd/goobers -run '^TestGettingStartedSampleQuickstartThroughRealRunner$'
+go test ./cmd/goobers -run '^TestGettingStartedSampleImplementationLocalCIThroughRealRunner$'
 ```
 
-Run this acceptance check from the Goobers source repository. It initializes
-the actual embedded `quickstart@v1` template, materializes the pinned fixture in
-a temporary Git repository, and drives the real Goobers local runner through
-backlog claim, implementation, review, branch push, and the production
-`open-pr` command. Only the external coding-model adapter and GitHub HTTP
-endpoint are replaced with deterministic test doubles. The check asserts that
-the pushed branch resolves the first seeded issue and that the provider
-receives the resulting pull request.
+Run these acceptance checks from the Goobers source repository. The quickstart
+check initializes the actual embedded `quickstart@v1` template, materializes the
+pinned fixture in a temporary Git repository, and drives the real Goobers local
+runner through backlog claim, implementation, review, branch push, and the
+production `open-pr` command.
+
+The implementation check uses the same seed issue and repository with the
+flagship implementation workflow's `implement` -> reviewer gate -> `local-ci`
+shape. It proves that the gaggle CI override is compiled through
+`ApplyGaggleCICommand` and executed by the real shell executor as
+`npm run ci`, asserting that a valid implementation passes the `local-ci` stage
+and a deliberately broken TypeScript implementation fails it.
+Only the external coding-model adapter and GitHub HTTP endpoint are replaced
+with deterministic test doubles.
 
 ## Disposal
 

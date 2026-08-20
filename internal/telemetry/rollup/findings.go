@@ -22,6 +22,10 @@ const (
 	// at least Thresholds.MinErrorSignatureCount times across runs
 	// (TUT-010 failure-patterns family — error-code clustering).
 	FindingErrorSignature FindingKind = "error-signature"
+	// FindingCICheckFailure flags a terminal CI check that failed in multiple
+	// distinct runs. The source ci-checks.json artifacts remain in each run's
+	// journal for test-level classification.
+	FindingCICheckFailure FindingKind = "ci-check-failure"
 	// FindingGateNeverFails flags a gate that has evaluated at least
 	// Thresholds.MinGateEvaluations times and never once returned a
 	// non-pass verdict — a gate providing no signal (TUT-010 gate-noise
@@ -65,9 +69,9 @@ type Finding struct {
 	FlaggedRuns []JournalPointer   `json:"flagged_runs"`
 }
 
-// Thresholds are the config-tunable detection knobs a Tutor goober
-// definition sets (OQ-2); DefaultThresholds gives sane defaults for a
-// caller that doesn't override them. Every rate is a fraction in [0, 1].
+// Thresholds are the config-tunable detection knobs a telemetry-query
+// workflow sets; DefaultThresholds gives sane defaults for a caller that
+// doesn't override them. Every rate is a fraction in [0, 1].
 type Thresholds struct {
 	// MinSamples is the minimum attempt/run count before a failure-rate
 	// finding is trustworthy — avoids flagging a stage on a single failed
@@ -79,6 +83,9 @@ type Thresholds struct {
 	// MinErrorSignatureCount flags a recurring (code, error_class) pattern
 	// occurring at least this many times. Default 5.
 	MinErrorSignatureCount int
+	// MinCICheckFailureRuns flags a CI check that failed in at least this many
+	// distinct runs. Default 2.
+	MinCICheckFailureRuns int
 	// MinGateEvaluations is the minimum evaluation count before a gate-noise
 	// finding (never-fails or repass-churn) is trustworthy. Default 5.
 	MinGateEvaluations int
@@ -97,6 +104,7 @@ func DefaultThresholds() Thresholds {
 		MinSamples:             5,
 		MaxFailureRate:         0.3,
 		MinErrorSignatureCount: 5,
+		MinCICheckFailureRuns:  2,
 		MinGateEvaluations:     5,
 		MaxGateEscalationRate:  0.2,
 		MaxFlaggedRuns:         10,
@@ -123,8 +131,8 @@ type DetectRequest struct {
 	Thresholds Thresholds
 }
 
-// Detect runs every TUT-010 detection family Detect supports — failure
-// patterns (stage failure rate, error-code clustering), gate noise
+// Detect runs every detection family Detect supports — failure patterns
+// (stage failure rate, error-code clustering, recurring CI check failures), gate noise
 // (never-fails, repass churn), and coverage gaps (untriggered workflows,
 // unreached stages) — against req's window/filter and Thresholds, and
 // returns candidate Findings sorted by (Kind, Subject, Stage) for a
@@ -135,6 +143,9 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 	th := req.Thresholds
 	if th == (Thresholds{}) {
 		th = DefaultThresholds()
+	}
+	if th.MinCICheckFailureRuns <= 0 {
+		th.MinCICheckFailureRuns = DefaultThresholds().MinCICheckFailureRuns
 	}
 	if th.MaxFlaggedRuns <= 0 {
 		th.MaxFlaggedRuns = 10
@@ -153,6 +164,12 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 		return nil, err
 	}
 	findings = append(findings, errFindings...)
+
+	ciFindings, err := db.detectCICheckFailures(req.StatsRequest, th)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, ciFindings...)
 
 	gateFindings, err := db.detectGateNoise(ctx, req.StatsRequest, th)
 	if err != nil {
@@ -279,6 +296,79 @@ func (db *DB) errorSignatureRuns(req StatsRequest, code, errorClass string, limi
 		ORDER BY e.occurred_at DESC, e.run_id DESC
 		LIMIT ?`, clause)
 	args = append(append([]any{}, args...), code, errorClass, limit)
+	return queryRunIDs(context.Background(), db, query, args)
+}
+
+func (db *DB) detectCICheckFailures(req StatsRequest, th Thresholds) ([]Finding, error) {
+	where, args := statsWhere("r.workflow", "r.gaggle", "c.occurred_at", req)
+	query := fmt.Sprintf(`
+		SELECT c.check_name, COUNT(DISTINCT c.run_id)
+		FROM ci_check_failures c
+		JOIN runs r ON r.run_id = c.run_id
+		%s
+		GROUP BY c.check_name
+		HAVING COUNT(DISTINCT c.run_id) >= ?
+		ORDER BY c.check_name`, where)
+	args = append(args, th.MinCICheckFailureRuns)
+	rows, err := db.readDB().QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: detect recurring CI check failures: %w", err)
+	}
+	var aggregates []struct {
+		name  string
+		count int
+	}
+	for rows.Next() {
+		var aggregate struct {
+			name  string
+			count int
+		}
+		if err := rows.Scan(&aggregate.name, &aggregate.count); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("rollup: scan recurring CI check failure: %w", err)
+		}
+		aggregates = append(aggregates, aggregate)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("rollup: iterate recurring CI check failures: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("rollup: close recurring CI check failures: %w", err)
+	}
+
+	findings := make([]Finding, 0, len(aggregates))
+	for _, aggregate := range aggregates {
+		runs, err := db.ciCheckFailureRuns(req, aggregate.name, th.MaxFlaggedRuns)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, Finding{
+			Kind:        FindingCICheckFailure,
+			Subject:     aggregate.name,
+			Metrics:     map[string]float64{"distinctRuns": float64(aggregate.count)},
+			Threshold:   float64(th.MinCICheckFailureRuns),
+			FlaggedRuns: runs,
+		})
+	}
+	return findings, nil
+}
+
+func (db *DB) ciCheckFailureRuns(req StatsRequest, checkName string, limit int) ([]JournalPointer, error) {
+	where, args := statsWhere("r.workflow", "r.gaggle", "c.occurred_at", req)
+	clause := "c.check_name = ?"
+	if where != "" {
+		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
+	}
+	query := fmt.Sprintf(`
+		SELECT c.run_id, MAX(c.occurred_at) AS latest_occurred_at
+		FROM ci_check_failures c
+		JOIN runs r ON r.run_id = c.run_id
+		WHERE %s
+		GROUP BY c.run_id
+		ORDER BY latest_occurred_at DESC, c.run_id DESC
+		LIMIT ?`, clause)
+	args = append(append([]any{}, args...), checkName, limit)
 	return queryRunIDs(context.Background(), db, query, args)
 }
 

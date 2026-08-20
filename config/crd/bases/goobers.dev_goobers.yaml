@@ -166,6 +166,7 @@ spec:
                             is only valid with header
                           rule: (has(self.env) && !has(self.header) && !has(self.scheme))
                             || (!has(self.env) && has(self.header))
+                      maxItems: 32
                       type: array
                     name:
                       description: Name is the invocation-local MCP server name.
@@ -186,6 +187,7 @@ spec:
                       && has(self.url))
                   - message: args are only valid with command
                     rule: has(self.command) || !has(self.args)
+                maxItems: 32
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
@@ -254,10 +256,6 @@ spec:
             - instructions
             - role
             type: object
-            x-kubernetes-validations:
-            - message: mcpServers are only supported by harness copilot
-              rule: '!has(self.mcpServers) || size(self.mcpServers) == 0 || !has(self.harness)
-                || self.harness == ''copilot'''
         required:
         - spec
         type: object

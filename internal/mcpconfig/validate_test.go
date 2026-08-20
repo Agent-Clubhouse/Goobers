@@ -251,42 +251,49 @@ func TestBYOCredentialKeys(t *testing.T) {
 	}
 }
 
+// TestValidateForHarness pins #1492: mcpServers are adapter-neutral —
+// declaring them is no longer rejected for claude-code, matching Copilot.
 func TestValidateForHarness(t *testing.T) {
 	servers := []apiv1.MCPServer{{Name: "context", Command: "context-server"}}
-	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot} {
+	for _, harness := range []apiv1.Harness{"", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
 		if err := ValidateForHarness(harness, servers, nil, []string{"read-context"}); err != nil {
 			t.Fatalf("ValidateForHarness(%q): %v", harness, err)
 		}
 	}
-
-	err := ValidateForHarness(apiv1.HarnessClaudeCode, servers, nil, []string{"read-context"})
-	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
-		t.Fatalf("ValidateForHarness(claude-code) error = %v, want unsupported-harness error", err)
-	}
 }
 
+// TestValidateForHarnessRejectsCredentialExposureToLocalSibling pins #1492's
+// AC3: the shared-process-environment credential-isolation rejection applies
+// identically to every harness — confirmed live that claude-code's stdio MCP
+// servers inherit the full parent process environment exactly like
+// Copilot's, so the same risk (and the same rejection) applies there too.
 func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T) {
-	credential := apiv1.MCPCredentialRef{
-		Kind:   apiv1.MCPCredentialKindBYO,
-		Ref:    "vendor-api",
-		Header: "Authorization",
-	}
-	servers := []apiv1.MCPServer{
-		{Name: "local-context", Command: "context-server"},
-		{Name: "vendor-context", URL: "https://vendor.example.test/mcp", CredentialRefs: []apiv1.MCPCredentialRef{credential}},
-	}
-	err := ValidateForHarness(apiv1.HarnessCopilot, servers, nil, nil)
-	if err == nil ||
-		!strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) {
-		t.Fatalf("ValidateForHarness error = %v, want local credential-isolation rejection", err)
-	}
+	for _, harness := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
+		t.Run(string(harness), func(t *testing.T) {
+			credential := apiv1.MCPCredentialRef{
+				Kind:   apiv1.MCPCredentialKindBYO,
+				Ref:    "vendor-api",
+				Header: "Authorization",
+			}
+			servers := []apiv1.MCPServer{
+				{Name: "local-context", Command: "context-server"},
+				{Name: "vendor-context", URL: "https://vendor.example.test/mcp", CredentialRefs: []apiv1.MCPCredentialRef{credential}},
+			}
+			err := ValidateForHarness(harness, servers, nil, nil)
+			if err == nil ||
+				!strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) ||
+				!strings.Contains(err.Error(), string(harness)) {
+				t.Fatalf("ValidateForHarness error = %v, want local credential-isolation rejection naming %q", err, harness)
+			}
 
-	servers[0].CredentialRefs = []apiv1.MCPCredentialRef{{
-		Kind: apiv1.MCPCredentialKindBYO,
-		Ref:  "vendor-api",
-		Env:  "VENDOR_TOKEN",
-	}}
-	if err := ValidateForHarness(apiv1.HarnessCopilot, servers, nil, nil); err != nil {
-		t.Fatalf("ValidateForHarness explicitly shared credential: %v", err)
+			servers[0].CredentialRefs = []apiv1.MCPCredentialRef{{
+				Kind: apiv1.MCPCredentialKindBYO,
+				Ref:  "vendor-api",
+				Env:  "VENDOR_TOKEN",
+			}}
+			if err := ValidateForHarness(harness, servers, nil, nil); err != nil {
+				t.Fatalf("ValidateForHarness explicitly shared credential: %v", err)
+			}
+		})
 	}
 }

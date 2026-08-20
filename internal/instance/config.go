@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,13 +16,10 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
-	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
-	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/speechnotify"
 )
 
@@ -35,6 +31,17 @@ const (
 	ConfigKind                       = "Instance"
 	DefaultAPIListenAddress          = "127.0.0.1:8080"
 	DefaultWebhookListenAddress      = "127.0.0.1:8081"
+	DefaultTemporalHostPort          = "127.0.0.1:7233"
+	DefaultTemporalNamespace         = "default"
+	DefaultEngineTaskQueue           = "goobers-engine"
+	TemporalHostPortEnv              = "GOOBERS_TEMPORAL_HOSTPORT"
+	TemporalAddressEnv               = "GOOBERS_TEMPORAL_ADDRESS"
+	TemporalAddressLegacyEnv         = "TEMPORAL_ADDRESS"
+	TemporalNamespaceEnv             = "GOOBERS_TEMPORAL_NAMESPACE"
+	TemporalNamespaceLegacyEnv       = "TEMPORAL_NAMESPACE"
+	TaskQueueEnv                     = "GOOBERS_TASK_QUEUE"
+	TemporalTaskQueueEnv             = "GOOBERS_TEMPORAL_TASK_QUEUE"
+	TemporalTaskQueueLegacyEnv       = "TEMPORAL_TASK_QUEUE"
 	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
 	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
 	DefaultWorkflowSourceRef         = "main"
@@ -78,6 +85,11 @@ type Config struct {
 	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
+	// projection loop disabled; standalone engine commands still use defaults.
+	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
+	engineResolutionApplied bool
+	engineProjectionEnabled bool
 	// ExternalTelemetry declares named, read-only operational telemetry
 	// connectors. Workflows select only a connector name and generic query
 	// inputs; provider fields remain confined to each connector's config.
@@ -119,9 +131,9 @@ type Config struct {
 	// existed.
 	SecretStores []SecretStoreConfig `json:"secretStores,omitempty" yaml:"secretStores,omitempty"`
 	// Sandbox declares the instance-wide isolation posture (#1305). Absent or
-	// zero-valued it is "enforced". Setting agentic to "disabled" is the
-	// operator-owned trusted-local opt-out; a gaggle may strengthen but not
-	// weaken it through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
+	// zero-valued it is "disabled" — sandboxing is strictly opt-in, so an
+	// unconfigured instance runs exactly as before. A gaggle may override it
+	// through GaggleSpec.Sandbox (EffectiveAgenticSandbox).
 	Sandbox *SandboxConfig `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 	// Workcopies tunes managed working-copy provisioning (docs/design/
 	// v2-cloud-scale.md §3). Nil keeps every default — a pointer, unlike the
@@ -211,13 +223,29 @@ func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
 // WorkflowSource locates the workflow configuration independently of Repos.
 // A local-dir source reads Path directly. A git source reads a committed Ref
 // from either a local repository Path or a remote HTTPS URL; remote sources
-// require their own token reference.
+// authenticate through their own token reference or a github-app auth block
+// (#3274) — exactly one of the two.
 type WorkflowSource struct {
 	Kind  string    `json:"kind" yaml:"kind"`
 	Path  string    `json:"path,omitempty" yaml:"path,omitempty"`
 	URL   string    `json:"url,omitempty" yaml:"url,omitempty"`
 	Ref   string    `json:"ref,omitempty" yaml:"ref,omitempty"`
 	Token *TokenRef `json:"token,omitempty" yaml:"token,omitempty"`
+	// Auth selects GitHub App installation-token minting for a REMOTE git
+	// source (#3274), reusing repos[]' RepoAuthConfig shape (kind github-app
+	// with appId/installationId/privateKey) the way DaemonIdentityConfig
+	// reuses the Kind vocabulary — the underlying mechanism is identical.
+	// Mutually exclusive with Token: exactly one identity mechanism per
+	// source, exactly as repos[] treats it. Nil preserves static-token
+	// behavior unchanged.
+	Auth *RepoAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// GitHubAppAuth reports whether the workflow source authenticates through
+// GitHub App installation-token minting (auth kind github-app, #3274) rather
+// than a static token ref.
+func (s WorkflowSource) GitHubAppAuth() bool {
+	return s.Auth != nil && s.Auth.Kind == GitHubAuthApp
 }
 
 // TrackedRef returns the configured git ref, defaulting to main.
@@ -269,6 +297,27 @@ type RunnerConfig struct {
 	//
 	// Per-stage timeoutSeconds still wins; this only moves the floor.
 	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
+	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
+	// keep the built-in default (["copilot"] / ["claude"]).
+	//
+	// The launcher was always data on the adapter (harness.CopilotAdapter.Command)
+	// but hardcoded at the composition root, so pointing a harness at a
+	// contract-compatible wrapper required a Goobers code change. This is the
+	// adopter escape hatch (the launcher twin of EnvPassthrough, #736): a
+	// deployment can run the same engine CLI through a wrapper — e.g.
+	// {"copilot": ["agency", "copilot"]} to launch a wrapper that forwards to
+	// the GitHub Copilot CLI and emits the same session/result artifacts — with
+	// no code change and no new harness. Goobers stays vendor-neutral: the
+	// wrapper name lives only in the adopter's instance.yaml, never in the enum.
+	//
+	// Each value must be a non-empty argv whose first element (the program) is
+	// non-empty; keys must be a known harness name. Validated at load, fail
+	// closed. Downstream harness logic (model/context/extra-arg selection,
+	// session capture, completion-file readback) is unchanged — the override
+	// only replaces the launch prefix, so it is safe only for a launcher that
+	// honors the same CLI contract as the harness it overrides.
+	HarnessCommand map[string][]string `json:"harnessCommand,omitempty" yaml:"harnessCommand,omitempty"`
 }
 
 // APIConfig configures the daemon's read-only HTTP API.
@@ -666,12 +715,31 @@ type RepoAuthConfig struct {
 	// inline value (CFG-009). The key only ever signs short-lived App JWTs
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+	// Slug is the App's URL-safe handle (the part before "[bot]" in its
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind github-app.
+	// Installation tokens cannot call GET /user, so the provider identity's
+	// login — which every trusted-comment check (claim markers, verdicts,
+	// handoffs) compares against — must be declared here (#3343). Without it
+	// those checks fail with "Resource not accessible by integration" the
+	// first time they run under App auth.
+	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
+}
+
+// BotLogin returns the GitHub login this auth block authenticates as, when
+// declarable: the App slug plus "[bot]" for kind github-app with Slug set,
+// otherwise empty (a PAT's login is discoverable via GET /user at runtime and
+// needs no declaration).
+func (a *RepoAuthConfig) BotLogin() string {
+	if a == nil || a.Kind != GitHubAuthApp || strings.TrimSpace(a.Slug) == "" {
+		return ""
+	}
+	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
-	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil
+	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil || a.Slug != ""
 }
 
 // GitHubID is a GitHub identifier config field YAML authors may write as a
@@ -981,6 +1049,14 @@ type OTLPConfig struct {
 	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
+// EngineConfig identifies the Temporal frontend and task queue shared by all
+// tier-3 engine processes.
+type EngineConfig struct {
+	HostPort  string `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	TaskQueue string `json:"taskQueue,omitempty" yaml:"taskQueue,omitempty"`
+}
+
 // RunConditions are instance-level run conditions (§7): max parallel runs and
 // per-workflow run budgets.
 type RunConditions struct {
@@ -1134,6 +1210,24 @@ func (c RunnerConfig) DefaultStageTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// knownHarnessNames lists the harness names an adopter may key a launcher
+// override under, sorted for a stable admission-error message.
+func knownHarnessNames() []string {
+	return []string{string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCopilot)}
+}
+
+// knownHarnessName reports whether name is a harness a launcher override may
+// target — the enum's authoritative membership, so a typo fails closed at load
+// instead of silently doing nothing.
+func knownHarnessName(name string) bool {
+	switch apiv1.Harness(name) {
+	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+		return true
+	default:
+		return false
+	}
+}
+
 // TelemetryEnabled reports whether the local rollup store is enabled
 // (defaults to true when unset). Wired into cmd/goobers' up.go/run.go (issue
 // #129): telemetry.enabled was documented and set in the real self-hosting
@@ -1170,6 +1264,110 @@ func (c *Config) ResolveOTLPConfig(lookupEnv func(string) (string, bool)) (OTLPC
 		return OTLPConfig{}, fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
 	}
 	return resolved, nil
+}
+
+// ResolveEngineConfig applies process environment overrides to instance.yaml
+// and validates the resulting Temporal connection configuration.
+func (c *Config) ResolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, bool, error) {
+	resolved, env, err := c.resolveEngineConfig(lookupEnv)
+	return resolved, c.Engine != nil || env.anyOverride, err
+}
+
+type engineEnvResolution struct {
+	anyOverride  bool
+	hostOverride bool
+}
+
+func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, engineEnvResolution, error) {
+	resolved := EngineConfig{
+		HostPort:  DefaultTemporalHostPort,
+		Namespace: DefaultTemporalNamespace,
+		TaskQueue: DefaultEngineTaskQueue,
+	}
+	if c.Engine != nil {
+		if c.Engine.HostPort != "" {
+			resolved.HostPort = c.Engine.HostPort
+		}
+		if c.Engine.Namespace != "" {
+			resolved.Namespace = c.Engine.Namespace
+		}
+		if c.Engine.TaskQueue != "" {
+			resolved.TaskQueue = c.Engine.TaskQueue
+		}
+	}
+	var envResolution engineEnvResolution
+	overrides := []struct {
+		keys   []string
+		target *string
+		host   bool
+	}{
+		{[]string{TemporalHostPortEnv, TemporalAddressEnv, TemporalAddressLegacyEnv}, &resolved.HostPort, true},
+		{[]string{TemporalNamespaceEnv, TemporalNamespaceLegacyEnv}, &resolved.Namespace, false},
+		{[]string{TaskQueueEnv, TemporalTaskQueueEnv, TemporalTaskQueueLegacyEnv}, &resolved.TaskQueue, false},
+	}
+	for _, override := range overrides {
+		for i, env := range override.keys {
+			if value, ok := lookupEnv(env); ok {
+				value = strings.TrimSpace(value)
+				if value == "" {
+					// Compatibility aliases historically used os.Getenv and
+					// treated an empty value as unset.
+					if i > 0 {
+						continue
+					}
+					return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("%s must not be empty when set", env)
+				}
+				*override.target = value
+				envResolution.anyOverride = true
+				envResolution.hostOverride = envResolution.hostOverride || override.host
+				break
+			}
+		}
+	}
+	if err := resolved.Validate(); err != nil {
+		return EngineConfig{}, engineEnvResolution{}, fmt.Errorf("engine: %w", err)
+	}
+	return resolved, envResolution, nil
+}
+
+// EffectiveEngineConfig returns the resolved engine configuration stored by
+// LoadConfig, or the standalone defaults when engine is not configured.
+func (c *Config) EffectiveEngineConfig() EngineConfig {
+	if c.Engine != nil {
+		return *c.Engine
+	}
+	return EngineConfig{
+		HostPort:  DefaultTemporalHostPort,
+		Namespace: DefaultTemporalNamespace,
+		TaskQueue: DefaultEngineTaskQueue,
+	}
+}
+
+// EngineProjectionEnabled reports whether instance YAML or a host/address
+// environment override configured a Temporal connection for the daemon.
+func (c *Config) EngineProjectionEnabled() bool {
+	if c.engineResolutionApplied {
+		return c.engineProjectionEnabled
+	}
+	return c.Engine != nil
+}
+
+// Validate checks the Temporal frontend and task queue fields.
+func (c EngineConfig) Validate() error {
+	if strings.TrimSpace(c.HostPort) != c.HostPort {
+		return fmt.Errorf("hostPort must not contain leading or trailing whitespace")
+	}
+	host, port, err := net.SplitHostPort(c.HostPort)
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("hostPort %q must be in host:port form", c.HostPort)
+	}
+	if strings.TrimSpace(c.Namespace) != c.Namespace || c.Namespace == "" {
+		return fmt.Errorf("namespace must be non-empty without leading or trailing whitespace")
+	}
+	if strings.TrimSpace(c.TaskQueue) != c.TaskQueue || c.TaskQueue == "" {
+		return fmt.Errorf("taskQueue must be non-empty without leading or trailing whitespace")
+	}
+	return nil
 }
 
 // Enabled reports whether collector push is configured.
@@ -1302,6 +1500,16 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Telemetry.OTLP != nil || resolvedOTLP.Enabled() {
 		cfg.Telemetry.OTLP = &resolvedOTLP
 	}
+	yamlEngineConfigured := cfg.Engine != nil
+	resolvedEngine, engineEnv, err := cfg.resolveEngineConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if yamlEngineConfigured || engineEnv.anyOverride {
+		cfg.Engine = &resolvedEngine
+	}
+	cfg.engineResolutionApplied = true
+	cfg.engineProjectionEnabled = yamlEngineConfigured || engineEnv.hostOverride
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -1314,362 +1522,38 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
-	if c.Workcopies != nil && c.Workcopies.Root != "" && !filepath.IsAbs(c.Workcopies.Root) {
-		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Workcopies.Root)
-	}
-	if err := c.validateAPIConfig(); err != nil {
+	if err := validateInOrder(
+		c.Workcopies.validate,
+		func() error { return c.API.validate(c.APIListenAddress()) },
+		c.validateWorkflowSource,
+		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
+	); err != nil {
 		return err
 	}
-	if c.WorkflowSource != nil {
-		if err := c.WorkflowSource.Validate(); err != nil {
-			return fmt.Errorf("workflowSource: %w", err)
-		}
-	}
-	if err := validateLoopbackListenAddress(c.WebhookListenAddress()); err != nil {
-		return fmt.Errorf("webhook.listen: %w", err)
-	}
-	// Secret stores validate before any token ref so a store-backed ref can be
-	// checked against the declared store names below.
+
+	// Store declarations must validate before any section checks a store-backed token.
 	stores, err := c.validateSecretStores()
 	if err != nil {
 		return err
 	}
-	if err := c.Portal.Validate(); err != nil {
-		return fmt.Errorf("portal: %w", err)
-	}
-	if c.Speech != nil {
-		if err := c.Speech.Validate(); err != nil {
-			return fmt.Errorf("speech: %w", err)
-		}
-	}
-	if c.Webhook.Secret.sourceCount() > 1 {
-		return fmt.Errorf("webhook.secret must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
-	}
-
-	if err := validateStoreRef("webhook.secret", c.Webhook.Secret, stores); err != nil {
-		return err
-	}
-	if c.Timezone != "" {
-		if _, err := time.LoadLocation(c.Timezone); err != nil {
-			return fmt.Errorf("timezone %q: %w", c.Timezone, err)
-		}
-	}
-	// Checked here, not only where it is applied: the value is consumed once
-	// per run when the deterministic executor is built, so a malformed duration
-	// would otherwise fail every run at dispatch instead of failing `goobers
-	// validate` once.
-	if _, err := c.Runner.DefaultStageTimeoutDuration(); err != nil {
-		return err
-	}
-	if c.Telemetry.OTLP != nil {
-		if err := c.Telemetry.OTLP.Validate(); err != nil {
-			return fmt.Errorf("telemetry.otlp: %w", err)
-		}
-		if c.Telemetry.OTLP.Enabled() && !c.TelemetryEnabled() {
-			return fmt.Errorf("telemetry.otlp.endpoint cannot be set when telemetry.enabled is false")
-		}
-		names := make([]string, 0, len(c.Telemetry.OTLP.Headers))
-		for name := range c.Telemetry.OTLP.Headers {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			if err := validateStoreRef(fmt.Sprintf("telemetry.otlp.headers[%q]", name), c.Telemetry.OTLP.Headers[name], stores); err != nil {
-				return err
-			}
-		}
-	}
-	if err := c.ExternalTelemetry.Validate(); err != nil {
-		return fmt.Errorf("externalTelemetry: %w", err)
-	}
-	for i, connector := range c.ExternalTelemetry.Connectors {
-		if connector.Auth.Token != nil &&
-			connector.Auth.Token.Env != "" &&
-			stageEnvironmentAllows(connector.Auth.Token.Env, c.Runner.EnvPassthrough) {
-			return fmt.Errorf(
-				"externalTelemetry.connectors[%d] (%s): auth.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-				i, connector.Name, connector.Auth.Token.Env,
-			)
-		}
-	}
-	if c.Telemetry.Retention != nil {
-		if _, err := c.Telemetry.Retention.WindowDuration(); err != nil {
-			return err
-		}
-		if c.Telemetry.Retention.MaxRuns < 0 {
-			return fmt.Errorf("telemetry.retention.maxRuns must not be negative")
-		}
-	}
-	if _, err := c.RunConditions.StalledRunTimeoutDuration(); err != nil {
-		return err
-	}
-	if err := runcontrol.Validate("runConditions", c.RunConditions.RunControls()); err != nil {
-		return err
-	}
-	if _, err := c.RunConditions.ClaimsLockTimeoutDuration(); err != nil {
-		return err
-	}
-	if c.Retention.MaxRetainedWorktreeBytes < 0 {
-		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
-	}
-	if _, err := c.Retention.RetainedWorktreeMaxAgeDuration(); err != nil {
-		return err
-	}
-	if c.Retention.Enabled && c.Retention.MaxRetainedWorktreeBytes == 0 && c.Retention.RetainedWorktreeMaxAge == "" {
-		return fmt.Errorf("retention.enabled requires at least one of retention.maxRetainedWorktreeBytes or retention.retainedWorktreeMaxAge to be set (enabling retention with no limits prunes nothing)")
-	}
-	for i, r := range c.Repos {
-		if r.Provider != "github" && r.Provider != "ado" && r.Provider != "gitea" {
-			return fmt.Errorf("repos[%d]: unsupported provider %q (supported: \"github\", \"ado\", \"gitea\")", i, r.Provider)
-		}
-		if r.Owner == "" || r.Name == "" {
-			return fmt.Errorf("repos[%d]: owner and name are required", i)
-		}
-		if r.PathLength != nil {
-			if r.PathLength.MaxPathLength < 0 {
-				return fmt.Errorf("repos[%d] (%s/%s): pathLength.maxPathLength must not be negative", i, r.Owner, r.Name)
-			}
-			if r.PathLength.BuildOutputAllowance < 0 {
-				return fmt.Errorf("repos[%d] (%s/%s): pathLength.buildOutputAllowance must not be negative", i, r.Owner, r.Name)
-			}
-		}
-		if r.DefaultStageTimeout != "" {
-			if _, err := (RunnerConfig{DefaultStageTimeout: r.DefaultStageTimeout}).DefaultStageTimeoutDuration(); err != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): %w", i, r.Owner, r.Name, err)
-			}
-		}
-		if r.RunControls != nil {
-			if err := runcontrol.Validate(fmt.Sprintf("repos[%d].runControls", i), *r.RunControls); err != nil {
-				return err
-			}
-		}
-		if r.Workspace != nil {
-			if r.Workspace.Pinned && r.Workspace.Worktrees {
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.pinned and workspace.worktrees are mutually exclusive", i, r.Owner, r.Name)
-			}
-			switch policy := r.Workspace.CleanPolicy; policy {
-			case "", WorkspaceCleanNone, WorkspaceCleanIgnoredSafe, WorkspaceCleanFull:
-			default:
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy %q must be one of none, ignored-safe, or full", i, r.Owner, r.Name, policy)
-			}
-			if !r.Pinned() && r.Workspace.CleanPolicy != "" {
-				return fmt.Errorf("VER: repos[%d] (%s/%s): workspace.cleanPolicy requires workspace.pinned", i, r.Owner, r.Name)
-			}
-		}
-		if r.Token.sourceCount() > 1 {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
-				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-		}
-		if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores); err != nil {
-			return err
-		}
-		switch r.Provider {
-		case "github":
-			if r.Project != "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			kind := GitHubAuthPAT
-			if r.Auth != nil {
-				kind = r.Auth.Kind
-			}
-			switch kind {
-			case GitHubAuthPAT:
-				if r.Auth != nil && r.Auth.hasGitHubAppFields() {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
-						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-				}
-			case GitHubAuthApp:
-				// Exactly one identity mechanism per repo: the minted
-				// installation token replaces the static token entirely — a
-				// token configured alongside it could only ever act as a
-				// silent fallback, which the minting design forbids (#686,
-				// no implicit PAT fallback).
-				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): auth kind %q must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if r.Auth.Tenant != "" || r.Auth.ClientID != "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.tenant and auth.clientId are only valid for ADO auth kinds", i, r.Owner, r.Name)
-				}
-				if r.Auth.AppID == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.appId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if r.Auth.InstallationID == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId is required for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
-				}
-				if _, err := strconv.ParseUint(string(r.Auth.InstallationID), 10, 64); err != nil {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.installationId %q must be the numeric installation ID", i, r.Owner, r.Name, r.Auth.InstallationID)
-				}
-				if r.Auth.PrivateKey == nil || r.Auth.PrivateKey.sourceCount() != 1 {
-					return fmt.Errorf("repos[%d] (%s/%s): auth.privateKey must reference exactly one of env, file, keychain, or store — "+
-						"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
-				}
-				if err := validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): auth.privateKey", i, r.Owner, r.Name), *r.Auth.PrivateKey, stores); err != nil {
-					return err
-				}
-				// The App key can mint tokens for every repo the installation
-				// covers — never allow the stage environment to carry it, the
-				// same fail-closed posture workflowSource.token.env gets below.
-				if r.Auth.PrivateKey.Env != "" && stageEnvironmentAllows(r.Auth.PrivateKey.Env, c.Runner.EnvPassthrough) {
-					return fmt.Errorf(
-						"repos[%d] (%s/%s): auth.privateKey.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-						i, r.Owner, r.Name, r.Auth.PrivateKey.Env,
-					)
-				}
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): unsupported GitHub auth kind %q (supported: %q, %q)", i, r.Owner, r.Name, kind, GitHubAuthPAT, GitHubAuthApp)
-			}
-		case "ado":
-			if r.Project == "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is required for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			if r.Auth != nil && r.Auth.hasGitHubAppFields() {
-				return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for provider \"github\"", i, r.Owner, r.Name)
-			}
-			kind := ADOAuthPAT
-			if r.Auth != nil {
-				kind = r.Auth.Kind
-			}
-			switch kind {
-			case ADOAuthPAT:
-				if !r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO PAT auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
-				}
-			case ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity:
-				if r.Token.Configured() {
-					return fmt.Errorf("repos[%d] (%s/%s): ADO auth kind %q must not configure token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name, kind)
-				}
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): unsupported ADO auth kind %q", i, r.Owner, r.Name, kind)
-			}
-			if r.Auth != nil && r.Auth.ClientID != "" && kind != ADOAuthManagedIdentity {
-				return fmt.Errorf("repos[%d] (%s/%s): auth.clientId is only valid for managed-identity", i, r.Owner, r.Name)
-			}
-		case "gitea":
-			if r.BaseURL == "" {
-				return fmt.Errorf("repos[%d] (%s/%s): baseUrl is required for provider \"gitea\" (self-hosted Gitea has no fixed host)", i, r.Owner, r.Name)
-			}
-			if r.Project != "" {
-				return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
-			}
-			if r.Auth != nil {
-				return fmt.Errorf("repos[%d] (%s/%s): provider \"gitea\" supports only a static token; remove the auth block", i, r.Owner, r.Name)
-			}
-			if !r.Token.Configured() {
-				return fmt.Errorf("repos[%d] (%s/%s): gitea auth requires token.env, token.file, token.keychain, or token.store", i, r.Owner, r.Name)
-			}
-		}
-		if r.Policy != nil {
-			if r.Provider != "github" {
-				return fmt.Errorf("repos[%d] (%s/%s): policy is only supported for provider \"github\" (issue #916 V1 scope)", i, r.Owner, r.Name)
-			}
-			switch r.Policy.RequiredMergeMethod {
-			case "", "merge", "squash", "rebase":
-			default:
-				return fmt.Errorf("repos[%d] (%s/%s): policy.requiredMergeMethod must be \"\", \"merge\", \"squash\", or \"rebase\"", i, r.Owner, r.Name)
-			}
-			for _, check := range r.Policy.RequiredStatusChecks {
-				if strings.TrimSpace(check) == "" {
-					return fmt.Errorf("repos[%d] (%s/%s): policy.requiredStatusChecks entries must not be empty", i, r.Owner, r.Name)
-				}
-			}
-		}
-	}
-	if c.DaemonIdentity != nil {
-		if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
-			return fmt.Errorf("daemonIdentity: %w", err)
-		}
-	}
-	seen := make(map[string]bool, len(c.Credentials))
-	for i, cg := range c.Credentials {
-		// Fail closed at load, not at the first stage that tries to resolve a
-		// bad grant: credentials are instance config rather than workflow input,
-		// and a malformed token ref can never resolve.
-		var key, label string
-		switch {
-		case cg.Capability != "" && cg.MCP == "":
-			if !capability.Known(cg.Capability) {
-				return fmt.Errorf("credentials[%d]: unknown capability %q", i, cg.Capability)
-			}
-			if !capability.StageDeclarable(cg.Capability) {
-				return fmt.Errorf(
-					"credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token",
-					i,
-					cg.Capability,
-				)
-			}
-			key, label = cg.Capability, "capability "+strconv.Quote(cg.Capability)
-		case cg.Capability == "" && mcpconfig.ValidBYOCredentialName(cg.MCP):
-			key, label = mcpconfig.BYOCredentialKey(cg.MCP), "MCP credential "+strconv.Quote(cg.MCP)
-		case cg.Capability == "" && cg.MCP != "":
-			return fmt.Errorf("credentials[%d]: MCP credential name %q must be a lowercase DNS label", i, cg.MCP)
-		default:
-			return fmt.Errorf("credentials[%d]: set exactly one of capability or mcp", i)
-		}
-		if seen[key] {
-			return fmt.Errorf("credentials[%d]: %s is sourced more than once", i, label)
-		}
-		seen[key] = true
-		if cg.Token.sourceCount() != 1 {
-			return fmt.Errorf("credentials[%d] (%s): token must reference exactly one of env, file, keychain, or store — "+
-				"inline secret values are never permitted (CFG-009, SEC-010)", i, label)
-		}
-		if cg.MCP != "" &&
-			cg.Token.Env != "" &&
-			stageEnvironmentAllows(cg.Token.Env, c.Runner.EnvPassthrough) {
-			return fmt.Errorf(
-				"credentials[%d] (%s): token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-				i, label, cg.Token.Env,
-			)
-		}
-		if err := validateStoreRef(fmt.Sprintf("credentials[%d] (%s): token", i, label), cg.Token, stores); err != nil {
-			return err
-		}
-	}
-	// Fail closed at load on a malformed runner capability claim (RRQ-1): a
-	// claim that can never string-match a requirement is a typo the scheduler
-	// would otherwise turn into an every-run schedule refusal at 3am, not a
-	// startup error. Duplicates collapse harmlessly (set membership), so only
-	// the token shape is enforced here.
-	for i, c := range c.Runner.Capabilities {
-		if err := runnercap.ValidateToken(c); err != nil {
-			return fmt.Errorf("runner.capabilities[%d]: %w", i, err)
-		}
-	}
-	if _, err := c.Runner.LivenessTimeoutDuration(); err != nil {
-		return err
-	}
-	// Fail closed at load on a malformed env-passthrough name (#736): a name
-	// carrying '=', NUL, or shell metacharacters could never be a real env var
-	// and, unchecked, would silently mis-split at stage launch. Default-deny is
-	// unaffected — this only validates the shape of an explicit opt-in name.
-	for i, name := range c.Runner.EnvPassthrough {
-		if !procenv.ValidName(name) {
-			return fmt.Errorf("runner.envPassthrough[%d]: %q is not a valid environment variable name", i, name)
-		}
-	}
-	if c.WorkflowSource != nil && c.WorkflowSource.Token != nil {
-		if err := validateStoreRef("workflowSource.token", *c.WorkflowSource.Token, stores); err != nil {
-			return err
-		}
-	}
-	if c.WorkflowSource != nil &&
-		c.WorkflowSource.Token != nil &&
-		c.WorkflowSource.Token.Env != "" &&
-		stageEnvironmentAllows(c.WorkflowSource.Token.Env, c.Runner.EnvPassthrough) {
-		return fmt.Errorf(
-			"workflowSource.token.env %q must not be exposed to stages through runner.envPassthrough or the built-in process environment allowlist",
-			c.WorkflowSource.Token.Env,
-		)
-	}
-	if c.Sandbox != nil {
-		if err := c.Sandbox.Validate(); err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-	}
-	return nil
+	return validateInOrder(
+		func() error { return c.Portal.validate() },
+		c.validateSpeech,
+		func() error { return c.Webhook.validateSecret(stores) },
+		c.validateTimezone,
+		c.Runner.validateDefaultStageTimeout,
+		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
+		c.validateExternalTelemetry,
+		c.Telemetry.Retention.validate,
+		c.RunConditions.validate,
+		c.Retention.validate,
+		func() error { return c.validateRepos(stores) },
+		func() error { return c.validateDaemonIdentity(stores) },
+		func() error { return c.validateCredentials(stores) },
+		c.Runner.validate,
+		func() error { return c.validateWorkflowSourceCredentials(stores) },
+		c.validateSandbox,
+	)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load
@@ -1682,38 +1566,8 @@ func (c *Config) validateSecretStores() (map[string]bool, error) {
 	}
 	stores := make(map[string]bool, len(c.SecretStores))
 	for i, s := range c.SecretStores {
-		if s.Name == "" {
-			return nil, fmt.Errorf("secretStores[%d]: name is required", i)
-		}
-		if !validSecretStoreName(s.Name) {
-			return nil, fmt.Errorf("secretStores[%d]: name %q must be a lowercase DNS label (letters, digits, and interior hyphens, at most 63 characters)", i, s.Name)
-		}
-		if stores[s.Name] {
-			return nil, fmt.Errorf("secretStores[%d]: name %q is declared more than once", i, s.Name)
-		}
-		stores[s.Name] = true
-		if s.Kind != SecretStoreKindAzureKeyVault {
-			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q)", i, s.Name, s.Kind, SecretStoreKindAzureKeyVault)
-		}
-		if err := validateVaultURI(s.VaultURI); err != nil {
-			return nil, fmt.Errorf("secretStores[%d] (%s): vaultURI: %w", i, s.Name, err)
-		}
-		if s.Auth == nil {
-			return nil, fmt.Errorf("secretStores[%d] (%s): auth is required (kind: one of %q, %q, %q) — store access always authenticates through an ambient identity, never a token ref",
-				i, s.Name, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
-		}
-		switch s.Auth.Kind {
-		case SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity:
-		case SecretStoreAuthAzureCLI:
-			if s.Auth.ClientID != "" {
-				return nil, fmt.Errorf("secretStores[%d] (%s): auth.clientId is not valid for auth kind %q", i, s.Name, s.Auth.Kind)
-			}
-		default:
-			return nil, fmt.Errorf("secretStores[%d] (%s): unsupported auth kind %q (supported: %q, %q, %q)",
-				i, s.Name, s.Auth.Kind, SecretStoreAuthWorkloadIdentity, SecretStoreAuthManagedIdentity, SecretStoreAuthAzureCLI)
-		}
-		if s.CacheTTLSeconds < 0 {
-			return nil, fmt.Errorf("secretStores[%d] (%s): cacheTTLSeconds must not be negative", i, s.Name)
+		if err := s.validate(i, stores); err != nil {
+			return nil, err
 		}
 	}
 	return stores, nil
@@ -1840,6 +1694,10 @@ func (p PortalConfig) Validate() error {
 // Validate checks workflow-source shape without resolving credentials or
 // accessing the source.
 func (s WorkflowSource) Validate() error {
+	return s.validate()
+}
+
+func (s WorkflowSource) validate() error {
 	hasPath := s.Path != ""
 	hasURL := s.URL != ""
 
@@ -1848,7 +1706,7 @@ func (s WorkflowSource) Validate() error {
 		if !hasPath {
 			return fmt.Errorf("path is required for kind %q", s.Kind)
 		}
-		if hasURL || s.Ref != "" || s.Token != nil {
+		if hasURL || s.Ref != "" || s.Token != nil || s.Auth != nil {
 			return fmt.Errorf("kind %q accepts only path", s.Kind)
 		}
 	case WorkflowSourceKindGit:
@@ -1859,11 +1717,20 @@ func (s WorkflowSource) Validate() error {
 			if err := validateRemoteGitURL(s.URL); err != nil {
 				return err
 			}
-			if s.Token == nil || s.Token.sourceCount() != 1 {
+			if s.Auth != nil {
+				if err := s.validateAuth(); err != nil {
+					return err
+				}
+			} else if s.Token == nil || s.Token.sourceCount() != 1 {
 				return fmt.Errorf("remote git token must reference exactly one of env, file, keychain, or store — inline secret values are never permitted (CFG-009, SEC-010)")
 			}
-		} else if s.Token != nil {
-			return fmt.Errorf("token is only valid for a remote git url")
+		} else {
+			if s.Token != nil {
+				return fmt.Errorf("token is only valid for a remote git url")
+			}
+			if s.Auth != nil {
+				return fmt.Errorf("auth is only valid for a remote git url")
+			}
 		}
 	default:
 		return fmt.Errorf("unsupported kind %q (supported: \"local-dir\", \"git\")", s.Kind)
@@ -1880,6 +1747,38 @@ func (s WorkflowSource) Validate() error {
 		if field.value != "" && strings.TrimSpace(field.value) != field.value {
 			return fmt.Errorf("%s must not contain leading or trailing whitespace", field.name)
 		}
+	}
+	return nil
+}
+
+// validateAuth checks a remote git workflowSource's auth block (#3274). The
+// block reuses RepoAuthConfig, but only github-app is meaningful here: a
+// static credential is spelled token:, never auth kind pat, so the two can
+// never compete for the same fetch. Required-field and mutual-exclusion
+// wording mirrors repos[]' own github-app validation; the stores/envPassthrough
+// checks the Config-level pass owns live in validateWorkflowSourceCredentials.
+func (s WorkflowSource) validateAuth() error {
+	if s.Auth.Kind != GitHubAuthApp {
+		return fmt.Errorf("unsupported auth kind %q (supported: %q; a static credential is configured through token, not auth)", s.Auth.Kind, GitHubAuthApp)
+	}
+	if s.Token != nil {
+		return fmt.Errorf("auth kind %q must not configure token.env, token.file, token.keychain, or token.store — the installation token is minted", GitHubAuthApp)
+	}
+	if s.Auth.Tenant != "" || s.Auth.ClientID != "" {
+		return fmt.Errorf("auth.tenant and auth.clientId are only valid for ADO auth kinds")
+	}
+	if s.Auth.AppID == "" {
+		return fmt.Errorf("auth.appId is required for auth kind %q", GitHubAuthApp)
+	}
+	if s.Auth.InstallationID == "" {
+		return fmt.Errorf("auth.installationId is required for auth kind %q", GitHubAuthApp)
+	}
+	if _, err := strconv.ParseUint(string(s.Auth.InstallationID), 10, 64); err != nil {
+		return fmt.Errorf("auth.installationId %q must be the numeric installation ID", s.Auth.InstallationID)
+	}
+	if s.Auth.PrivateKey == nil || s.Auth.PrivateKey.sourceCount() != 1 {
+		return fmt.Errorf("auth.privateKey must reference exactly one of env, file, keychain, or store — " +
+			"inline secret values are never permitted (CFG-009, SEC-010)")
 	}
 	return nil
 }
@@ -2157,47 +2056,6 @@ func validHeaderName(name string) bool {
 		}
 	}
 	return true
-}
-
-// validateAPIConfig checks the API listener posture. A loopback bind keeps
-// the tier-1 local-trust default. A non-loopback bind is refused unless BOTH
-// TLS and an authenticator are configured (#640, SEC-043): the daemon must
-// never expose an unauthenticated or plaintext API off-box by accident, and
-// there is deliberately no insecure override.
-func (c *Config) validateAPIConfig() error {
-	address := c.APIListenAddress()
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("api.listen: must be a host:port address: %w", err)
-	}
-	if host == "" {
-		return fmt.Errorf("api.listen: host is required; wildcard listeners are not allowed")
-	}
-	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
-		return fmt.Errorf("api.listen: port %q must be a number from 0 through 65535", port)
-	}
-	if c.API.TLS != nil {
-		if c.API.TLS.CertFile == "" || c.API.TLS.KeyFile == "" {
-			return fmt.Errorf("api.tls: certFile and keyFile are both required")
-		}
-	}
-	if c.API.Auth != nil {
-		if c.API.Auth.OIDC == nil {
-			return fmt.Errorf("api.auth: oidc is required — it is the only supported authenticator (SEC-043)")
-		}
-		if err := c.API.Auth.OIDC.Validate(); err != nil {
-			return fmt.Errorf("api.auth.oidc: %w", err)
-		}
-	}
-	if isLoopbackHost(host) {
-		return nil
-	}
-	if c.API.TLS == nil || c.API.Auth == nil {
-		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
-			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
-			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
-	}
-	return nil
 }
 
 // Validate checks the OIDC issuer/audience/role-mapping shape without

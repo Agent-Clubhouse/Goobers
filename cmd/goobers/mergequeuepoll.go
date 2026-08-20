@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -47,7 +48,7 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"provider failure), 2 = usage/IO error.\n"
 
 func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("merge-queue-poll", flag.ContinueOnError)
+	fs := newCLIFlagSet("merge-queue-poll", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "merge-queue-poll")
 	if err := fs.Parse(args); err != nil {
@@ -68,12 +69,24 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRMerge)
+	// Azure DevOps land oracle (ADO merge epic). Dispatch to the ADO
+	// branch here so the GitHub-only merge-queue machinery below stays
+	// unreachable on ADO: the opt-out DequeuePullRequest, the eviction/timeout
+	// PR-as-work-item remediation labeling (UpdateWorkItem(ID: prNumber) —
+	// wrong-object hazard on ADO, §8), and the concrete-*GitHubProvider branch
+	// cleanup helper (mergeQueuePollMerged). Every GitHub path below is
+	// byte-identical; the ADO behavior is a new branch reached only here.
+	if repo.Provider == providers.ProviderADO {
+		return runMergeQueuePollADO(root, repo, stdout, stderr)
+	}
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRMerge),
+		withStageProviderMutations("pr"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -309,7 +322,14 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	labelProvider := newGitHubProvider(labelToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+	labelProvider, err := newProviderForStage(providerStageRoot(""), repo, false,
+		withStageProviderToken(labelToken),
+		withStageProviderMutations("pr"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if _, err := labelProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: pullNumber, AddLabels: []string{needsRemediationLabel}, Comment: comment,
 	}); err != nil {
@@ -407,13 +427,169 @@ func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// mergeQueuePollBackoff returns base<<attempt capped at max — this
-// package's own copy of internal/executor/cipoll.go's unexported backoff,
-// for the same capped-exponential poll cadence.
+// mergeQueuePollBackoff returns a jittered duration between half and all of
+// base<<attempt, with the exponential ceiling capped at max.
 func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
-	d := base << attempt
-	if d <= 0 || d > max {
-		return max
+	ceiling := base << attempt
+	if ceiling <= 0 || ceiling > max {
+		ceiling = max
 	}
-	return d
+	floor := ceiling / 2
+	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
+}
+
+// runMergeQueuePollADO is merge-queue-poll's Azure DevOps land oracle
+// (merge-wiring-plan §1d/§7-step-2, CONF-3 #2076). It watches the
+// auto-complete-armed pull request merge-pr enqueued until ADO reports it
+// completed (Merged) — the same landed-oracle role PollMergeQueueEntry serves
+// on GitHub. The poll is routed through the capability-checked *Dispatcher
+// (providers.NewDispatcher) so the concrete-*GitHubProvider helpers this file's
+// GitHub path uses (branch cleanup, DequeuePullRequest, PR-as-work-item
+// remediation labeling) stay unreachable on ADO.
+//
+// Completion (merge) authority rides on the ado:pr:complete capability
+// (capability.ADOPRComplete), the ADO counterpart to github:pr:merge, resolved
+// BEFORE the provider is constructed — mirroring how the GitHub path gates the
+// poll on github:pr:merge — so this stage cannot silently acquire completion
+// authority from an ordinary ado:pr:write grant (pr-lifecycle-loop §7,
+// decider≠executor).
+//
+// PERIPHERAL GitHub side effects are documented no-ops on ADO:
+//   - opt-out dequeue (DequeuePullRequest, §1d:166): no ADO equivalent — the
+//     "queue" is ADO's own auto-complete, not a separate merge authority to
+//     dequeue from. ADO PollMergeQueueEntry does populate Labels, but there is
+//     nothing to dequeue, so no opt-out handling runs here.
+//   - eviction/timeout remediation (§1d:294-324, §8): GitHub routes an evicted
+//     or timed-out PR to pr-remediation via UpdateWorkItem(ID: prNumber,
+//     AddLabels…). On ADO that numeric PR id addresses wit/workitems/{id},
+//     mutating an unrelated work item — the PR-as-work-item hazard — so the
+//     outcome is recorded to the result file WITHOUT any work-item write.
+//   - branch cleanup (§1d:66): ADO PollPullRequest never reports
+//     HeadRepository, so cleanupMergedBranch cannot run; skipped.
+//
+// Wiring the ADO remediation-routing and branch-cleanup follow-ups is deferred
+// to the ADO merge epic (CONF-3 #2076).
+func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	// Completion authority is a distinct capability from ordinary
+	// ado:pr:write. Resolve the grant before constructing the provider so an
+	// un-granted stage fails closed rather than completing a pull request.
+	if _, err := providerToken(capability.ADOPRComplete); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	dispatcher := providers.NewDispatcher(adoProvider)
+
+	pullNumber := providerInput("pullNumber", "")
+	if pullNumber == "" {
+		pf(stderr, "error: pullNumber input is required\n")
+		return 1
+	}
+	resultFile := providerInput("resultFile", "queue-result.json")
+	interval, err := pollDurationInput("pollIntervalSeconds", executor.DefaultPollInterval)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", executor.DefaultMaxPollInterval)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	timeout, err := pollDurationInput("pollTimeoutSeconds", executor.DefaultPollTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	// Same stage-budget clamp the GitHub path applies (#884): never poll past
+	// the deadline the executor SIGKILLs this stage at.
+	if clamped := boundedwait.MergeQueuePollBudget(stageTimeout()); timeout > clamped {
+		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
+		timeout = clamped
+	}
+
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	deadline := time.Now().Add(timeout)
+	for attempt := 0; ; attempt++ {
+		result, pollErr := dispatcher.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+		if pollErr != nil && !providers.IsTransientError(pollErr) {
+			return failProviderStage(stderr, "poll merge queue entry", pollErr, resultFile)
+		}
+		if pollErr == nil {
+			// ADO reports explicit terminal states (completed→Merged,
+			// abandoned/auto-complete-cleared→Evicted) — there is no GitHub-style
+			// absent-entry ambiguity to disambiguate, so Pending simply keeps
+			// polling until a terminal state or this stage's own timeout.
+			switch result.State {
+			case providers.MergeQueueEntryMerged:
+				return mergeQueuePollMergedADO(pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+			case providers.MergeQueueEntryEvicted:
+				return mergeQueuePollEvictedADO(pullNumber, resultFile, stdout, stderr)
+			case providers.MergeQueueEntryPending, providers.MergeQueueEntryAbsent:
+				// Still auto-completing; keep watching.
+			}
+		}
+		if time.Now().After(deadline) {
+			return mergeQueuePollTimedOutADO(pullNumber, timeout, resultFile, stdout, stderr)
+		}
+		select {
+		case <-ctx.Done():
+			pf(stderr, "error: %v\n", ctx.Err())
+			return 1
+		case <-time.After(mergeQueuePollBackoff(interval, maxInterval, attempt)):
+		}
+	}
+}
+
+// mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
+// merged determination itself is the CORE land action and is written unchanged;
+// branch cleanup (cleanupMergedBranch, the GitHub concrete-*GitHubProvider
+// helper) is a documented no-op on ADO because ADO PollPullRequest never
+// reports HeadRepository (merge-wiring-plan §1d/§8), so it is skipped rather
+// than run against a nil head repository.
+func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+	if err := writeQueueResult(resultFile, pullNumber, "merged", mergeSHA, nil, ""); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "merge queue merged pr #%s (%s); branch cleanup deferred on ado\n", pullNumber, mergeSHA)
+	return 0
+}
+
+// mergeQueuePollEvictedADO records an ADO queue eviction as an outcome WITHOUT
+// the GitHub remediation-labeling side effect. On GitHub an eviction is routed
+// to pr-remediation by UpdateWorkItem(ID: prNumber, AddLabels…); on ADO that
+// numeric PR id addresses wit/workitems/{id}, so the write would mutate an
+// unrelated work item (PR-as-work-item hazard, merge-wiring-plan §1d/§8). The
+// outcome is written so queue-gate can still read it; the remediation routing
+// is deferred to the ADO merge epic (CONF-3 #2076).
+func mergeQueuePollEvictedADO(pullNumber, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("merge queue evicted pull request #%s: its build against the projected merge state failed; ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber)
+	if err := writeQueueResult(resultFile, pullNumber, "evicted", "", nil, reason); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "merge queue evicted pr #%s; remediation labeling skipped on ado (pr-as-work-item hazard)\n", pullNumber)
+	return 0
+}
+
+// mergeQueuePollTimedOutADO records an ADO poll timeout without the GitHub
+// remediation-labeling side effect (same PR-as-work-item hazard as
+// mergeQueuePollEvictedADO). It also skips recordPostMergeTimeout: post-merge
+// reconciliation is GitHub-hardwired (merge-wiring-plan §0), so seeding it with
+// an ADO entry is out of scope for this epic and deferred alongside the ADO
+// remediation routing (CONF-3 #2076).
+func mergeQueuePollTimedOutADO(pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("merge queue poll for pull request #%s timed out after %s while it was still pending; ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber, timeout)
+	if err := writeQueueResult(resultFile, pullNumber, "timeout", "", nil, reason); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "merge queue poll for pr #%s timed out; remediation labeling skipped on ado (pr-as-work-item hazard)\n", pullNumber)
+	return 0
 }

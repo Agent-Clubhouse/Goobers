@@ -1,6 +1,6 @@
 # Design: Sandboxing + per-goober credential injection (isolation rung 2) — V1 epic #35
 
-> Status: **Draft for review** · Area prefix: `SEC` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `SEC` · Milestone: **V1**
 > Requirements: [`docs/requirements/security.md`](../../requirements/security.md)
 > (SEC-044/045, SEC-Q6) · Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §9
 >
@@ -8,12 +8,14 @@
 > each link back to the correspondingly-named section here. This is the most
 > security-sensitive epic in the pass; fail-closed is the rule throughout.
 >
-> Progress (2026-07-26): S1 per-goober credential scoping **shipped** (#823); S0
+> Progress (2026-08-10): S1 per-goober credential scoping **shipped** (#823); S0
 > sandbox mechanism **decided**
 > ([ADR 0001](../../adr/0001-agentic-sandbox-mechanism.md)) with the native
-> implementation landed (`internal/sandbox`, darwin + linux); the initial Windows
-> posture is decided as the explicitly logged W0 rung (§3.1, #651), with implementation
-> deferred; S2–S4 (executor/harness wiring and enforcement rollout) are in progress/open.
+> implementation landed (`internal/sandbox`, darwin + linux). Write confinement shipped
+> in #1418, S3 fail-closed enforcement shipped in #166, and the S4 egress posture shipped
+> in #167; S2 remains open for read-path confinement (#165). Windows remains at the
+> explicitly logged W0 rung (§3.1, #651), with native sandbox construction returning
+> `sandbox.ErrUnsupported`.
 
 ## 1. Verdict
 
@@ -24,8 +26,14 @@ is materialized for an undeclared capability. What's missing is **isolation rung
 
 - **Per-goober** credential injection (SEC-045) — today injection is per-*stage*; it must
   be scoped to a goober identity.
-- **Sandboxed agentic execution (SEC-044) is unbuilt.** [`internal/harness/copilot.go`](../../../internal/harness/copilot.go)
-  runs `copilot` as a bare subprocess and explicitly notes isolation is "deferred to V1."
+- **Sandboxed agentic execution (SEC-044) is partially shipped.** Native write
+  confinement shipped in #1418, and S3 enforcement shipped in #166:
+  [`internal/harness/confine.go`](../../../internal/harness/confine.go) places Copilot
+  runtime state inside the workspace, narrows linked-worktree writable roots, wraps the
+  command with `sandbox.Sandbox`, and fails closed when an enforced sandbox is unavailable.
+  Read-path confinement remains open in #165. Windows remains at W0 because
+  [`internal/sandbox/native_other.go`](../../../internal/sandbox/native_other.go) returns
+  `sandbox.ErrUnsupported`.
 - **The sandbox mechanism is resolved (SEC-Q6):** OS-native Seatbelt on macOS and
   bubblewrap on Linux, with containers deferred. Windows initially uses a named,
   unsandboxed-with-warning W0 posture, not an implicit omission (§3.1). See

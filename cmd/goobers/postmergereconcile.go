@@ -32,8 +32,9 @@ const (
 )
 
 type postMergeReconcileLedger struct {
-	Version int                                `json:"version"`
-	Entries map[string]postMergeReconcileEntry `json:"entries"`
+	Version        int                                `json:"version"`
+	Entries        map[string]postMergeReconcileEntry `json:"entries"`
+	OpenPRScanPage map[string]int                     `json:"openPRScanPage,omitempty"`
 }
 
 type postMergeReconcileEntry struct {
@@ -90,7 +91,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fs := flag.NewFlagSet("reconcile-post-merge", flag.ContinueOnError)
+	fs := newCLIFlagSet("reconcile-post-merge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	limit := fs.Int("max", limitDefault, "maximum pending pull requests inspected in one sweep (1-100)")
 	lookback := fs.Duration("lookback", lookbackDefault, "maximum age of a queue timeout eligible for reconciliation")
@@ -121,25 +122,32 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	prToken, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderMutations("pr"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	issuesProvider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+		withStageProviderMutations("issue"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := providerToken(capability.GitHubBranchDelete); err != nil {
+	if _, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubBranchDelete),
+	); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	issuesProvider := newGitHubProvider(issuesToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
@@ -151,7 +159,81 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
 		report.Scanned, report.Reconciled, report.Pending, report.Expired)
+	if len(unparkErrs) > 0 {
+		return failProviderStage(stderr, "reconcile open pull request parks", errors.Join(unparkErrs...), "")
+	}
 	return 0
+}
+
+func reconcileOpenPullRequestParks(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	root string,
+	base string,
+	limit int,
+	stdout, stderr io.Writer,
+) []error {
+	if base == "" {
+		return nil
+	}
+	var others []providers.PullRequestSummary
+	err := withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(repo.Owner + "/" + repo.Name + "#" + base)
+		page := ledger.OpenPRScanPage[key]
+		if page < 1 {
+			page = 1
+		}
+		list := func(page int) error {
+			others, err = provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+				Repository: repo, Base: base, Limit: limit, Page: page, SkipCheckState: true,
+			})
+			return err
+		}
+		if err := list(page); err != nil {
+			return err
+		}
+		if len(others) == 0 && page > 1 {
+			page = 1
+			if err := list(page); err != nil {
+				return err
+			}
+		}
+		ledger.OpenPRScanPage[key] = page + 1
+		return writePostMergeReconcileLedger(ledgerPath, ledger)
+	})
+	if err != nil {
+		return []error{fmt.Errorf("list bounded open pull requests targeting %s for park reconciliation: %w", base, err)}
+	}
+	namespace := providerBranchNamespace()
+	namespaced := filterPullRequestsByHeadPrefix(others, namespace)
+	demotedCandidates := filterPullRequestsByHeadPrefix(others, "goobers/")
+	resolved, resolvedErrs := unparkResolvedSiblingsFrom(
+		ctx, provider, repo, 0, namespaced, stderr,
+	)
+	escalated, escalationErrs := unparkSelfHealedEscalationsFrom(
+		ctx, provider, repo, 0, namespaced, stderr,
+	)
+	demoted, demotionErrs := unparkSelfHealedDemotionsFrom(
+		ctx, provider, repo, 0, demotedCandidates, stderr,
+	)
+	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s)\n",
+		len(resolved), len(escalated), len(demoted))
+	return append(append(resolvedErrs, escalationErrs...), demotionErrs...)
+}
+
+func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix string) []providers.PullRequestSummary {
+	filtered := make([]providers.PullRequestSummary, 0, len(prs))
+	for _, pr := range prs {
+		if strings.HasPrefix(pr.Head, prefix) {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered
 }
 
 func reconcilePostMerges(
@@ -457,8 +539,9 @@ func withPostMergeReconcileLock(root string, fn func(string) error) error {
 
 func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error) {
 	ledger := postMergeReconcileLedger{
-		Version: postMergeReconcileVersion,
-		Entries: map[string]postMergeReconcileEntry{},
+		Version:        postMergeReconcileVersion,
+		Entries:        map[string]postMergeReconcileEntry{},
+		OpenPRScanPage: map[string]int{},
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -475,6 +558,9 @@ func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error)
 	}
 	if ledger.Entries == nil {
 		ledger.Entries = map[string]postMergeReconcileEntry{}
+	}
+	if ledger.OpenPRScanPage == nil {
+		ledger.OpenPRScanPage = map[string]int{}
 	}
 	return ledger, nil
 }

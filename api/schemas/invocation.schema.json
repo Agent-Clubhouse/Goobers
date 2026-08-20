@@ -24,6 +24,7 @@
       "type": "string",
       "description": "The gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.Branch); empty means the default 'main'. Injected as GOOBERS_BASE_BRANCH (#2087)."
     },
+    "goober": { "type": "string", "minLength": 1, "description": "Goober this invocation is for; absent for a deterministic stage or an automated gate. The local runner dispatches from the workflow definition and never needed it on the wire; a Temporal worker has only the envelope, so without it the agentic seam cannot resolve which goober to construct." },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
     "instructionAddendum": {
       "type": "string",
@@ -83,6 +84,7 @@
           "ado:pr:comment",
           "ado:pr:write",
           "ado:pr:status",
+          "ado:pr:complete",
           "ado:work-items:write",
           "telemetry:read",
           "journal:read",

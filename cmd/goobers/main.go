@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	_ "time/tzdata"
 )
 
 // runProcessExits is true only for the real CLI entrypoint. In-process callers
@@ -90,6 +91,9 @@ modes exit 0 before a terminal outcome is known.
 
 Use ` + "`goobers help all`" + ` for advanced operator commands or
 ` + "`goobers help stages`" + ` for runner-invoked workflow internals.
+Quickstart guide: docs/guides/quickstart.md
+DSL entry points: ` + "`goobers schema`" + ` and ` + "`goobers examples`" + `
+Troubleshooting: ` + "`goobers status`" + `, ` + "`goobers trace`" + `, and ` + "`goobers escalations`" + `
 `
 
 const usageAllHeader = `goobers — complete command reference

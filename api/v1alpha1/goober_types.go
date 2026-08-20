@@ -92,6 +92,7 @@ type MCPServer struct {
 	// +optional
 	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 	// CredentialRefs bind first-party or named BYO credentials to this server.
+	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	CredentialRefs []MCPCredentialRef `json:"credentialRefs,omitempty" yaml:"credentialRefs,omitempty"`
 }
@@ -99,7 +100,6 @@ type MCPServer struct {
 // GooberSpec is the definition of a role-specialized AI worker. It declares
 // everything needed to materialize the goober as ephemeral pods when a workflow
 // invokes it (GBO-001, GBO-002).
-// +kubebuilder:validation:XValidation:rule="!has(self.mcpServers) || size(self.mcpServers) == 0 || !has(self.harness) || self.harness == 'copilot'",message="mcpServers are only supported by harness copilot"
 type GooberSpec struct {
 	// Gaggle is the name of the Gaggle this goober belongs to.
 	// +kubebuilder:validation:Required
@@ -170,6 +170,7 @@ type GooberSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
+	// +kubebuilder:validation:MaxItems=32
 	MCPServers []MCPServer `json:"mcpServers,omitempty" yaml:"mcpServers,omitempty"`
 	// ScaleFactor is the desired replica count for concurrent work. Increasing it
 	// and redeploying yields more concurrent replicas, which claim work so no two

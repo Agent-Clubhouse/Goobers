@@ -1,75 +1,227 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/user"
+	"strings"
+
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 )
 
-// Tier-2 human-intervention CLI commands (HITL-7/#469): approve/override/
-// rerun. Each is registered as a first-class ActionRuntimeMutation command
-// now — via runtimeSubcommand, so it appears in cliSurfaceActions() and
-// participates in the CLI/API/UI runtime-parity check alongside the stub
-// routes internal/httpapi already registers — but the handler body is a
-// deliberate stub. The real behavior (calling the daemon's approve/override/
-// rerun API through this same seam) is #466/#468's scope: gate force-pass/
-// override (#468) has no backing implementation yet (internal/gate/
-// evaluate.go still refuses apiv1.EvaluatorHuman outright), and nothing
-// today wires internal/runner.RerunStage (the real, already-built
-// rerun-with-addendum primitive, #465/#467) to any external caller. Landing
-// every surface's registration now means #466/#468 only ever replace a
-// handler body — never touch CLI registration, API routing, or auth wiring.
+const maxInterventionResponseBody = 1 << 20
 
-const runApproveHelp = "Usage: goobers run approve <run-id> <stage> [path]\n\n" +
-	"Approve an escalated human/reviewer gate, unblocking the run past it.\n" +
-	"Not yet implemented (HITL-4/#466) — this command is registered now so the\n" +
-	"CLI surface, the daemon API route, and the access-control seam (HITL-7/\n" +
-	"#469) are all in place before the real behavior lands.\n\n" +
-	"Exit codes: 1 = not yet implemented, 2 = usage error.\n"
+const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
+	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
+	"records the authenticated actor, decision, and resulting resume in the run\n" +
+	"journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.\n\n" +
+	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
-func runRunApprove(args []string, stdout, stderr io.Writer) int {
-	return runStageMutationStub("run approve", runApproveHelp, args, stdout, stderr)
-}
-
-const runOverrideHelp = "Usage: goobers run override <run-id> <stage> [path]\n\n" +
-	"Force-pass a nondeterministic gate with an operator-supplied rationale,\n" +
-	"overriding its own verdict. Not yet implemented (HITL-6/#468) — this\n" +
-	"command is registered now so the CLI surface, the daemon API route, and\n" +
-	"the access-control seam (HITL-7/#469) are all in place before the real\n" +
-	"behavior lands.\n\n" +
-	"Exit codes: 1 = not yet implemented, 2 = usage error.\n"
-
-func runRunOverride(args []string, stdout, stderr io.Writer) int {
-	return runStageMutationStub("run override", runOverrideHelp, args, stdout, stderr)
-}
-
-const runRerunHelp = "Usage: goobers run rerun <run-id> <stage> [path]\n\n" +
-	"Re-enter an escalated run at one agentic task or reviewer gate with a\n" +
-	"one-off recorded instruction addendum. The underlying primitive already\n" +
-	"exists (internal/runner.RerunStage, HITL-3/HITL-5, #465/#467) but nothing\n" +
-	"outside the runner package calls it yet — this command is registered now\n" +
-	"so the CLI surface, the daemon API route, and the access-control seam\n" +
-	"(HITL-7/#469) are all in place before HITL-4 (#466) wires it through.\n\n" +
-	"Exit codes: 1 = not yet implemented, 2 = usage error.\n"
-
-func runRunRerun(args []string, stdout, stderr io.Writer) int {
-	return runStageMutationStub("run rerun", runRerunHelp, args, stdout, stderr)
-}
-
-// runStageMutationStub is the shared stub body for every tier-2 CLI
-// intervention command: it validates the shared <run-id> <stage> [path]
-// shape usage errors would catch either way, then reports the action as not
-// yet implemented — never a fake success, since no state actually changed.
-func runStageMutationStub(id, help string, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet(id, flag.ContinueOnError)
+func runApprove(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("approve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, id)
+	fs.Usage = helpUsage(stderr, "approve")
+	decision := fs.String("decision", "pass", "configured gate decision to approve")
+	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	return runInterventionCLI(
+		fs, apicontract.RouteApproveStage, "approve",
+		httpapi.InterventionRequest{Actor: *actor, Decision: *decision},
+		stdout, stderr,
+	)
+}
+
+const overrideHelp = "Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
+	"Override a nondeterministic gate on an escalated or failed run and continue\n" +
+	"from the selected configured branch. The rationale and authenticated actor\n" +
+	"are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token\n" +
+	"when API auth is enabled.\n\n" +
+	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
+
+func runOverride(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("override", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "override")
+	decision := fs.String("decision", "pass", "configured gate decision to force")
+	rationale := fs.String("rationale", "", "required audit rationale")
+	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*rationale) == "" {
+		pf(stderr, "error: --rationale is required\n")
+		fs.Usage()
+		return 2
+	}
+	return runInterventionCLI(
+		fs, apicontract.RouteOverrideStage, "override",
+		httpapi.InterventionRequest{Actor: *actor, Decision: *decision, Rationale: *rationale},
+		stdout, stderr,
+	)
+}
+
+const rerunStageHelp = "Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]\n\n" +
+	"Rerun one agentic task or reviewer gate on an escalated run with a one-off\n" +
+	"instruction addendum. The actor, addendum, target, and human attempt are\n" +
+	"recorded in the run journal; the workflow definition is not changed.\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.\n\n" +
+	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
+
+func runRerunStage(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("rerun-stage", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, "rerun-stage")
+	addendum := fs.String("addendum", "", "required one-off instruction addendum")
+	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*addendum) == "" {
+		pf(stderr, "error: --addendum is required\n")
+		fs.Usage()
+		return 2
+	}
+	return runInterventionCLI(
+		fs, apicontract.RouteRerunStage, "rerun-stage",
+		httpapi.InterventionRequest{Actor: *actor, InstructionAddendum: *addendum},
+		stdout, stderr,
+	)
+}
+
+func runInterventionCLI(
+	fs *flag.FlagSet,
+	routeID apicontract.RouteID,
+	action string,
+	input httpapi.InterventionRequest,
+	stdout, stderr io.Writer,
+) int {
 	if fs.NArg() < 2 || fs.NArg() > 3 {
 		fs.Usage()
 		return 2
 	}
-	pf(stderr, "error: %s is not implemented yet (tracked separately from the access-control seam, HITL-7/#469)\n", id)
-	return 1
+	input.RunID = fs.Arg(0)
+	input.Stage = fs.Arg(1)
+	root := "."
+	if fs.NArg() == 3 {
+		root = fs.Arg(2)
+	}
+	if strings.TrimSpace(input.Actor) == "" {
+		actor, err := defaultInterventionActor()
+		if err != nil {
+			pf(stderr, "error: resolve intervention actor: %v\n", err)
+			return 2
+		}
+		input.Actor = actor
+	}
+
+	result, apiErr, err := callInterventionAPI(instance.NewLayout(root), routeID, input)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if apiErr != nil {
+		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
+		return 1
+	}
+	pf(stdout, "%s accepted for run %s; phase=%s", action, input.RunID, result.Phase)
+	if result.State != "" {
+		pf(stdout, " state=%s", result.State)
+	}
+	pln(stdout, "")
+	return 0
+}
+
+func callInterventionAPI(
+	layout instance.Layout,
+	routeID apicontract.RouteID,
+	input httpapi.InterventionRequest,
+) (httpapi.InterventionResult, *apicontract.APIError, error) {
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("load instance config: %w", err)
+	}
+	address, err := dashboardDaemonAPIAddress(layout, apiListenAddress(config))
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("resolve live daemon API: %w", err)
+	}
+	route, ok := apicontract.V1Route(routeID)
+	if !ok {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("API route %q is not registered", routeID)
+	}
+	routePath := strings.NewReplacer(
+		"{run}", url.PathEscape(input.RunID),
+		"{stage}", url.PathEscape(input.Stage),
+	).Replace(route.Path)
+	body, err := json.Marshal(input)
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("encode intervention request: %w", err)
+	}
+	request, err := http.NewRequest(route.Method, daemonAPIScheme(config)+"://"+address+routePath, bytes.NewReader(body))
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("build intervention request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	key, err := newInterventionIdempotencyKey()
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("generate intervention idempotency key: %w", err)
+	}
+	request.Header.Set(httpapi.HeaderIdempotencyKey, key)
+	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("call live daemon API: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxInterventionResponseBody))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var envelope apicontract.ErrorEnvelope
+		if err := decoder.Decode(&envelope); err != nil {
+			return httpapi.InterventionResult{}, nil, fmt.Errorf("daemon API returned %s with an invalid error body: %w", response.Status, err)
+		}
+		return httpapi.InterventionResult{}, &envelope.Error, nil
+	}
+	var result httpapi.InterventionResult
+	if err := decoder.Decode(&result); err != nil {
+		return httpapi.InterventionResult{}, nil, fmt.Errorf("decode daemon intervention result: %w", err)
+	}
+	return result, nil, nil
+}
+
+func newInterventionIdempotencyKey() (string, error) {
+	var key [16]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", key[:]), nil
+}
+
+func defaultInterventionActor() (string, error) {
+	for _, name := range []string{"GITHUB_ACTOR", "USER", "USERNAME"} {
+		if actor := strings.TrimSpace(os.Getenv(name)); actor != "" {
+			return actor, nil
+		}
+	}
+	current, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	if actor := strings.TrimSpace(current.Username); actor != "" {
+		return actor, nil
+	}
+	return "", errors.New("current user has no username; pass --actor")
 }

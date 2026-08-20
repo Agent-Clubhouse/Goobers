@@ -38,7 +38,7 @@ const signalHelp = "Usage: goobers signal <name> [path]\n\n" +
 // future caller of Scheduler.Signal; this CLI path has no opinion on
 // delivery mechanism and works standalone in the meantime.
 func runSignal(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("signal", flag.ContinueOnError)
+	fs := newCLIFlagSet("signal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "signal")
 	if err := fs.Parse(args); err != nil {

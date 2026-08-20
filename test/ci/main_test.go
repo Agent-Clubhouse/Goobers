@@ -52,10 +52,14 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"fmt-check",
 		"tidy-check",
 		"no-phone-home",
+		"stage-name-lint",
 		"vet",
 		"flake-policy",
+		"design-doc-status",
+		"markdown-links",
 		"build-config-sync",
 		"portal-install",
+		"portal-playwright-install",
 		"portal-build",
 		"portal-dist-diff",
 		"portal-dist-untracked",
@@ -67,6 +71,8 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"test",
 		"lint",
 		"portal-test",
+		"portal-deadcode",
+		"portal-e2e",
 		"portal-contract-generate",
 		"portal-contract-diff",
 		"portal-contract-typecheck",
@@ -297,8 +303,43 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home vet flake-policy build-scheduler portal-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links build-scheduler portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
+	}
+}
+
+func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
+	t.Parallel()
+	got := checks(
+		[]string{"goobers"},
+		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "custom-npm"},
+		buildMetadata{},
+		"linux",
+		"",
+	)
+
+	install := checkByLabel(t, got, "portal-playwright-install")
+	if install.command != "custom-npm" {
+		t.Errorf("portal-playwright-install command = %q, want custom-npm", install.command)
+	}
+	if want := []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"}; !reflect.DeepEqual(install.args, want) {
+		t.Errorf("portal-playwright-install args = %q, want %q", install.args, want)
+	}
+
+	e2e := checkByLabel(t, got, "portal-e2e")
+	if e2e.command != "custom-npm" {
+		t.Errorf("portal-e2e command = %q, want custom-npm", e2e.command)
+	}
+	if want := []string{"--prefix", "portal", "run", "test:e2e"}; !reflect.DeepEqual(e2e.args, want) {
+		t.Errorf("portal-e2e args = %q, want %q", e2e.args, want)
+	}
+
+	deadcode := checkByLabel(t, got, "portal-deadcode")
+	if deadcode.command != "custom-npm" {
+		t.Errorf("portal-deadcode command = %q, want custom-npm", deadcode.command)
+	}
+	if want := []string{"--prefix", "portal", "run", "deadcode"}; !reflect.DeepEqual(deadcode.args, want) {
+		t.Errorf("portal-deadcode args = %q, want %q", deadcode.args, want)
 	}
 }
 
@@ -929,6 +970,24 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 	if !slices.Contains(args, "./...") {
 		t.Errorf("sharded unit args lost the package spec (hermetic expands ./...): %q", joined)
+	}
+}
+
+func TestApplyRuntimeTogglesOverridesTestTimeout(t *testing.T) {
+	t.Parallel()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_TEST_TIMEOUT" {
+			return "60m"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(mergeGateChecks(), groupUnit), env)
+	if args := labelArgs(unit, "test"); !slices.Contains(args, "60m") || slices.Contains(args, "30m") {
+		t.Errorf("unit timeout was not overridden: %q", args)
+	}
+	shipped := applyRuntimeToggles(groupChecksOnly(mergeGateChecks(), groupShipped), env)
+	if args := labelArgs(shipped, "shipped-workflows"); !slices.Contains(args, "60m") || slices.Contains(args, "20m") {
+		t.Errorf("shipped timeout was not overridden: %q", args)
 	}
 }
 

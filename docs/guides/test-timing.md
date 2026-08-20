@@ -46,6 +46,13 @@ The artifact is JSON with `schemaVersion: 1`:
 }
 ```
 
+The Linux race shards use reviewed package measurements checked in at
+`.github/unit-shard-weights.json`. The hermetic runner assigns the longest
+packages first to the currently lightest shard; packages below the table's
+measurement threshold and packages added later use `defaultSeconds`. Refresh
+the table from successful race-shard logs or timing artifacts when the package
+mix or measured shard balance changes, and update its source metadata.
+
 Timing budgets are intentionally soft. An over-budget run emits a GitHub
 workflow warning and an `OVER BUDGET` summary row, but the comparison command
 still succeeds. Test failures and malformed timing data remain ordinary CI

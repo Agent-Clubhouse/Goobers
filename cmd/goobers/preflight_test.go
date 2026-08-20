@@ -34,28 +34,33 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	}}}}
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if _, err := preflightAgenticHarnesses(goobers, agentic); err == nil {
+	if _, err := preflightAgenticHarnesses(goobers, agentic, nil, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly); err != nil {
+	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, nil, nil); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
 	// Healthy harness → preflight passes.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	var gotEnvPassthrough []string
+	harnessAdapterFor = func(_ apiv1.Harness, envPassthrough []string, _ map[string][]string) (harness.Adapter, error) {
+		gotEnvPassthrough = append([]string(nil), envPassthrough...)
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
-	info, err := preflightAgenticHarnesses(goobers, agentic)
+	info, err := preflightAgenticHarnesses(goobers, agentic, []string{"CLAUDE_CONFIG_DIR"}, nil)
 	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
 	}
 	if got := info[apiv1.HarnessCopilot].Version; got != "copilot version 1.2.3" {
 		t.Fatalf("preflight version = %q", got)
+	}
+	if strings.Join(gotEnvPassthrough, ",") != "CLAUDE_CONFIG_DIR" {
+		t.Fatalf("adapter env passthrough = %v, want [CLAUDE_CONFIG_DIR]", gotEnvPassthrough)
 	}
 
 	gateOnly := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
@@ -65,6 +70,8 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	info, err = preflightAgenticHarnesses(
 		map[string]apiv1.GooberSpec{"reviewer": {}},
 		gateOnly,
+		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("reviewer-only default harness preflight: %v", err)
@@ -79,7 +86,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 // preflight through adapterFor — validate --check-harness AND the automatic
 // daemon-startup preflight — verifies sign-in, not just CLI presence.
 func TestAdapterForConfiguresAuthProbe(t *testing.T) {
-	a, err := adapterFor(apiv1.HarnessCopilot)
+	a, err := adapterFor(apiv1.HarnessCopilot, []string{"CLAUDE_CONFIG_DIR"}, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -92,6 +99,9 @@ func TestAdapterForConfiguresAuthProbe(t *testing.T) {
 	}
 	if strings.Join(ca.AuthCheckArgs, " ") != strings.Join(copilotAuthCheckArgs, " ") {
 		t.Fatalf("AuthCheckArgs = %v, want the confirmed probe %v", ca.AuthCheckArgs, copilotAuthCheckArgs)
+	}
+	if strings.Join(ca.ExtraEnvAllowlist, ",") != "CLAUDE_CONFIG_DIR" {
+		t.Fatalf("ExtraEnvAllowlist = %v, want [CLAUDE_CONFIG_DIR]", ca.ExtraEnvAllowlist)
 	}
 }
 
@@ -113,14 +123,14 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// Installed but signed out: version 0, auth probe non-zero. The adapter
 	// carries copilotAuthCheckArgs (as the real adapterFor now does), so the
 	// probe actually runs during the startup preflight.
-	harnessAdapterFor = func(apiv1.Harness) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := preflightAgenticHarnesses(goobers, agentic)
+	_, err := preflightAgenticHarnesses(goobers, agentic, nil, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}

@@ -1,0 +1,61 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CONNECT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers connect \- connect an instance to your own GitHub repository
+.SH SYNOPSIS
+\fBgoobers connect\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
+
+Connect an instance to your own GitHub repository — the connect rung of the
+onboarding ladder. The command rewrites the template placeholders
+(your-org/your-repo) in instance.yaml repos[] and in every materialized
+gaggle's project and backlog under config/gaggles/, then validates the
+result in-process. Configuration already pointing at a real repository is
+left alone (and reported skipped) unless --replace is set.
+
+Credentials are recorded by NAME only: --token-env stores the environment
+variable name (default GOOBERS_GITHUB_TOKEN) in the repo's token
+reference. Token values never pass through this command; a value that looks
+like a pasted token is rejected.
+
+Only GitHub repositories can be connected. An Azure DevOps identity (an
+organization/project/repository slug or a dev.azure.com URL) is refused
+with the instance.yaml block to write by hand — see
+docs/guides/ado-authentication.md.
+
+--seed derives two label sets from the connected gaggles and idempotently
+ensures every one of them exists on the repository: the backlog SELECTORS
+(backlog labels plus each workflow's trustLabel/requireLabels inputs) and
+the labels those workflows WRITE or exclude on (the goobers:claimed claim
+mirror, each issue-close-out stage's park/status label, readyLabel inputs,
+and every excludeLabels entry) — a run dies at its first park or close-out
+when those do not exist yet. The one safe starter issue it files carries
+the selector labels only, never the lifecycle ones. Seeding uses the same
+--token-env; when that variable is unset the issue is reported pending and
+the local rewrite still completes.
+
+When the token variable is set, the target repository's reachability is
+checked with the exact credential path a real run would use BEFORE any
+file is written, and a failed connect leaves the instance exactly as it
+was. After a successful connect the same credential reports how many of
+the repository's open issues your backlog selectors currently match.
+
+Flags:
+  --token-env <name>  repository token environment variable name (default GOOBERS_GITHUB_TOKEN)
+  --seed              ensure selector labels + one starter issue on the repository
+  --replace           also rewrite entries already pointing at a real repository
+  --json              emit the versioned onboarding action envelope
+
+Exit codes: 0 = connected (or already connected), 1 = refusal, validation,
+or provider error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers connect acme/web ./my-instance
+goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance
+goobers connect acme/web --json ./my-instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -41,9 +44,9 @@ import (
 //
 // It mirrors the established cross-process cache discipline (#758 merge-policy,
 // #523 sibling context): a single JSON file under the instance scheduler dir,
-// guarded by withFileLock, written atomically. Sharing one store across the
-// list consumers also collapses their redundant independent listings — later
-// stages in the scheduler evaluation reuse the first stage's snapshot.
+// guarded by a bounded file lock, written atomically. Sharing one store across
+// the list consumers also collapses their redundant independent listings —
+// later stages in the scheduler evaluation reuse the first stage's snapshot.
 const (
 	apiReadCacheFileName   = "api-read-cache.json"
 	apiReadCacheBodyDir    = "api-read-cache-bodies"
@@ -54,8 +57,13 @@ const (
 	apiReadCacheMaxBytes   = 16 << 20
 	// apiReadHTTPTimeout mirrors providers' own default provider HTTP timeout;
 	// the wrapper's inner client keeps the same round-trip budget.
-	apiReadHTTPTimeout = 60 * time.Second
+	apiReadHTTPTimeout              = 60 * time.Second
+	apiReadCacheLockAcquireTimeout  = time.Second
+	apiReadCacheLockRetryInterval   = 10 * time.Millisecond
+	apiReadCacheMaxLockAcquisitions = 4
 )
+
+var apiReadCacheLocks = newAPIReadCacheLockManager(apiReadCacheMaxLockAcquisitions)
 
 // apiReadCacheEntry is one (token-scope, URL)'s cached conditional-GET result.
 type apiReadCacheEntry struct {
@@ -124,7 +132,63 @@ type apiReadCache struct {
 // pass-through (standalone/manual invocation with no instance scheduler dir to
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
+	cleanStaleAPIReadCacheLocks(schedulerDir)
 	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID}
+}
+
+// apiReadCacheStaleLockAge is how old an api-read-cache per-list-key lock
+// file (apiReadListLockPath) must be before startup cleanup treats it as
+// debris rather than a lock a peer might still be contending for.
+// lock.Acquire creates its file with O_CREATE but Release only unlocks and
+// closes it (internal/platform/lock) — by design, nothing ever unlinks it —
+// so every distinct list-request key this scheduler dir has ever seen leaves
+// a permanent zero-byte file behind. No withFileLock critical section here
+// runs anywhere close to this long, so a file this old is safe to remove.
+const apiReadCacheStaleLockAge = 24 * time.Hour
+
+// apiReadCacheLockCleanupDone tracks which scheduler dirs have already had
+// their stale per-list-key locks swept in this process, so a long-lived
+// daemon does the directory scan once at startup rather than on every cache
+// construction.
+var apiReadCacheLockCleanupDone sync.Map // schedulerDir -> *sync.Once
+
+// cleanStaleAPIReadCacheLocks removes apiReadListLockPath lock files older
+// than apiReadCacheStaleLockAge. Before removing one it takes a non-blocking
+// lock on it, which both confirms no peer currently holds it and closes the
+// TOCTOU window between the age check and the removal — a peer that opens
+// the path afterward simply creates a fresh file and locks that instead.
+// Best effort throughout: any error just leaves the file for a later sweep,
+// and this must never fail cache construction.
+func cleanStaleAPIReadCacheLocks(schedulerDir string) {
+	if schedulerDir == "" {
+		return
+	}
+	onceVal, _ := apiReadCacheLockCleanupDone.LoadOrStore(schedulerDir, new(sync.Once))
+	onceVal.(*sync.Once).Do(func() {
+		entries, err := os.ReadDir(schedulerDir)
+		if err != nil {
+			return
+		}
+		prefix := apiReadCacheLockName + "."
+		cutoff := time.Now().Add(-apiReadCacheStaleLockAge)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			path := filepath.Join(schedulerDir, name)
+			held, err := tryAcquireAPIReadCacheLock(path, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
+			if err != nil {
+				continue // a live peer holds it (or it's otherwise unavailable) — leave it
+			}
+			_ = os.Remove(path)
+			_ = held.Release()
+		}
+	})
 }
 
 func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
@@ -156,7 +220,7 @@ func invalidateCurrentProviderSnapshot(root string) error {
 	}
 	schedulerDir := layoutFor(root).SchedulerDir()
 	cache := newAPIReadCache(schedulerDir, snapshotID, nil)
-	return withFileLock(filepath.Join(schedulerDir, apiReadCacheLockName), func() error {
+	return withAPIReadCacheLock(filepath.Join(schedulerDir, apiReadCacheLockName), func() error {
 		entries := cache.readDiskUnlocked()
 		prefix := "snapshot\x00" + snapshotID + "\x00"
 		for key := range entries {
@@ -185,7 +249,7 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 			resp       *http.Response
 			requestErr error
 		)
-		lockErr := withFileLock(apiReadListLockPath(c.schedulerDir, key), func() error {
+		lockErr := withAPIReadCacheLock(apiReadListLockPath(c.schedulerDir, key), func() error {
 			entries := c.readDisk()
 			c.replaceMemory(entries)
 			if entry, hit := entries[snapshotKey]; hit {
@@ -200,7 +264,7 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 				snapshot.Snapshot = c.snapshotID
 				c.remember(key, updated)
 				c.remember(snapshotKey, snapshot)
-				_ = withFileLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
+				_ = withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
 					onDisk := c.readDiskUnlocked()
 					onDisk[key] = updated
 					onDisk[snapshotKey] = snapshot
@@ -332,6 +396,146 @@ func apiReadListLockPath(schedulerDir, key string) string {
 	return filepath.Join(schedulerDir, apiReadCacheLockName+"."+hex.EncodeToString(sum[:8]))
 }
 
+type apiReadCacheLockResult struct {
+	handle *lock.Handle
+	err    error
+}
+
+type apiReadCacheLockAttempt struct {
+	done chan struct{}
+
+	mu        sync.Mutex
+	result    apiReadCacheLockResult
+	completed bool
+	abandoned bool
+}
+
+// apiReadCacheLockManager deduplicates blocked opens by path and caps blocked
+// OS calls across distinct cache keys so a daemon cannot leak resources without
+// bound when CreateFile never returns.
+type apiReadCacheLockManager struct {
+	mu       sync.Mutex
+	inFlight map[string]*apiReadCacheLockAttempt
+	slots    chan struct{}
+}
+
+func newAPIReadCacheLockManager(limit int) *apiReadCacheLockManager {
+	return &apiReadCacheLockManager{
+		inFlight: make(map[string]*apiReadCacheLockAttempt),
+		slots:    make(chan struct{}, limit),
+	}
+}
+
+// acquireAPIReadCacheLock bounds the file open that precedes LockFileEx and can
+// otherwise block indefinitely inside CreateFile on Windows.
+func acquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	return apiReadCacheLocks.acquire(lockPath, timeout, acquire)
+}
+
+func (m *apiReadCacheLockManager) acquire(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
+		}
+		attempt, owner, err := m.start(lockPath, acquire)
+		if err != nil {
+			return nil, err
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-attempt.done:
+			timer.Stop()
+			if !owner {
+				continue
+			}
+		case <-timer.C:
+			if owner {
+				attempt.abandon()
+			}
+			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
+		}
+
+		handle, err := attempt.acquired()
+		if !errors.Is(err, lock.ErrHeld) {
+			return handle, err
+		}
+
+		delay := min(apiReadCacheLockRetryInterval, time.Until(deadline))
+		if delay <= 0 {
+			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
+		}
+		time.Sleep(delay)
+	}
+}
+
+func (m *apiReadCacheLockManager) start(lockPath string, acquire func(string) (*lock.Handle, error)) (*apiReadCacheLockAttempt, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if attempt := m.inFlight[lockPath]; attempt != nil {
+		return attempt, false, nil
+	}
+	select {
+	case m.slots <- struct{}{}:
+	default:
+		return nil, false, fmt.Errorf("api read cache lock %q: acquisition capacity exhausted", lockPath)
+	}
+
+	attempt := &apiReadCacheLockAttempt{done: make(chan struct{})}
+	m.inFlight[lockPath] = attempt
+	go func() {
+		handle, err := acquire(lockPath)
+		attempt.mu.Lock()
+		attempt.completed = true
+		if attempt.abandoned {
+			_ = handle.Release()
+		} else {
+			attempt.result = apiReadCacheLockResult{handle: handle, err: err}
+		}
+		attempt.mu.Unlock()
+
+		m.mu.Lock()
+		delete(m.inFlight, lockPath)
+		<-m.slots
+		m.mu.Unlock()
+		close(attempt.done)
+	}()
+	return attempt, true, nil
+}
+
+func (a *apiReadCacheLockAttempt) abandon() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.abandoned = true
+	if a.completed {
+		_ = a.result.handle.Release()
+		a.result.handle = nil
+	}
+}
+
+func (a *apiReadCacheLockAttempt) acquired() (*lock.Handle, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.result.handle, a.result.err
+}
+
+func tryAcquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	return apiReadCacheLocks.acquire(lockPath, timeout, acquire)
+}
+
+// withAPIReadCacheLock fails open on contention or a blocked file open. The
+// cache is optional, so provider reads must not wait behind its filesystem I/O.
+func withAPIReadCacheLock(lockPath string, fn func() error) error {
+	held, err := acquireAPIReadCacheLock(lockPath, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = held.Release() }()
+	return fn()
+}
+
 // lookup returns a fresh cached entry for key, loading the disk cache into
 // memory on first use. Fail-open: any load error yields an empty cache.
 func (c *apiReadCache) lookup(key string) (apiReadCacheEntry, bool) {
@@ -379,7 +583,7 @@ func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
 	c.mu.Unlock()
 
 	lockPath := filepath.Join(c.schedulerDir, apiReadCacheLockName)
-	_ = withFileLock(lockPath, func() error {
+	_ = withAPIReadCacheLock(lockPath, func() error {
 		onDisk := c.readDiskUnlocked() // re-read under lock so we merge, not clobber, a peer's writes
 		onDisk[key] = entry
 		return c.writeDisk(evictAPIReadCache(onDisk))
@@ -390,7 +594,7 @@ func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
 // file, unreadable, corrupt JSON) returns an empty map — never fails a caller.
 func (c *apiReadCache) readDisk() map[string]apiReadCacheEntry {
 	out := map[string]apiReadCacheEntry{}
-	if err := withFileLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
+	if err := withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
 		out = c.readDiskUnlocked()
 		return nil
 	}); err != nil {

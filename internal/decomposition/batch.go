@@ -2,8 +2,8 @@ package decomposition
 
 import "strings"
 
-// Batch marker comment prefixes. DEC-4's publisher (not yet implemented) owns
-// writing these; select-source only needs to recognize one already present so
+// Batch marker comment prefixes. The publisher owns writing these;
+// select-source only needs to recognize one already present so
 // several old escalation runs pointing at the same parent resolve to the
 // existing batch instead of racing to create a second one (design doc §2.1).
 // Forward-declared here, ahead of the publisher that emits them, exactly like

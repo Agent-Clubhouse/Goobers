@@ -14,6 +14,20 @@ current product claim; the cluster entrypoints in this repository remain
 quarantined. What is intended to stay constant is the configuration and run
 contract, so scaling execution does not require redefining the workforce.
 
+## Install
+
+Install the current `v0.1.0` release on Linux or macOS:
+
+```sh
+/bin/sh -c "$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)" \
+  -- v0.1.0
+```
+
+The installer verifies the downloaded archive against the release checksum and
+places `goobers` in `$HOME/.local/bin`. See
+[Release installation and verification](docs/guides/releases.md) for
+prerequisites, install-directory overrides, and the Windows path.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,
@@ -113,12 +127,29 @@ first-run path: a credential-free local demo, a disposable GitHub-backed run,
 and then a regular instance using the
 [production-oriented configuration examples](config-examples/README.md).
 
+Prefer a guided walkthrough over typing CLI commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](docs/cli/README.md#goobers-getting-started).
+
 For deeper context, read the
 [historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
 [architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/),
 and [requirements](docs/requirements/). Those documents include future
 design; this overview deliberately describes the behavior shipped in this
 tree.
+
+## EvalSuite (workflow evaluation)
+
+EvalSuite is an in-progress epic ([#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662))
+for deterministic, reproducible evaluation of agentic workflows: side-by-side
+(A/B) comparisons and shadow/dark runs against production-like input without
+side effects. It is not yet shipped behavior — treat it the same as the other
+future-design docs above until its child issues land.
+
+- [Design overview and status](docs/design/evals-suite.md)
+- [Onboarding: running EvalSuite tests and reading reports](docs/guides/evals-onboarding.md)
+- [PR review checklist for EvalSuite artifacts](docs/guides/evals-review-checklist.md)
 
 ## Engineering reference
 
@@ -127,6 +158,7 @@ tree.
 | Path | Contents | Status |
 |---|---|---|
 | `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active |
+| `config/` | CRD manifests for tier-3 config delivery | **Quarantined** — reserved for cloud-scale execution |
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
 | `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
 | `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
@@ -143,6 +175,7 @@ tree.
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
 | `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
+| `evals/` | EvalSuite design docs and prototype runner/adapter implementation for deterministic, reproducible workflow evaluation | Prototype runner in-tree — not shipped behavior |
 | `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
 | `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
@@ -179,8 +212,11 @@ ordered first-run flow and CLI walkthrough. Use these focused guides only for
 the differences relevant to your environment:
 
 - [Linux host setup](docs/guides/quickstart-linux.md)
+- [macOS host setup](docs/guides/quickstart-macos.md)
 - [Windows host setup](docs/guides/quickstart-windows.md)
 - [Release installation and verification](docs/guides/releases.md)
+- [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
+- [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)

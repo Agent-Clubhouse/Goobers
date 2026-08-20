@@ -1,6 +1,10 @@
 package telemetry
 
-import semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+import (
+	"time"
+
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+)
 
 // Attribute is a key in the canonical Goobers span attribute registry.
 type Attribute string
@@ -113,6 +117,16 @@ const (
 
 // RunAttributes describes a workflow run root span.
 type RunAttributes struct {
+	// StartedAt backdates the span to when the run actually began, instead of
+	// stamping it at creation. Zero keeps the default (now), which is what a
+	// live tier-1 run wants.
+	//
+	// It exists for the engine path: a tier-3 run's spans are synthesized
+	// AFTER the fact, from workflow history via the journal projection, so a
+	// span stamped at synthesis time would report the wrong moment and a
+	// meaningless duration. WithTimestamp is already how this package backdates
+	// span EVENTS (span.go:125); this extends the same idea to span starts.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
@@ -125,6 +139,8 @@ type RunAttributes struct {
 
 // TaskAttributes describes one task attempt span.
 type TaskAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
@@ -145,6 +161,8 @@ type TaskAttributes struct {
 
 // GateAttributes describes one gate evaluation span.
 type GateAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string

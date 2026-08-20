@@ -1,2 +1,4 @@
-DSLVERSION Workflow/default-implement: 1.4 (supported)
+WARNING PLACEHOLDER001 config/gaggles/example/gaggle.yaml: contains unedited template marker(s) your-org, your-repo; replace them with the target repository coordinates
+WARNING PLACEHOLDER001 instance.yaml: contains unedited template marker(s) your-org, your-repo; replace them with the target repository coordinates
+DSLVERSION Workflow/default-implement: 2.0 (supported)
 OK: instance.yaml valid; config/ valid (1 gaggle(s), 1 goober(s), 1 workflow(s))

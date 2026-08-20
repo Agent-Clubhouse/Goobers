@@ -1,6 +1,6 @@
 # Design: Polyglot stacks — .NET/C# first-class, Apple/Android laddered
 
-> Status: **Draft for review** · Area: `RUN` / `WF` / `area:runner` · Milestone: **V1 —
+> Status: **draft — for review** · Area: `RUN` / `WF` / `area:runner` · Milestone: **V1 —
 > arbitrary repos, teams, hardening** (composes with **Custom & Generic Stages**, epic #744)
 > References: `internal/executor/` (dispatch/shell/env), `internal/procenv/procenv.go`,
 > `api/v1alpha1/gaggle_types.go`, `api/v1alpha1/workflow_types.go`, the per-gaggle CI-command

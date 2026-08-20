@@ -19,13 +19,13 @@ type InstanceEventsCompaction struct {
 
 // CompactInstanceEvents rewrites the instance journal at dir, keeping complete
 // records whose event time is at or after keepAfter, run.started records at
-// or after keepRunStartsAfter, plus the latest scheduled trigger per workflow
-// as restart checkpoints. A zero keepAfter keeps every record (a no-op on the
-// journal — used when the caller only wants the surrounding db-vacuum
-// maintenance). Records are preserved as their ORIGINAL raw line bytes, never
-// re-marshaled, so any forward-compatible unknown fields survive compaction
-// unchanged. Kept records retain their original seq, so the journal stays
-// seq-monotonic.
+// or after keepRunStartsAfter, the init.completed marker, plus the latest
+// scheduled trigger per workflow as restart checkpoints. A zero keepAfter
+// keeps every record (a no-op on the journal — used when the caller only wants
+// the surrounding db-vacuum maintenance). Records are preserved as their
+// ORIGINAL raw line bytes, never re-marshaled, so any forward-compatible
+// unknown fields survive compaction unchanged. Kept records retain their
+// original seq, so the journal stays seq-monotonic.
 //
 // Compaction never rewrites dir's current events file in place: it writes the
 // compacted content to a new generation (see instancegen.go) and advances the
@@ -110,6 +110,7 @@ func compactInstanceEventsData(
 		time       time.Time
 		triggerKey string
 		runStarted bool
+		initDone   bool
 	}
 	var records []record
 	latestTrigger := make(map[string]int)
@@ -118,6 +119,7 @@ func compactInstanceEventsData(
 			continue
 		}
 		var meta struct {
+			Schema   string    `json:"schema"`
 			Seq      uint64    `json:"seq"`
 			Time     time.Time `json:"time"`
 			Type     EventType `json:"type"`
@@ -128,8 +130,12 @@ func compactInstanceEventsData(
 		if err := json.Unmarshal(bytes.TrimSpace(line), &meta); err != nil {
 			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
 		}
+		if meta.Schema != EventSchema {
+			return InstanceEventsCompaction{}, nil, unsupportedPayloadSchema("event", meta.Schema, EventSchema)
+		}
 		rec := record{line: line, time: meta.Time}
 		rec.runStarted = meta.Type == EventRunStarted
+		rec.initDone = meta.Type == EventInitCompleted
 		if meta.Type == EventTriggerFired && meta.Workflow != "" &&
 			(meta.Reason == "" || meta.Reason == "scheduled" || bytes.HasPrefix([]byte(meta.Reason), []byte("catch-up "))) {
 			rec.triggerKey = meta.Gaggle + "\x00" + meta.Workflow
@@ -143,7 +149,7 @@ func compactInstanceEventsData(
 		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
 		keepBudgetHistory := rec.runStarted &&
 			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
-		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint && !keepBudgetHistory {
+		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint && !keepBudgetHistory && !rec.initDone {
 			result.Dropped++
 			continue
 		}
@@ -162,8 +168,9 @@ func compactInstanceEventsData(
 // instance log remains open — including by other independently-opened
 // InstanceLog handles or unrelated readers, which never see this rewrite at
 // all: it never touches the generation they have open (see instancegen.go).
-// Scheduled trigger and recent run-start checkpoints are also retained so
-// restart reconciliation preserves scheduler state.
+// Scheduled trigger, recent run-start checkpoints, and the init completion
+// marker are also retained so restart reconciliation and guided target
+// classification preserve durable state.
 func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (InstanceEventsCompaction, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

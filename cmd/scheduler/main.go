@@ -7,12 +7,13 @@
 // cron evaluator in `goobers up`, ARCHITECTURE.md §7). See docs/ARCHITECTURE.md
 // §11. Revived in V2.
 //
-// Configuration is via environment (config-as-code; no UI):
+// Configuration is YAML-first with environment overrides (config-as-code; no UI):
 //
 //	GOOBERS_CONFIG_DIR         path to the config repo (required)
-//	GOOBERS_TEMPORAL_HOSTPORT  Temporal frontend (default 127.0.0.1:7233)
-//	GOOBERS_TEMPORAL_NAMESPACE Temporal namespace (default "default")
-//	GOOBERS_TASK_QUEUE         engine task queue (default goobers-engine)
+//	GOOBERS_INSTANCE_ROOT      instance root containing instance.yaml (optional)
+//	GOOBERS_TEMPORAL_HOSTPORT  overrides engine.hostPort
+//	GOOBERS_TEMPORAL_NAMESPACE overrides engine.namespace
+//	GOOBERS_TASK_QUEUE         overrides engine.taskQueue
 //	GOOBERS_BACKLOG_TOKEN      backlog provider token (Key Vault-injected)
 //	GOOBERS_ADO_AUTH_KIND      pat|azure-cli|workload-identity|managed-identity
 //	GOOBERS_POLL_INTERVAL      backlog poll cadence (default 30s)
@@ -34,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/scheduler"
@@ -67,13 +69,17 @@ type config struct {
 	environment       string
 }
 
-func configFromEnv() config {
+func configFromEnv() (config, error) {
+	engineConfig, err := schedulerEngineConfig(os.Getenv("GOOBERS_INSTANCE_ROOT"))
+	if err != nil {
+		return config{}, err
+	}
 	return config{
 		configDir:         os.Getenv("GOOBERS_CONFIG_DIR"),
 		namespace:         os.Getenv("GOOBERS_NAMESPACE"),
-		temporalHostPort:  envOr("GOOBERS_TEMPORAL_HOSTPORT", "127.0.0.1:7233"),
-		temporalNamespace: envOr("GOOBERS_TEMPORAL_NAMESPACE", "default"),
-		taskQueue:         envOr("GOOBERS_TASK_QUEUE", bootstrap.DefaultTaskQueue),
+		temporalHostPort:  engineConfig.HostPort,
+		temporalNamespace: engineConfig.Namespace,
+		taskQueue:         engineConfig.TaskQueue,
 		backlogToken:      os.Getenv("GOOBERS_BACKLOG_TOKEN"),
 		adoAuthKind:       os.Getenv("GOOBERS_ADO_AUTH_KIND"),
 		adoTenant:         os.Getenv("GOOBERS_ADO_TENANT"),
@@ -84,11 +90,26 @@ func configFromEnv() config {
 		exporter:          telemetry.ExporterKind(envOr("GOOBERS_OTEL_EXPORTER", string(telemetry.ExporterStdout))),
 		otlpEndpoint:      os.Getenv("GOOBERS_OTLP_ENDPOINT"),
 		environment:       os.Getenv("GOOBERS_ENV"),
+	}, nil
+}
+
+func schedulerEngineConfig(root string) (instance.EngineConfig, error) {
+	if root != "" {
+		cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+		if err != nil {
+			return instance.EngineConfig{}, err
+		}
+		return cfg.EffectiveEngineConfig(), nil
 	}
+	resolved, _, err := (&instance.Config{}).ResolveEngineConfig(os.LookupEnv)
+	return resolved, err
 }
 
 func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) error {
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		return err
+	}
 	if cfg.configDir == "" {
 		return errors.New("GOOBERS_CONFIG_DIR is required")
 	}
@@ -235,6 +256,7 @@ func schedulerTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.C
 	return telemetry.Config{
 		ServiceName:    "scheduler",
 		ServiceVersion: version.Get().Version,
+		BuildCommit:    version.Get().Commit,
 		Environment:    cfg.environment,
 		Exporter:       cfg.exporter,
 		OTLPEndpoint:   cfg.otlpEndpoint,

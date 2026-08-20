@@ -1,6 +1,6 @@
 # Design: Unattended operation — an instance that survives a week without an operator
 
-> Status: **Draft for review — prescriptive** · Area prefix: `UNOP` · Milestone: _proposed_
+> Status: **draft — for review; prescriptive** · Area prefix: `UNOP` · Milestone: _proposed_
 > **Unattended Operation**
 > Origin: every load-bearing availability failure across the 2026-07 run-watch corpus
 > (`~/source/Goobers-Review/`): a silent daemon death with no watchdog

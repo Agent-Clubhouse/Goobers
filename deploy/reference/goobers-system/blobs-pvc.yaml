@@ -1,0 +1,30 @@
+# The fleet's content-addressed artifact store (#2866).
+#
+# Stage artifacts are the channel through which one stage hands work to the
+# next, and they are resolved as a path on the LOCAL filesystem. On a single
+# worker that is correct and free. Across workers it is not: stage 1 records
+# into node A's staging area, stage 2 is polled by node B whose area is empty,
+# and the stage fails closed on an integrity fault — correct behaviour, useless
+# outcome.
+#
+# This volume is the shared cache that makes a multi-worker run possible. It is
+# the ONLY volume here that more than one pod writes at once, hence RWX.
+#
+# Safe on storage without dependable POSIX locking, unlike the journal: a
+# content-addressed store never locks. A digest is written once, published by
+# rename, and two writers racing on one digest are by construction writing
+# identical bytes. `doctor --k8s` warns about these classes because they are
+# unsafe for the journal; that warning does not apply to this lock-free store.
+#
+# Omit this entirely if you run a single worker.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-blobs
+  namespace: goobers-system
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: set to an RWX-capable class for your platform.

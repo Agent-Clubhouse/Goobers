@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/telemetry"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/providers"
 )
 
 // WorkflowEntry is one workflow the scheduler manages: its readiness
@@ -38,7 +39,10 @@ type WorkflowEntry struct {
 	Gaggle          string
 	Readiness       apiv1.ReadinessConditions
 	Schedules       []Schedule
-	Signals         []string
+	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
+	// adaptive idle policy.
+	ScheduleBackoffs []IdleBackoffConfig
+	Signals          []string
 	// PollFallbackCause, when non-empty, explains why a scheduled fire is the
 	// fallback for an event-capable workflow.
 	PollFallbackCause string
@@ -103,6 +107,51 @@ const minPoll = time.Second
 // count that often.
 const backlogPollInterval = 30 * time.Second
 
+const (
+	defaultIdleBackoffFloor   = time.Minute
+	defaultIdleBackoffCeiling = 15 * time.Minute
+)
+
+// IdleBackoffConfig is the runtime form of a schedule trigger's idle policy.
+type IdleBackoffConfig struct {
+	Enabled bool
+	Floor   time.Duration
+	Ceiling time.Duration
+}
+
+// ParseIdleBackoff applies schedule-trigger defaults and validates duration
+// ordering for runtime wiring.
+func ParseIdleBackoff(backoff *apiv1.IdleBackoff) (IdleBackoffConfig, error) {
+	config := IdleBackoffConfig{
+		Enabled: true,
+		Floor:   defaultIdleBackoffFloor,
+		Ceiling: defaultIdleBackoffCeiling,
+	}
+	if backoff == nil {
+		return config, nil
+	}
+	if backoff.Enabled != nil {
+		config.Enabled = *backoff.Enabled
+	}
+	var err error
+	if backoff.Floor != "" {
+		config.Floor, err = time.ParseDuration(backoff.Floor)
+		if err != nil || config.Floor <= 0 {
+			return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff floor %q must be a positive duration", backoff.Floor)
+		}
+	}
+	if backoff.Ceiling != "" {
+		config.Ceiling, err = time.ParseDuration(backoff.Ceiling)
+		if err != nil || config.Ceiling <= 0 {
+			return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff ceiling %q must be a positive duration", backoff.Ceiling)
+		}
+	}
+	if config.Ceiling < config.Floor {
+		return IdleBackoffConfig{}, fmt.Errorf("localscheduler: idleBackoff ceiling %s must not be below floor %s", config.Ceiling, config.Floor)
+	}
+	return config, nil
+}
+
 // demandPollTimeout bounds provider-backed demand checks while Tick holds
 // tickMu so signals and configuration reloads cannot stall indefinitely.
 const demandPollTimeout = 45 * time.Second
@@ -118,6 +167,13 @@ var newRunID = telemetry.NewRunID
 // narrow-interface pattern for the tier-3 scheduler.
 type SpanStarter interface {
 	StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error)
+}
+
+type runAdmission struct {
+	identity   WorkflowIdentity
+	generation uint64
+	owners     int
+	retained   bool
 }
 
 // Scheduler is the embedded scheduler daemon (§7, SCH-001): it ties cron
@@ -137,18 +193,21 @@ type Scheduler struct {
 	refreshHeartbeat  func(time.Time) error
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 
-	mu         sync.Mutex
-	tickMu     sync.Mutex
-	triggers   map[WorkflowIdentity]TriggerState
-	dispatches sync.WaitGroup
-	wake       chan struct{}
+	mu          sync.Mutex
+	admissionMu sync.Mutex
+	tickMu      sync.Mutex
+	triggers    map[WorkflowIdentity]TriggerState
+	dispatches  sync.WaitGroup
+	wake        chan struct{}
 	// reconciledRuns identifies the pre-existing runs represented in
 	// Conditions' startup counts, so recovery releases cannot consume another
 	// run's workflow-level slot.
 	reconciledRuns map[string]WorkflowIdentity
-	// admittedRuns identifies live dispatches whose condition slots remain
-	// reserved until their Starter returns or a watchdog terminalizes them.
-	admittedRuns map[string]WorkflowIdentity
+	// admittedRuns identifies live dispatches and continuations whose shared
+	// condition slot remains reserved until every owner releases it or a
+	// watchdog terminalizes the run.
+	admittedRuns            map[string]runAdmission
+	nextAdmissionGeneration uint64
 	// backlogLastCheck tracks, per backlog-item-triggered workflow, when its
 	// BacklogCounter was last polled (#344) — separate from triggers'
 	// LastEval, which is cron-Schedule-specific bookkeeping a workflow with
@@ -157,6 +216,7 @@ type Scheduler struct {
 	// the worst case is one extra poll right after a restart, not a
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
+	idleBackoffs     map[WorkflowIdentity][]idleBackoffState
 	// pendingScheduleDemand retains demand that a due scheduled poll found but
 	// concurrency limits could not admit yet. A durable outstanding marker lets
 	// Reconcile repoll current demand without replaying fully consumed firings or
@@ -165,6 +225,13 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// quotaResumePacing drains provider-backed workflow polls one workflow per
+	// tick after an exhausted quota window resets.
+	quotaResumePacing map[apiv1.Provider]bool
+	// authCircuits suppress provider polls and dispatch for a workflow after a
+	// permanent credential failure. Reload clears the circuit after an
+	// operator repairs configuration.
+	authCircuits map[WorkflowIdentity]struct{}
 	// lastDispatchedGaggle is the cursor for work-conserving round-robin
 	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
@@ -282,10 +349,13 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		demandPollTimeout:     demandPollTimeout,
 		triggers:              make(map[WorkflowIdentity]TriggerState),
 		reconciledRuns:        make(map[string]WorkflowIdentity),
-		admittedRuns:          make(map[string]WorkflowIdentity),
+		admittedRuns:          make(map[string]runAdmission),
 		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
+		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
+		quotaResumePacing:     make(map[apiv1.Provider]bool),
+		authCircuits:          make(map[WorkflowIdentity]struct{}),
 		wake:                  make(chan struct{}, 1),
 		writeTriggerState:     writeTriggerEvaluations,
 	}
@@ -297,6 +367,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		s.workflows[identity] = e
 		ts := TriggerState{Workflow: e.Workflow, Schedules: e.Schedules, LastEval: s.now()}
 		s.triggers[identity] = ts
+		s.idleBackoffs[identity] = make([]idleBackoffState, len(e.Schedules))
 	}
 	return s
 }
@@ -381,10 +452,15 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		at := last[identity]
 		ts.LastEval = at
 		s.triggers[identity] = ts
-		if outstandingScheduleDemand[identity] && s.workflows[identity].ScheduleDemandCounter != nil {
-			s.pendingScheduleDemand[identity] = scheduledDemand{
-				repoll: true,
+		if outstandingScheduleDemand[identity] {
+			pending := scheduledDemand{
+				schedule:  TickResult{Fire: true, LastEval: ts.LastEval},
+				remaining: 1,
 			}
+			if s.workflows[identity].ScheduleDemandCounter != nil {
+				pending = scheduledDemand{repoll: true}
+			}
+			s.pendingScheduleDemand[identity] = pending
 		}
 	}
 	return nil
@@ -428,6 +504,8 @@ func resolveRunStartedIdentities(runsDirs []string, event journal.Event, workflo
 // Matching by run prevents terminal cleanup from consuming another running
 // run's workflow-level slot when no slot was seeded for the terminal run.
 func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
 	if ok && reconciledWorkflow.Workflow == workflow {
@@ -440,13 +518,15 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	}
 }
 
-// ReleaseRun returns a run's live admission or restart-reconciled slot exactly
-// once. Watchdogs use this after terminalizing a run; dispatch and resume
-// cleanup may safely call it again.
+// ReleaseRun force-releases a run's live admission or restart-reconciled slot
+// exactly once. Watchdogs use this after terminalizing a run; generation-scoped
+// dispatch and continuation cleanup may safely run afterward.
 func (s *Scheduler) ReleaseRun(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
 	s.mu.Lock()
-	identity, admitted := s.admittedRuns[runID]
-	if admitted && identity.Workflow == workflow {
+	admission, admitted := s.admittedRuns[runID]
+	if admitted && admission.identity.Workflow == workflow {
 		delete(s.admittedRuns, runID)
 	}
 	reconciledIdentity, reconciled := s.reconciledRuns[runID]
@@ -457,8 +537,8 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 
 	released := false
 	switch {
-	case admitted && identity.Workflow == workflow:
-		s.conditions.ReleaseWorkflow(identity)
+	case admitted && admission.identity.Workflow == workflow:
+		s.conditions.ReleaseWorkflow(admission.identity)
 		released = true
 	case reconciled && reconciledIdentity.Workflow == workflow:
 		s.conditions.ReleaseWorkflow(reconciledIdentity)
@@ -469,11 +549,128 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	}
 }
 
+func (s *Scheduler) releaseAdmissionOwner(runID, workflow string, generation uint64) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow || admission.generation != generation {
+		s.mu.Unlock()
+		return
+	}
+	admission.owners--
+	if admission.owners > 0 || admission.retained {
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return
+	}
+	delete(s.admittedRuns, runID)
+	s.mu.Unlock()
+
+	s.conditions.ReleaseWorkflow(admission.identity)
+	s.wakeForPendingScheduleDemand()
+}
+
+func (s *Scheduler) admissionOwnerRelease(runID, workflow string, generation uint64) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.releaseAdmissionOwner(runID, workflow, generation)
+		})
+	}
+}
+
+// RetainContinuation keeps a run's condition slot reserved between
+// interventions without accumulating one owner per pause.
+func (s *Scheduler) RetainContinuation(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow {
+		return
+	}
+	admission.retained = true
+	s.admittedRuns[runID] = admission
+}
+
+// ReleaseRetainedContinuation drops the between-interventions hold while
+// preserving any dispatch or active-continuation owners.
+func (s *Scheduler) ReleaseRetainedContinuation(runID, workflow string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	s.mu.Lock()
+	admission, admitted := s.admittedRuns[runID]
+	if !admitted || admission.identity.Workflow != workflow || !admission.retained {
+		s.mu.Unlock()
+		return
+	}
+	admission.retained = false
+	if admission.owners > 0 {
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return
+	}
+	delete(s.admittedRuns, runID)
+	s.mu.Unlock()
+
+	s.conditions.ReleaseWorkflow(admission.identity)
+	s.wakeForPendingScheduleDemand()
+}
+
+// ReserveContinuation reserves the configured workflow's concurrency slot for
+// an existing run without recording a second run start or consuming its rate
+// budget. The returned release is idempotent.
+func (s *Scheduler) ReserveContinuation(runID, gaggle, workflow string) (release func(), ok bool, reason string) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+
+	identity := WorkflowIdentity{Gaggle: gaggle, Workflow: workflow}
+	s.mu.Lock()
+	entry, configured := s.workflows[identity]
+	admission, admitted := s.admittedRuns[runID]
+	_, reconciled := s.reconciledRuns[runID]
+	switch {
+	case !configured:
+		s.mu.Unlock()
+		return func() {}, false, "workflow unavailable"
+	case admitted && admission.identity == identity:
+		admission.owners++
+		s.admittedRuns[runID] = admission
+		s.mu.Unlock()
+		return s.admissionOwnerRelease(runID, workflow, admission.generation), true, ""
+	case admitted || reconciled:
+		s.mu.Unlock()
+		return func() {}, false, "run already admitted"
+	}
+	s.mu.Unlock()
+
+	if ok, reason := s.conditions.ReserveContinuation(identity, entry.Readiness); !ok {
+		return func() {}, false, reason
+	}
+	s.mu.Lock()
+	s.nextAdmissionGeneration++
+	generation := s.nextAdmissionGeneration
+	s.admittedRuns[runID] = runAdmission{
+		identity:   identity,
+		generation: generation,
+		owners:     1,
+	}
+	s.mu.Unlock()
+
+	return s.admissionOwnerRelease(runID, workflow, generation), true, ""
+}
+
 func (s *Scheduler) wakeForPendingScheduleDemand() {
 	s.mu.Lock()
 	pending := len(s.pendingScheduleDemand) > 0
+	pacing := len(s.quotaResumePacing) > 0
 	s.mu.Unlock()
-	if !pending {
+	if !pending || pacing {
 		return
 	}
 	select {
@@ -528,6 +725,7 @@ type tickCandidate struct {
 	poolSkips          int
 	dispatchedThisTick bool
 	stopped            bool
+	scheduleIndexes    []int
 }
 
 func (c *tickCandidate) next() (TickResult, journal.TriggerKind, bool) {
@@ -580,9 +778,31 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		entries = append(entries, e)
 	}
 	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].PollPriority != entries[j].PollPriority {
+			return entries[i].PollPriority > entries[j].PollPriority
+		}
+		if entries[i].Workflow != entries[j].Workflow {
+			return entries[i].Workflow < entries[j].Workflow
+		}
+		return entries[i].Gaggle < entries[j].Gaggle
+	})
+	providers := make(map[apiv1.Provider]struct{})
+	for _, entry := range entries {
+		providers[quotaProvider(entry.RepoRef.Provider)] = struct{}{}
+		if entry.BacklogCounter != nil || entry.ScheduleDemandCounter != nil {
+			providers[quotaProvider(entry.PollProvider)] = struct{}{}
+		}
+	}
+	for provider := range providers {
+		s.journalProviderQuotaReset(provider, now)
+	}
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
+		if s.authCircuitOpen(entryIdentity(entry)) {
+			continue
+		}
 		identity := entryIdentity(entry)
 		s.mu.Lock()
 		pending := s.pendingScheduleDemand[identity]
@@ -606,6 +826,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			// and both dispatch the same due firing.
 			s.mu.Lock()
 			ts := s.triggers[identity]
+			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
 			res := Tick(ts, now)
 			var persistErr error
 			if res.LastEval != ts.LastEval {
@@ -625,7 +846,16 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			}
 			if res.Fire {
 				candidate.schedule = res
-				if entry.ScheduleDemandCounter == nil {
+				candidate.scheduleIndexes = dueIndexes
+				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
+					s.journalEvent(journal.Event{
+						Type:     journal.EventTickSkipped,
+						Workflow: entry.Workflow,
+						Gaggle:   entry.Gaggle,
+						Reason:   reason,
+					})
+					candidate.scheduleIndexes = nil
+				} else if entry.ScheduleDemandCounter == nil {
 					candidate.scheduleRemaining = 1
 					candidate.scheduleDemand = false
 				} else {
@@ -641,6 +871,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 
 	s.pollDemandCounters(ctx, allCandidates, now)
+	s.paceQuotaResumedCandidates(allCandidates)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 {
@@ -697,7 +928,11 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 						fire += "; " + fireReason(tick, kind)
 					}
 				}
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire)
+				var scheduleIndexes []int
+				if kind == journal.TriggerSchedule {
+					scheduleIndexes = candidate.scheduleIndexes
+				}
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -768,6 +1003,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
 	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
 
@@ -789,10 +1025,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		if checked, ok := s.backlogLastCheck[identity]; ok {
 			backlogLastCheck[identity] = checked
 		}
-		if entry.ScheduleDemandCounter != nil {
-			if pending, ok := s.pendingScheduleDemand[identity]; ok {
-				pendingScheduleDemand[identity] = pending
-			}
+		idleBackoffs[identity] = make([]idleBackoffState, len(entry.Schedules))
+		if pending, ok := s.pendingScheduleDemand[identity]; ok {
+			pendingScheduleDemand[identity] = pending
 		}
 		if skips := s.consecutivePoolSkips[identity]; skips > 0 {
 			consecutivePoolSkips[identity] = skips
@@ -829,8 +1064,10 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.idleBackoffs = idleBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
+	s.authCircuits = make(map[WorkflowIdentity]struct{})
 
 	select {
 	case s.wake <- struct{}{}:
@@ -844,11 +1081,13 @@ func (s *Scheduler) backlogPollDue(entry WorkflowEntry, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	last := s.backlogLastCheck[identity]
-	due := last.IsZero() || !now.Before(last.Add(backlogPollInterval))
-	if due {
-		s.backlogLastCheck[identity] = now
-	}
-	return due
+	return last.IsZero() || !now.Before(last.Add(backlogPollInterval))
+}
+
+func (s *Scheduler) recordBacklogPoll(entry WorkflowEntry, now time.Time) {
+	s.mu.Lock()
+	s.backlogLastCheck[entryIdentity(entry)] = now
+	s.mu.Unlock()
 }
 
 type demandPoll struct {
@@ -861,6 +1100,142 @@ type scheduledDemand struct {
 	schedule  TickResult
 	remaining int
 	repoll    bool
+}
+
+type idleBackoffState struct {
+	consecutive int
+	interval    time.Duration
+	nextPoll    time.Time
+	generation  uint64
+}
+
+type idleBackoffToken struct {
+	index      int
+	generation uint64
+}
+
+func dueScheduleIndexes(schedules []Schedule, lastEval, now time.Time) []int {
+	var due []int
+	for index, schedule := range schedules {
+		next := schedule.Next(lastEval)
+		if !next.IsZero() && !next.After(now) {
+			due = append(due, index)
+		}
+	}
+	return due
+}
+
+func scheduleBackoffConfig(entry WorkflowEntry, index int) IdleBackoffConfig {
+	config := IdleBackoffConfig{
+		Enabled: true,
+		Floor:   defaultIdleBackoffFloor,
+		Ceiling: defaultIdleBackoffCeiling,
+	}
+	if index >= len(entry.ScheduleBackoffs) {
+		return config
+	}
+	config = entry.ScheduleBackoffs[index]
+	if config.Floor <= 0 {
+		config.Floor = defaultIdleBackoffFloor
+	}
+	if config.Ceiling <= 0 {
+		config.Ceiling = defaultIdleBackoffCeiling
+	}
+	return config
+}
+
+func (s *Scheduler) scheduleBackedOff(identity WorkflowIdentity, entry WorkflowEntry, indexes []int, now time.Time) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	var next time.Time
+	consecutive := 0
+	for _, index := range indexes {
+		config := scheduleBackoffConfig(entry, index)
+		if !config.Enabled || index >= len(states) || !states[index].nextPoll.After(now) {
+			return false, ""
+		}
+		if next.IsZero() || states[index].nextPoll.Before(next) {
+			next = states[index].nextPoll
+		}
+		if states[index].consecutive > consecutive {
+			consecutive = states[index].consecutive
+		}
+	}
+	if next.IsZero() {
+		return false, ""
+	}
+	return true, fmt.Sprintf("idle backoff: next poll at %s after %d consecutive no-work run(s)", next.UTC().Format(time.RFC3339), consecutive)
+}
+
+func (s *Scheduler) beginScheduledPoll(identity WorkflowIdentity, indexes []int) []idleBackoffToken {
+	if len(indexes) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	tokens := make([]idleBackoffToken, 0, len(indexes))
+	for _, index := range indexes {
+		if index >= len(states) {
+			continue
+		}
+		states[index].generation++
+		tokens = append(tokens, idleBackoffToken{index: index, generation: states[index].generation})
+	}
+	s.idleBackoffs[identity] = states
+	return tokens
+}
+
+func (s *Scheduler) recordScheduledPollResult(identity WorkflowIdentity, entry WorkflowEntry, tokens []idleBackoffToken, noWork bool, completedAt time.Time) {
+	if len(tokens) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	for _, token := range tokens {
+		if token.index >= len(states) || states[token.index].generation != token.generation {
+			continue
+		}
+		config := scheduleBackoffConfig(entry, token.index)
+		if !config.Enabled || !noWork {
+			states[token.index].consecutive = 0
+			states[token.index].interval = 0
+			states[token.index].nextPoll = time.Time{}
+			continue
+		}
+		states[token.index].consecutive++
+		if states[token.index].interval < config.Floor {
+			states[token.index].interval = config.Floor
+		} else if states[token.index].interval >= config.Ceiling/2 {
+			states[token.index].interval = config.Ceiling
+		} else {
+			states[token.index].interval *= 2
+		}
+		if states[token.index].interval > config.Ceiling {
+			states[token.index].interval = config.Ceiling
+		}
+		states[token.index].nextPoll = completedAt.Add(states[token.index].interval)
+	}
+	s.idleBackoffs[identity] = states
+}
+
+func (s *Scheduler) resetIdleBackoff(identity WorkflowIdentity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	states := s.idleBackoffs[identity]
+	for index := range states {
+		states[index].generation++
+		states[index].consecutive = 0
+		states[index].interval = 0
+		states[index].nextPoll = time.Time{}
+	}
+	s.idleBackoffs[identity] = states
 }
 
 func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCandidate, now time.Time) {
@@ -906,8 +1281,34 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		})
 
 		s.journalProviderQuotaReset(provider, now)
+		pacing := s.quotaResumePacingActive(provider)
+		var pacedIdentity WorkflowIdentity
+		if pacing {
+			for _, poll := range due {
+				identity := entryIdentity(poll.candidate.entry)
+				if pacedIdentity == (WorkflowIdentity{}) {
+					pacedIdentity = identity
+				}
+			}
+		}
 		for _, poll := range due {
 			entry := poll.candidate.entry
+			if s.authCircuitOpen(entryIdentity(entry)) {
+				s.applyDemandCount(poll, 0)
+				continue
+			}
+			if pacing && entryIdentity(entry) != pacedIdentity {
+				if poll.schedule {
+					s.deferScheduleDemandPoll(poll.candidate)
+				}
+				continue
+			}
+			if poll.schedule {
+				poll.candidate.schedulePollDue = false
+			} else {
+				poll.candidate.backlogPollDue = false
+				s.recordBacklogPoll(entry, now)
+			}
 			decision := ProviderPollBudget{Provider: provider, Requested: 1, Allowed: 1}
 			if s.providerQuota != nil {
 				decision = s.providerQuota.ReservePolls(provider, now, 1)
@@ -928,6 +1329,89 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
 	}
+}
+
+func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	s.persistScheduleDemand(identity, true)
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule: candidate.schedule,
+		repoll:   true,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
+	chosen := make(map[apiv1.Provider]WorkflowIdentity)
+	due := make(map[apiv1.Provider]map[WorkflowIdentity]struct{})
+	deferredPolls := make(map[apiv1.Provider]bool)
+	for _, candidate := range candidates {
+		identity := entryIdentity(candidate.entry)
+		pollProvider := quotaProvider(candidate.entry.PollProvider)
+		if s.quotaResumePacingActive(pollProvider) &&
+			(candidate.schedulePollDue || candidate.backlogPollDue) {
+			if due[pollProvider] == nil {
+				due[pollProvider] = make(map[WorkflowIdentity]struct{})
+			}
+			due[pollProvider][identity] = struct{}{}
+			deferredPolls[pollProvider] = true
+		}
+		if candidate.scheduleRemaining == 0 && candidate.backlogRemaining == 0 {
+			continue
+		}
+		provider := quotaProvider(candidate.entry.RepoRef.Provider)
+		if !s.quotaResumePacingActive(provider) {
+			continue
+		}
+		if due[provider] == nil {
+			due[provider] = make(map[WorkflowIdentity]struct{})
+		}
+		due[provider][identity] = struct{}{}
+		allowed, ok := chosen[provider]
+		if !ok {
+			chosen[provider] = identity
+			continue
+		}
+		if allowed == identity {
+			continue
+		}
+		if candidate.scheduleRemaining > 0 && !candidate.scheduleDemand {
+			s.deferScheduledDispatch(candidate)
+		}
+		candidate.scheduleRemaining = 0
+		if candidate.backlogRemaining > 0 {
+			s.clearBacklogPoll(candidate.entry)
+			candidate.backlogRemaining = 0
+		}
+	}
+	for provider, identities := range due {
+		if len(identities) <= 1 && !deferredPolls[provider] {
+			s.setQuotaResumePacing(provider, false)
+		}
+	}
+	for provider := range s.activeQuotaResumeProviders() {
+		if len(due[provider]) == 0 {
+			s.setQuotaResumePacing(provider, false)
+		}
+	}
+}
+
+func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	s.persistScheduleDemand(identity, true)
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule:  candidate.schedule,
+		remaining: candidate.scheduleRemaining,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) clearBacklogPoll(entry WorkflowEntry) {
+	s.mu.Lock()
+	delete(s.backlogLastCheck, entryIdentity(entry))
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
@@ -1014,6 +1498,16 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 			s.journalPollShed(entry, budgetErr.Provider, budgetErr.Remaining, budgetErr.Requested, budgetErr.ResetAt)
 			return 0
 		}
+		if providers.IsAuthenticationError(err) {
+			s.openAuthCircuit(entryIdentity(entry))
+			s.journalEvent(journal.Event{
+				Type:     journal.EventError,
+				Workflow: entry.Workflow,
+				Gaggle:   entry.Gaggle,
+				Error:    &journal.ErrorDetail{Code: providers.ErrorCodeAuthFailed, Message: err.Error()},
+			})
+			return 0
+		}
 		code := "backlog_count_failed"
 		if poll.schedule {
 			code = "schedule_demand_count_failed"
@@ -1053,7 +1547,35 @@ func (s *Scheduler) journalProviderQuotaReset(provider apiv1.Provider, now time.
 	if !ok {
 		return
 	}
+	s.setQuotaResumePacing(reset.Provider, true)
 	s.journalProviderQuotaResetDecision(reset.Provider, reset.Remaining, reset.ResetAt)
+}
+
+func (s *Scheduler) quotaResumePacingActive(provider apiv1.Provider) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quotaResumePacing[quotaProvider(provider)]
+}
+
+func (s *Scheduler) setQuotaResumePacing(provider apiv1.Provider, active bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = quotaProvider(provider)
+	if active {
+		s.quotaResumePacing[provider] = true
+		return
+	}
+	delete(s.quotaResumePacing, provider)
+}
+
+func (s *Scheduler) activeQuotaResumeProviders() map[apiv1.Provider]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	providers := make(map[apiv1.Provider]struct{}, len(s.quotaResumePacing))
+	for provider := range s.quotaResumePacing {
+		providers[provider] = struct{}{}
+	}
+	return providers
 }
 
 func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, remaining int, resetAt time.Time) {
@@ -1079,19 +1601,40 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	var entry WorkflowEntry
-	matches := 0
+	var gaggles []string
 	for identity, candidate := range s.workflows {
 		if identity.Workflow == workflow {
 			entry = candidate
-			matches++
+			gaggles = append(gaggles, identity.Gaggle)
 		}
 	}
 	s.mu.Unlock()
-	if matches == 0 {
+	if len(gaggles) == 0 {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
 	}
-	if matches > 1 {
-		return "", fmt.Errorf("localscheduler: workflow %q is ambiguous across gaggles", workflow)
+	if len(gaggles) > 1 {
+		sort.Strings(gaggles)
+		commands := make([]string, 0, len(gaggles))
+		for _, gaggle := range gaggles {
+			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
+		}
+		return "", fmt.Errorf(
+			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
+			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
+		)
+	}
+	return s.triggerWorkflow(ctx, entry, now,
+		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
+		"manual")
+}
+
+// TriggerExact manually fires one workflow identified by its gaggle and name.
+func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
 	}
 	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
@@ -1121,7 +1664,10 @@ func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, no
 	if reason == "" {
 		reason = fireReason(tick, trigger.Kind)
 	}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason)
+	if trigger.Kind == journal.TriggerSignal {
+		s.resetIdleBackoff(entryIdentity(entry))
+	}
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil)
 	if !admitted {
 		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
@@ -1166,6 +1712,21 @@ func (s *Scheduler) RecordTriggerRefusal(workflow, reason string) {
 		Type:     journal.EventTickSkipped,
 		Workflow: workflow,
 		Reason:   reason,
+	})
+}
+
+// RecordRecoveredTrigger distinguishes a delegated request claimed after a
+// daemon restart from a retry or resume of an existing run.
+func (s *Scheduler) RecordRecoveredTrigger(requestID, workflow, runID string) {
+	s.journalEvent(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: workflow,
+		RunID:    runID,
+		Runner: map[string]any{
+			"kind":      journal.RunnerAnnotationTriggerRecovery,
+			"action":    journal.RecoveryActionNewClaim,
+			"requestId": requestID,
+		},
 	})
 }
 
@@ -1228,6 +1789,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 	byGaggle := make(map[string][]WorkflowEntry)
 	gaggleNames := make([]string, 0)
 	for _, entry := range subscribed {
+		s.resetIdleBackoff(entryIdentity(entry))
 		if _, ok := byGaggle[entry.Gaggle]; !ok {
 			gaggleNames = append(gaggleNames, entry.Gaggle)
 		}
@@ -1245,7 +1807,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 				next[gaggle]++
 				attempted = true
 				runID, admitted, reason := s.dispatch(ctx, entry, now,
-					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire)
+					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil)
 				if admitted {
 					runIDs = append(runIDs, runID)
 					break
@@ -1273,7 +1835,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string) (runID string, admitted bool, skipReason string) {
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int) (runID string, admitted bool, skipReason string) {
 	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
@@ -1289,6 +1851,18 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 
 	span := s.startSpan(ctx, entry, runID)
 	defer span.End()
+
+	if s.authCircuitOpen(entryIdentity(entry)) {
+		reason := ReasonProviderAuth + ": operator must repair credentials and reload configuration"
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
 
 	// Unlike the journalEvent calls below (best-effort: they record a
 	// decision already made, so a write failure doesn't roll it back), a
@@ -1354,13 +1928,22 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	})
 	span.Succeed("started: " + runID)
 
+	s.admissionMu.Lock()
 	s.mu.Lock()
-	s.admittedRuns[runID] = identity
+	s.nextAdmissionGeneration++
+	admissionGeneration := s.nextAdmissionGeneration
+	s.admittedRuns[runID] = runAdmission{
+		identity:   identity,
+		generation: admissionGeneration,
+		owners:     1,
+	}
 	s.mu.Unlock()
+	s.admissionMu.Unlock()
 	s.dispatches.Add(1)
+	backoffTokens := s.beginScheduledPoll(identity, scheduleIndexes)
 	go func() {
 		defer s.dispatches.Done()
-		defer s.ReleaseRun(runID, entry.Workflow)
+		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
 		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
 			RunID:   runID,
@@ -1368,6 +1951,13 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 			Trigger: trigger,
 			RepoRef: entry.RepoRef,
 		})
+		if startErr == nil {
+			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())
+		}
+		if (startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed) ||
+			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {
+			s.openAuthCircuit(identity)
+		}
 		// #710: this echo used to carry only the bare phase string — a
 		// business failure (result.Phase == "failed", startErr == nil: the
 		// run completed dispatch cleanly and reported a failed OUTCOME)
@@ -1402,6 +1992,19 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		s.journalEvent(ev)
 	}()
 	return runID, true, ""
+}
+
+func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, open := s.authCircuits[identity]
+	return open
+}
+
+func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity) {
+	s.mu.Lock()
+	s.authCircuits[identity] = struct{}{}
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) resetPoolSkips(identity WorkflowIdentity) {
@@ -1482,6 +2085,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if len(s.quotaResumePacing) > 0 {
+		return minPoll
+	}
 	var earliest time.Time
 	consider := func(next time.Time) {
 		if earliest.IsZero() || next.Before(earliest) {
@@ -1489,6 +2095,9 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		}
 	}
 	for name, entry := range s.workflows {
+		if _, open := s.authCircuits[name]; open {
+			continue
+		}
 		ts := s.triggers[name]
 		if next, ok := NextScheduledFire(entry.Schedules, ts.LastEval); ok {
 			consider(next)

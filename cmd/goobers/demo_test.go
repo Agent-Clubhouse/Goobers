@@ -172,6 +172,12 @@ Learn the desired-state model: https://github.com/Agent-Clubhouse/Goobers/blob/m
 Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact
+
+Post-init validation:
+DSLVERSION Workflow/demo: 2.0 (supported)
+OK: instance.yaml valid; config/ valid (1 gaggle(s), 0 goober(s), 1 workflow(s))
+
+Next: no placeholder edits are required.
 `, abs, abs)
 	if stdout.String() != want {
 		t.Fatalf("init --demo banner:\n--- got ---\n%s--- want ---\n%s", stdout.String(), want)

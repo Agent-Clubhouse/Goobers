@@ -1,3 +1,12 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The live self-hosting instance maintains its gaggle config outside this repo
+# and operator-tunes its backlog selector there; the selector below is
+# deliberately not mirrored from it. The checked-in `labels: [goobers]` scope
+# documents the adopter convention: a single backlog-scoping label, created by
+# the README's label bootstrap, that the operator applies to each issue the
+# gaggle should treat as backlog. `backlog.labels` is a hard AND-filter
+# (internal/labelpredicate) — an issue without the label is invisible to every
+# backlog-consuming workflow.
 apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
 metadata:

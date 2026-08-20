@@ -14,7 +14,7 @@ and [`docs/VISION.md`](docs/VISION.md).
 
 ## Development setup
 
-You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.5),
+You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.6),
 Node.js 24 with npm, Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
 [`.golangci.yml`](.golangci.yml)).
@@ -70,6 +70,24 @@ Ordinary unit tests should use in-process fakes; integration tests are for real
 local executables, not network services, cloud credentials, or heavyweight
 infrastructure.
 
+### Design-document status
+
+Every Markdown document under `docs/design/` and `docs/adr/` must put a
+`Status:` marker in its first 10 lines. The first word after the marker is one
+of this controlled enum:
+
+| Status | Meaning |
+|---|---|
+| `draft` | Proposed, exploratory, or under review |
+| `approved` | Accepted as a design or decision, but not necessarily implemented |
+| `implemented` | Reflected in the shipped system |
+| `superseded` | Replaced in whole or in part by a newer source of record |
+| `historical` | Retained as a completed campaign, survey, or other historical record |
+
+Status values are case-insensitive. Free-text detail may follow the enum value,
+for example `> Status: **implemented — GA in #1939**`. The merge gate rejects a
+missing marker or a value outside the enum.
+
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
 gate, and `verify-full` on a Unix-like host with the pinned envtest and native
 sandbox prerequisites available. **Agent workflow authors:** a Goobers
@@ -86,6 +104,10 @@ command instead. **CI:** each validation job maps to the same contract:
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
 | `journal conformance` | Full-tier `make test-conformance` gate; also a dependency of the required aggregate status |
 | `make ci` aggregate | Required status for the merge tier, Windows compile slice, vulnerability scan, and journal-conformance gate; it runs no additional validation |
+| `unit` | Standalone `make ci` gate |
+| `e2e` | Full-tier `make test-e2e` gate |
+| `envtest` | Full-tier `make test-envtest` gate with pinned envtest provisioning |
+| `coverage` | Full-tier `make cover-check` gate using `COVERAGE_THRESHOLD`; publishes `coverage.out` |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned |
 | `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
 | `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
@@ -98,8 +120,10 @@ name begins with `TestConformance`, currently covering `journal.ConformanceView`
 journal sequence determinism, and the local-runner walking-skeleton seed. This
 target and naming boundary are the landing zone for the V2 local-to-Temporal
 dual-runner conformance harness. E2e, envtest, and coverage are local `verify-full`
-gates pending CI promotion in [#628](https://github.com/Agent-Clubhouse/Goobers/issues/628);
-future stress jobs follow the same one-target-per-job pattern.
+gates promoted as independently retriable CI checks. After the workflow change
+merges, a repository owner must add the exact check names `unit`, `e2e`, `envtest`,
+and `coverage` to the required-check ruleset. Future stress jobs follow the same
+one-target-per-job pattern.
 Focused targets such as
 `make validate-configs`, `make portal-ci`, and `make portal-contract` remain
 available when only one surface changed. `go run ./test/ci` is the
@@ -107,6 +131,13 @@ cross-platform implementation of `make ci`; it launches tools without Bash or
 POSIX-shell syntax. On Windows, stock `cmd.exe` is used only for Node's
 `npm.cmd` shim, and GNU Make is not required. Other convenience targets can
 still use a POSIX shell.
+
+Micro-benchmarks for journal event encoding, scrubbing, parsing, and read-model
+projection are opt-in and do not run with ordinary tests:
+
+```sh
+go test -run=^$ -bench=. ./internal/journal ./internal/readmodel
+```
 
 ### Platform prerequisites
 
@@ -131,7 +162,7 @@ validation targets use POSIX host facilities; Linux additionally requires
 `bubblewrap` with unprivileged user namespaces available.
 The strict integration target additionally provisions the executable inventory
 reported by `make test-integration`; when adding a dependency, update
-`internal/testdep` and the integration CI provisioning step together.
+`test/testsupport/testdep` and the integration CI provisioning step together.
 
 ### CI platform matrix
 
@@ -201,14 +232,14 @@ Registry entries retain every lifecycle transition in `Feature.History`; the
 current `Level` and `SinceVersion` must match the final transition. Use
 `vMAJOR.MINOR.PATCH` release versions (`dev` is reserved for the initial
 pre-release baseline). The compatibility guard compares the current registry
-with the feature registry executed from the latest reachable canonical SemVer
-tag. A removal is valid only when that tagged build already marks the feature
-deprecated; adding deprecated and removed history in one change does not
-satisfy the release window. Before the first tagged release, the external
-baseline is empty and no feature may enter `removed`. Registry validation and
-`TestFeatureRegistryAgainstLatestRelease` reject rewritten, skipped,
-out-of-order, or too-early transitions. CI checks out complete tag history so
-the release baseline cannot silently disappear. When changing the current
+with the feature registry executed from the latest canonical SemVer tag
+advertised by `origin`. A removal is valid only when that tagged build already
+marks the feature deprecated; adding deprecated and removed history in one
+change does not satisfy the release window. Before the first tagged release,
+the external baseline is empty and no feature may enter `removed`. Registry
+validation and `TestFeatureRegistryAgainstLatestRelease` reject rewritten,
+skipped, out-of-order, or too-early transitions. Local-only tags are ignored so
+stale runner state cannot invent a release baseline. When changing the current
 feature matrix, regenerate it with `make docs`.
 
 Whole DSL versions have a separate support window in
@@ -226,6 +257,14 @@ a version may become `unsupported` only when that tagged matrix already marks
 it `deprecated`. Adding deprecated and unsupported history in one change does
 not satisfy the released-minor window; before the first tag, no version may
 become unsupported.
+
+**Current state:** DSL `2.0` is the supported authoring version; every
+shipped, reference, and example workflow pins it. DSL `1.4` is `deprecated`
+(replacement `2.0`, unsupported after `v0.5.0`) — a workflow pinned to `1.4`
+still loads and runs, but `goobers validate` emits a `DVL020` warning. Migrate
+a pinned workflow mechanically with `goobers fix --to 2.0`; the only semantic
+delta the migrator pins is `automated.pollIntervalSeconds: 10` on gates fed by
+a `ci-poll` task, where 2.0's input builder injects that default.
 
 ## Binary maintenance policy
 

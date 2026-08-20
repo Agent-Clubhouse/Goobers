@@ -529,4 +529,52 @@ UPDATE projection_state SET ready = 0 WHERE id = 1;
 DELETE FROM run_stage;
 DELETE FROM run;
 `,
+
+	// v9: graph nodes used by cross-run credit assignment. This is separate
+	// from run_stage because gates are nodes but are not stage attempts.
+	`
+CREATE TABLE IF NOT EXISTS run_node (
+	run_id               TEXT NOT NULL,
+	kind                 TEXT NOT NULL,
+	name                 TEXT NOT NULL,
+	identity             TEXT NOT NULL DEFAULT '',
+	attempts             INTEGER NOT NULL DEFAULT 0,
+	retry_waste_attempts INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (run_id, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_run_node_identity
+	ON run_node(kind, name, identity, run_id);
+
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
+
+	// v10: durable keyset cursor for the projected-to-journal repair direction.
+	`
+ALTER TABLE sweep_cursor ADD COLUMN reverse_after_started_at TEXT;
+ALTER TABLE sweep_cursor ADD COLUMN reverse_after_run_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sweep_cursor ADD COLUMN reverse_cycle_before TEXT;
+CREATE INDEX IF NOT EXISTS idx_run_oldest ON run(started_at ASC, run_id ASC);
+`,
+
+	// v11: durable direction alternation for a one-entry repair batch.
+	`
+ALTER TABLE sweep_cursor ADD COLUMN forward_next INTEGER NOT NULL DEFAULT 0;
+`,
+
+	// v12: covering active-run counts by workflow.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_phase_workflow
+	ON run(phase, gaggle, workflow);
+`,
+
+	// v13: operator-facing facts complete the zero-journal-open run list row.
+	`
+ALTER TABLE run ADD COLUMN operator_json TEXT NOT NULL DEFAULT '{}';
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_node WHERE TRUE;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
 }

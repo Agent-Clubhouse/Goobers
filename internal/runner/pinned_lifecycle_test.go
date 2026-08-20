@@ -96,7 +96,7 @@ queued:
 	}
 
 	resumed, err := r.Resume(context.Background(), ResumeInput{
-		RunID: "pinned-paused-1", Machine: machine, RepoRef: ref,
+		RunID: "pinned-paused-1", RepoRef: ref,
 		HumanDecision: &HumanGateDecision{
 			Gate: "approval", PauseSeq: latestHumanPauseSeq(t, filepath.Join(root, "runs"), "pinned-paused-1", "approval"), Decision: "pass",
 		},

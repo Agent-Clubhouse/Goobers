@@ -57,7 +57,13 @@ type Store interface {
 
 	Tombstoned(ctx context.Context, runID string) (bool, error)
 
-	ProjectedRunIDsBefore(ctx context.Context, before time.Time, limit int) ([]readmodel.RunRow, error)
+	ProjectedRunIDsAfter(
+		ctx context.Context,
+		afterStartedAt time.Time,
+		afterRunID string,
+		before time.Time,
+		limit int,
+	) ([]readmodel.RunRow, error)
 }
 
 // Writer routes repair mutations through the read model's sole-writer loop.
@@ -95,10 +101,6 @@ type Options struct {
 const (
 	defaultEntriesPerSecond = 200
 	defaultBatchSize        = 64
-	// reverseSweepLimit bounds the projected-but-absent direction per step. The
-	// forward walk is cursor-driven; this one queries the store, so it needs its
-	// own bound or a large store would make one step unbounded.
-	reverseSweepLimit = 128
 )
 
 // Sweeper walks run directories and reconciles them against the read model.
@@ -108,6 +110,7 @@ type Sweeper struct {
 	watermarks Watermarks
 	options    Options
 	stats      Stats
+	stat       func(string) (os.FileInfo, error)
 }
 
 // Stats are the sweep's observable counters.
@@ -136,7 +139,10 @@ func New(store Store, writer Writer, watermarks Watermarks, options Options) *Sw
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Sweeper{store: store, writer: writer, watermarks: watermarks, options: options}
+	return &Sweeper{
+		store: store, writer: writer, watermarks: watermarks, options: options,
+		stat: os.Stat,
+	}
 }
 
 // Run sweeps continuously until the context is cancelled.
@@ -173,6 +179,25 @@ func (s *Sweeper) Step(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Reserve half the batch for reverse progress; unused capacity immediately
+	// returns to the forward walk. A one-entry batch alternates directions
+	// because it cannot make progress in both within one Step.
+	reverseLimit := s.options.BatchSize / 2
+	if s.options.BatchSize == 1 && !cursor.ForwardNext {
+		reverseLimit = 1
+	}
+	reverseExamined := 0
+	if reverseLimit > 0 {
+		reverseExamined, err = s.sweepReverse(ctx, &cursor, reverseLimit)
+		if err != nil {
+			return err
+		}
+	}
+	if s.options.BatchSize == 1 {
+		cursor.ForwardNext = !cursor.ForwardNext
+	}
+	forwardLimit := s.options.BatchSize - reverseExamined
+
 	if cursor.Root == "" {
 		cursor = s.beginCycle(cursor)
 	}
@@ -182,10 +207,10 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		// The recorded root no longer exists — a gaggle was removed, or the
 		// layout changed. Restart the cycle rather than failing: the cursor is a
 		// position hint, not a fact about the world.
-		return s.writer.SaveSweepCursor(ctx, s.beginCycle(readmodel.SweepCursor{}))
+		return s.writer.SaveSweepCursor(ctx, s.beginCycle(cursor))
 	}
 
-	names, err := s.readBatch(root, cursor.AfterName, s.options.BatchSize)
+	names, err := s.readBatch(root, cursor.AfterName, forwardLimit)
 	if err != nil {
 		return err
 	}
@@ -206,19 +231,16 @@ func (s *Sweeper) Step(ctx context.Context) error {
 		cursor.AfterName = name
 	}
 
-	if len(names) < s.options.BatchSize {
+	if len(names) < forwardLimit {
 		// This root is exhausted. Move to the next, or complete the cycle.
 		cursor = s.advanceRoot(cursor)
 	}
-	if err := s.writer.SaveSweepCursor(ctx, cursor); err != nil {
-		return err
-	}
-	return s.sweepReverse(ctx)
+	return s.writer.SaveSweepCursor(ctx, cursor)
 }
 
 // reconcile brings one on-disk directory into agreement with the read model.
 func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
-	info, err := os.Stat(dir)
+	info, err := s.stat(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -314,27 +336,52 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 // rather than a hope, and it is the fix for #1943 — a run whose journal is
 // removed is currently reclassified as running and stays that way forever,
 // because nothing ever looks for rows whose source has vanished.
-func (s *Sweeper) sweepReverse(ctx context.Context) error {
-	rows, err := s.store.ProjectedRunIDsBefore(ctx, s.options.Now(), reverseSweepLimit)
-	if err != nil {
-		return err
+func (s *Sweeper) sweepReverse(
+	ctx context.Context,
+	cursor *readmodel.SweepCursor,
+	limit int,
+) (int, error) {
+	if cursor.ReverseCycleBefore.IsZero() {
+		cursor.ReverseCycleBefore = s.options.Now().UTC()
 	}
+	rows, err := s.store.ProjectedRunIDsAfter(
+		ctx,
+		cursor.ReverseAfterStartedAt,
+		cursor.ReverseAfterRunID,
+		cursor.ReverseCycleBefore,
+		limit,
+	)
+	if err != nil {
+		return 0, err
+	}
+	examined := 0
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
-			return err
+			return examined, err
 		}
+		s.stats.EntriesExamined++
+		examined++
 		if _, ok := s.locate(row.RunID); ok {
+			cursor.ReverseAfterStartedAt = row.StartedAt
+			cursor.ReverseAfterRunID = row.RunID
 			continue
 		}
 		// Projected with no journal anywhere. Whether retention removed it or an
 		// operator did, the row is now unsupported by any source, and §3.2 makes
 		// journals authoritative — so the row goes and run.removed is published.
 		if err := s.writer.RemoveRun(ctx, row.RunID); err != nil {
-			return err
+			return examined, err
 		}
+		cursor.ReverseAfterStartedAt = row.StartedAt
+		cursor.ReverseAfterRunID = row.RunID
 		s.stats.Removed++
 	}
-	return nil
+	if len(rows) < limit {
+		cursor.ReverseAfterStartedAt = time.Time{}
+		cursor.ReverseAfterRunID = ""
+		cursor.ReverseCycleBefore = time.Time{}
+	}
+	return examined, nil
 }
 
 // project reads a run directory into a projection. Never takes a journal lock.
@@ -352,7 +399,12 @@ func (s *Sweeper) project(dir string) (readmodel.Projection, bool, error) {
 		return readmodel.Projection{}, false,
 			fmt.Errorf("repair: read events in %s: %w", dir, err)
 	}
-	return readmodel.ProjectRun(identity, readmodel.Projection{}, events), true, nil
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return readmodel.Projection{}, false,
+			fmt.Errorf("repair: project operator facts in %s: %w", dir, err)
+	}
+	return projection, true, nil
 }
 
 // hasMarker reports whether intake holds anything for this run.
@@ -368,7 +420,7 @@ func (s *Sweeper) hasMarker(ctx context.Context, runID string) (bool, error) {
 func (s *Sweeper) locate(runID string) (string, bool) {
 	for _, root := range s.options.RunsDirs {
 		candidate := filepath.Join(root, runID)
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		if info, err := s.stat(candidate); err == nil && info.IsDir() {
 			return candidate, true
 		}
 	}

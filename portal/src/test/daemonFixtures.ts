@@ -135,12 +135,29 @@ function run(
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
     lastActivityAt: finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
+    stale: false,
     lastSeq,
     repassCount,
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
     noWork: false,
+    operator:
+      phase === "running"
+        ? {
+            issue: { number: "3088", title: "Operator status progress" },
+            currentStage: "review",
+            heartbeatAgeMillis: 30_000,
+            liveness: "recent",
+            trajectory: "review",
+            prOpenerStage: "open-pr",
+            claim: { leaseStatus: "active", providerMarker: "verified" },
+            latestError: { code: "provider.rate_limit", message: "quota exhausted" },
+            review: { verdict: "needs-changes", rationale: "Show operator context." },
+            nextTransition: "finish review",
+            potentialBlockers: ["provider quota is exhausted"],
+          }
+        : undefined,
   };
 }
 
@@ -579,6 +596,20 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
     },
     telemetryStats: {
+      creditAssignment: [
+        {
+          gaggle: "core",
+          workflow: "implementation",
+          kind: "gate",
+          stage: "review",
+          identity: "sha256:reviewer",
+          routedRuns: 4,
+          failureRuns: 1,
+          failureShare: 0.25,
+          escalationRuns: 1,
+          retryWasteAttempts: 2,
+        },
+      ],
       gaggles: [
         {
           gaggle: "core",
@@ -614,6 +645,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 2_700_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 3_600_000,
+          stuckAbortedRuns: 0,
         },
         {
           gaggle: "tools",
@@ -625,6 +657,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 1_800_000,
+          stuckAbortedRuns: 0,
         },
       ],
       stages: [
@@ -652,6 +685,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           retryWasteDurationMs: 480_000,
           retryWasteTokens: 12_000,
           retryWasteCostUSD: 0.75,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "core",
@@ -674,6 +708,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           p50CostUSD: 0.4,
           p95CostUSD: 0.8,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "tools",
@@ -686,6 +721,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           tokenSamples: 0,
           costSamples: 0,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
       ],
       usage: [
@@ -963,6 +999,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: {
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],

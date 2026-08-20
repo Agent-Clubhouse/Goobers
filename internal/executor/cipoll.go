@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -31,6 +33,7 @@ import (
 const (
 	OutputCIStatus       = "ciStatus"
 	OutputCIFailedChecks = "ciFailedChecks"
+	OutputPRNumber       = InputPRNumber
 	CIChecksArtifactName = "ci-checks.json"
 )
 
@@ -71,26 +74,35 @@ type CIChecksArtifact struct {
 // Annotations — keeps one unambiguous field.
 type CICheck struct {
 	providers.CheckDetail
-	Annotations []providers.CheckAnnotation `json:"annotations,omitempty"`
+	Annotations      []providers.CheckAnnotation `json:"annotations,omitempty"`
+	HostReproduction CIHostReproduction          `json:"hostReproduction"`
+}
+
+// CIHostReproduction tells a repass whether the current runner can reproduce a
+// platform-specific check locally.
+type CIHostReproduction struct {
+	Status        string `json:"status"`
+	HostPlatform  string `json:"hostPlatform"`
+	CheckPlatform string `json:"checkPlatform,omitempty"`
+	Diagnostic    string `json:"diagnostic"`
 }
 
 // CIChecksArtifactMetadata records every lossy bound applied while curating a
 // ci-checks.json artifact.
 type CIChecksArtifactMetadata struct {
-	Truncated          bool `json:"truncated"`
-	SummariesTruncated int  `json:"summariesTruncated,omitempty"`
-	SummariesDropped   int  `json:"summariesDropped,omitempty"`
-	AnnotationsDropped int  `json:"annotationsDropped,omitempty"`
-	ChecksDropped      int  `json:"checksDropped,omitempty"`
+	Truncated                   bool `json:"truncated"`
+	SummariesTruncated          int  `json:"summariesTruncated,omitempty"`
+	SummariesDropped            int  `json:"summariesDropped,omitempty"`
+	AnnotationMessagesTruncated int  `json:"annotationMessagesTruncated,omitempty"`
+	AnnotationsDropped          int  `json:"annotationsDropped,omitempty"`
+	ChecksDropped               int  `json:"checksDropped,omitempty"`
 }
 
 // CIStatusTimeout is the OutputCIStatus value CIPollExecutor sets when it
 // gives up waiting for a terminal check state before the overall Timeout
 // expires — deliberately distinct from providers.CheckStatePassing/
 // CheckStateFailing (#239) so a downstream ci-status gate check can route a
-// stalled/slow CI queue to escalation instead of the "fail" branch's
-// implement repass, which was the worst possible response to CI merely being
-// slow: re-implementing a change that was never actually reviewed as failing.
+// stalled/slow CI queue separately from the "fail" branch's implement repass.
 const CIStatusTimeout = "timeout"
 
 // Well-known Task.Inputs keys a ci-poll stage may declare (see
@@ -350,7 +362,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		invoke.ReportProgress(ctx)
 		if err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			if !providers.IsTransientError(err) {
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
@@ -360,11 +372,11 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
 			}
 			if now().After(deadline) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			if serr := sleep(ctx, backoff(interval, maxInterval, attempt)); serr != nil {
 				if ciPollDeadlineExceeded(parentCtx, ctx) {
-					return ciPollTimeoutOutcome(timeout), nil
+					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 				}
 				return apiv1.ResultEnvelope{}, serr
 			}
@@ -373,16 +385,16 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		consecutiveErrors = 0
 		switch result.CheckState {
 		case providers.CheckStatePassing:
-			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
+			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), nil
 		case providers.CheckStateFailing:
 			return e.ciPollFailureOutcome(ctx, cfg, result)
 		}
 		if now().After(deadline) {
-			return ciPollTimeoutOutcome(timeout), nil
+			return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 		}
 		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -390,7 +402,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 }
 
 func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
-	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing")
+	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing", cfg.PullID)
 	names := failingCheckNames(result.Checks)
 	if len(names) == 0 {
 		return outcome, nil
@@ -448,11 +460,12 @@ func (e *CIPollExecutor) failingCheckAnnotations(ctx context.Context, cfg CIPoll
 
 // boundCheckAnnotations caps how much of one check's annotation set reaches the
 // artifact, so a matrix job emitting hundreds cannot crowd out sibling checks.
-func boundCheckAnnotations(annotations []providers.CheckAnnotation) []providers.CheckAnnotation {
+func boundCheckAnnotations(annotations []providers.CheckAnnotation) ([]providers.CheckAnnotation, int, int) {
 	if len(annotations) == 0 {
-		return nil
+		return nil, 0, 0
 	}
 	bounded := make([]providers.CheckAnnotation, 0, min(len(annotations), maxCICheckAnnotations))
+	messagesTruncated := 0
 	for _, annotation := range annotations {
 		if len(bounded) == maxCICheckAnnotations {
 			break
@@ -463,10 +476,56 @@ func boundCheckAnnotations(annotations []providers.CheckAnnotation) []providers.
 		annotation.Message = strings.ToValidUTF8(annotation.Message, "�")
 		if truncated, did := truncateUTF8Bytes(annotation.Message, maxCIAnnotationMessageBytes); did {
 			annotation.Message = truncated
+			messagesTruncated++
 		}
 		bounded = append(bounded, annotation)
 	}
-	return bounded
+	return bounded, len(annotations) - len(bounded), messagesTruncated
+}
+
+func classifyHostReproduction(checkName, hostPlatform string) CIHostReproduction {
+	checkPlatform := checkPlatformFromName(checkName)
+	reproduction := CIHostReproduction{
+		Status:       "unknown",
+		HostPlatform: hostPlatform,
+		Diagnostic:   fmt.Sprintf("host reproducibility unknown from check name; current host is %s", hostPlatform),
+	}
+	if checkPlatform == "" {
+		return reproduction
+	}
+	reproduction.CheckPlatform = checkPlatform
+	if checkPlatform == hostPlatform {
+		reproduction.Status = "reproducible"
+		reproduction.Diagnostic = fmt.Sprintf("check targets %s and is reproducible on the current host", checkPlatform)
+		return reproduction
+	}
+	reproduction.Status = "not-reproducible"
+	reproduction.Diagnostic = fmt.Sprintf("check targets %s and cannot be reproduced on the current %s host", checkPlatform, hostPlatform)
+	return reproduction
+}
+
+func checkPlatformFromName(name string) string {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	platforms := make(map[string]struct{}, 1)
+	for _, word := range words {
+		switch word {
+		case "linux", "ubuntu":
+			platforms["linux"] = struct{}{}
+		case "darwin", "macos":
+			platforms["darwin"] = struct{}{}
+		case "windows", "win32":
+			platforms["windows"] = struct{}{}
+		}
+	}
+	if len(platforms) != 1 {
+		return ""
+	}
+	for platform := range platforms {
+		return platform
+	}
+	return ""
 }
 
 func failingCheckNames(checks []providers.CheckDetail) []string {
@@ -526,8 +585,14 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			check.Summary = bounded
 			artifact.Metadata.SummariesTruncated++
 		}
-		entry := CICheck{CheckDetail: check}
-		entry.Annotations = boundCheckAnnotations(annotations[check.Name])
+		entry := CICheck{
+			CheckDetail:      check,
+			HostReproduction: classifyHostReproduction(check.Name, runtime.GOOS),
+		}
+		var annotationsDropped, messagesTruncated int
+		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(annotations[check.Name])
+		artifact.Metadata.AnnotationsDropped += annotationsDropped
+		artifact.Metadata.AnnotationMessagesTruncated += messagesTruncated
 		artifact.Checks = append(artifact.Checks, entry)
 	}
 	for _, check := range checks {
@@ -541,7 +606,10 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 		}
 	}
 	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)
-	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 || artifact.Metadata.SummariesTruncated > 0
+	artifact.Metadata.Truncated = artifact.Metadata.ChecksDropped > 0 ||
+		artifact.Metadata.SummariesTruncated > 0 ||
+		artifact.Metadata.AnnotationMessagesTruncated > 0 ||
+		artifact.Metadata.AnnotationsDropped > 0
 
 	data, err := json.Marshal(artifact)
 	if err != nil {
@@ -614,16 +682,12 @@ func ciPollDeadlineExceeded(parentCtx, pollCtx context.Context) bool {
 }
 
 // ciPollTimeoutOutcome builds the ResultEnvelope for a poll that exhausted
-// its Timeout while still pending. Outputs[OutputCIStatus] is set to
-// CIStatusTimeout — distinct from "passing"/"failing" — so a downstream
-// ci-status gate check can route it to escalation rather than the "fail"
-// branch's implement repass (#239): CI merely being slow is not the same
-// evidence as CI having actually failed, and re-implementing in response
-// wastes an agentic attempt on the worst possible diagnosis.
-func ciPollTimeoutOutcome(timeout time.Duration) apiv1.ResultEnvelope {
+// its Timeout while still pending. It preserves the PR number so a workflow
+// can checkpoint and re-enter ci-poll without losing the pull request context.
+func ciPollTimeoutOutcome(timeout time.Duration, pullID string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
-		Outputs: map[string]interface{}{OutputCIStatus: CIStatusTimeout},
+		Outputs: map[string]interface{}{OutputCIStatus: CIStatusTimeout, OutputPRNumber: pullID},
 		Error: &apiv1.ErrorInfo{
 			Code:      "poll_timeout",
 			Message:   fmt.Sprintf("ci-poll timed out after %s waiting for a terminal check state", timeout),
@@ -636,23 +700,25 @@ func ciPollTimeoutOutcome(timeout time.Duration) apiv1.ResultEnvelope {
 // ciPollOutcome builds the ResultEnvelope for a poll that reached a terminal
 // state: the stage itself always succeeded (it determined an outcome); the
 // outcome is carried in Outputs[OutputCIStatus] using the providers.CheckState
-// vocabulary ("passing"/"failing"), not apiv1.ResultStatus.
-func ciPollOutcome(checkState providers.CheckState, summary string) apiv1.ResultEnvelope {
+// vocabulary ("passing"/"failing"), not apiv1.ResultStatus. The PR number is
+// passed through for workflow loops that poll the same pull request again.
+func ciPollOutcome(checkState providers.CheckState, summary, pullID string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{OutputCIStatus: string(checkState)},
+		Outputs: map[string]interface{}{OutputCIStatus: string(checkState), OutputPRNumber: pullID},
 		Summary: summary,
 	}
 }
 
-// backoff returns base<<attempt capped at max, matching the shape of the
-// repo's other capped-exponential backoff (providers.backoffDuration).
+// backoff returns a jittered duration between half and all of base<<attempt,
+// with the exponential ceiling capped at max.
 func backoff(base, max time.Duration, attempt int) time.Duration {
-	d := base << attempt
-	if d <= 0 || d > max {
-		return max
+	ceiling := base << attempt
+	if ceiling <= 0 || ceiling > max {
+		ceiling = max
 	}
-	return d
+	floor := ceiling / 2
+	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
 // contextSleep waits for d or until ctx is cancelled, whichever comes first —

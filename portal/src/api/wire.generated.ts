@@ -127,7 +127,6 @@ export const goWireFixtures = {
           "labels": [
             "goobers:ready"
           ],
-          "query": "is:issue",
           "connectionRef": "github"
         },
         "gooberCount": 1,
@@ -415,12 +414,27 @@ export const goWireFixtures = {
         "finishedAt": "2026-07-18T12:36:56Z",
         "durationMillis": 120000,
         "lastActivityAt": "2026-07-18T12:36:56Z",
+        "stale": false,
         "lastSeq": 16,
         "repassCount": 2,
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1,
-        "noWork": false
+        "noWork": false,
+        "operator": {
+          "issue": {
+            "number": "673",
+            "title": "Improve operator status"
+          },
+          "currentStage": "review",
+          "liveness": "terminal",
+          "trajectory": "parked",
+          "claim": {
+            "leaseStatus": "released",
+            "providerMarker": "recorded"
+          },
+          "potentialBlockers": []
+        }
       }
     ],
     "workflowActivity": [
@@ -449,12 +463,27 @@ export const goWireFixtures = {
     "finishedAt": "2026-07-18T12:36:56Z",
     "durationMillis": 120000,
     "lastActivityAt": "2026-07-18T12:36:56Z",
+    "stale": false,
     "lastSeq": 16,
     "repassCount": 2,
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
     "noWork": false,
+    "operator": {
+      "issue": {
+        "number": "673",
+        "title": "Improve operator status"
+      },
+      "currentStage": "review",
+      "liveness": "terminal",
+      "trajectory": "parked",
+      "claim": {
+        "leaseStatus": "released",
+        "providerMarker": "recorded"
+      },
+      "potentialBlockers": []
+    },
     "graph": {
       "name": "implementation",
       "version": 7,
@@ -725,7 +754,8 @@ export const goWireFixtures = {
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
-        "maxDurationMs": 140001
+        "maxDurationMs": 140001,
+        "stuckAbortedRuns": 1
       }
     ],
     "stages": [
@@ -752,7 +782,8 @@ export const goWireFixtures = {
         "retryWasteAttempts": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75
+        "retryWasteCostUSD": 0.75,
+        "stuckAbortedAttempts": 1
       }
     ],
     "usage": [
@@ -768,6 +799,7 @@ export const goWireFixtures = {
         "p50CopilotPremiumRequests": 1,
         "p95CopilotPremiumRequests": 2,
         "costSamples": 4,
+        "costUSD": 1.5,
         "p50CostUSD": 1.25,
         "p95CostUSD": 2.5,
         "retryWasteAttempts": 1,
@@ -787,6 +819,20 @@ export const goWireFixtures = {
         "copilotPremiumRequests": 3,
         "costSamples": 3,
         "costUSD": 1.5
+      }
+    ],
+    "creditAssignment": [
+      {
+        "gaggle": "core",
+        "workflow": "implementation",
+        "kind": "gate",
+        "stage": "review",
+        "identity": "sha256:reviewer",
+        "routedRuns": 4,
+        "failureRuns": 1,
+        "failureShare": 0.25,
+        "escalationRuns": 1,
+        "retryWasteAttempts": 2
       }
     ],
     "curation": {

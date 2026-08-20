@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -82,6 +83,13 @@ type RunRequest struct {
 	MCPServers []apiv1.MCPServer
 	// Tools is the goober's default-deny tool allowlist.
 	Tools []string
+	// GoobersIORegistered reports that this adapter has actually wired the
+	// goobers-io MCP server for this run (set by the adapter's own
+	// withAutoGoobersIO*-equivalent before the prompt is rendered). The
+	// prompt's "## goobers-io tools" section is gated on this, not on
+	// eligibility alone (#2774) — an adapter that never registers the server
+	// must never instruct the model to call tools that don't exist there.
+	GoobersIORegistered bool
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -113,6 +121,10 @@ type RunRequest struct {
 	// Nil (the default, and always the value under a "disabled" posture)
 	// leaves the launch path byte-identical to the pre-sandbox behavior.
 	Sandbox sandbox.Sandbox
+	// HarnessVersion is the CLI version captured by startup preflight, passed
+	// through so an adapter can record it alongside the effective invocation
+	// in run diagnostics (#2962). Empty when preflight did not report one.
+	HarnessVersion string
 }
 
 // Outcome is what an Adapter hands back after a harness session ends.
@@ -144,6 +156,15 @@ type Outcome struct {
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past
 	// the cap (0 if TranscriptTruncated is false).
 	TranscriptDroppedBytes int64
+	// Stderr is the separately captured harness subprocess stderr. It is
+	// bounded at MaxTranscriptBytes and recorded as a run artifact on failure.
+	Stderr []byte
+	// InputInspectionReceipts are tool-owned goobers-io records collected
+	// independently of adapter transcript telemetry.
+	InputInspectionReceipts []mcpio.InputInspectionReceipt
+	// InputInspectionReceiptsCollected reports that goobers-io receipt
+	// collection was configured, including when no inspection call occurred.
+	InputInspectionReceiptsCollected bool
 }
 
 // PreflightInfo describes the installed harness verified before agentic work

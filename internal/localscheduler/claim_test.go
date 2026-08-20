@@ -45,6 +45,126 @@ func TestClaimAndRelease(t *testing.T) {
 	}
 }
 
+func TestReclaimAllIsAtomicOnConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "8"}
+	beta := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "9"}
+	if ok, _, err := ledger.ClaimScoped(beta, "other-run", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed conflict: ok=%v err=%v", ok, err)
+	}
+
+	ok, holder, err := ledger.ReclaimAll([]ClaimEntry{
+		{ItemID: "8", Gaggle: "alpha", Provider: "github", ExternalID: "8"},
+		{ItemID: "9", Gaggle: "alpha", Provider: "github", ExternalID: "9"},
+	}, "resumed-run", "implement", time.Hour)
+	if err != nil || ok || holder != "other-run" {
+		t.Fatalf("ReclaimAll = (%v, %q, %v), want conflict with other-run", ok, holder, err)
+	}
+	if _, held := ledger.LookupScoped(alpha); held {
+		t.Fatal("non-conflicting claim was written despite batch conflict")
+	}
+	if entry, held := ledger.LookupScoped(beta); !held || entry.RunID != "other-run" {
+		t.Fatalf("conflicting claim = (%+v, %v), want original owner", entry, held)
+	}
+}
+
+func TestReclaimAllPersistsCompleteSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claims := []ClaimEntry{
+		{ItemID: "8", Gaggle: "alpha", Provider: "github", ExternalID: "8"},
+		{ItemID: "9", Gaggle: "alpha", Provider: "github", ExternalID: "9"},
+	}
+	if ok, holder, err := ledger.ReclaimAll(claims, "resumed-run", "implement", time.Hour); err != nil || !ok || holder != "resumed-run" {
+		t.Fatalf("ReclaimAll = (%v, %q, %v)", ok, holder, err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.ForRunAll("resumed-run"); len(got) != 2 {
+		t.Fatalf("reclaimed set = %+v, want two claims", got)
+	}
+}
+
+func TestClaimHistorySurvivesReleaseAndReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
+	if ok, _, err := ledger.ClaimScoped(key, "run-history", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(key, "run-history"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := reopened.HistoryForRun("run-history")
+	if len(history) != 1 || history[0].Gaggle != "alpha" ||
+		history[0].Provider != "github" || history[0].ExternalID != "466" {
+		t.Fatalf("claim history = %+v", history)
+	}
+	if _, held := reopened.LookupScoped(key); held {
+		t.Fatal("released historical claim is still active")
+	}
+}
+
+func TestClaimHistoryForTerminalRunAgesOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	ledger, err := OpenClaimLedger(path, WithLedgerClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
+	if ok, _, err := ledger.ClaimScoped(oldKey, "terminal-run", "implement", 365*24*time.Hour); err != nil || !ok {
+		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
+	}
+	now = now.Add(time.Hour)
+	if err := ledger.ReleaseScoped(oldKey, "terminal-run"); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(claimHistoryTTL + 2*time.Hour)
+	if history := ledger.HistoryForRun("terminal-run"); len(history) != 1 ||
+		!history[0].ExpiresAt.After(now) {
+		t.Fatalf("terminal-run history before pruning = %+v, want unexpired long lease", history)
+	}
+	if ok, _, err := ledger.Claim("current-item", "current-run", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("trigger history pruning: ok=%v err=%v", ok, err)
+	}
+	if history := ledger.HistoryForRun("terminal-run"); len(history) != 0 {
+		t.Fatalf("expired terminal-run history = %+v, want none", history)
+	}
+
+	reopened, err := OpenClaimLedger(path, WithLedgerClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history := reopened.HistoryForRun("terminal-run"); len(history) != 0 {
+		t.Fatalf("persisted terminal-run history = %+v, want none", history)
+	}
+	if history := reopened.HistoryForRun("current-run"); len(history) != 1 {
+		t.Fatalf("current-run history = %+v, want one entry", history)
+	}
+}
+
 func TestClaimsAreIndependentAcrossGaggles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.json")
 	ledger, err := OpenClaimLedger(path)

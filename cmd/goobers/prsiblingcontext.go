@@ -91,6 +91,13 @@ type siblingPR struct {
 	Overlap []string `json:"overlap,omitempty"`
 }
 
+type siblingLifecycleOutcome struct {
+	Number          int    `json:"number"`
+	Outcome         string `json:"outcome"`
+	PreviousHeadSHA string `json:"previousHeadSha"`
+	CurrentHeadSHA  string `json:"currentHeadSha"`
+}
+
 // runGatherSiblingContext implements `goobers gather-sibling-context`
 // (issue #359): loads every OTHER open PR's touched files + state as
 // evidence context for the holistic review gate that follows — the
@@ -129,7 +136,7 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"2 = usage/IO error.\n"
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-sibling-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-sibling-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-sibling-context")
 	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")
@@ -152,12 +159,17 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	if repo.Provider == providers.ProviderADO {
+		return runGatherSiblingContextADO(root, repo, stdout, stderr)
+	}
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
 
 	selectedNumberStr := providerInput("selectedNumber", "")
 	if selectedNumberStr == "" {
@@ -215,6 +227,11 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	var selectedLabels []string
 	reused := 0
 	siblings := make([]siblingPR, 0, len(prs))
+	lifecycleOutcomes := make([]siblingLifecycleOutcome, 0)
+	failCheckState := func(number int, err error) int {
+		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", number), err, "sibling-context.json")
+	}
+siblingLoop:
 	for _, pr := range prs {
 		if pr.Number == selectedNumber {
 			selectedFound = true
@@ -264,31 +281,70 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		key := strconv.Itoa(pr.Number)
 		prior, hit := cached[key]
 		hit = hit && prior.HeadSHA == pr.HeadSHA
-		paths := prior.Files
-		lines := prior.Lines
-		if !hit {
-			files, ferr := provider.PullRequestFiles(ctx, repo, key)
-			if ferr != nil {
-				return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+		retriedAfterHeadMove := false
+		for {
+			paths := prior.Files
+			lines := prior.Lines
+			if !hit {
+				files, ferr := provider.PullRequestFiles(ctx, repo, key)
+				if ferr != nil {
+					return failProviderStage(stderr, fmt.Sprintf("list files for PR #%d", pr.Number), ferr, "sibling-context.json")
+				}
+				paths = make([]string, 0, len(files))
+				lines = 0
+				for _, f := range files {
+					paths = append(paths, f.Path)
+					lines += f.Additions + f.Deletions
+				}
 			}
-			paths = make([]string, 0, len(files))
-			lines = 0
-			for _, f := range files {
-				paths = append(paths, f.Path)
-				lines += f.Additions + f.Deletions
+
+			checkState, checkErr := provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if checkErr == nil {
+				if hit {
+					reused++
+				}
+				next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths, Lines: lines}
+				siblings = append(siblings, siblingPR{
+					Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
+					Labels: pr.Labels, CheckState: string(checkState), Files: paths,
+				})
+				break
 			}
-		} else {
-			reused++
+
+			refreshed, refreshErr := provider.GetPullRequest(ctx, repo, key)
+			if refreshErr != nil || refreshed.Number != pr.Number {
+				return failCheckState(pr.Number, checkErr)
+			}
+
+			outcome := ""
+			switch {
+			case refreshed.Merged:
+				outcome = "merged"
+			case strings.EqualFold(refreshed.State, "closed"):
+				outcome = "closed"
+			case refreshed.HeadSHA != pr.HeadSHA:
+				outcome = "head-moved"
+			default:
+				return failCheckState(pr.Number, checkErr)
+			}
+			lifecycleOutcomes = append(lifecycleOutcomes, siblingLifecycleOutcome{
+				Number:          pr.Number,
+				Outcome:         outcome,
+				PreviousHeadSHA: pr.HeadSHA,
+				CurrentHeadSHA:  refreshed.HeadSHA,
+			})
+			if outcome != "head-moved" {
+				continue siblingLoop
+			}
+			if retriedAfterHeadMove {
+				continue siblingLoop
+			}
+
+			pr = refreshed
+			prior = siblingCacheEntry{}
+			hit = false
+			retriedAfterHeadMove = true
 		}
-		checkState, err := provider.RefCheckState(ctx, repo, pr.HeadSHA)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", pr.Number), err, "sibling-context.json")
-		}
-		next[key] = siblingCacheEntry{HeadSHA: pr.HeadSHA, CheckState: checkState, Files: paths, Lines: lines}
-		siblings = append(siblings, siblingPR{
-			Number: pr.Number, URL: pr.URL, Head: pr.Head, HeadSHA: pr.HeadSHA, Draft: pr.Draft,
-			Labels: pr.Labels, CheckState: string(checkState), Files: paths,
-		})
 	}
 
 	// Persist before the selected-vanished check: sibling evidence gathered
@@ -446,17 +502,18 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		// float64 in the merged Outputs, so it was silently dropped and
 		// apply-verdict aborted with "selectedNumber is required" on every run —
 		// no PR ever received a merge-review label since #381.
-		"selectedNumber":         selectedNumberStr,
-		"head":                   selectedHead,
-		"base":                   base,
-		"hasSubstantiveFindings": strconv.FormatBool(hasSubstantiveFindings),
-		"hasFailingCI":           providerInput("hasFailingCI", "false"),
-		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
-		"advisoryMode":           strconv.FormatBool(advisoryMode),
-		"selectedHeadSha":        selectedHeadSHA,
-		"selectedBaseSha":        selectedBaseSHA,
-		"reviewDigest":           reviewDigest,
-		"siblings":               siblings,
+		"selectedNumber":           selectedNumberStr,
+		"head":                     selectedHead,
+		"base":                     base,
+		"hasSubstantiveFindings":   strconv.FormatBool(hasSubstantiveFindings),
+		"hasFailingCI":             providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":        strconv.FormatBool(len(overlappingSiblings) > 0),
+		"advisoryMode":             strconv.FormatBool(advisoryMode),
+		"selectedHeadSha":          selectedHeadSHA,
+		"selectedBaseSha":          selectedBaseSHA,
+		"reviewDigest":             reviewDigest,
+		"siblings":                 siblings,
+		"siblingLifecycleOutcomes": lifecycleOutcomes,
 		// overlappingSiblings: PR numbers whose files intersect the selected
 		// PR's (#989). Empty slice, not omitted, so a consumer can distinguish
 		// "computed, none overlap" from "field absent / older producer".
@@ -504,5 +561,97 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s\n",
 		len(siblings), reused, len(siblings)-reused, cacheNote)
+	return 0
+}
+
+// runGatherSiblingContextADO produces the gather-sibling-context stage output on
+// Azure DevOps. The GitHub path's sibling scan leans on surfaces ADO gaps or
+// that carry GitHub-only identity semantics (RefCheckState, AuthenticatedLogin,
+// the sibling file-overlap and verdict caches, the scope-drift/scope-gate label
+// writes) — none of which the single-clean-PR ADO land needs. So on ADO this
+// stage resolves only the selected PR's own head/base SHAs (the deterministic
+// pin apply-verdict requires via selectedHeadSha/selectedBaseSha) with one
+// PollPullRequest and emits an EMPTY sibling set: the review gate then has
+// trivial no-sibling evidence and reviews the single diff, keeping the run
+// moving. Cross-PR sibling sequencing on ADO is deferred to the ADO merge epic
+// (#2061). It never resolves a github:* capability token — the ADO provider
+// resolves its own org-scoped auth from instance config.
+func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	selectedNumberStr := providerInput("selectedNumber", "")
+	if selectedNumberStr == "" {
+		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
+		return 1
+	}
+	if _, aerr := strconv.Atoi(selectedNumberStr); aerr != nil {
+		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, aerr)
+		return 1
+	}
+	base := providerInput("base", providerBaseBranch())
+	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: selectedNumberStr})
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("poll pull request #%s", selectedNumberStr), err, "sibling-context.json")
+	}
+	if poll.State != "open" || poll.Merged {
+		// The selected PR closed/merged/retargeted between pr-select and here —
+		// nothing to review, the same disposition as the GitHub
+		// selected-vanished path above.
+		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
+	}
+
+	selectedHead := poll.HeadBranch
+	if selectedHead == "" {
+		selectedHead = providerInput("head", "")
+	}
+	if base == "" {
+		base = poll.BaseBranch
+	}
+
+	resultFile := providerInput("resultFile", "sibling-context.json")
+	out := map[string]interface{}{
+		"selectedNumber":         selectedNumberStr,
+		"head":                   selectedHead,
+		"base":                   base,
+		"hasSubstantiveFindings": providerInput("hasSubstantiveFindings", "false"),
+		"hasFailingCI":           providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":      "false",
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
+		"selectedHeadSha":        poll.HeadSHA,
+		"selectedBaseSha":        poll.BaseSHA,
+		"reviewDigest":           computeReviewDigest(poll.HeadSHA, poll.BaseSHA, poll.Labels),
+		// Empty slices (not omitted) so a consumer distinguishes "computed, none
+		// overlap" from "field absent"; matches the GitHub producer above.
+		"siblings":               []siblingPR{},
+		"overlappingSiblings":    []int{},
+		"overlappingSiblingsCsv": "",
+		// Scope drift/gate are GitHub-only label mechanics; report zero/false so
+		// the pre-merge scope gate this threads into never parks on ADO.
+		"selectedChangedFiles": "0",
+		"selectedChangedLines": "0",
+		"scopeGateParked":      "false",
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		pf(stderr, "error: marshal sibling context: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	pf(stdout, "gathered context for 0 sibling PR(s) on Azure DevOps (empty sibling set — single-PR review)\n")
 	return 0
 }

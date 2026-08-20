@@ -36,10 +36,133 @@ func (r *Runner) exportOutbox(jr executionJournal, workspaceRoot string, t apiv1
 	if len(files) == 0 {
 		return nil
 	}
-	if _, err := jr.ExportOutbox(t.Name, attempt, class, files); err != nil {
+	refs, err := jr.ExportOutbox(t.Name, attempt, class, files)
+	if err != nil {
 		return fmt.Errorf("task %q: export outbox: %w", t.Name, err)
 	}
+	if t.OutboxMirrorPath != "" {
+		if err := mirrorOutbox(jr.Dir(), t.OutboxMirrorPath, refs); err != nil {
+			return fmt.Errorf("task %q: mirror outbox: %w", t.Name, err)
+		}
+	}
 	return nil
+}
+
+func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
+	root, err := expandOutboxMirrorRoot(configuredRoot)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("create mirror root: %w", err)
+	}
+	runID := filepath.Base(runDir)
+	if !apiv1.ValidRunID(runID) {
+		return fmt.Errorf("invalid run id %q", runID)
+	}
+	const outboxPrefix = "artifacts/outbox/"
+	for _, ref := range refs {
+		refPath := filepath.ToSlash(ref.Path)
+		if !strings.HasPrefix(refPath, outboxPrefix) {
+			return fmt.Errorf("journal ref %q is outside the outbox", ref.Path)
+		}
+		source, err := apiv1.ResolveContainedPath(runDir, filepath.FromSlash(refPath))
+		if err != nil {
+			return fmt.Errorf("resolve journal source %q: %w", ref.Path, err)
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("read journal source %q: %w", ref.Path, err)
+		}
+		rel := filepath.Join(runID, filepath.FromSlash(strings.TrimPrefix(refPath, outboxPrefix)))
+		parent, err := makeContainedDir(root, filepath.Dir(rel))
+		if err != nil {
+			return fmt.Errorf("prepare mirror destination %q: %w", rel, err)
+		}
+		tmp, err := os.CreateTemp(parent, ".outbox-*")
+		if err != nil {
+			return fmt.Errorf("create mirror temporary file: %w", err)
+		}
+		tmpName := tmp.Name()
+		err = tmp.Chmod(0o644)
+		if err == nil {
+			_, err = tmp.Write(data)
+		}
+		closeErr := tmp.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			dest := filepath.Join(parent, filepath.Base(rel))
+			if info, statErr := os.Lstat(dest); statErr == nil {
+				if info.IsDir() {
+					err = fmt.Errorf("destination is a directory")
+				}
+				if _, resolveErr := apiv1.ResolveContainedPath(root, rel); resolveErr != nil {
+					err = resolveErr
+				} else if err == nil {
+					err = os.Remove(dest)
+				}
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				err = statErr
+			}
+			if err == nil {
+				err = os.Rename(tmpName, dest)
+			}
+		}
+		if err != nil {
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("write mirror destination %q: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+func expandOutboxMirrorRoot(configured string) (string, error) {
+	root := configured
+	if strings.HasPrefix(root, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		root = filepath.Join(home, strings.TrimPrefix(root, "~/"))
+	}
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("mirror root %q must be absolute or start with ~/", configured)
+	}
+	return filepath.Clean(root), nil
+}
+
+// makeContainedDir creates a relative directory one segment at a time and
+// checks every resulting path after symlink resolution.
+func makeContainedDir(root, rel string) (string, error) {
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", apiv1.ErrPathEscape
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	current := root
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		if err := os.Mkdir(current, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+		resolved, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			return "", err
+		}
+		back, err := filepath.Rel(resolvedRoot, resolved)
+		if err != nil || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("%w: %q resolves to %q", apiv1.ErrSymlinkEscape, rel, resolved)
+		}
+	}
+	return filepath.EvalSymlinks(current)
 }
 
 // collectOutboxFiles resolves each declared entry against workspaceRoot and

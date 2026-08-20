@@ -223,8 +223,8 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 
 	// The required aggregate must fail if any merge-gate slice fails. `make ci`
 	// is fanned across parallel jobs (checks/lint/unit/shipped) plus the macOS
-	// behavioral unit run and dead-code analysis; those, the Windows gate, the
-	// vulnerability scan, journal conformance, and (#2019) the
+	// and Windows behavioral unit runs and dead-code analysis; those, the
+	// Windows runtime gate, vulnerability scan, journal conformance, and (#2019) the
 	// integration/sandbox/linux-validation jobs must all be depended on — all
 	// three ran on every PR already at full runner cost but enforced nothing
 	// until #2019 added them here. (The aggregate keeps its ruleset-pinned
@@ -243,6 +243,12 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		"checks", "lint", "darwin-build", "unit", "unit-macos", "shipped",
 		"deadcode", "windows-smoke", "vulnerability-scan", "conformance",
 		"integration", "sandbox", "linux-validation",
+		// #3152 added e2e/envtest/coverage meaning them to be required, but left
+		// them out of the aggregate — the only context the branch ruleset
+		// requires — so they ran on every PR and blocked nothing (#3206).
+		// unit-gate (the `make ci` monolith) was retired: every check it ran
+		// has a dedicated job above.
+		"e2e", "envtest", "coverage",
 	} {
 		if !strings.Contains(needsLine, gate) {
 			t.Errorf("required CI aggregate must depend on %q so it fails when that gate fails", gate)
@@ -250,7 +256,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 }
 
-func TestCIWorkflowScopesMainPushToPostMergeJobs(t *testing.T) {
+func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
@@ -259,21 +265,80 @@ func TestCIWorkflowScopesMainPushToPostMergeJobs(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"checks", "unit-macos"} {
+	// The broad Windows behavioural tier is deliberately absent: enabling it
+	// surfaced 670 failing tests across 19 packages, tracked separately. The
+	// shipped-workflow contracts do run on Windows and are required.
+	shipped := workflowJob(workflow, "shipped")
+	if !strings.Contains(shipped, "os: windows-latest") {
+		t.Error("shipped-workflow contract matrix must include Windows")
+	}
+	if !strings.Contains(shipped, `timeout: "40m"`) ||
+		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") {
+		t.Error("Windows shipped-workflow contracts must receive sufficient timeout headroom")
+	}
+}
+
+func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+
+	const requiredCheckName = "    name: make ci (fmt-check · vet · build · test · lint)"
+	// Repository ruleset 19093039 pins this exact required-check name:
+	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
+	requiredCI := workflowJob(string(data), "required-ci")
+	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
+		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))
+	}
+}
+
+func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		if section == "" {
-			t.Errorf("CI workflow is missing post-merge job %q", job)
+			t.Errorf("CI workflow is missing main validation job %q", job)
 		} else if strings.Contains(section, "github.event_name != 'push'") {
-			t.Errorf("post-merge job %q must run on main pushes", job)
+			t.Errorf("main validation job %q must run on main pushes", job)
 		}
 	}
 	for _, job := range []string{
-		"deadcode", "lint", "darwin-build", "unit", "shipped", "integration",
-		"conformance", "windows-smoke", "vulnerability-scan", "required-ci",
+		"deadcode", "darwin-build", "integration",
+		"conformance", "vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
 		if section := workflowJob(workflow, job); !strings.Contains(section, "github.event_name != 'push'") {
-			t.Errorf("merge-gate job %q must not rerun on main pushes", job)
+			t.Errorf("PR-only job %q must not rerun on main pushes", job)
+		}
+	}
+
+	escalation := workflowJob(workflow, "escalate-main-failure")
+	for _, want := range []string{
+		"github.event_name == 'push'",
+		"needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]",
+		"issues: write",
+		"actions/github-script@v9",
+		"github.rest.issues.create",
+		`labels: ["goobers:critical", "type:bug", "area:workflows"]`,
+	} {
+		if !strings.Contains(escalation, want) {
+			t.Errorf("main failure escalation job must contain %q", want)
+		}
+	}
+	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+		want := "needs." + job + ".result == 'failure'"
+		if !strings.Contains(escalation, want) {
+			t.Errorf("main failure escalation job must detect a failed %q job", job)
 		}
 	}
 }

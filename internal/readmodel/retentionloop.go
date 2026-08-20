@@ -15,7 +15,7 @@ import (
 // enormous burst of removals into the change feed — waking every connected
 // client to refetch at the same moment.
 
-// RetentionLoop applies the projection retention window on a schedule.
+// RetentionLoop applies projection and change-feed retention on a schedule.
 type RetentionLoop struct {
 	store   *Store
 	writer  RetentionWriter
@@ -73,17 +73,7 @@ func NewRetentionLoop(
 }
 
 // Run applies retention until the context ends.
-//
-// # Why an unbounded window still runs the loop
-//
-// It does not: Run returns immediately. That matters because the alternative —
-// looping and doing nothing — would burn a goroutine and a timer forever on
-// every instance that has not opted in, which is all of them by default.
 func (l *RetentionLoop) Run(ctx context.Context) {
-	if !l.window.Bounded() {
-		l.options.Logger.Debug("projection retention is unbounded; no pass will run")
-		return
-	}
 	ticker := time.NewTicker(l.options.Interval)
 	defer ticker.Stop()
 
@@ -110,18 +100,20 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	l.stats.Passes++
 	l.stats.LastPassAt = time.Now().UTC()
 
-	result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			l.stats.Failures++
-			l.options.Logger.Warn("projection retention pass failed", "error", err)
+	if l.window.Bounded() {
+		result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				l.stats.Failures++
+				l.options.Logger.Warn("projection retention pass failed", "error", err)
+			}
+			return
 		}
-		return
-	}
-	l.stats.AgedOut += result.AgedOut
-	if result.AgedOut > 0 {
-		l.options.Logger.Info("projection retention aged out runs",
-			"aged_out", result.AgedOut, "floor", result.Floor.Format(time.RFC3339))
+		l.stats.AgedOut += result.AgedOut
+		if result.AgedOut > 0 {
+			l.options.Logger.Info("projection retention aged out runs",
+				"aged_out", result.AgedOut, "floor", result.Floor.Format(time.RFC3339))
+		}
 	}
 
 	// Prune the change feed in the same pass, but AFTER the removals — each

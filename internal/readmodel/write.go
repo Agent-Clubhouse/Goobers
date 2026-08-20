@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -83,6 +84,14 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
+	}
+	for _, node := range p.Nodes {
+		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
 	// The change row commits WITH the fact it describes (§6.2). That ordering is
 	// the point: today the projection updates on run finish while the stream
 	// discovers change by polling the filesystem, so "refetch" and "the data is
@@ -134,15 +143,20 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 	if disposition == "" {
 		disposition = DispositionUnknown
 	}
-	_, err := tx.ExecContext(ctx, `
+	operatorJSON, err := json.Marshal(row.Operator)
+	if err != nil {
+		return fmt.Errorf("readmodel: encode operator facts for run %s: %w", row.RunID, err)
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO run (
 			run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
 			trigger_kind, trigger_ref, phase, terminal, current_stage,
 			started_at, finished_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
 			outcome_verdict, outcome_target, disposition,
-			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste,
+			operator_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -168,7 +182,8 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			any_token_measured = excluded.any_token_measured,
 			any_premium_measured = excluded.any_premium_measured,
 			any_cost_measured = excluded.any_cost_measured,
-			any_retry_waste = excluded.any_retry_waste
+			any_retry_waste = excluded.any_retry_waste,
+			operator_json = excluded.operator_json
 		-- Idempotence, and the guard that makes out-of-order delivery safe: an
 		-- older projection never overwrites a newer one. Without it, a repair
 		-- sweep racing live projection could rewind a run's phase.
@@ -183,6 +198,7 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget), disposition,
 		boolInt(row.AnyTokenMeasured), boolInt(row.AnyPremiumMeasured),
 		boolInt(row.AnyCostMeasured), boolInt(row.AnyRetryWaste),
+		string(operatorJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: upsert run %s: %w", row.RunID, err)
@@ -226,6 +242,19 @@ func insertStageRow(
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)
+	}
+	return nil
+}
+
+func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node (
+			run_id, kind, name, identity, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity, node.Attempts, node.RetryWasteAttempts,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
 	}
 	return nil
 }
@@ -320,6 +349,37 @@ func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("readmodel: phase count rows: %w", err)
+	}
+	return out, nil
+}
+
+// ActiveRunCounts returns active counts grouped by workflow from the stored
+// phase projection.
+func (s *Store) ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error) {
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT gaggle, workflow, COUNT(*)
+		FROM run
+		WHERE phase = ?
+		GROUP BY gaggle, workflow`, journal.PhaseRunning)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: count active runs by workflow: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []WorkflowCount
+	for rows.Next() {
+		var count WorkflowCount
+		if err := rows.Scan(&count.Gaggle, &count.Workflow, &count.Count); err != nil {
+			return nil, fmt.Errorf("readmodel: scan active workflow count: %w", err)
+		}
+		out = append(out, count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: active workflow count rows: %w", err)
 	}
 	return out, nil
 }

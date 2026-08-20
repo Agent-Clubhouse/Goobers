@@ -24,24 +24,36 @@ self-hosting workflows.
 
 ## What's in here
 
-```
-reference-workflows/
-  README.md               # this file
-  instance.yaml.example    # template instance.yaml (no secrets — copy and use as-is)
-  manifest.yaml             # top-level desired state (kind: Manifest)
-  gaggles/
-    goobers/
-      gaggle.yaml            # the "goobers" gaggle: targets Agent-Clubhouse/Goobers
-      goobers/
-        curator/             # issues-only: dedupe, tag, split, mark ready
-        implementer/          # repo:push only: issue -> code change
-        reviewer/              # no write capability: adversarial code review
-        nominator/              # issues-only + telemetry:read: files new issues from evidence
-      workflows/
-        backlog-curation.yaml    # #25 — 3x/day
-        implementation.yaml       # #27 — 2x/day (the flagship loop)
-        work-nomination.yaml       # #26 — 1x/day
-```
+The shipped tree loads **11 goobers and 11 workflows**.
+<!-- reference-inventory: goobers=11 workflows=11 -->
+
+| Goober role | Purpose |
+|---|---|
+| `analyst` | Diagnoses Tutor signals from telemetry and journals. |
+| `config-author` | Drafts Tutor changes inside the confined config roots. |
+| `curator` | Deduplicates, tags, scopes, and roadmaps approved issues. |
+| `decomposer` | Designs read-only, validated delivery slices for oversized work. |
+| `docs` | Updates documentation from a scoped signal. |
+| `implementer` | Implements claimed issues and PR remediation in a worktree. |
+| `nominator` | Files evidence-backed backlog items. |
+| `quality-lead` | Collates the quality sprint's parallel findings. |
+| `quality-researcher` | Audits one quality lens without write authority. |
+| `reviewer` | Produces independent implementation and PR-lifecycle verdicts. |
+| `test-quality-analyst` | Classifies recurring test failures and drafts bounded fix or quarantine findings. |
+
+| Workflow | Purpose |
+|---|---|
+| `backlog-curation` | Curates maintainer-approved backlog items. |
+| `decomposition` | Converts oversized approved work into validated child batches. |
+| `docs-updater` | Turns a documentation signal into a reviewed PR. |
+| `implementation` | Implements a ready issue and opens a PR. |
+| `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
+| `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
+| `quality-sprint` | Runs parallel quality audits and nominates findings. |
+| `self-update` | Stages an operator-requested Goobers binary update. |
+| `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
+| `tutor` | Diagnoses run evidence and proposes confined config changes. |
+| `work-nomination` | Nominates repository work from telemetry and repo signals. |
 
 ## Guardrails (confirmed, not just described)
 
@@ -55,10 +67,13 @@ config itself, not left to operator discretion:
 - **The reviewer gate is ON** in `implementation` — every implementation run
   gets an independent, no-write-capability reviewer verdict (`pass` /
   `needs-changes` / `fail`) before a PR can reach the CI-poll/repass loop.
-- **The instance never merges.** There is no merge stage anywhere in
-  `implementation.yaml` — it ends at `close-out` once CI passes. Branch
-  protection on `main` (the `make ci` GitHub Actions check, required,
-  `enforce_admins=true`) plus a human review are the only path to `main`.
+- **Merging is an explicit, fail-closed opt-in.** `implementation` never
+  merges; it ends after opening and checking its PR. The separate
+  `merge-review` workflow grants `github:pr:merge` to its deterministic
+  `merge-pr` stage, which is the checked-in instance's merge authority.
+  Removing that task/grant and routing a published pass verdict to a terminal
+  branch restores review-only operation. The command refuses to acquire
+  undeclared merge authority.
 - **Budgets are low by default.** `implementation` fires twice daily
   (`readiness.maxConcurrentRuns: 1`, `maxRunsPerHour: 1`, cadence 2x/day) — a
   hard ceiling of exactly 2 runs/day, via cadence × hourly cap (the same
@@ -68,10 +83,11 @@ config itself, not left to operator discretion:
   `maxRunsPerHour: 1`.
 - **Capability grants are minimal per goober** and checked at validate time
   (fail-closed on mismatch — a workflow task using a capability its goober
-  doesn't grant is a validation **error**, not a warning): curator and
-  nominator get `github:issues:write` only (+ nominator gets
-  `telemetry:read`); implementer gets `repo:push` only; reviewer gets no
-  capability at all.
+  doesn't grant is a validation **error**, not a warning). Every agentic role
+  has `agent:model`; write grants are limited to the role's job. `curator`
+  has issue and milestone writes, `nominator` has issue writes plus a
+  stage-disabled-by-default issue-approval grant, `implementer`, `docs`, and
+  `config-author` have `repo:push`, and the remaining roles are read-only.
 - **The Tutor is confined to this config root.** When the self-tuning Tutor
   loop (#104 / epic #36) opens a config-as-code PR, its `open-pr` stage checks
   the run's git diff and refuses (fail-closed, no PR opened) to touch anything
@@ -84,25 +100,59 @@ config itself, not left to operator discretion:
 
 ## Tokens and scopes
 
-You need a GitHub personal access token (fine-grained, scoped to
-`Agent-Clubhouse/Goobers` only) with:
+The shipped configuration has three credential paths:
+
+| Environment variable | Required | Identity and purpose |
+|---|---|---|
+| `GOOBERS_GITHUB_TOKEN` | Yes | Repository identity used for provider reads/writes, branch pushes, and the opt-in merge path. |
+| `GOOBERS_GITHUB_REVIEW_TOKEN` | Yes | Separate reviewer identity used only for native PR reviews. |
+| `GOOBERS_COPILOT_TOKEN` | Headless only | Model identity for `agent:model`; an interactive installation can use the stored Copilot CLI sign-in instead. |
+
+`GOOBERS_GITHUB_TOKEN` must be a fine-grained PAT scoped to
+`Agent-Clubhouse/Goobers` only, with:
 
 - **Issues:** read and write (curation, nomination, and the backlog-query
-  stage all read/write issues).
+  stage all read/write issues, labels, and milestones).
 - **Pull requests:** read and write (`open-pr`, `ci-poll`, review requests).
-- **Contents:** read and write (the implementer pushes to a
-  `goobers/<workflow>/<run-id>` branch — never `main`).
+- **Contents:** read and write (managed branches, opt-in merge, and merged
+  branch cleanup).
 - **Checks / statuses:** read (CI-poll needs to see check results).
 
-The `merge-review` workflow also needs `GOOBERS_GITHUB_REVIEW_TOKEN`, a
-fine-grained PAT with **Pull requests: read and write** owned by a different
-GitHub identity. GitHub does not allow the identity that authored a PR to
-approve it, so `github:pr:review` cannot reuse the repo token for goober-authored
-PRs.
+`GOOBERS_GITHUB_REVIEW_TOKEN` is a fine-grained PAT with **Pull requests:
+read and write**, owned by a different GitHub identity. GitHub does not allow
+the identity that authored a PR to approve it, so `github:pr:review` cannot
+reuse the repository token for goober-authored PRs.
 
-Do **not** grant merge or admin permissions — the instance is never supposed
-to merge, and branch protection should stay something only a human/repo
-admin can touch.
+Neither token needs administration permission or permission to alter branch
+protection. Keep required checks and branch protection enabled: `merge-pr`
+uses the repository token only after every gate below passes and then
+re-checks live provider state.
+
+## Opt-in merge policy and gates
+
+The checked-in `merge-review` workflow opts into autonomous landing. It does
+not turn a model verdict directly into a merge:
+
+| Gate/check | Merge posture |
+|---|---|
+| `issue-staleness-gate` | Stops when the linked issue changed after implementation. |
+| `review` | Produces an independent verdict pinned to the selected head and base. |
+| `elect-gate` | Resolves overlapping sibling ordering; election never bypasses verdict publication. |
+| `advisory-verdict` | Makes PRs outside managed branch prefixes review-only. |
+| `published-verdict` | Requires the native, separately authenticated review decision to be `pass`. |
+| `scope-gate` | Prevents an oversized or parked PR from reaching the landing command. |
+| `merge-opt-out-gate` | Honors a late `goobers:no-merge-review` opt-out. |
+| `merge-gate` | Routes only an actual merge or queue enrollment onward; refusals remain unmerged. |
+| `queue-opt-out-gate` | Stops a dequeued PR after it opts out. |
+| `queue-gate` | Requires the merge queue's eventual `merged` outcome before post-merge work. |
+
+Immediately before landing, `merge-pr` serializes the poll/decide/merge
+window and independently re-checks the `github:pr:merge` grant, pass verdict,
+required CI, draft state, head SHA, relevant base movement, Tutor human-signoff
+rules, run-aborted and no-merge labels, and single-lander evidence for
+overlapping PRs. GitHub branch policy determines direct merge versus merge
+queue. Only a confirmed merge reaches `post-merge` to close linked issues,
+fan out remediation, and clean up the managed branch.
 
 ## Apply the self-hosting configuration
 
@@ -136,7 +186,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 4 goober(s), 3 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
@@ -155,7 +205,15 @@ After the canonical quickstart has created and validated a regular instance:
      gh label create "$ns:$name" --color "$color" --description "$desc" \
        --repo Agent-Clubhouse/Goobers --force
    done
+   gh label create goobers --color 006B75 \
+     --description "Scopes which issues count as a gaggle's backlog (gaggle.yaml backlog.labels)" \
+     --repo Agent-Clubhouse/Goobers --force
    ```
+
+   The bare `goobers` label is the gaggle's backlog scope — `gaggle.yaml` sets
+   `backlog.labels: [goobers]`, a hard AND-filter — so apply it to every issue
+   the gaggle should treat as backlog; an issue without it is invisible to
+   every backlog-consuming workflow.
 
 5. **Start the daemon** (scheduler + runner + telemetry rollup):
 
@@ -177,12 +235,24 @@ After the canonical quickstart has created and validated a regular instance:
   worktree, passes it through the reviewer gate and a local `make ci` gate,
   opens a PR, polls CI with a bounded repass loop (repassing to the
   implementer on `needs-changes` or a CI failure), and comments on the
-  originating issue once CI passes. It stops there — a human merges.
+  originating issue once CI passes. It stops there; landing belongs to the
+  independently triggered `merge-review` workflow.
 - **Nomination** (06:41 local, once daily): reviews telemetry/repo signals,
   checks the existing backlog for duplicates, and files well-evidenced
   issues carrying `goobers:nominated` + an evidence footer. Filed issues are
   **not** pre-approved — a maintainer reviews and applies `goobers:approved`
   before curation will touch them.
+- **Decomposition** (04:53 local, once daily, or on direct invocation): selects
+  the same oldest eligible escalation, designs and validates bounded single-PR
+  slices, and publishes them only after deterministic validation.
+- **PR lifecycle:** `merge-review` reviews and may land eligible managed PRs;
+  `pr-remediation` rebases or fixes PRs that need work.
+- **Maintenance:** `docs-updater` handles documentation signals,
+  `quality-sprint` nominates findings from parallel audits,
+  `test-suite-quality` nominates recurring flaky-test fixes or bounded
+  quarantines, `tutor` proposes confined config improvements, and
+  `self-update` stages requested binary updates. Their trigger and budget
+  details live in their workflow YAML.
 
 ## Observing a run
 

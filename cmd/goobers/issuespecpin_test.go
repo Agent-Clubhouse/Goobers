@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestFormatAndParseIssueSpecPinRoundTrips(t *testing.T) {
-	line := formatIssueSpecPin("123", "2026-08-01T12:00:00Z")
+	line := formatIssueSpecPin("123", "2026-08-01T12:00:00Z", "Title", "Body")
 	if line == "" {
 		t.Fatal("formatIssueSpecPin returned empty string for valid inputs")
 	}
@@ -12,8 +12,9 @@ func TestFormatAndParseIssueSpecPinRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatalf("parseIssueSpecPin did not find a pin in body:\n%s", body)
 	}
-	if pin.IssueID != "123" || pin.UpdatedAt != "2026-08-01T12:00:00Z" {
-		t.Fatalf("pin = %+v, want {IssueID:123 UpdatedAt:2026-08-01T12:00:00Z}", pin)
+	if pin.IssueID != "123" || pin.UpdatedAt != "2026-08-01T12:00:00Z" ||
+		pin.SpecDigest != issueSpecDigest("Title", "Body") {
+		t.Fatalf("pin = %+v, want issue ID, timestamp, and title/body digest", pin)
 	}
 }
 
@@ -29,7 +30,7 @@ func TestFormatIssueSpecPinEmptyWhenNothingToPin(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := formatIssueSpecPin(tc.issueID, tc.issueUpdatedAt); got != "" {
+			if got := formatIssueSpecPin(tc.issueID, tc.issueUpdatedAt, "", ""); got != "" {
 				t.Fatalf("formatIssueSpecPin(%q, %q) = %q, want empty", tc.issueID, tc.issueUpdatedAt, got)
 			}
 		})

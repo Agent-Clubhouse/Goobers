@@ -66,21 +66,24 @@ func TestConcurrentFirstOpenSucceeds(t *testing.T) {
 	const n = 8
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
+	start := make(chan struct{})
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
+			<-start
 			store, err := Open(path)
 			if err != nil {
-				errs <- fmt.Errorf("open: %w", err)
+				errs <- fmt.Errorf("open %d: %w", i, err)
 				return
 			}
 			defer func() { _ = store.Close() }()
 			if _, err := store.State(context.Background()); err != nil {
-				errs <- fmt.Errorf("state: %w", err)
+				errs <- fmt.Errorf("state %d: %w", i, err)
 			}
-		}()
+		}(i)
 	}
+	close(start)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -172,11 +175,14 @@ func TestOrderingIndexesServeTheListShapes(t *testing.T) {
 		{"gaggle scoped", "WHERE gaggle = 'gaggle-000'", "idx_run_gaggle_recency"},
 		{"gaggle and workflow", "WHERE gaggle = 'gaggle-000' AND workflow = 'wf-0'", "idx_run_gaggle_workflow_recency"},
 		{"phase aggregate", "WHERE phase = 'running'", "idx_run_phase_recency"},
+		{"active counts by workflow", "WHERE phase = 'running' GROUP BY gaggle, workflow", "idx_run_phase_workflow"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			query := "SELECT run_id, started_at FROM run " + tc.where +
-				" ORDER BY started_at DESC, run_id ASC LIMIT 51"
+			query := "SELECT run_id, started_at FROM run " + tc.where
+			if !strings.Contains(tc.where, "GROUP BY") {
+				query += " ORDER BY started_at DESC, run_id ASC LIMIT 51"
+			}
 			plan := explain(t, store, query)
 			t.Logf("plan: %s", plan)
 			if !strings.Contains(plan, tc.want) {

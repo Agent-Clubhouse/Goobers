@@ -6,6 +6,7 @@ import (
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // DefaultTaskQueue is the Temporal task queue the engine worker and the
@@ -23,6 +24,7 @@ type EngineDeps struct {
 	Det        invoke.Deterministic
 	Auto       invoke.Automated
 	Workspaces engine.WorkspaceProvisioner
+	Scrubber   journal.Scrubber
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -35,6 +37,7 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		Auto:            deps.Auto,
 		ScheduleService: temporalClient.WorkflowService(),
 		Workspaces:      deps.Workspaces,
+		Scrubber:        deps.Scrubber,
 	})
 }
 

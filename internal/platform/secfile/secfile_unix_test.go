@@ -53,6 +53,25 @@ func TestVerifyPrivate_RejectsGroupOrOther(t *testing.T) {
 	}
 }
 
+func TestVerifyPrivate_AcceptsGroupOrOtherOnTrustedMount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var checkedPath string
+	err := verifyPrivateWithMountCheck(path, func(path string) bool {
+		checkedPath = path
+		return true
+	})
+	if err != nil {
+		t.Fatalf("verifyPrivateWithMountCheck() = %v, want nil", err)
+	}
+	if checkedPath != path {
+		t.Errorf("mount check path = %q, want %q", checkedPath, path)
+	}
+}
+
 // TestVerifyPrivate_FailsClosedOnMissingFile proves the fail-closed contract:
 // an indeterminate protection state (here, a stat error) refuses the secret
 // rather than trusting it.

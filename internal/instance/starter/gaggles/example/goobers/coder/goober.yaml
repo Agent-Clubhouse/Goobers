@@ -12,6 +12,9 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
+  capabilities:
+    - repo:push
+    - agent:model
   skills:
     - implement
     - run-tests

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -44,13 +45,29 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles   []TelemetryGaggleStats `json:"gaggles"`
-	Runs      []TelemetryRunStats    `json:"runs"`
-	Stages    []TelemetryStageStats  `json:"stages"`
-	Usage     []TelemetryUsageStats  `json:"usage"`
-	Models    []TelemetryModelStats  `json:"models"`
-	Curation  TelemetryCurationStats `json:"curation"`
-	ReadyPool TelemetryReadyPool     `json:"readyPool"`
+	Gaggles          []TelemetryGaggleStats `json:"gaggles"`
+	Runs             []TelemetryRunStats    `json:"runs"`
+	Stages           []TelemetryStageStats  `json:"stages"`
+	Usage            []TelemetryUsageStats  `json:"usage"`
+	Models           []TelemetryModelStats  `json:"models"`
+	CreditAssignment []NodeCredit           `json:"creditAssignment"`
+	Curation         TelemetryCurationStats `json:"curation"`
+	ReadyPool        TelemetryReadyPool     `json:"readyPool"`
+}
+
+// NodeCredit ranks one workflow node's accumulated contribution to adverse
+// outcomes over the requested telemetry window.
+type NodeCredit struct {
+	Gaggle             string  `json:"gaggle"`
+	Workflow           string  `json:"workflow"`
+	Kind               string  `json:"kind"`
+	Stage              string  `json:"stage"`
+	Identity           string  `json:"identity,omitempty"`
+	RoutedRuns         int     `json:"routedRuns"`
+	FailureRuns        int     `json:"failureRuns"`
+	FailureShare       float64 `json:"failureShare"`
+	EscalationRuns     int     `json:"escalationRuns"`
+	RetryWasteAttempts int     `json:"retryWasteAttempts"`
 }
 
 // TelemetryCurationStats is the windowed action rollup for backlog curation.
@@ -132,6 +149,11 @@ type TelemetryRunStats struct {
 	AvgDurationMs  *float64 `json:"avgDurationMs,omitempty"`
 	MinDurationMs  *int64   `json:"minDurationMs,omitempty"`
 	MaxDurationMs  *int64   `json:"maxDurationMs,omitempty"`
+	// StuckAbortedRuns is how many of TotalRuns were excluded from
+	// Avg/Min/MaxDurationMs because they hung and were later aborted (the
+	// watchdog's max-duration expiry) rather than reaching a designed
+	// terminal — disclosed rather than silently dropped (#2534, #1439).
+	StuckAbortedRuns int `json:"stuckAbortedRuns"`
 }
 
 // TelemetryStageStats is the attempt aggregate for one stage.
@@ -162,6 +184,11 @@ type TelemetryStageStats struct {
 	RetryWasteDurationMs *int64   `json:"retryWasteDurationMs,omitempty"`
 	RetryWasteTokens     *int64   `json:"retryWasteTokens,omitempty"`
 	RetryWasteCostUSD    *float64 `json:"retryWasteCostUSD,omitempty"`
+	// StuckAbortedAttempts is how many of TotalAttempts belong to a run that
+	// hung and was later aborted (the watchdog's max-duration expiry),
+	// excluded from Avg/Min/MaxDurationMs and from P50/P95DurationMs —
+	// disclosed rather than silently dropped (#2534, #1439).
+	StuckAbortedAttempts int `json:"stuckAbortedAttempts"`
 }
 
 // TelemetryUsageStats is an exact AI usage rollup for one operational scope.
@@ -181,6 +208,7 @@ type TelemetryUsageStats struct {
 	P50CopilotPremiumRequests *float64 `json:"p50CopilotPremiumRequests,omitempty"`
 	P95CopilotPremiumRequests *float64 `json:"p95CopilotPremiumRequests,omitempty"`
 	CostSamples               int      `json:"costSamples"`
+	CostUSD                   *float64 `json:"costUSD,omitempty"`
 	P50CostUSD                *float64 `json:"p50CostUSD,omitempty"`
 	P95CostUSD                *float64 `json:"p95CostUSD,omitempty"`
 	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
@@ -311,11 +339,12 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Gaggles: make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
-		Runs:    make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages:  make([]TelemetryStageStats, 0, len(stats.Stages)),
-		Usage:   make([]TelemetryUsageStats, 0, len(stats.Usage)),
-		Models:  make([]TelemetryModelStats, 0, len(stats.Models)),
+		Gaggles:          make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:             make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:           make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Usage:            make([]TelemetryUsageStats, 0, len(stats.Usage)),
+		Models:           make([]TelemetryModelStats, 0, len(stats.Models)),
+		CreditAssignment: []NodeCredit{},
 		Curation: TelemetryCurationStats{
 			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,
@@ -374,14 +403,15 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Runs {
 		item := TelemetryRunStats{
-			Gaggle:         stat.Gaggle,
-			Workflow:       stat.Workflow,
-			Model:          stat.Model,
-			HarnessVersion: stat.HarnessVersion,
-			TotalRuns:      stat.TotalRuns,
-			CompletedRuns:  stat.CompletedRuns,
-			FailedRuns:     stat.FailedRuns,
-			OtherRuns:      stat.OtherRuns,
+			Gaggle:           stat.Gaggle,
+			Workflow:         stat.Workflow,
+			Model:            stat.Model,
+			HarnessVersion:   stat.HarnessVersion,
+			TotalRuns:        stat.TotalRuns,
+			CompletedRuns:    stat.CompletedRuns,
+			FailedRuns:       stat.FailedRuns,
+			OtherRuns:        stat.OtherRuns,
+			StuckAbortedRuns: stat.StuckAbortedRuns,
 		}
 		if stat.CompletedRuns+stat.FailedRuns > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
@@ -395,19 +425,20 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Stages {
 		item := TelemetryStageStats{
-			Gaggle:             stat.Gaggle,
-			Workflow:           stat.Workflow,
-			Stage:              stat.Stage,
-			Branch:             stat.Branch,
-			Model:              stat.Model,
-			HarnessVersion:     stat.HarnessVersion,
-			TotalAttempts:      stat.TotalAttempts,
-			SucceededAttempts:  stat.SucceededAttempts,
-			FailedAttempts:     stat.FailedAttempts,
-			DurationSamples:    stat.DurationSamples,
-			TokenSamples:       stat.TokenSamples,
-			CostSamples:        stat.CostSamples,
-			RetryWasteAttempts: stat.RetryWasteAttempts,
+			Gaggle:               stat.Gaggle,
+			Workflow:             stat.Workflow,
+			Stage:                stat.Stage,
+			Branch:               stat.Branch,
+			Model:                stat.Model,
+			HarnessVersion:       stat.HarnessVersion,
+			TotalAttempts:        stat.TotalAttempts,
+			SucceededAttempts:    stat.SucceededAttempts,
+			FailedAttempts:       stat.FailedAttempts,
+			DurationSamples:      stat.DurationSamples,
+			TokenSamples:         stat.TokenSamples,
+			CostSamples:          stat.CostSamples,
+			RetryWasteAttempts:   stat.RetryWasteAttempts,
+			StuckAbortedAttempts: stat.StuckAbortedAttempts,
 		}
 		if stat.SucceededAttempts+stat.FailedAttempts > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
@@ -462,6 +493,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
 		}
 		if stat.HasCost {
+			item.CostUSD = float64Pointer(stat.CostUSD)
 			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
 			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
 		}
@@ -610,7 +642,31 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 	if s.telemetry == nil {
 		return TelemetryStatsResult{}, ErrTelemetryUnavailable
 	}
-	return s.telemetry.TelemetryStats(ctx, req)
+	result, err := s.telemetry.TelemetryStats(ctx, req)
+	if err != nil || s.sources.ReadModel == nil {
+		return result, err
+	}
+	credits, err := s.sources.ReadModel.CreditAssignment(ctx, readmodel.CreditOptions{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+	})
+	if err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	result.CreditAssignment = make([]NodeCredit, 0, len(credits))
+	for _, credit := range credits {
+		failureShare := 0.0
+		if credit.RoutedRuns > 0 {
+			failureShare = float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+		}
+		result.CreditAssignment = append(result.CreditAssignment, NodeCredit{
+			Gaggle: credit.Gaggle, Workflow: credit.Workflow, Kind: credit.Kind,
+			Stage: credit.Stage, Identity: credit.Identity,
+			RoutedRuns: credit.RoutedRuns, FailureRuns: credit.FailureRuns,
+			FailureShare: failureShare, EscalationRuns: credit.EscalationRuns,
+			RetryWasteAttempts: credit.RetryWasteAttempts,
+		})
+	}
+	return result, nil
 }
 
 // TelemetryErrorSignatures implements TelemetryReader for the daemon's full local service.

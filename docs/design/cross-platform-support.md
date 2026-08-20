@@ -1,6 +1,6 @@
 # Cross-Platform Support — Linux & Windows nodes
 
-**Status:** Approved for backlog planning (PO directive, 2026-07-16). Backlog-only future
+**Status:** approved — for backlog planning (PO directive, 2026-07-16). Backlog-only future
 investment: items are not `goobers:approved` and not eligible for automated implementation
 until promoted.
 

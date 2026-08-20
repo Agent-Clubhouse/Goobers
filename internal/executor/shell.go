@@ -47,6 +47,10 @@ const DefaultMaxOutputBytes int64 = 1 << 20 // 1 MiB
 // wave).
 const groupKillWaitDelay = 5 * time.Second
 
+// Provider reset timestamps are second-granularity and may be slightly ahead
+// of the runner's clock.
+const providerRateLimitResetSlack = 2 * time.Second
+
 // timeoutDumpGrace bounds how long Run waits, after sending SIGQUIT to a
 // timed-out stage's process group, for the Go processes in it (go test, the
 // goobers CLI, goober-runtime) to write their FULL goroutine traces to the
@@ -359,7 +363,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	if e.SelfBin != "" && stageInvokesGoobersCLI(command) {
 		name = e.SelfBin
 	}
-	cmd := exec.Command(name, command[1:]...)
+	invokeName, invokeArgs := commandInvocation(name, command[1:])
+	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	// Configure tree ownership before the network isolation below layers its
@@ -432,12 +437,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// stdout/stderr before dying — a stage that blew its timeout is exactly
 		// the case worth diagnosing, and SIGKILL alone leaves no trace of WHY
 		// it hung (the long-standing "killed at 10m, cmd/goobers never finished,
-		// no dump" record). If the group dumps and exits within timeoutDumpGrace
-		// the SIGKILL below is skipped; otherwise (a non-Go child, one that
-		// caught SIGQUIT, or one wedged in an uninterruptible syscall) it is
-		// force-killed exactly as before. A deliberate cancel (not a timeout)
-		// goes straight to SIGKILL — nothing to diagnose there.
-		dumped := false
+		// no dump" record). The final SIGKILL sweep always runs: the direct
+		// child exiting after SIGQUIT does not prove that signal-ignoring
+		// descendants exited too. A deliberate cancel (not a timeout) goes
+		// straight to SIGKILL — nothing to diagnose there.
+		waited := false
 		if timedOut {
 			// SIGQUIT the whole tree so every Go process in it dumps its full
 			// goroutine trace and exits before the force-kill below. A platform
@@ -446,15 +450,15 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			if supported, _ := tree.RequestDump(); supported {
 				select {
 				case waitErr = <-waitDone:
-					dumped = true // goroutine traces are now in the captured output
+					waited = true // goroutine traces are now in the captured output
 				case <-time.After(timeoutDumpGrace):
 				}
 			}
 		}
-		if !dumped {
-			// Kill the whole tree, not just the direct child, so a runaway
-			// subprocess tree can't outlive the stage.
-			_ = tree.Kill()
+		// Kill the whole tree, not just the direct child, so a runaway
+		// subprocess tree can't outlive the stage.
+		_ = tree.Kill()
+		if !waited {
 			select {
 			case waitErr = <-waitDone:
 			case <-time.After(groupKillWaitDelay):
@@ -521,10 +525,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	if timedOut {
 		if stageInvokesProviderBuiltin(command) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
 				command[1], timeout, context.DeadlineExceeded,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -569,9 +573,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				stageName = command[1]
 			}
 			if report.Retryable {
-				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(report.Code, fmt.Errorf(
 					"executor: goobers stage %q reported %s: %s", stageName, report.Code, message,
-				))
+				)))
 			}
 			result.Status = apiv1.ResultFailure
 			result.Error = &apiv1.ErrorInfo{Code: report.Code, Message: message, Retryable: false}
@@ -604,21 +608,21 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
 					mergeResultFileOutputs(&result, data)
-					if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-						message, _ := result.Outputs[OutputErrorMessage].(string)
+					code, message, retryable := consumeErrorOutputs(result.Outputs)
+					if code != "" {
 						if message == "" {
 							message = fmt.Sprintf("command exited %d", exitCode)
 						}
-						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
-							return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
-								"executor: provider stage %q reported %s: %s", command[1], code, message,
-							))
+						if retryable {
+							return apiv1.ResultEnvelope{}, providerStageInfrastructureFailure(command[1], code, message, result.Outputs)
 						}
+
 						result.Status = apiv1.ResultFailure
 						result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: false}
 						result.Summary = message
 						return result, nil
 					}
+
 					// The file existed and parsed but carried no
 					// OutputErrorCode (the stage self-reported success
 					// shape yet still exited nonzero, or wrote an
@@ -638,9 +642,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 		providerErr := errors.New(message)
 		if providers.IsTransientError(providerErr) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("provider_error", fmt.Errorf(
 				"executor: provider stage %q failed: %w", command[1], providerErr,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -705,6 +709,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
+	code, message, retryable := consumeErrorOutputs(result.Outputs)
 	if exitCode == 0 {
 		// OutputNoWork (issue #233) only ever downgrades a would-be Success
 		// to NoWork — it's read from result.Outputs, which is only ever
@@ -725,12 +730,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// A typed error reported through the declared result file (see
 	// OutputErrorCode) beats the generic nonzero_exit: the command knew
 	// exactly why it failed and said so structurally.
-	if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-		message, _ := result.Outputs[OutputErrorMessage].(string)
+	if code != "" {
 		if message == "" {
 			message = fmt.Sprintf("command exited %d", exitCode)
 		}
-		retryable, _ := result.Outputs[OutputErrorRetryable].(bool)
 		result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: retryable}
 		result.Summary = message
 		return result, nil
@@ -740,8 +743,38 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
+	diagnostic := summarizeCommandFailure(outBytes, errBytes)
+	if applyCommandFailureDiagnostic(&result, exitCode, diagnostic, stdoutRef.Path, stderrRef.Path) {
+		return result, nil
+	}
+	if excerpt := stderrFailureExcerpt(errBytes); excerpt != "" {
+		result.Error.Message += "; stderr: " + excerpt
+	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
+}
+
+func consumeErrorOutputs(outputs map[string]interface{}) (code, message string, retryable bool) {
+	code, _ = outputs[OutputErrorCode].(string)
+	message, _ = outputs[OutputErrorMessage].(string)
+	retryable, _ = outputs[OutputErrorRetryable].(bool)
+	delete(outputs, OutputErrorCode)
+	delete(outputs, OutputErrorMessage)
+	delete(outputs, OutputErrorRetryable)
+	return code, message, retryable
+}
+
+func providerStageInfrastructureFailure(stage, code, message string, outputs map[string]interface{}) error {
+	err := StageFailure(code, fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message))
+	if code != providers.ErrorCodeRateLimited {
+		return invoke.InfrastructureFailure(err)
+	}
+	resetValue, _ := outputs["rateLimitReset"].(string)
+	resetAt, parseErr := time.Parse(time.RFC3339, resetValue)
+	if parseErr != nil {
+		return invoke.InfrastructureFailure(err)
+	}
+	return invoke.InfrastructureFailureUntil(err, resetAt.Add(providerRateLimitResetSlack))
 }
 
 func readBuiltinErrorReport(path string) (*builtinErrorReport, error) {
@@ -905,6 +938,22 @@ func stderrExcerpt(errBytes []byte) string {
 		s += "…"
 	}
 	return s
+}
+
+// Generic command failures keep both ends: runtimes may print the cause before
+// a long stack dump, while tools conventionally print terminal causes last.
+func stderrFailureExcerpt(errBytes []byte) string {
+	if len(errBytes) == 0 {
+		return ""
+	}
+	if len(errBytes) <= missingResultFileStderrExcerptBytes {
+		return strings.TrimSpace(string(errBytes))
+	}
+	headBytes := missingResultFileStderrExcerptBytes / 2
+	tailBytes := missingResultFileStderrExcerptBytes - headBytes
+	head := strings.TrimSpace(string(errBytes[:headBytes]))
+	tail := strings.TrimSpace(string(errBytes[len(errBytes)-tailBytes:]))
+	return head + "…" + tail
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {

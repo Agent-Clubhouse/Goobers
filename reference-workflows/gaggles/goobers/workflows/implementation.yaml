@@ -4,7 +4,7 @@
 # changes are deliberately not mirrored here.
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: implementation
 spec:
@@ -192,7 +192,8 @@ spec:
 
     # The merge tier and required declared-dependency integration gate from
     # CONTRIBUTING.md's "Validation tier contract", run on the implementation
-    # branch after syncing base.
+    # branch after review has published a durable checkpoint and after syncing
+    # base.
     - name: local-ci
       type: deterministic
       goal: Run the project's local CI-equivalent and strict declared-dependency integration validation in the worktree.
@@ -213,19 +214,21 @@ spec:
       # p99 and absorbs both contention, the cold golangci-lint cache each fresh
       # worktree now pays for (#1971), and the shorter integration tier.
       #
-      # Deliberately still maxAttempts 1: a timeout is reported retryable, but
-      # retrying immediately would meet the same contention, and two attempts at
-      # this budget would outlast the run-level stall timeout.
+      # Deliberately still maxAttempts 1: result failures route through
+      # local-gate, whose infrastructure branch has its own bounded,
+      # crash-resumable retry budget separate from policy repasses.
       timeoutSeconds: 1500
       retry:
         maxAttempts: 1
       next: local-gate
 
-    # Deterministic branch push (#237): the implementer commits but never
-    # pushes (no configured auth/identity for an agentic session to do so
-    # reliably) — this stage publishes the run branch to origin through the
-    # credential seam (#14), authenticated per-invocation, never persisted to
-    # disk. Runs after local-ci passes so a broken build is never published.
+    # Deterministic branch checkpoint (#237/#3272): the implementer commits but
+    # never pushes (no configured auth/identity for an agentic session to do so
+    # reliably) — this stage publishes the reviewed run branch to origin
+    # through the credential seam (#14), authenticated per-invocation, never
+    # persisted to disk. It deliberately runs before long local CI but still
+    # before open-pr, preserving the exact reviewed commit when validation
+    # infrastructure fails without publishing a pull request prematurely.
     - name: push-branch
       type: deterministic
       goal: Push the run's branch to origin.
@@ -235,7 +238,7 @@ spec:
         - repo:push
       policyActions:
         - push-repository-branch
-      next: open-pr
+      next: local-ci
 
     - name: open-pr
       type: deterministic
@@ -289,6 +292,8 @@ spec:
         - provider:pr:write
       expectedOutputs:
         - ciStatus
+        # Passed through by the built-in so timeout can re-enter this task.
+        - prNumber
       next: ci-gate
 
     - name: close-out
@@ -380,22 +385,24 @@ spec:
       agentic:
         goober: reviewer
       branches:
-        pass: local-ci
+        pass: push-branch
         needs-changes: implement
         fail: park-needs-human
         escalate: park-escalated
 
     # failure-class distinguishes retryable executor/infrastructure failures
     # from a genuine local-CI failure. Only the latter is actionable by the
-    # implementer; infrastructure failures park with their own gate outcome.
+    # implementer. Infrastructure failures retry local-ci against the exact
+    # reviewed commit under a separate bounded budget; exhaustion takes this
+    # gate's escalation branch, and terminal cleanup retains the pushed branch.
     - name: local-gate
       evaluator: automated
       automated:
         check: failure-class
       branches:
-        pass: push-branch
+        pass: open-pr
         fail: implement
-        infra: park-escalated
+        infra: local-ci
         escalate: park-escalated
 
     # #947: open-pr re-checks the claimed issue's state immediately before
@@ -426,6 +433,10 @@ spec:
         check: ci-status
         params:
           equals: "passing"
+        # Pinned explicitly at the 1.4 -> 2.0 migration: DSL 2.0's ci-poll
+        # input builder injects this default where DSL 1.4 left it unset, so
+        # the pin keeps compiled behavior identical across the version bump.
+        pollIntervalSeconds: 10
       branches:
         pass: close-out
         # Provider-authored failure evidence remains unapproved and is routed
@@ -433,17 +444,7 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it parks for remediation/investigation
-        # instead of spending an agentic repass re-implementing a change
-        # that was never actually reviewed as failing.
-        #
-        # Via park-escalated, NOT straight to "@escalate" (#929). Both reach
-        # the same terminal phase — park-escalated's own next is "@escalate" —
-        # but the issue-side bookkeeping only runs if the stage does. Routing
-        # timeout directly at the terminal state left the driving issue
-        # permanently orphaned: still goobers:ready, still goobers:claimed,
-        # never parked at all (#2028: goobers:needs-remediation here). Still
-        # claimed means query-backlog will not re-offer it, and no park label
-        # means no one sees it either, so it silently left the workable
-        # backlog with no signal at all.
-        timeout: park-escalated
+        # didn't finish in this polling window. Re-enter ci-poll at the
+        # journaled stage boundary so the same PR remains claimed and keeps
+        # waiting without consuming implementation or repass budget (#3325).
+        timeout: ci-poll

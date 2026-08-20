@@ -99,6 +99,14 @@ const (
 	// branch policy gates on (#772). Separate from ADOPRWrite so status-
 	// publish authority can be granted to a distinct identity from the author.
 	ADOPRStatus Capability = "ado:pr:status"
+	// ADOPRComplete grants completing (merging) an Azure Repos pull request —
+	// the ADO counterpart to GitHubPRMerge, and deliberately separate from
+	// ADOPRWrite for the same reason (docs/design/v0/pr-lifecycle-loop.md §7):
+	// implementation/pr-remediation may open and update PRs on ADO, but only
+	// merge-review may complete one. Without this, ADO completion authority
+	// would ride on ordinary ado:pr:write, defeating the decider/executor
+	// capability isolation GitHubPRMerge was designed to preserve.
+	ADOPRComplete Capability = "ado:pr:complete"
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
@@ -132,7 +140,7 @@ func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
-		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOWorkItemsWrite,
+		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }

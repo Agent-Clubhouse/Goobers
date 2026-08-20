@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/speechnotify"
+	speechtest "github.com/goobers/goobers/test/testsupport/speechnotify"
 )
 
 type recordingDesktopNotifier struct {
@@ -280,7 +281,7 @@ func TestTerminalNotifierSpeechIsOptInExactAndReceipted(t *testing.T) {
 		t.Fatalf("append terminal: %v", err)
 	}
 
-	fake := &speechnotify.FakeSynthesizer{}
+	fake := &speechtest.FakeSynthesizer{}
 	installFakeSpeechSink(t, fake)
 	notifier, err := buildTerminalNotifier(
 		context.Background(),
@@ -314,7 +315,7 @@ func TestTerminalNotifierSpeechIsOptInExactAndReceipted(t *testing.T) {
 }
 
 func TestTerminalNotifierRejectsEnabledSpeechWithoutPreflight(t *testing.T) {
-	fake := &speechnotify.FakeSynthesizer{PreflightErr: errors.New("audio device unavailable")}
+	fake := &speechtest.FakeSynthesizer{PreflightErr: errors.New("audio device unavailable")}
 	installFakeSpeechSink(t, fake)
 	notifier, err := buildTerminalNotifier(
 		context.Background(),

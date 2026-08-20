@@ -1,41 +1,47 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"regexp"
 )
 
-// issueSpecPin is the implementation-time snapshot of the linked issue's
-// UpdatedAt, embedded into the PR body by formatStructuredPRBody (#2340).
+// issueSpecPin is the implementation-time snapshot of the linked issue,
+// embedded into the PR body by formatStructuredPRBody (#2340).
 // merge-review's check-issue-staleness stage reads it back and compares
 // against a fresh GetWorkItem to detect an issue edited after implementation
 // began but before merge-review looked at the PR — the general case #2238's
 // goobers:run-aborted label doesn't cover, since that only invalidates a PR
 // whose OWN implementation run was cancelled.
-//
-// Deliberately pins UpdatedAt rather than a content digest (unlike
-// internal/decomposition's IssueSnapshotDigest, DEC-1's own analog): the
-// issue's labels aren't recoverable from the run's journaled scalar stage
-// outputs without new plumbing (see openprbody.go), while UpdatedAt already
-// is. The issue's acceptance criteria explicitly allow either.
 type issueSpecPin struct {
-	IssueID   string `json:"issueId"`
-	UpdatedAt string `json:"updatedAt"`
+	IssueID    string `json:"issueId"`
+	UpdatedAt  string `json:"updatedAt"`
+	SpecDigest string `json:"specDigest,omitempty"`
 }
 
 var issueSpecPinPattern = regexp.MustCompile(`(?s)<!-- issue-spec-pin: (.*?) -->`)
 
 // formatIssueSpecPin renders the marker line, or "" when there is nothing to
 // pin (no linked issue, or the provider never populated UpdatedAt for it).
-func formatIssueSpecPin(issueID, updatedAt string) string {
+func formatIssueSpecPin(issueID, updatedAt, title, body string) string {
 	if issueID == "" || updatedAt == "" {
 		return ""
 	}
-	data, err := json.Marshal(issueSpecPin{IssueID: issueID, UpdatedAt: updatedAt})
+	data, err := json.Marshal(issueSpecPin{
+		IssueID:    issueID,
+		UpdatedAt:  updatedAt,
+		SpecDigest: issueSpecDigest(title, body),
+	})
 	if err != nil {
 		return ""
 	}
 	return "<!-- issue-spec-pin: " + string(data) + " -->"
+}
+
+func issueSpecDigest(title, body string) string {
+	sum := sha256.Sum256([]byte(title + "\x00" + body))
+	return fmt.Sprintf("sha256:%x", sum)
 }
 
 // parseIssueSpecPin recovers the pin from a PR body. Absence (an older PR
@@ -68,11 +74,11 @@ func parseIssueSpecPin(body string) (issueSpecPin, bool) {
 // indefinitely, even though it already flagged that edit and routed the PR
 // to remediation. Advancing the pin to the edit just observed means the
 // next check only fires on a genuinely new edit.
-func replaceIssueSpecPin(body, issueID, updatedAt string) string {
+func replaceIssueSpecPin(body, issueID, updatedAt, title, issueBody string) string {
 	if !issueSpecPinPattern.MatchString(body) {
 		return body
 	}
-	replacement := formatIssueSpecPin(issueID, updatedAt)
+	replacement := formatIssueSpecPin(issueID, updatedAt, title, issueBody)
 	if replacement == "" {
 		return body
 	}

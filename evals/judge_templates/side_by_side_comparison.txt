@@ -1,0 +1,31 @@
+You are an evaluator for an AI agent system called Goobers. Scenario "{scenario_id}" is a side-by-side comparison: a baseline version and a candidate version both ran on the same input. Your job is to judge whether the candidate is at least as good as the baseline — NOT whether the candidate is good in a vacuum.
+
+Input given to both versions:
+{input}
+
+Baseline output:
+{baseline_output}
+
+Candidate output:
+{candidate_output}
+
+Expected output (may be absent):
+{expected}
+
+Additional scoring instructions for this scenario:
+{instructions}
+
+Score how the candidate compares to the baseline:
+- 1.0 = candidate is clearly better than or equivalent to the baseline
+- ~0.5 = candidate is roughly comparable but has a mix of improvements and regressions
+- 0.0 = candidate is clearly worse than the baseline (a regression)
+
+A regression on any of these should pull the score down even if other aspects improved: correctness, safety, or omitting something the baseline included that the input required.
+
+Respond with ONLY a single JSON object, no prose before or after it:
+{{
+  "score": <float 0.0-1.0, candidate-vs-baseline quality>,
+  "labels": [<zero or more of "regression", "improvement", "equivalent", "hallucination">],
+  "reason": "<one or two sentences naming the specific difference that drove the score>",
+  "confidence": <float 0.0-1.0>
+}}

@@ -14,6 +14,9 @@ import {
   eventStage,
   eventSummary,
   journalEntries,
+  keyMomentEvidence,
+  keyMomentLabel,
+  keyMoments,
   orderRunEvents,
   runEventStages,
   UNSCOPED_EVENT_STAGE,
@@ -708,5 +711,131 @@ describe("runEventStages", () => {
 
   it("is empty for no events", () => {
     expect(runEventStages([])).toEqual([]);
+  });
+});
+
+describe("keyMoments", () => {
+  it("keeps only decisions, handoffs, and escalations, dropping bookkeeping/evidence/liveness noise", () => {
+    const events: RunEvent[] = [
+      event(1, "run.started", { category: "transition" }),
+      event(2, "gate.started", { category: "bookkeeping", gate: "review" }),
+      event(3, "span.recorded", { category: "evidence", stage: "run:review", name: "reviewer.transcript" }),
+      event(4, "stage.heartbeat", { category: "liveness", stage: "implement" }),
+      event(5, "gate.evaluated", {
+        category: "decision",
+        gate: "review",
+        verdict: "pass",
+        target: "implement",
+      }),
+      event(6, "branch.started", { branchName: "docs" }),
+      event(7, "branch.finished", { branchName: "docs", branchStatus: "succeeded" }),
+    ];
+
+    const kinds = keyMoments(events).map((moment) => [moment.event.seq, moment.kind]);
+    expect(kinds).toEqual(
+      expect.arrayContaining([
+        [5, "decision"],
+        [6, "handoff"],
+        [7, "handoff"],
+      ]),
+    );
+    expect(keyMoments(events)).toHaveLength(3);
+  });
+
+  it("orders by significance — escalation, then decision, then handoff — before falling back to recency", () => {
+    const events: RunEvent[] = [
+      event(1, "branch.started", { branchName: "docs" }),
+      event(2, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
+      event(3, "stage.finished", { category: "transition", stage: "implement", status: "escalated" }),
+      event(4, "gate.evaluated", { category: "decision", gate: "review", verdict: "needs-changes" }),
+    ];
+
+    expect(keyMoments(events).map((moment) => moment.event.seq)).toEqual([3, 4, 2, 1]);
+  });
+
+  it("classifies a gate decision that routes to escalate as an escalation, not a plain decision", () => {
+    const events: RunEvent[] = [
+      event(1, "gate.evaluated", {
+        category: "decision",
+        gate: "review",
+        verdict: "blocked",
+        target: "@escalate",
+      }),
+    ];
+
+    expect(keyMoments(events)).toEqual([{ event: events[0], kind: "escalation" }]);
+  });
+
+  it("flags an explicitly escalated event even without a decision category", () => {
+    const events: RunEvent[] = [
+      event(1, "stage.finished", { category: "transition", stage: "implement", escalated: true }),
+    ];
+
+    expect(keyMoments(events)).toEqual([{ event: events[0], kind: "escalation" }]);
+  });
+
+  it("is empty for a run with no significant events", () => {
+    const events: RunEvent[] = [
+      event(1, "run.started", { category: "transition" }),
+      event(2, "stage.heartbeat", { category: "liveness", stage: "implement" }),
+    ];
+
+    expect(keyMoments(events)).toEqual([]);
+  });
+});
+
+describe("keyMomentLabel", () => {
+  it("gives each kind a human label", () => {
+    expect(keyMomentLabel("escalation")).toBe("Escalation");
+    expect(keyMomentLabel("decision")).toBe("Decision");
+    expect(keyMomentLabel("handoff")).toBe("Handoff");
+  });
+});
+
+describe("keyMomentEvidence", () => {
+  it("finds the verdict artifact recorded on the same gate before the decision", () => {
+    const events: RunEvent[] = [
+      event(1, "gate.started", { category: "bookkeeping", gate: "review" }),
+      event(2, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          name: "verdict/review-1.json",
+          digest: "sha256:verdict-1",
+          size: 40,
+          mediaType: "application/json",
+          stage: "review",
+        },
+      }),
+      event(3, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
+    ];
+
+    const decision = events[2];
+    expect(keyMomentEvidence(events, decision, "run-1")).toBe(events[1]);
+  });
+
+  it("never looks past the moment's own sequence", () => {
+    const events: RunEvent[] = [
+      event(1, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
+      event(2, "artifact.recorded", {
+        category: "evidence",
+        artifact: {
+          name: "verdict/review-1.json",
+          digest: "sha256:verdict-1",
+          size: 40,
+          mediaType: "application/json",
+          stage: "review",
+        },
+      }),
+    ];
+
+    expect(keyMomentEvidence(events, events[0], "run-1")).toBeUndefined();
+  });
+
+  it("is undefined when the branch never recorded inspectable evidence", () => {
+    const events: RunEvent[] = [
+      event(1, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
+    ];
+
+    expect(keyMomentEvidence(events, events[0], "run-1")).toBeUndefined();
   });
 });

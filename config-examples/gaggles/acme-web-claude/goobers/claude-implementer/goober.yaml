@@ -1,0 +1,29 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-implementer
+spec:
+  gaggle: acme-web-claude
+  role: implementer
+  displayName: Implementer (Claude Code)
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  # Implement-only: this stage never opens the PR or touches issues directly
+  # (those are separate deterministic stages in the implementation
+  # workflow) — repo:push covers repository writes; agent:model authenticates
+  # the harness without granting provider mutation.
+  capabilities:
+    - repo:push
+    - agent:model
+  policyActions:
+    - modify-repository
+  skills:
+    - implement
+    - run-tests
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - claude-implementation

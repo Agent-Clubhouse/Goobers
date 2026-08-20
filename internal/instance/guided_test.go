@@ -37,6 +37,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		CopilotTokenEnv:      "WIDGET_COPILOT_TOKEN",
 		Workflows:            []string{GuidedWorkflowImplementation, GuidedWorkflowWorkNomination},
 		CICommand:            []string{"npm", "run", "ci"},
+		RequiredCapabilities: []string{"node@20"},
 	}
 
 	res, err := initGuidedForTest(root, opts)
@@ -48,6 +49,7 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 
 	layout := NewLayout(root)
+	assertPreviewFeaturesDefaultOff(t, layout.ConfigDir())
 	cfg, err := LoadConfig(layout.ConfigFile())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -55,6 +57,9 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	if len(cfg.Repos) != 1 || cfg.Repos[0].Owner != "acme" ||
 		cfg.Repos[0].Name != "widget-service" || cfg.Repos[0].Token.Env != "WIDGET_REPO_TOKEN" {
 		t.Fatalf("unexpected guided repository config: %+v", cfg.Repos)
+	}
+	if !slices.Equal(cfg.Runner.Capabilities, []string{"node@20"}) {
+		t.Fatalf("guided runner capabilities = %v, want [node@20]", cfg.Runner.Capabilities)
 	}
 	wantCredentials := map[string]string{
 		string(capability.GitHubIssuesWrite): "WIDGET_ISSUES_TOKEN",
@@ -85,6 +90,9 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 		gaggle.Spec.Backlog.Project != "acme/widget-service" ||
 		!slices.Equal(gaggle.Spec.CICommand, []string{"npm", "run", "ci"}) {
 		t.Fatalf("unexpected guided gaggle: %+v", gaggle)
+	}
+	if !slices.Equal(gaggle.Spec.RequiredCapabilities, []string{"node@20"}) {
+		t.Fatalf("guided gaggle required capabilities = %v, want [node@20]", gaggle.Spec.RequiredCapabilities)
 	}
 
 	for _, goober := range set.Goobers {
@@ -126,6 +134,66 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 	if strings.Contains(string(instructions), "Acme Web") || !strings.Contains(string(instructions), "acme/widget-service") {
 		t.Fatalf("instructions were not specialized for the repository")
+	}
+}
+
+// TestInitGuidedClaudeCodeHarnessAppliesToEveryGoober pins #2777: guided
+// init's harness choice is one decision for the whole generated fleet, so it
+// must override every selected goober's harness — including implementer,
+// whose acme-web template already ships harness: claude-code, and the
+// others, whose template ships harness: copilot — uniformly, and route the
+// optional model-auth token through the claude-specific field, not Copilot's.
+func TestInitGuidedClaudeCodeHarnessAppliesToEveryGoober(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	opts := GuidedOptions{
+		GaggleName:           "widget-service",
+		RepoOwner:            "acme",
+		RepoName:             "widget-service",
+		RepoTokenEnv:         "WIDGET_REPO_TOKEN",
+		WorkTrackingTokenEnv: "WIDGET_ISSUES_TOKEN",
+		PullRequestTokenEnv:  "WIDGET_PR_TOKEN",
+		RepoPushTokenEnv:     "WIDGET_PUSH_TOKEN",
+		Harness:              "claude-code",
+		ClaudeTokenEnv:       "WIDGET_CLAUDE_TOKEN",
+		Workflows:            []string{GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration},
+		CICommand:            []string{"npm", "run", "ci"},
+		RequiredCapabilities: []string{"node@20"},
+	}
+
+	if _, err := initGuidedForTest(root, opts); err != nil {
+		t.Fatalf("InitGuided: %v", err)
+	}
+
+	layout := NewLayout(root)
+	cfg, err := LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	foundModelCredential := false
+	for _, credential := range cfg.Credentials {
+		if credential.Capability != string(capability.AgentModel) {
+			continue
+		}
+		foundModelCredential = true
+		if credential.Token.Env != "WIDGET_CLAUDE_TOKEN" {
+			t.Errorf("agent:model credential token env = %q, want WIDGET_CLAUDE_TOKEN", credential.Token.Env)
+		}
+	}
+	if !foundModelCredential {
+		t.Fatal("no agent:model credential grant was produced for the claude-code token env")
+	}
+
+	set, report, err := LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) == 0 {
+		t.Fatal("no goobers were generated")
+	}
+	for _, goober := range set.Goobers {
+		if goober.Spec.Harness != "claude-code" {
+			t.Errorf("goober %q harness = %q, want claude-code", goober.Name, goober.Spec.Harness)
+		}
 	}
 }
 
@@ -231,6 +299,7 @@ func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 			switch workflow {
 			case GuidedWorkflowImplementation:
 				opts.CICommand = []string{"go", "test", "./..."}
+				opts.RequiredCapabilities = []string{"go@1.26"}
 				opts.PullRequestTokenEnv = "PR_TOKEN"
 				opts.RepoPushTokenEnv = "PUSH_TOKEN"
 			case GuidedWorkflowBacklogCuration:
@@ -294,6 +363,7 @@ func TestGuidedGaggleAndWorkflowDocumentCICommandLink(t *testing.T) {
 			CopilotTokenEnv:      "MODEL_TOKEN",
 			Workflows:            []string{GuidedWorkflowImplementation},
 			CICommand:            []string{"go", "test", "./..."},
+			RequiredCapabilities: []string{"go@1.26"},
 		}
 		sourceRoot := filepath.Join(t.TempDir(), "widget-config-source")
 		if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {

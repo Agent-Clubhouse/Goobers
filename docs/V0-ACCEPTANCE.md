@@ -39,7 +39,7 @@ against the responsible issue, per issue #30's scope.
 
 ## Prerequisites
 
-- Go 1.26.5+ (matches `go.mod`).
+- Go 1.26.6+ (matches `go.mod`).
 - `golangci-lint` on the daemon's `PATH`; the `local-ci` gate inherits the
   daemon's environment, not your interactive shell's (see
   `docs/guides/quickstart.md`).
@@ -48,7 +48,7 @@ against the responsible issue, per issue #30's scope.
   access to a repo you're willing to have the instance open PRs against —
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
-- The [self-hosting dogfood config](#28) this repo ships — `reference-workflows/` is on
+- The [self-hosting dogfood config](#1-setup) this repo ships — `reference-workflows/` is on
   `main`: as of `e739bd0`, **6 goobers, 4 workflows** (curator, implementer,
   reviewer, nominator, analyst, config-author; backlog-curation, work-nomination,
   implementation, and `tutor.yaml`'s weekly self-improvement loop), with the
@@ -274,10 +274,11 @@ downstream mechanics a cron-fired pass would. A literal cron-fired
 end-to-end pass has not separately been recorded in this session; that gap
 is real, not claimed as closed here.
 
-## Known limitations (V0 → later)
+## Historical V0 limitations
 
-What V0 deliberately does not do, so a reader doesn't mistake a scoping
-decision for a bug:
+This archival list records what V0 deliberately did not do at acceptance time.
+It does not describe current product limitations; later releases have
+superseded some entries.
 
 - **No self-merge.** A human merges the PR the implementation workflow opens
   (`ARCHITECTURE.md` §12 roadmap). Full autonomy is out of scope at every
@@ -303,17 +304,14 @@ decision for a bug:
   by design — safer than a denylist filter that could miss a credential var),
   which may starve tools that expect `XDG_*`/`LANG`/`SSL_CERT_FILE`/proxy vars
   in less common environments — tracked as #75 (V1).
-- **`instance.yaml` is loaded once, at `goobers up` startup.** Editing it
-  (repos, telemetry, `runConditions`) while the daemon is running has no
-  effect until the next restart. With the opt-in `goobers up --watch-config`
-  flag (off by default), the `config/` definition directory is watched and valid
-  edits are atomically reloaded; invalid edits keep the last-known-good
-  definitions and append `config.reload.rejected` to the instance journal
-  (CFG-020/DEP-025, #154). Without the flag, `config/` is loaded once at startup
-  like `instance.yaml`. (The live-watch trigger is experimental and slated for
-  replacement by the Workflow CD config source, #453.) An `instance.yaml` that fails `Validate()` is
-  caught at that startup load (`goobers up` refuses to start, per `up.go`'s
-  `os.Stat(l.ConfigFile())`/`LoadConfig` checks), not silently ignored.
+- **Config reload was limited to direct-directory watching.** At V0,
+  `instance.yaml` and `config/` were loaded at `goobers up` startup unless the
+  opt-in `--watch-config` flag watched direct edits to `config/`. This historical
+  limitation was superseded by Git `workflowSource` reconciliation: Git sources
+  now reconcile continuously without `--watch-config`, using periodic polling
+  plus local-ref and authenticated-webhook wakeups while retaining
+  last-known-good definitions after an invalid revision. `instance.yaml` itself
+  remains startup-loaded.
 - **Workflow definitions are pinned at `Version: 1` permanently.** There is no
   mechanism yet to bump a workflow's version when its definition changes;
   `trace`'s `(v1)` display and journal `Trigger.Kind`/gate-outcome comparisons
@@ -373,7 +371,7 @@ V0-ACCEPTANCE.md", `Fixes #317`, branch
 `docs/guides/quickstart.md` only (zero scope creep — matches #317's
 acceptance criteria exactly), state=OPEN/MERGEABLE at time of writing,
 pending the manual human merge the no-self-merge DoD requires (#30's
-acceptance criteria; see [Known limitations](#known-limitations-v0--later))
+acceptance criteria; see [Known limitations](#historical-v0-limitations))
 — no agent merges to this repo autonomously, so this PR is left for Mason
 to merge directly rather than merged by the operator who opened this
 record.

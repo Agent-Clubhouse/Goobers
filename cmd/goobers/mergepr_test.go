@@ -1332,7 +1332,7 @@ func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
 
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
-	held, err := lock.Acquire(lockPath)
+	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatalf("pre-acquire merge lock: %v", err)
 	}
@@ -1445,18 +1445,47 @@ func TestMergePRRecordsMergeConflictAsRefusal(t *testing.T) {
 	}
 }
 
-// TestMergePRKeepsUnrecognized405AsProviderFailure is #1751's explicit
-// classification constraint: GitHub uses 405 for several merge refusals
-// (branch protection, ruleset violations, method restrictions), so the status
-// code alone must never be read as a conflict. An unrecognized 405 keeps the
-// generic provider-stage failure rather than being silently recorded as a
-// merge-conflict refusal, which would let an unrelated policy block reach
-// record-merge-refusal and demote a lander for the wrong reason.
+func TestMergePRRecordsRequiredStatusCheckPendingAsRefusal(t *testing.T) {
+	st := &mergePRServerState{
+		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
+		mergeRefusalStatus: http.StatusMethodNotAllowed,
+		mergeRefusalBody:   `{"message":"Repository rule violations found\n\nRequired status check \"make ci (fmt-check · vet · build · test · lint)\" is expected.\n\n","documentation_url":"https://docs.github.com/rest"}`,
+	}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q; a pending required check is a business refusal, not a provider-stage failure", code, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
+	}
+	if result["reason"] != requiredStatusPendingReason {
+		t.Fatalf("result = %+v, want reason=%s", result, requiredStatusPendingReason)
+	}
+	if result["selectedNumber"] != "9" {
+		t.Fatalf("result = %+v, want selectedNumber=9 for record-merge-refusal", result)
+	}
+	if result["selectedHeadSha"] != "head123" {
+		t.Fatalf("result = %+v, want selectedHeadSha=head123 for record-merge-refusal", result)
+	}
+	if _, ok := result["landOutcome"]; ok {
+		t.Fatalf("result = %+v, want no landOutcome so merge-gate takes the refusal branch", result)
+	}
+	if _, ok := result["errorCode"]; ok {
+		t.Fatalf("result = %+v, want no generic provider error envelope", result)
+	}
+}
+
 func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
 		mergeRefusalStatus: http.StatusMethodNotAllowed,
-		mergeRefusalBody:   `{"message":"Required status check \"lint\" is expected."}`,
+		mergeRefusalBody:   `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue"}`,
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, dir := mergePREnv(t, server.URL, false, map[string]string{
@@ -1471,7 +1500,7 @@ func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
 	if _, ok := result["errorCode"]; !ok {
 		t.Fatalf("result = %+v, want the generic provider error envelope", result)
 	}
-	if result["reason"] == "merge-conflict" {
-		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge conflict", result)
+	if _, ok := result["reason"]; ok {
+		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
 	}
 }

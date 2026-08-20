@@ -70,6 +70,9 @@ type fakePR struct {
 	// categorical self-review 422 — the #870 single-identity case where the
 	// reviewing token is also the PR author.
 	selfReview bool
+	// fineGrainedSelfReview returns the opaque 404 emitted for the same
+	// restriction when the reviewer uses a fine-grained PAT.
+	fineGrainedSelfReview bool
 }
 
 type fakeReview struct {
@@ -228,6 +231,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
 	mux.HandleFunc("/user", s.handleAuthenticatedUser)
+	mux.HandleFunc("/graphql", s.handleGraphQL)
 	mux.HandleFunc(prefix+"/issues/events", s.handleIssueEvents)
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
@@ -241,6 +245,41 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+func (s *fakeGitHubServer) handleGraphQL(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	repository := make(map[string]interface{})
+	for variable, value := range request.Variables {
+		if !strings.HasPrefix(variable, "ref") {
+			continue
+		}
+		state := "PENDING"
+		for _, pr := range s.prs {
+			if pr.headSHA != fmt.Sprint(value) {
+				continue
+			}
+			switch pr.checkState {
+			case "success":
+				state = "SUCCESS"
+			case "failure", "error":
+				state = "FAILURE"
+			}
+			break
+		}
+		repository["r"+strings.TrimPrefix(variable, "ref")] = map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": state},
+		}
+	}
+	writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": repository}})
 }
 
 // handleRepoLabels serves the repository label set: GET lists it, POST defines a
@@ -805,6 +844,15 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 				out = append(out, prDetailJSON(pr))
 			}
 		}
+		if perPage, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && perPage > 0 {
+			page := 1
+			if requestedPage, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && requestedPage > 0 {
+				page = requestedPage
+			}
+			start := min((page-1)*perPage, len(out))
+			end := min(start+perPage, len(out))
+			out = out[start:end]
+		}
 		writeFakeJSON(w, out)
 	case http.MethodPost:
 		var body struct {
@@ -858,6 +906,11 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			Event    string `json:"event"`
 		}
 		decodeFakeJSON(r, &body)
+		if pr.fineGrainedSelfReview {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"}`)
+			return
+		}
 		if pr.selfReview {
 			// GitHub's exact categorical refusal (#870): author == reviewer.
 			verb := "approve"
@@ -1066,6 +1119,12 @@ func (s *fakeGitHubServer) setPRSelfReview(number int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].selfReview = true
+}
+
+func (s *fakeGitHubServer) setPRFineGrainedSelfReview(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].fineGrainedSelfReview = true
 }
 
 // closeIssue flips a fixture issue's state to closed — for #552's

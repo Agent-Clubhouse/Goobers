@@ -75,6 +75,28 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n")
 	}
 
+	// Unconditional for every agentic invocation, not gated on req.Sandbox
+	// (#2419): a goober invents ad-hoc scratch files mid-task for its own
+	// bookkeeping (extract data, then loop over it) far more often than it
+	// runs under Goobers' own confinement — req.Sandbox is nil for the
+	// overwhelming majority of real invocations (sandbox enforcement is
+	// opt-in per instance, not the default), and even where it is set,
+	// $TMPDIR is a Goobers-internal confinement detail, not something a
+	// model should need to know about. A prior version of this guidance
+	// told the model to use $TMPDIR when req.Sandbox != nil, which both
+	// missed the common case and pointed at the wrong mechanism — the
+	// denial this was written for traced to the harness's own bash
+	// invocation, not internal/harness/confine.go's sandbox at all. Every
+	// workspace (repo, repo-readonly, scratch) is already a real,
+	// already-writable directory; a relative path inside it always works,
+	// with no confinement-specific env var to know about.
+	b.WriteString("## Scratch files\n\n")
+	b.WriteString("If you need a scratch file for intermediate processing, write it as a relative path inside your current workspace — do not assume `/tmp` or any other absolute host path is writable.\n\n")
+
+	if req.GoobersIORegistered {
+		b.WriteString(goobersIOPromptSection(req))
+	}
+
 	if completionInResponse {
 		b.WriteString(renderResponseCompletionContract(req))
 		return b.String()
@@ -133,19 +155,22 @@ func completionContract(req RunRequest) (string, string) {
 	return "result", resultShapeHint
 }
 
-// resultShapeHint deliberately omits "error", "artifacts", and "transcript" from the base
-// shape. "error" is required only on a "failure"/"blocked" status, and an empty
-// error object on a successful result fails the schema's errorInfo minLength:1
-// check (#297). "artifacts" must be digested ArtifactPointer objects — a model
-// cannot reliably self-report a content digest, and no harness step resolves a
-// model-declared path into one, so a model that fills the field produces an
-// invalid completion (#301); stage evidence (e.g. a reviewer's diff) and the
-// captured transcript are recorded and digested by the runner, never
-// self-reported here. These fields are described conditionally/out-of-band
-// instead of shown inline.
-const resultShapeHint = `{"status": "success"|"failure"|"blocked"|"no-work", "outputs": {...}, "summary": "...", "metrics": {...}}
+// resultShapeHint deliberately omits "error", "artifacts", "transcript", and
+// "metrics" from the base shape. "error" is required only on a
+// "failure"/"blocked" status, and an empty error object on a successful result
+// fails the schema's errorInfo minLength:1 check (#297). "artifacts" must be
+// digested ArtifactPointer objects — a model cannot reliably self-report a
+// content digest, and no harness step resolves a model-declared path into one,
+// so a model that fills the field produces an invalid completion (#301);
+// "metrics" is optional and accepts numeric measurements only. Stage evidence
+// (e.g. a reviewer's diff) and the captured transcript are recorded and digested
+// by the runner, never self-reported here. These fields are described
+// conditionally/out-of-band instead of shown inline.
+const resultShapeHint = `{"status": "success"|"failure"|"blocked"|"no-work", "outputs": {...}, "summary": "..."}
 
 Use "no-work" only when the task completed without error but found nothing to act on; the runner then completes the workflow without running downstream stages. On a "failure" or "blocked" status, also include an "error" object: {"code": "...", "message": "..."} (both non-empty). Omit "error" entirely on success and no-work. Do not populate "artifacts" or "transcript" — the runner records and digests them.
+
+Do not populate "metrics" unless you have numeric measurements. Every metrics value must be a JSON number, never a string, boolean, array, or object. Confidence labels, trust decisions, and issue references belong in "summary" or scalar "outputs", not in metrics.
 
 On a "blocked" status, if you can name specific blocking issue numbers, set outputs.blockedBy to a single comma-separated string (e.g. "441,442") — never an array or object; outputs accepts scalars only and a structured value is schema-rejected.`
 

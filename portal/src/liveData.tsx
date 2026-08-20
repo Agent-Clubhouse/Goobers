@@ -34,6 +34,8 @@ export interface LiveDataConfig {
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
+  /** How long the initial SSE handshake may remain pending. */
+  connectTimeoutMs: number;
   /**
    * How long the stream may go completely silent before it is treated as dead.
    *
@@ -68,6 +70,7 @@ const defaultConfig: LiveDataConfig = {
   invalidationWindowMs: 50,
   reconnectBaseDelayMs: 250,
   reconnectMaxDelayMs: 30_000,
+  connectTimeoutMs: 10_000,
   streamIdleTimeoutMs: 45_000,
   connectionSettledMs: 10_000,
   failuresBeforePolling: 3,
@@ -165,6 +168,7 @@ export function LiveDataProvider({
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
       config?.reconnectMaxDelayMs,
+      config?.connectTimeoutMs,
       config?.streamIdleTimeoutMs,
       config?.connectionSettledMs,
       config?.refreshMaxDelayMs,
@@ -238,6 +242,7 @@ export class LiveDataController {
   private polling = false;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private connectTimer: ReturnType<typeof setTimeout> | undefined;
   /**
    * Fires when the stream has been silent past streamIdleTimeoutMs.
    *
@@ -405,11 +410,13 @@ export class LiveDataController {
     let stream: DaemonEventStream | undefined;
     let connectedAt = 0;
     const resumeCursor = this.cursor;
+    const connectTimer = this.armConnectWatchdog(generation, controller);
     try {
       stream = await this.client.connectEvents(
         resumeCursor ? { cursor: resumeCursor } : undefined,
         { signal: controller.signal },
       );
+      this.clearConnectWatchdog(connectTimer);
       if (!this.isCurrent(generation, controller)) {
         stream.close();
         return;
@@ -459,11 +466,43 @@ export class LiveDataController {
       }
       this.handleDisconnect("stream-error");
     } finally {
+      this.clearConnectWatchdog(connectTimer);
       this.clearIdleWatchdog();
       if (this.activeStream === stream) {
         this.activeStream = undefined;
       }
       stream?.close();
+    }
+  }
+
+  private armConnectWatchdog(
+    generation: number,
+    controller: AbortController,
+  ): ReturnType<typeof setTimeout> {
+    this.clearConnectWatchdog();
+    const timer = setTimeout(() => {
+      if (!this.isCurrent(generation, controller)) {
+        return;
+      }
+      this.dependencies.diagnostics?.recordSSE({
+        event: "reconnect",
+        cause: "connect-timeout",
+        delayMs: this.config.connectTimeoutMs,
+      });
+      controller.abort();
+      this.handleDisconnect("connect-timeout");
+    }, this.config.connectTimeoutMs);
+    this.connectTimer = timer;
+    return timer;
+  }
+
+  private clearConnectWatchdog(expected?: ReturnType<typeof setTimeout>): void {
+    if (expected !== undefined && this.connectTimer !== expected) {
+      return;
+    }
+    if (this.connectTimer !== undefined) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = undefined;
     }
   }
 
@@ -664,6 +703,7 @@ export class LiveDataController {
 
   private closeConnection(cause: string): void {
     const connected = this.activeStream !== undefined;
+    this.clearConnectWatchdog();
     // The watchdog belongs to the connection, so it dies with it. Without this
     // it outlives every teardown path — provider stop, offline, tab hidden,
     // reconnect — and fires against a generation that no longer exists, leaving

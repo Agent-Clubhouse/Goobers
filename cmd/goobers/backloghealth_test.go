@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,12 +13,99 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root, repo := providerDispatchFixture(t, kind)
+			provider, err := newBacklogHealthProvider(root, repo, true)
+			if err != nil {
+				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
+			}
+			assertDispatchedProviderKind(t, provider, kind)
+		})
+	}
+}
+
+func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	changedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/acme/project/_apis/wit/wiql", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"workItems": []map[string]int{{"id": 42}},
+		})
+	})
+	mux.HandleFunc("/acme/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 42,
+			"fields": map[string]any{
+				"System.WorkItemType": "Task",
+				"System.Title":        "Ready backlog item",
+				"System.State":        "Active",
+				"System.Tags":         "goobers:approved; goobers:ready",
+				"System.CreatedDate":  changedAt.Add(-time.Hour).Format(time.RFC3339),
+				"System.ChangedDate":  changedAt.Format(time.RFC3339),
+			},
+		})
+	})
+	mux.HandleFunc("/acme/project/_apis/wit/workitemtypes/Task/states", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"value": []map[string]string{{"name": "Active", "category": "InProgress"}},
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	original := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		if routed != repo {
+			t.Fatalf("routed repo = %#v, want %#v", routed, repo)
+		}
+		return providers.NewADOProvider(
+			routed.Owner,
+			routed.Project,
+			"token",
+			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL },
+		), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = original })
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code != 0 {
+		t.Fatalf("backlog-health: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "backlog-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got backlogHealthReport
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ReadyPoolDepth != 1 || got.ReadyPoolStarved {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if got.AverageReadyAgeSeconds < (2*time.Hour - time.Minute).Seconds() {
+		t.Fatalf("average ready age = %f, want provider timestamp age near two hours", got.AverageReadyAgeSeconds)
+	}
+	if len(got.ReadyTransitions) != 0 {
+		t.Fatalf("ready transitions = %#v, want no synthesized ADO transitions", got.ReadyTransitions)
+	}
+}
 
 func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
@@ -58,6 +147,31 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	}
 }
 
+func TestAnnotateReadyTimesSkipsClosedItems(t *testing.T) {
+	readyAt := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
+	items := []providers.WorkItem{
+		{ID: "closed", State: "closed", Labels: []string{providers.LabelReady}},
+		{ID: "open", State: "open", Labels: []string{providers.LabelReady}},
+	}
+	transitions := []providers.WorkItemLabelTransition{{
+		ItemID: "open", Label: providers.LabelReady, Added: true, OccurredAt: readyAt,
+	}}
+
+	if err := annotateReadyTimes(items, providers.LabelReady, transitions); err != nil {
+		t.Fatalf("annotateReadyTimes: %v", err)
+	}
+	if items[0].ReadyAt != nil {
+		t.Fatalf("closed item readyAt = %v, want nil", items[0].ReadyAt)
+	}
+	if items[1].ReadyAt == nil || !items[1].ReadyAt.Equal(readyAt) {
+		t.Fatalf("open item readyAt = %v, want %v", items[1].ReadyAt, readyAt)
+	}
+
+	if err := annotateReadyTimes(items[1:], providers.LabelReady, nil); err == nil {
+		t.Fatal("annotateReadyTimes accepted open ready item without an active label-add event")
+	}
+}
+
 func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -77,7 +191,7 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	); err != nil {
 		t.Fatalf("remove ready label: %v", err)
 	}
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "health-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "health-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

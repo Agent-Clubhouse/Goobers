@@ -1,0 +1,10 @@
+{
+  "digestsSha256": "9552551dcbef484f8afdcfd55dea14bef92eee260aa43232533ee9db0378e64e",
+  "patches": [
+    {
+      "version": 1,
+      "binaryVersion": "v0.2.0",
+      "description": "Initial freeze: digests.json as committed when DSL 2.0 was locked as supported and final at the v0.2.0 lock ceremony (#3279) — no runtime patches applied yet. New DSL surface belongs in a copied-forward interpreter, never here."
+    }
+  ]
+}

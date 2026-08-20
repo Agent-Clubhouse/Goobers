@@ -68,6 +68,11 @@ const (
 	// of the runner substrate, so the same workflow definition must produce
 	// identical conformance views sandboxed or not.
 	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
+	// EventNotificationRequested records exact pre-rendered content before any
+	// sink is attempted.
+	EventNotificationRequested EventType = "notification.requested"
+	// EventNotificationReceipt records one sink attempt or suppression result.
+	EventNotificationReceipt EventType = "notification.delivery.receipt"
 
 	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
 	// All four are conformance-normative: they and the completeness record are
@@ -169,6 +174,19 @@ const (
 	AttemptHuman AttemptClass = "human"
 )
 
+const (
+	// RunnerAnnotationRunRecovery identifies a recovered run.
+	RunnerAnnotationRunRecovery = "run.recovery"
+	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
+	RunnerAnnotationTriggerRecovery = "trigger.recovery"
+	// RecoveryActionResumed records continuation of an interrupted stage.
+	RecoveryActionResumed = "resumed"
+	// RecoveryActionRetried records a new attempt after interruption.
+	RecoveryActionRetried = "retried"
+	// RecoveryActionNewClaim records an item claimed after daemon restart.
+	RecoveryActionNewClaim = "new_claim"
+)
+
 // Event is the versioned journal envelope: one JSON object per line in
 // events.jsonl. It is deliberately flat and omitempty-heavy so `cat`/`jq`/`grep`
 // are first-class debugging tools (§4).
@@ -213,6 +231,12 @@ type Event struct {
 	// Actor identifies the human principal that requested an intervention.
 	// Normative.
 	Actor string `json:"actor,omitempty"`
+	// Action identifies the human intervention recorded by run.resumed.
+	// Normative.
+	Action string `json:"action,omitempty"`
+	// Decision is the configured gate branch selected by a run.resumed
+	// intervention. Normative.
+	Decision string `json:"decision,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
@@ -227,6 +251,9 @@ type Event struct {
 	// Target is the branch/state a gate selected or a run.resumed action chose.
 	// Normative.
 	Target string `json:"target,omitempty"`
+	// Complete marks a run.resumed intervention that selected the workflow's
+	// terminal completion branch. Normative.
+	Complete bool `json:"complete,omitempty"`
 	// Escalated reports that gate evaluation selected its escalation control
 	// branch. Normative.
 	Escalated bool `json:"escalated,omitempty"`
@@ -278,6 +305,12 @@ type Event struct {
 	// Runner holds runner-specific annotations. The ONLY sanctioned
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
+	// NotificationRequest is the typed payload on notification.requested.
+	// Notification delivery is operational output and excluded from workflow
+	// conformance.
+	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
+	// NotificationReceipt is the typed payload on notification.delivery.receipt.
+	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
 
 	// --- parallel/branch payload (§6.2) ---
 
@@ -401,6 +434,10 @@ func (e Event) IsConformanceNormative() bool {
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only
 		// per §3.3, never content-compared across runners.
+		return false
+	case EventNotificationRequested, EventNotificationReceipt:
+		// Output transports are deployment-side effects, not deterministic
+		// workflow-machine transitions.
 		return false
 	default:
 		return true

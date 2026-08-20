@@ -1,16 +1,65 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
+
+func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	currentPath := defaultWorkflowPath(root)
+	raw, err := os.ReadFile(currentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
+	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const nextOnly workflow.FeatureID = "goober.spec.next-only"
+	var versions []string
+	features, code := instanceUsedFeaturesWithResolver(
+		root,
+		&bytes.Buffer{},
+		workflow.FeaturesForGaggle,
+		func(def workflow.Definition, _ apiv1.GooberSpec) ([]workflow.Feature, error) {
+			versions = append(versions, def.DSLVersion)
+			if def.DSLVersion != supportmatrix.NextDSLVersion {
+				return nil, nil
+			}
+			return []workflow.Feature{{
+				ID: nextOnly,
+				DSLVersions: []workflow.DSLFeatureSupport{{
+					Version: supportmatrix.NextDSLVersion,
+					Level:   workflow.SupportPreview,
+				}},
+			}}, nil
+		},
+	)
+	if code != 0 {
+		t.Fatalf("instanceUsedFeaturesWithResolver code = %d", code)
+	}
+	if len(versions) != 1 || versions[0] != supportmatrix.NextDSLVersion {
+		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.NextDSLVersion)
+	}
+	if !slices.ContainsFunc(features, func(feature workflow.Feature) bool {
+		return feature.ID == nextOnly
+	}) {
+		t.Fatalf("used features do not contain %q: %+v", nextOnly, features)
+	}
+}
 
 // TestFeaturesListsBuildMatrix: the bare command prints the full build feature
 // matrix — every registry feature, with the table header and a trailing count —
@@ -138,9 +187,12 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", 1)
-	next = strings.Replace(next, "name: default-implement", "name: next-implement", 1)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "next-implement.yaml"), []byte(next), 0o644); err != nil {
+	// The starter scaffold pins NextDSLVersion (2.0) since #2698, so the
+	// second workflow drops back to the deprecated-but-loadable
+	// CurrentDSLVersion (1.4) to exercise one row per interpreter version.
+	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
+	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,6 +215,28 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 		if !seen[version] {
 			t.Errorf("output missing %s row for DSL %s:\n%s", feature, version, stdout)
 		}
+	}
+}
+
+// TestFeaturesUsedIncludesGaggleScopedFeatures: gaggle-scoped features live on
+// the GaggleSpec, not on any workflow, so --used only sees them through the
+// FeaturesForGaggle fan-out (#3297) — before that wiring, a gaggle declaring a
+// sparse checkout reported nothing gaggle-scoped at all. Sparse checkout is
+// the GA gaggle feature, so the instance loads without a preview
+// acknowledgement.
+func TestFeaturesUsedIncludesGaggleScopedFeatures(t *testing.T) {
+	root := initIntrospectionInstance(t)
+	replaceInFile(t, filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"),
+		"    branch: main",
+		"    branch: main\n    checkout:\n      sparse:\n        - docs")
+
+	code, stdout, stderr := runArgs(t, "features", "--used", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	const feature = "gaggle.spec.project.checkout.sparse"
+	if !strings.Contains(stdout, feature) {
+		t.Fatalf("gaggle-scoped feature %q missing from --used output:\n%s", feature, stdout)
 	}
 }
 

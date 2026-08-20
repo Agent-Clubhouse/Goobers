@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -78,6 +79,27 @@ func TestWorkflowCRDValidatesDSLVersionShape(t *testing.T) {
 	const wantPattern = `^[0-9]+\.[0-9]+$`
 	if schema.Pattern != wantPattern {
 		t.Fatalf("dslVersion pattern = %q, want %q", schema.Pattern, wantPattern)
+	}
+}
+
+func TestManifestCRDValidatesInstance(t *testing.T) {
+	spec := loadCRDSpecSchema(t, "../../config/crd/bases/goobers.dev_manifests.yaml")
+	if !slices.Equal(spec.Required, []string{"instance"}) {
+		t.Fatalf("Manifest spec required fields = %v, want [instance]", spec.Required)
+	}
+
+	instance := spec.Properties["instance"]
+	if !slices.Equal(instance.Required, []string{"environment", "name"}) {
+		t.Fatalf("Manifest instance required fields = %v, want [environment name]", instance.Required)
+	}
+	environment := instance.Properties["environment"]
+	gotEnvironments := make([]string, len(environment.Enum))
+	for i, value := range environment.Enum {
+		gotEnvironments[i] = string(value.Raw)
+	}
+	wantEnvironments := []string{`"dev"`, `"staging"`, `"prod"`}
+	if !slices.Equal(gotEnvironments, wantEnvironments) {
+		t.Fatalf("Manifest environment enum = %v, want %v", gotEnvironments, wantEnvironments)
 	}
 }
 

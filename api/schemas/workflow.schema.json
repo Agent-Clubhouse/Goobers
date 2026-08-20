@@ -50,6 +50,7 @@
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },
         "start": { "type": "string", "minLength": 1, "examples": ["act"], "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
           "type": "array",
@@ -131,7 +132,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
@@ -171,6 +172,16 @@
           "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
         },
         "schedule": { "type": "string", "description": "Cron expression or @every interval used by a schedule trigger." },
+        "idleBackoff": {
+          "type": "object",
+          "description": "Adaptive delay after consecutive scheduled runs find no work. Omitted defaults to enabled with a one-minute floor and fifteen-minute ceiling.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable adaptive idle backoff. Defaults to true." },
+            "floor": { "type": "string", "minLength": 1, "description": "Minimum idle interval as a positive Go duration. Defaults to 1m." },
+            "ceiling": { "type": "string", "minLength": 1, "description": "Maximum idle interval as a positive Go duration. Defaults to 15m and must not be below floor." }
+          }
+        },
         "signal": { "type": "string", "description": "External signal name used by a signal trigger." },
         "events": {
           "type": "array",
@@ -184,6 +195,12 @@
           "if": { "required": ["trustLabel"] },
           "then": {
             "properties": { "type": { "const": "backlog-item" } }
+          }
+        },
+        {
+          "if": { "required": ["idleBackoff"] },
+          "then": {
+            "properties": { "type": { "const": "schedule" } }
           }
         }
       ]
@@ -232,6 +249,7 @@
           "maxItems": 32,
           "items": { "type": "string" }
         },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Task-level override for the local outbox mirror root. Most specific value wins over workflow and gaggle settings." },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
         "capabilities": {
@@ -256,6 +274,7 @@
               "ado:pr:comment",
               "ado:pr:write",
               "ado:pr:status",
+              "ado:pr:complete",
               "ado:work-items:write",
               "telemetry:read",
               "journal:read",
@@ -312,6 +331,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",
@@ -350,7 +370,7 @@
           }
         },
         "expectedOutputs": { "type": "array", "description": "Intended task postconditions. Accepted for forward compatibility but not enforced by the local runner.", "items": { "type": "string" } },
-        "continueOnError": { "type": "boolean", "description": "Whether a failed result remains visible to the next gate instead of immediately failing the run. Failed-task outputs are discarded." },
+        "continueOnError": { "type": "boolean", "description": "Whether this stage's failure is tolerated. With a task as `next`, a failed stage fails the run unless this is true. With a gate as `next`, the failed status always reaches the gate and its branches are honored either way; this flag then only decides how a failure the gate routes to workflow completion is recorded — tolerated (run completes) or preserved (run marked failed). Failed-task outputs are discarded in every case." },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"], "description": "Agentic timeout behavior: fail the attempt or salvage a viable committed diff." },
         "next": { "type": "string", "description": "Next task, gate, or parallel state. Empty means successful terminal completion." }
       },
@@ -438,7 +458,7 @@
           }
         },
         "maxRepasses": {
-          "description": "Per-gate override of the inherited repass budget; valid for automated and agentic gates.",
+          "description": "Override of the inherited target-stage re-entry budget when this gate routes to an already-completed stage; valid for automated and agentic gates.",
           "type": "integer",
           "minimum": 1
         },

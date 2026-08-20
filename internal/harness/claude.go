@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +23,72 @@ var defaultClaudeExtraArgs = []string{
 	"--output-format", "stream-json",
 	"--verbose",
 	"--permission-mode", "bypassPermissions",
+}
+
+// claudeToolGroups expands the shared harness-neutral tool-group vocabulary
+// (see copilotToolGroups) into Claude Code's own built-in tool names. There is
+// no Claude equivalent of the "github" group (Copilot resolves it to
+// github-mcp-server-* tools) — a goober declaring tools: [github] on
+// claude-code falls through expandToolGroup unexpanded, which is a known,
+// separately-tracked gap (#1471 scope is tools, not that mapping).
+var claudeToolGroups = map[string][]string{
+	"shell": {
+		"Bash", "Read", "Edit", "Write", "Glob", "Grep",
+	},
+	"telemetry": {
+		"Read", "Glob", "Grep",
+	},
+}
+
+// claudeAvailableTools expands a goober's declared tool allowlist into the
+// deduplicated set of concrete Claude Code built-in tool names.
+func claudeAvailableTools(tools []string) []string {
+	var expanded []string
+	seen := make(map[string]struct{})
+	for _, declared := range tools {
+		for _, tool := range expandToolGroup(declared, claudeToolGroups) {
+			if _, ok := seen[tool]; ok {
+				continue
+			}
+			seen[tool] = struct{}{}
+			expanded = append(expanded, tool)
+		}
+	}
+	return expanded
+}
+
+// claudeExtraArgs builds the CLI flags controlling tool availability. With no
+// declared tools it returns defaultClaudeExtraArgs unchanged, preserving
+// today's unrestricted-bypass behavior byte-for-byte. With a non-empty
+// allowlist it uses --tools to define which built-in tools exist at all (the
+// analog of Copilot's --available-tools) plus --allowedTools to pre-approve
+// exactly that same set, so the session runs non-interactively without
+// needing the blanket --permission-mode bypassPermissions escape hatch.
+func claudeExtraArgs(tools []string) []string {
+	if len(tools) == 0 {
+		return append([]string(nil), defaultClaudeExtraArgs...)
+	}
+	allowlist := strings.Join(claudeAvailableTools(tools), ",")
+	return []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--tools", allowlist,
+		"--allowedTools", allowlist,
+	}
+}
+
+// claudeKnownModels are the Claude Code model identifiers this adapter
+// accepts. Unlike the Copilot CLI adapter, Claude Code exposes no
+// authenticated "list available models" API to discover this set
+// dynamically, so it is maintained here and rejected at config admission
+// (ValidateConfig) — not at Run time, since Run may be driving a session
+// whose configuration was already admitted, or a caller (a test, `goobers
+// run`) that intentionally bypasses admission.
+var claudeKnownModels = map[string]bool{
+	"claude-fable-5":            true,
+	"claude-opus-5":             true,
+	"claude-sonnet-5":           true,
+	"claude-haiku-4-5-20251001": true,
 }
 
 // ClaudeAdapter drives Claude Code in non-interactive print mode.
@@ -38,10 +106,32 @@ type ClaudeAdapter struct {
 // Name returns the adapter's diagnostic identity.
 func (c *ClaudeAdapter) Name() string { return "claude-code" }
 
-// ValidateConfig checks Claude Code model and harness option values.
+// ValidateConfig checks Claude Code model and harness option values. This is
+// called during config admission, so an unsupported model is rejected before
+// a run is ever attempted rather than failing (or silently misbehaving)
+// mid-session.
 func (c *ClaudeAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
+	if err := validateClaudeModel(model); err != nil {
+		return err
+	}
 	_, err := normalizeClaudeConfig(model, options)
 	return err
+}
+
+func validateClaudeModel(model string) error {
+	// "" and "auto" both mean "let the harness pick" — "auto" is the
+	// cross-adapter sentinel goober configs use for this (see the Copilot
+	// adapter's own always-valid "auto" entry), so it must be accepted here
+	// too rather than rejected as an unknown model.
+	if model == "" || model == "auto" || claudeKnownModels[model] {
+		return nil
+	}
+	valid := make([]string, 0, len(claudeKnownModels))
+	for name := range claudeKnownModels {
+		valid = append(valid, name)
+	}
+	sort.Strings(valid)
+	return fmt.Errorf("unknown model %q; valid models: %s", model, strings.Join(valid, ", "))
 }
 
 func normalizeClaudeConfig(model string, options map[string]apiextensionsv1.JSON) (map[string]string, error) {
@@ -84,12 +174,14 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	env := baseEnv(c.ExtraEnvAllowlist)
 	baseCommand := resolveHarnessCommand(c.Command)
 	versionCommand := append(append([]string(nil), baseCommand...), "--version")
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: versionCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q did not respond to --version: %w — check it is installed and signed in", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q --version exited %d — check it is installed and signed in", bin, res.ExitCode)
+	versionProbe := fmt.Sprintf("harness: claude-code: %q --version", bin)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            versionCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
 	version := firstOutputLine(res.Transcript)
 	if version == "" {
@@ -97,14 +189,43 @@ func (c *ClaudeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	}
 
 	authCommand := append(append([]string(nil), baseCommand...), "auth", "status")
-	res, err = c.runner().Run(ctx, ProcessRequest{Command: authCommand, Env: env})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status failed: %w — run `claude auth login`", bin, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: claude-code: %q auth status exited %d — run `claude auth login`", bin, res.ExitCode)
+	authProbe := fmt.Sprintf("harness: claude-code: %q auth status", bin)
+	res, err = c.runner().Run(ctx, ProcessRequest{
+		Command:            authCommand,
+		Env:                env,
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run `claude auth login`")
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+// buildClaudeArgv assembles the claude CLI invocation with every flag ahead
+// of a "--" terminator and the prompt last. Every shipped instructions.md
+// opens with YAML frontmatter, so the prompt routinely begins with "-"; a
+// CLI parser that scans all argv positions for option-shaped tokens would
+// otherwise misparse it regardless of where in argv it sits. Putting the
+// prompt behind "--" as the final element is the only placement immune to
+// that, since everything after "--" is taken as a literal. It returns the
+// argv plus the indices of the prompt and the "--session-id" flag token,
+// both of which the completion-recovery path rewrites in place.
+func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID, prompt string) (argv []string, promptArg, sessionSelectorArg int) {
+	argv = append(argv, baseCommand...)
+	argv = append(argv, "-p")
+	argv = append(argv, extra...)
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	if effort != "" {
+		argv = append(argv, "--effort", effort)
+	}
+	sessionSelectorArg = len(argv)
+	argv = append(argv, "--session-id", sessionID)
+	argv = append(argv, "--")
+	promptArg = len(argv)
+	argv = append(argv, prompt)
+	return argv, promptArg, sessionSelectorArg
 }
 
 func (c *ClaudeAdapter) runner() ProcessRunner {
@@ -122,9 +243,13 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if req.Workspace == "" {
 		return Outcome{}, fmt.Errorf("harness: claude-code: RunRequest.Workspace is empty")
 	}
+	req = withAutoGoobersIOClaude(req, c.SelfBin)
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: invalid configuration: %w", err)
+	}
+	if err := validateToolAllowlist(c.Name(), req.Tools); err != nil {
+		return Outcome{}, err
 	}
 
 	prompt := renderPrompt(req)
@@ -137,25 +262,39 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	}
 
 	baseCommand := resolveHarnessCommand(c.Command)
-	argv := append(baseCommand, "-p", prompt)
-	promptArg := len(baseCommand) + 1
 	extra := c.ExtraArgs
 	if extra == nil {
-		extra = defaultClaudeExtraArgs
+		extra = claudeExtraArgs(req.Tools)
 	}
-	argv = append(argv, extra...)
-	if req.Model != "" {
-		argv = append(argv, "--model", req.Model)
+	var mcpConfigArgs []string
+	goobersIOArg, err := goobersIOClaudeMCPConfigArg(req, c.SelfBin)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: %w", err)
 	}
-	if effort, ok := options["effort"]; ok {
-		argv = append(argv, "--effort", effort)
+	if goobersIOArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, goobersIOArg)
+	}
+	declaredMCPArg, mcpEnvAdditions, err := prepareClaudeMCP(ctx, req)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if declaredMCPArg != "" {
+		mcpConfigArgs = append(mcpConfigArgs, declaredMCPArg)
+	}
+	// A single --mcp-config flag takes multiple space-separated values
+	// (confirmed live: repeated servers from separate values merge cleanly),
+	// so goobers-io's registration and a goober's declared mcpServers coexist
+	// under one flag invocation without conflicting.
+	if len(mcpConfigArgs) > 0 {
+		extra = append(append([]string(nil), extra...), "--mcp-config")
+		extra = append(extra, mcpConfigArgs...)
+		extra = append(extra, "--strict-mcp-config")
 	}
 	sessionID, err := newHarnessSessionID()
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: create session id: %w", err)
 	}
-	sessionSelectorArg := len(argv)
-	argv = append(argv, "--session-id", sessionID)
+	argv, promptArg, sessionSelectorArg := buildClaudeArgv(baseCommand, extra, req.Model, options["effort"], sessionID, prompt)
 
 	env, err := buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
@@ -168,29 +307,32 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if err != nil {
 		return Outcome{}, err
 	}
+	env = append(env, mcpEnvAdditions...)
 
-	var writableRoots []string
+	// Isolate this run from the invoking user's ambient ~/.claude: an
+	// unsandboxed run must not inherit the host's personal settings, hooks,
+	// plugins, or MCP servers just because it happens to run on a machine
+	// with a populated home directory (a goober's behavior must depend only
+	// on what the DSL config declares). CLAUDE_CONFIG_DIR is redirected to a
+	// fresh, per-run directory seeded with nothing but a copy of the stored
+	// credentials (if any) unconditionally, for both sandboxed and
+	// unsandboxed runs.
+	configDir, tempDir, err := prepareClaudeRuntime(req.Workspace)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	if err := seedClaudeCredentials(ctx, env, configDir); err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: isolate ambient config: %w", err)
+	}
+	env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
+	env = overrideEnv(env, "TMPDIR", tempDir)
+
 	if req.Sandbox != nil {
-		configDir, tempDir, err := prepareClaudeSandboxRuntime(req.Workspace)
+		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
-		if err := seedClaudeCredentials(env, configDir); err != nil {
-			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
-		}
-		profileDir := filepath.Join(req.Workspace, filepath.FromSlash(sandboxRuntimeSubdir), "profile")
-		var privateRoots []string
-		env, privateRoots, err = isolateSandboxProfile(env, profileDir)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
-		}
-		writableRoots, err = gitWritableRoots(req.Workspace)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
-		}
-		env = overrideEnv(env, "CLAUDE_CONFIG_DIR", configDir)
-		env = overrideEnv(env, "TMPDIR", tempDir)
-		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, writableRoots, privateRoots)
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, writableRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: claude-code: sandbox: %w", err)
 		}
@@ -258,6 +400,13 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+		Stderr:                 result.Stderr,
+	}
+	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
+	out.InputInspectionReceipts = receipts
+	out.InputInspectionReceiptsCollected = receiptsCollected
+	if receiptsErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
 	if native, ok := convertClaudeStreams(claudeInvocationStreams(invocationResults, captures, req.MaxTranscriptBytes), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
 		out.Metrics = native.metrics
@@ -279,7 +428,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	return out, nil
 }
 
-func prepareClaudeSandboxRuntime(workspace string) (string, string, error) {
+func prepareClaudeRuntime(workspace string) (string, string, error) {
 	goobersDir := filepath.Join(workspace, ".goobers")
 	sandboxDir := filepath.Join(goobersDir, "sandbox")
 	for _, dir := range []string{goobersDir, sandboxDir} {
@@ -317,7 +466,21 @@ func ensurePlainDirectory(path string) error {
 	return nil
 }
 
-func seedClaudeCredentials(env []string, destination string) error {
+const claudeCodeKeychainService = "Claude Code-credentials"
+
+type claudeKeychainReader func(context.Context, string) ([]byte, error)
+
+func seedClaudeCredentials(ctx context.Context, env []string, destination string) error {
+	return seedClaudeCredentialsForPlatform(ctx, env, destination, runtime.GOOS, readClaudeKeychainCredentials)
+}
+
+func seedClaudeCredentialsForPlatform(
+	ctx context.Context,
+	env []string,
+	destination string,
+	goos string,
+	readKeychain claudeKeychainReader,
+) error {
 	sourceDir := ""
 	var home, userProfile string
 	for _, entry := range env {
@@ -340,22 +503,51 @@ func seedClaudeCredentials(env []string, destination string) error {
 			userProfile = value
 		}
 	}
-	if userProfile != "" {
+	// HOME wins when explicitly set — matching the convention used for
+	// resolving Copilot's config home (copilotConfigHome). USERPROFILE is
+	// the Windows-native fallback, only consulted when HOME is unset; it
+	// must not unconditionally override an explicitly configured HOME
+	// (e.g. from a POSIX-style toolchain shim, or a test/sandbox override),
+	// which is ambient on every real Windows runner regardless of HOME.
+	if home == "" {
 		home = userProfile
 	}
 	if sourceDir == "" && home != "" {
 		sourceDir = filepath.Join(home, ".claude")
 	}
-	if sourceDir == "" {
-		return nil
+	var credentials []byte
+	if sourceDir != "" {
+		source := filepath.Join(sourceDir, ".credentials.json")
+		var err error
+		credentials, err = os.ReadFile(source)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read stored credentials: %w", err)
+		}
 	}
-	source := filepath.Join(sourceDir, ".credentials.json")
-	credentials, err := os.ReadFile(source)
-	if err != nil {
-		if os.IsNotExist(err) {
+	if credentials == nil {
+		if goos != "darwin" {
 			return nil
 		}
-		return fmt.Errorf("read stored credentials: %w", err)
+		var err error
+		credentials, err = readKeychain(ctx, claudeCodeKeychainService)
+		if err != nil {
+			// "No such item" is the Keychain's spelling of the same state the
+			// file branch above treats as optional: this machine simply has no
+			// stored Claude Code login. Every other platform returns nil here
+			// rather than failing, and so should darwin — otherwise the adapter
+			// is unusable on any Mac where Claude Code was never signed in,
+			// which includes every CI runner. Genuine failures (a locked
+			// keychain, a denied prompt, security(1) missing) still fail
+			// closed, since they leave the credential state unknown.
+			if isKeychainItemNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("read Claude Code credentials from macOS Keychain service %q: %w", claudeCodeKeychainService, err)
+		}
+		credentials = bytes.TrimSpace(credentials)
+		if len(credentials) == 0 {
+			return fmt.Errorf("macOS Keychain service %q contains empty Claude Code credentials", claudeCodeKeychainService)
+		}
 	}
 	target := filepath.Join(destination, ".credentials.json")
 	if err := os.WriteFile(target, credentials, 0o600); err != nil {
@@ -365,4 +557,23 @@ func seedClaudeCredentials(env []string, destination string) error {
 		return fmt.Errorf("secure stored credentials: %w", err)
 	}
 	return nil
+}
+
+func readClaudeKeychainCredentials(ctx context.Context, service string) ([]byte, error) {
+	return exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+}
+
+// keychainItemNotFoundExit is security(1)'s exit status for
+// errSecItemNotFound — "The specified item could not be found in the keychain."
+// It is a distinct status from its permission and I/O failures, which is what
+// makes "absent" separable from "could not be determined" here.
+const keychainItemNotFoundExit = 44
+
+// isKeychainItemNotFound reports whether err is security(1) saying the item
+// simply is not there, as opposed to any failure that leaves the credential
+// state unknown. Matched on the exit status rather than the message so it does
+// not depend on security(1)'s stderr wording.
+func isKeychainItemNotFound(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == keychainItemNotFoundExit
 }

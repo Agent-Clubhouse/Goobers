@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SCAFFOLD GAGGLE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers scaffold gaggle \- scaffold a gaggle, or rename one with --from
+.SH SYNOPSIS
+\fBgoobers scaffold gaggle\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers scaffold gaggle [--force | --from <existing-gaggle>] <name> [path]
+
+Create a new gaggle in the instance at path (an instance root, default
+"."). With no --from, scaffolds an empty gaggle: gaggle.yaml plus its
+manifest.yaml registration, ready for `goobers scaffold goober`/
+`scaffold workflow`. Existing files are never replaced unless --force is
+set.
+
+--from <existing-gaggle> instead renames that gaggle to <name>: it moves
+gaggles/<existing-gaggle> to gaggles/<name> and rewrites every identity
+reference in place — gaggle.yaml's metadata.name and isolation.namespace,
+the manifest.yaml gaggles list entry, and every contained goober/workflow's
+spec.gaggle back-reference — while leaving project, backlog, ciCommand,
+instructions, and workflow bodies untouched. --force is not accepted
+with --from: a rename never overwrites an existing gaggle directory.
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

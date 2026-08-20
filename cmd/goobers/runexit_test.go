@@ -116,7 +116,7 @@ func TestRunDelegatedExitCodesForTerminalPhases(t *testing.T) {
 			}()
 
 			var stdout, stderr bytes.Buffer
-			code := runDelegatedTrigger(ctx, l, "default-implement", root, false, &stdout, &stderr)
+			code := runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
 			if err := <-responseDone; err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +168,7 @@ func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
 	}()
 
 	var stdout, stderr bytes.Buffer
-	code := runDelegatedTrigger(ctx, l, "default-implement", root, false, &stdout, &stderr)
+	code := runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
 	if err := <-responseDone; err != nil {
 		t.Fatal(err)
 	}

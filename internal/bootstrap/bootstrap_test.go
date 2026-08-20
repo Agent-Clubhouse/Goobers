@@ -147,7 +147,10 @@ func TestSchedulerForPinsGaggleAndGooberPolicy(t *testing.T) {
 	if st.last.BranchNamespace != "bots/" {
 		t.Errorf("branchNamespace = %q, want the gaggle's configured root", st.last.BranchNamespace)
 	}
-	if want := map[string][]string{"reviewer": {"agent:model"}}; !reflect.DeepEqual(st.last.GateGooberCapabilities, want) {
+	if want := map[string][]string{
+		"coder":    {"agent:model"},
+		"reviewer": {"agent:model"},
+	}; !reflect.DeepEqual(st.last.GateGooberCapabilities, want) {
 		t.Errorf("gateGooberCapabilities = %v, want %v", st.last.GateGooberCapabilities, want)
 	}
 	if got := st.last.RunControls; got.MaxRepasses != 5 || got.StalledRunTimeout != "30m0s" {

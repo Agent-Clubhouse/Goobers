@@ -10,10 +10,11 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
-  # Implement-only: repo:push is the whole grant (the PR/issue stages are the
-  # stack-agnostic deterministic stages, unchanged from the Go/web gaggles).
+  # Implement-only: repo:push covers repository writes and agent:model
+  # authenticates the harness (the PR/issue stages remain deterministic).
   capabilities:
     - repo:push
+    - agent:model
   policyActions:
     - modify-repository
   skills:

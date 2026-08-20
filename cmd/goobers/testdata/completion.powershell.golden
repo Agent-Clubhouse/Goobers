@@ -5,6 +5,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     $topLevel = @(
         'version'
         'init'
+        'connect'
         'examples'
         'scaffold'
         'validate'
@@ -12,6 +13,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'down'
         'service'
         'dashboard'
+        'getting-started'
         'run'
         'signal'
         'workflow'
@@ -33,7 +35,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     if ($elements.Count -gt 0 -and !($elements.Count -eq 1 -and $wordToComplete -eq $elements[0])) {
         switch ($elements[0]) {
             'help' {
-                $completions = @('all', 'stages')
+                $completions = @('all', 'stages', 'instance', 'gaggle', 'goober', 'workflow', 'stage', 'gate', 'harness', 'capability')
             }
             default { return }
         }

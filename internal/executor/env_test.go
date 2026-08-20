@@ -2,12 +2,16 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // TestBaseEnvMatchesProcenv is the #248 drift-guard: executor's baseEnv()
@@ -95,6 +99,43 @@ func TestBaseEnvStillBlocksSecretShapedVars(t *testing.T) {
 	}
 }
 
+func TestBuildStageEnvTypesUnavailableCredential(t *testing.T) {
+	const (
+		capability = "repo:push"
+		envName    = "GOOBERS_TEST_UNAVAILABLE_CREDENTIAL"
+	)
+	t.Setenv(envName, "")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: "push-token",
+		Env:  envName,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: capability,
+		Ref:        "push-token",
+	}}, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = buildStageEnv(
+		context.Background(), injector, []string{capability}, noopRegistrar{},
+		"", "", "", "", "", "", false, nil, nil, nil, nil,
+	)
+	var coded interface {
+		error
+		StageErrorCode() string
+	}
+	if !errors.As(err, &coded) {
+		t.Fatalf("buildStageEnv error = %v, want typed credential failure", err)
+	}
+	if got := coded.StageErrorCode(); got != telemetry.ErrCodeCredentialUnavailable {
+		t.Fatalf("StageErrorCode() = %q, want %q", got, telemetry.ErrCodeCredentialUnavailable)
+	}
+}
+
 // TestBuildStageEnv_InjectsRunContextOnlyWhenRequested is #322's core: the
 // run's operational identity (GOOBERS_RUN_ID/GOOBERS_GAGGLE/
 // GOOBERS_WORKFLOW/GOOBERS_INSTANCE_ROOT) is injected only when
@@ -166,40 +207,40 @@ func TestBuildStageEnv_InjectsRunContextOnlyWhenRequested(t *testing.T) {
 	}
 }
 
-// TestBuildStageEnvInjectsAdditionalRepoPaths is MGV-11 (#1286): a stage's
-// read-only reference-repo checkouts are surfaced as GOOBERS_ADDITIONAL_REPO_*
-// path vars plus a GOOBERS_ADDITIONAL_REPOS index — but only alongside the other
-// run-context vars (injectRunContext), so a local-ci stage running the project's
-// own build never receives them.
+// TestBuildStageEnvInjectsAdditionalRepoPaths is MGV-11 (#1286): a stage granted
+// contents:read receives its provisioned reference-repo paths independently of
+// whether its command consumes operational run context.
 func TestBuildStageEnvInjectsAdditionalRepoPaths(t *testing.T) {
 	additional := map[string]string{
 		"goobers":   "/work/refs/goobers",
 		"clubhouse": "/work/refs/clubhouse",
 	}
-	withCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", true, nil, nil, nil, additional)
-	if err != nil {
-		t.Fatalf("buildStageEnv(injectRunContext=true): %v", err)
-	}
-	for _, want := range []string{
-		"GOOBERS_ADDITIONAL_REPO_GOOBERS=/work/refs/goobers",
-		"GOOBERS_ADDITIONAL_REPO_CLUBHOUSE=/work/refs/clubhouse",
-		"GOOBERS_ADDITIONAL_REPOS=clubhouse,goobers", // sorted for determinism
-	} {
-		if !hasEnv(withCtx, want) {
-			t.Errorf("missing %q in %v", want, withCtx)
+	declared := []string{string(capability.ContentsRead)}
+	for _, injectRunContext := range []bool{true, false} {
+		env, err := buildStageEnv(context.Background(), nil, declared, nil, "run-1", "site", "publish", "", "", "", injectRunContext, nil, nil, nil, additional)
+		if err != nil {
+			t.Fatalf("buildStageEnv(injectRunContext=%v): %v", injectRunContext, err)
+		}
+		for _, want := range []string{
+			"GOOBERS_ADDITIONAL_REPO_GOOBERS=/work/refs/goobers",
+			"GOOBERS_ADDITIONAL_REPO_CLUBHOUSE=/work/refs/clubhouse",
+			"GOOBERS_ADDITIONAL_REPOS=clubhouse,goobers", // sorted for determinism
+		} {
+			if !hasEnv(env, want) {
+				t.Errorf("injectRunContext=%v: missing %q in %v", injectRunContext, want, env)
+			}
 		}
 	}
 	if got := AdditionalRepoEnvVar("goobers"); got != "GOOBERS_ADDITIONAL_REPO_GOOBERS" {
 		t.Errorf("AdditionalRepoEnvVar(goobers) = %q", got)
 	}
 
-	// A non-goobers-CLI stage (local-ci) never receives them.
-	noCtx, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", false, nil, nil, nil, additional)
+	withoutCapability, err := buildStageEnv(context.Background(), nil, nil, nil, "run-1", "site", "publish", "", "", "", false, nil, nil, nil, additional)
 	if err != nil {
-		t.Fatalf("buildStageEnv(injectRunContext=false): %v", err)
+		t.Fatalf("buildStageEnv(without contents:read): %v", err)
 	}
-	if hasEnvPrefix(noCtx, "GOOBERS_ADDITIONAL_REPO") {
-		t.Errorf("reference-repo vars leaked into a non-goobers-CLI stage: %v", noCtx)
+	if hasEnvPrefix(withoutCapability, "GOOBERS_ADDITIONAL_REPO") {
+		t.Errorf("reference-repo vars leaked without contents:read: %v", withoutCapability)
 	}
 }
 

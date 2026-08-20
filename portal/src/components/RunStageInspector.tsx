@@ -108,18 +108,23 @@ export function RunStageInspector({
   client,
   runId,
   node,
+  workflow,
   selectedSeq,
   events = [],
   inspectorRef,
+  onSelectAttempt,
   selectedEvidence,
   selectedEvidenceVisit,
 }: {
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
+  /** The run's own workflow, shown alongside the stage id for context (#2538). This is a run-level constant, not a phase tier — #2538's phase/stage nesting criterion needs a backend concept that doesn't exist yet (tracked in #2599). */
+  workflow?: string;
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
+  onSelectAttempt?: (isLatest: boolean) => void;
   selectedEvidence?: RunEvent;
   selectedEvidenceVisit?: number;
 }) {
@@ -227,12 +232,17 @@ export function RunStageInspector({
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
 
+  const selectAttempt = (attempt: StageAttempt) => {
+    setSelectedId(attempt.id);
+    onSelectAttempt?.(attempt.id === visible[visible.length - 1]?.id);
+  };
+
   const selectVisit = (visit: StageVisit) => {
     const attempt = visit.attempts[visit.attempts.length - 1];
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
   };
 
   const moveVisitSelection = (index: number) => {
@@ -258,7 +268,7 @@ export function RunStageInspector({
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -275,7 +285,9 @@ export function RunStageInspector({
   return (
     <Inspector
       className="run-inspector"
-      label={`${node.id} attempt inspector`}
+      label={
+        workflow ? `${workflow} · ${node.id} attempt inspector` : `${node.id} attempt inspector`
+      }
       rootRef={inspectorRef}
     >
       <div className="inspector-heading">
@@ -283,8 +295,11 @@ export function RunStageInspector({
           <Icon name={nodeIcon(node.kind)} size={17} />
         </span>
         <div>
-          <span>{node.kind}</span>
+          <span className="inspector-scope">
+            {workflow ? `${workflow} · ${node.kind}` : node.kind}
+          </span>
           <h3>{node.id}</h3>
+          {node.owner && <span className="inspector-owner">Owned by {node.owner}</span>}
         </div>
       </div>
 
@@ -359,7 +374,7 @@ export function RunStageInspector({
                                 : "attempt-button"
                             }
                             key={attempt.id}
-                            onClick={() => setSelectedId(attempt.id)}
+                            onClick={() => selectAttempt(attempt)}
                             onKeyDown={(event) => onAttemptKeyDown(event, index)}
                             ref={(element) => {
                               attemptButtons.current[index] = element;
@@ -414,27 +429,50 @@ function EvidenceDetail({
         </span>
         <strong>{eventHeading(event)}</strong>
       </div>
-      {isTranscriptEvent(event) ? (
-        <TranscriptRow client={client} event={event} runId={runId} />
-      ) : event.artifact ? (
-        <div className="artifact-list">
-          <ArtifactRow
-            artifact={{
-              ...event.artifact,
-              recordedSeq: event.artifact.recordedSeq ?? event.seq,
-            }}
-            attemptNumber={event.artifact.attempt ?? event.attempt}
-            attemptVisit={visit}
-            client={client}
-            runId={runId}
-          />
-        </div>
-      ) : (
-        <p className="artifact-load-error" role="alert">
-          Evidence content is unavailable.
-        </p>
-      )}
+      <EvidencePayload client={client} event={event} runId={runId} visit={visit} />
     </div>
+  );
+}
+
+// EvidencePayload renders whatever an inspectable evidence event (transcript
+// or artifact) carries, without assuming a graph node context — the shared
+// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
+// reuses directly for its inline "state change and payload" preview (#2537),
+// so the two views never grow separate rendering logic for the same evidence.
+export function EvidencePayload({
+  client,
+  event,
+  runId,
+  visit,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  runId: string;
+  visit?: number;
+}) {
+  if (isTranscriptEvent(event)) {
+    return <TranscriptRow client={client} event={event} runId={runId} />;
+  }
+  if (event.artifact) {
+    return (
+      <div className="artifact-list">
+        <ArtifactRow
+          artifact={{
+            ...event.artifact,
+            recordedSeq: event.artifact.recordedSeq ?? event.seq,
+          }}
+          attemptNumber={event.artifact.attempt ?? event.attempt}
+          attemptVisit={visit}
+          client={client}
+          runId={runId}
+        />
+      </div>
+    );
+  }
+  return (
+    <p className="artifact-load-error" role="alert">
+      Evidence content is unavailable.
+    </p>
   );
 }
 

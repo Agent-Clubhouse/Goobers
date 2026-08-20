@@ -71,6 +71,35 @@ func fixtureService(t *testing.T) (*Local, instance.Layout, *workflow.Machine) {
 	return service, layout, fixtureMachine(t)
 }
 
+func TestOfflineRunsListsJournalsWithoutDaemon(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"run-offline",
+		machine.Def.Name,
+		machine.Def.Spec.Gaggle,
+		time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	finishFixtureRun(t, run, clock, journal.PhaseCompleted)
+
+	offline, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := offline.ListRuns(context.Background(), RunListOptions{ShowNoWork: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 1 || page.Runs[0].ID != "run-offline" {
+		t.Fatalf("offline list = %+v, want run-offline", page.Runs)
+	}
+}
+
 func createFixtureRun(
 	t *testing.T,
 	layout instance.Layout,
@@ -153,13 +182,21 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 		started, journal.Trigger{Kind: journal.TriggerManual}, true,
 	)
 	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageRerunRequested, Stage: "implement", Attempt: 2,
+		Actor: "operator@example.test", InstructionAddendum: "reuse the parser",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 		t.Fatal(err)
 	}
 	clock.advance(time.Second)
 	if err := run.Append(journal.Event{
 		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Target: "implement",
-		Actor: "operator@example.test", WorkflowVersion: machine.Def.Version,
+		Actor: "operator@example.test", Action: "override", Gate: "review",
+		Decision: "pass", Rationale: "accepted risk", WorkflowVersion: machine.Def.Version,
 		WorkflowDigest: machine.Digest(),
 	}); err != nil {
 		t.Fatal(err)
@@ -184,9 +221,114 @@ func TestRunSummaryReflectsHumanTerminalResume(t *testing.T) {
 	resumed := ledger.Events[len(ledger.Events)-1]
 	if resumed.Type != journal.EventRunResumed ||
 		resumed.Actor != "operator@example.test" ||
+		resumed.Action != "override" ||
+		resumed.Gate != "review" ||
+		resumed.Decision != "pass" ||
+		resumed.Rationale != "accepted risk" ||
 		resumed.WorkflowVersion != machine.Def.Version ||
 		resumed.WorkflowDigest != machine.Digest() {
 		t.Fatalf("projected run.resumed = %+v", resumed)
+	}
+	var rerun RunEvent
+	for _, event := range ledger.Events {
+		if event.Type == journal.EventStageRerunRequested {
+			rerun = event
+			break
+		}
+	}
+	if rerun.Actor != "operator@example.test" || rerun.InstructionAddendum != "reuse the parser" {
+		t.Fatalf("projected stage.rerun.requested = %+v", rerun)
+	}
+}
+
+func TestRunProjectionsFlagStaleUnmonitoredRunningRun(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-staleness", machine.Def.Name, machine.Def.Spec.Gaggle,
+		startedAt, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	appendFixtureStageAttempt(t, run, clock, "")
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const timeout = time.Minute
+	heartbeatAt := startedAt
+	service.sources.LivenessTimeout = timeout
+	service.sources.SchedulerHeartbeat = func() (time.Time, error) {
+		return heartbeatAt, nil
+	}
+
+	service.now = func() time.Time { return startedAt.Add(30 * time.Second) }
+	recent, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent.Runs) != 1 || recent.Runs[0].Stale {
+		t.Fatalf("recent running list = %+v, want live run", recent.Runs)
+	}
+
+	service.now = func() time.Time { return startedAt.Add(5 * time.Minute) }
+	stale, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale.Runs) != 1 || !stale.Runs[0].Stale {
+		t.Fatalf("inactive list = %+v, want stale run", stale.Runs)
+	}
+	detail, err := service.GetRun(context.Background(), "run-staleness")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.Stale {
+		t.Fatalf("detail stale = false, want true: %+v", detail.RunSummary)
+	}
+
+	heartbeatAt = startedAt.Add(5 * time.Minute)
+	healthy, err := service.ListRuns(context.Background(), RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(healthy.Runs) != 1 || healthy.Runs[0].Stale {
+		t.Fatalf("heartbeat-healthy list = %+v, want live run", healthy.Runs)
+	}
+}
+
+func TestRunEventsProjectsCompletionIntervention(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-human-completed", machine.Def.Name, machine.Def.Spec.Gaggle,
+		time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunResumed, Status: string(journal.PhaseEscalated), Complete: true,
+		Actor: "operator@example.test", Action: "approve", Gate: "review", Decision: "pass",
+		WorkflowVersion: machine.Def.Version, WorkflowDigest: machine.Digest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(time.Second)
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := service.RunEvents(context.Background(), "run-human-completed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := ledger.Events[len(ledger.Events)-2]
+	if resumed.Type != journal.EventRunResumed || !resumed.Complete || resumed.Action != "approve" {
+		t.Fatalf("projected completion run.resumed = %+v", resumed)
 	}
 }
 
@@ -619,6 +761,26 @@ func TestUsageStagePopulationsSelectOnlyContributingAttempts(t *testing.T) {
 	}
 }
 
+func TestTelemetryStageAttemptQueriesHonorCancellation(t *testing.T) {
+	db, err := rollup.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service := &Local{sources: LocalSources{Telemetry: db}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := service.telemetryStageAttempts(ctx, "run-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("telemetryStageAttempts error = %v, want context.Canceled", err)
+	}
+	if _, err := service.matchesTelemetryPopulation(ctx, "run-1", RunListOptions{
+		StagePopulation: StagePopulationTokenMeasured,
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("matchesTelemetryPopulation error = %v, want context.Canceled", err)
+	}
+}
+
 func TestRetryWastePopulationSeparatesParallelBranches(t *testing.T) {
 	attempts := []rollup.StageAttempt{
 		{Stage: "research", Branch: 1, BranchKnown: true, Traversal: 1},
@@ -1014,7 +1176,7 @@ func TestRunDetailProjectsExecutedTransitions(t *testing.T) {
 	}
 }
 
-func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
+func TestUnknownSchemaFailsClosedDespiteTornTail(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, _ := createFixtureRun(
 		t,
@@ -1044,33 +1206,28 @@ func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	detail, err := service.GetRun(context.Background(), "run-future")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if detail.Phase != journal.PhaseRunning || detail.Graph != nil || detail.GraphStatus != "unavailable" {
-		t.Fatalf("future run detail = %+v", detail)
-	}
-	if detail.TransitionsStatus != "unavailable" || detail.Transitions != nil {
-		t.Fatalf("transitions = %+v (%s), want unavailable/nil without a pinned graph", detail.Transitions, detail.TransitionsStatus)
-	}
-	events, err := service.RunEvents(context.Background(), "run-future")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events.Events) != 2 {
-		t.Fatalf("events = %+v", events.Events)
-	}
-	future := events.Events[1]
-	if future.KnownSchema || future.Seq != 2 || future.Branch != 4 ||
-		!strings.Contains(string(future.Raw), `"answer":42`) {
-		t.Fatalf("future event = %+v", future)
-	}
-	if future.Category != RunEventUnknown || future.ReplayChapter {
-		t.Fatalf("future event classification = (%q, %t)", future.Category, future.ReplayChapter)
-	}
-	if future.Status != "" {
-		t.Fatalf("unsupported type-specific status was trusted: %+v", future)
+	for _, operation := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "GetRun", run: func() error {
+			_, err := service.GetRun(context.Background(), "run-future")
+			return err
+		}},
+		{name: "RunEvents", run: func() error {
+			_, err := service.RunEvents(context.Background(), "run-future")
+			return err
+		}},
+	} {
+		err := operation.run()
+		if err == nil {
+			t.Fatalf("%s accepted a newer journal schema", operation.name)
+		}
+		for _, want := range []string{"event/v99", "event/v1", "minimum binary"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error %q does not contain %q", operation.name, err, want)
+			}
+		}
 	}
 }
 
@@ -1717,6 +1874,8 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 			"escalated":     true,
 			"duplicateDiff": true,
 			"diffDigest":    "sha256:aaaa",
+			"reason":        "UNCHANGED_REPASS",
+			"repassTarget":  "implement",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1727,12 +1886,13 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantReason := "UNCHANGED_REPASS: repass produced a diff identical to the immediately prior attempt (implement-classified failure)"
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector.Kind != "gate" ||
 		detail.Escalation.Selector.Name != "review" ||
 		detail.Escalation.SelectedBranch != "needs-changes" ||
-		detail.Escalation.TerminalReason != "repass produced a diff identical to the immediately prior attempt" {
-		t.Fatalf("duplicate-diff escalation = %+v", detail.Escalation)
+		detail.Escalation.TerminalReason != wantReason {
+		t.Fatalf("duplicate-diff escalation = %+v, want reason %q", detail.Escalation, wantReason)
 	}
 }
 

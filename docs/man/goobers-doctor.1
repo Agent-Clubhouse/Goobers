@@ -22,6 +22,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
   storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
+  mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   registry           optional  §1     registry reachable (host-side sanity)

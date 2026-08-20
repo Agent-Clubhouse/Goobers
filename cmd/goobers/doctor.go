@@ -33,6 +33,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
 	"  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces\n" +
 	"  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists\n" +
+	"  mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes\n" +
 	"  oidc-issuer        required* §1/§3  issuer discovery document reachable\n" +
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
@@ -80,7 +81,7 @@ var doctorKubeClient = func(kubeconfig, contextName string, timeout time.Duratio
 // declared forge-policy manifest against its live GitHub state (#916, Tier 4
 // of #903). Exactly one mode is required per invocation.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs := newCLIFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")

@@ -26,19 +26,48 @@ import (
 // gather-pr-context's tests: one open PR, its check state, and a fixed set of
 // comments (one of which may carry an embedded verdict-json payload).
 type gatherPRContextServer struct {
-	owner, repo        string
-	authenticatedLogin string
-	prNumber           int
-	head, base         string
-	headSHA            string
-	baseSHA            string
-	body               string
-	checkState         string
-	labels             []string
-	comments           []map[string]interface{}
+	owner, repo         string
+	authenticatedLogin  string
+	prNumber            int
+	head, base          string
+	headSHA             string
+	baseSHA             string
+	body                string
+	checkState          string
+	labels              []string
+	comments            []map[string]interface{}
+	includeUnselected   bool
+	includeEarlierCrown bool
+	unselectedCount     int
+	graphQLCalls        int
 }
 
-func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
+func serveBulkCheckStates(t *testing.T, w http.ResponseWriter, r *http.Request, calls *int, states map[string]string) {
+	t.Helper()
+	*calls++
+	var request struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		t.Fatalf("decode GraphQL request: %v", err)
+	}
+	repository := make(map[string]interface{})
+	for variable, value := range request.Variables {
+		if !strings.HasPrefix(variable, "ref") {
+			continue
+		}
+		state := states[fmt.Sprint(value)]
+		if state == "" {
+			state = "SUCCESS"
+		}
+		repository["r"+strings.TrimPrefix(variable, "ref")] = map[string]interface{}{
+			"statusCheckRollup": map[string]string{"state": state},
+		}
+	}
+	writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{"repository": repository}})
+}
+
+func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	prefix := "/repos/" + s.owner + "/" + s.repo
 	mux := http.NewServeMux()
@@ -71,7 +100,7 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		for i, l := range s.labels {
 			labelObjs[i] = map[string]string{"name": l}
 		}
-		writeFakeJSON(w, []map[string]interface{}{
+		prs := []map[string]interface{}{
 			{
 				"number": s.prNumber, "draft": false,
 				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber),
@@ -80,7 +109,42 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
 				"labels":   labelObjs,
 			},
-		})
+		}
+		if s.includeEarlierCrown {
+			prs = append([]map[string]interface{}{{
+				"number": s.prNumber - 1, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber-1),
+				"head":     map[string]interface{}{"ref": "goobers/impl/earlier-passing", "sha": "earlier-passing-sha"},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+			}}, prs...)
+			prs = append(prs, map[string]interface{}{
+				"number": s.prNumber + 1000, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+1000),
+				"head":     map[string]interface{}{"ref": "goobers/impl/parked-dependent", "sha": "parked-dependent-sha"},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+				"labels":   []map[string]string{{"name": blockedOnSiblingLabel}},
+			})
+		}
+		unselectedCount := s.unselectedCount
+		if s.includeUnselected && unselectedCount == 0 {
+			unselectedCount = 1
+		}
+		for i := 0; i < unselectedCount; i++ {
+			prs = append(prs, map[string]interface{}{
+				"number": s.prNumber + i + 1, "draft": false,
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber+i+1),
+				"head":     map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/unselected-%d", i), "sha": fmt.Sprintf("unselected-head-sha-%d", i)},
+				"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+			})
+		}
+		writeFakeJSON(w, prs)
+	})
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		state := "SUCCESS"
+		if s.checkState == "failure" {
+			state = "FAILURE"
+		}
+		serveBulkCheckStates(t, w, r, &s.graphQLCalls, map[string]string{s.headSHA: state})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/status", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		state := s.checkState
@@ -97,9 +161,67 @@ func (s gatherPRContextServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, s.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
 	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/status", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/earlier-passing-sha/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{"check_runs": []interface{}{}})
+	})
+	mux.HandleFunc(prefix+"/commits/unselected-head-sha-", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
+	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var comment map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+				t.Fatalf("decode comment: %v", err)
+			}
+			comment["id"] = len(s.comments) + 1
+			s.comments = append(s.comments, comment)
+			writeFakeJSON(w, comment)
+			return
+		}
 		writeFakeJSON(w, s.comments)
 	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Labels []string `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode labels: %v", err)
+		}
+		for _, label := range request.Labels {
+			if !hasAnyLabel(s.labels, []string{label}) {
+				s.labels = append(s.labels, label)
+			}
+		}
+		writeFakeJSON(w, labelsJSON(s.labels))
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels/", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		label := strings.TrimPrefix(r.URL.Path, fmt.Sprintf("%s/issues/%d/labels/", prefix, s.prNumber))
+		filtered := s.labels[:0]
+		for _, existing := range s.labels {
+			if existing != label {
+				filtered = append(filtered, existing)
+			}
+		}
+		s.labels = filtered
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if s.includeEarlierCrown {
+		mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber+1000), func(w http.ResponseWriter, r *http.Request) {
+			writeFakeJSON(w, []map[string]interface{}{{
+				"id": 1000, "body": blockedOnSiblingCommentFor(t, s.prNumber-1),
+			}})
+		})
+		mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, s.prNumber-1), func(w http.ResponseWriter, r *http.Request) {
+			writeFakeJSON(w, map[string]interface{}{
+				"number": s.prNumber - 1, "state": "open",
+				"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, s.prNumber-1),
+				"labels":   []interface{}{},
+			})
+		})
+	}
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "want GET", http.StatusMethodNotAllowed)
@@ -237,7 +359,8 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		owner: "your-org", repo: "your-repo",
 		prNumber: 55, head: prBranch, base: "main",
 		headSHA: headSHA, baseSHA: baseSHA,
-		labels: []string{"goobers:needs-remediation"},
+		labels:          []string{"goobers:needs-remediation"},
+		unselectedCount: 40,
 		comments: []map[string]interface{}{
 			{"id": 1, "user": map[string]string{"login": "human-reviewer"}, "body": "please rebase", "created_at": "2026-07-01T00:00:00Z"},
 			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-02T00:00:00Z"},
@@ -270,11 +393,17 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if srv.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 41 PRs", srv.graphQLCalls)
 	}
 	if !strings.Contains(stdout, "PR #55") {
 		t.Fatalf("stdout = %q, want a mention of PR #55", stdout)
@@ -465,6 +594,14 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	t.Chdir(wt.Path)
 	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	if err := updateRemediationNoopState(
+		layoutFor(instanceRoot).SchedulerDir(),
+		remediationNoopKey("", 1974),
+		remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest},
+		"prior-digest-run",
+	); err != nil {
+		t.Fatalf("seed digest no-op state: %v", err)
+	}
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
@@ -474,6 +611,21 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 		t.Fatalf("stdout = %q, want no-work before remediation for an already escalated digest", stdout)
 	}
 	assertNoWorkProviderStageResult(t, resultFile)
+	if !hasAnyLabel(srv.labels, []string{remediationEscalatedLabel}) ||
+		hasAnyLabel(srv.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("labels = %v, want visibly parked escalation", srv.labels)
+	}
+	if len(srv.comments) != 1 || !strings.Contains(fmt.Sprint(srv.comments[0]["body"]), "unchanged diff digest") {
+		t.Fatalf("comments = %v, want visible unchanged-digest reason", srv.comments)
+	}
+	state, err := readRemediationNoopState(layoutFor(instanceRoot).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read no-op state: %v", err)
+	}
+	record := state.Records[remediationNoopKey("", 1974)]
+	if record.Attempts != remediationNoopLimit || !record.Parked {
+		t.Fatalf("no-op record = %+v, want parked at limit %d", record, remediationNoopLimit)
+	}
 }
 
 func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
@@ -514,6 +666,49 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 			t.Errorf("selected PR #485's %q finding was not routed to substantive remediation", class)
 		}
+	}
+}
+
+func TestSequencingOnlyRemediationWaitUsesLiveState(t *testing.T) {
+	pr := providers.PullRequestSummary{CheckState: providers.CheckStatePassing}
+	state := blockedOnSiblingState{Blockers: []int{41}}
+	if !shouldParkRemediation(pr, state) {
+		t.Fatal("sequencing-only blocked PR was not parked")
+	}
+
+	pr.CheckState = providers.CheckStateFailing
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("failing CI was treated as sequencing-only")
+	}
+
+	pr.CheckState = providers.CheckStatePassing
+	pr.Labels = []string{needsRemediationLabel}
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("live needs-remediation state was treated as sequencing-only")
+	}
+
+	pr.Labels = nil
+	state.Blockers = nil
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("resolved blocker was treated as live sequencing")
+	}
+}
+
+func TestFoundationCoupledRemediationWaitParksUntilFoundationResolves(t *testing.T) {
+	pr := providers.PullRequestSummary{
+		Labels:     []string{needsRemediationLabel},
+		CheckState: providers.CheckStatePassing,
+	}
+	state := blockedOnSiblingState{
+		Blockers: []int{41},
+		Reason:   "foundation-coupled to PR #41, which substantially rewrites shared files",
+	}
+	if !shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR was not parked while its foundation is live")
+	}
+	pr.CheckState = providers.CheckStateFailing
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR with failing CI was parked")
 	}
 }
 
@@ -930,8 +1125,8 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
 		prNumber: 56, head: prBranch, base: "main",
-		headSHA: headSHA, baseSHA: baseSHA,
-		checkState: "failure",
+		headSHA: headSHA, baseSHA: baseSHA, checkState: "failure",
+		unselectedCount: 40, includeEarlierCrown: true,
 	}
 	server := srv.start(t)
 
@@ -958,11 +1153,17 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
+	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Chdir(wt.Path)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if srv.graphQLCalls != 1 {
+		t.Fatalf("bulk check-state calls = %d, want 1 for 42 PRs", srv.graphQLCalls)
 	}
 	if !strings.Contains(stdout, "PR #56") {
 		t.Fatalf("stdout = %q, want a mention of PR #56", stdout)

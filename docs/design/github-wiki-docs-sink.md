@@ -1,6 +1,6 @@
 # Design: GitHub wiki sink for docs-updater
 
-> **Status:** Accepted design contract (2026-07-26); runtime implementation is
+> **Status:** approved — accepted design contract (2026-07-26); runtime implementation is
 > sequenced after #1495.
 >
 > **Related:** #472 (docs-updater epic), #1016 (`docsRoots`), #1019 and

@@ -69,10 +69,17 @@ type GaggleSpec struct {
 	// this gaggle. A workflow may override either value again.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where workflows in
+	// this gaggle mirror their durable journal outbox. A workflow or task may
+	// override it. The local runner appends the run id and journal outbox layout
+	// beneath this root; the journal remains the source of truth.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Sandbox overrides the instance-wide isolation posture for this gaggle's
-	// agentic stages (#1305). Agentic stages are sandboxed by default. A gaggle
-	// may strengthen an operator's trusted-local opt-out to enforced, but may
-	// not weaken the instance posture.
+	// agentic stages (#1305). Effective posture is gaggle override, else the
+	// instance.yaml sandbox block, else disabled — sandboxing is strictly
+	// opt-in, so a gaggle that omits this behaves exactly as before.
 	// +optional
 	Sandbox *GaggleSandbox `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 	// Workcopies overrides the instance-level managed working-copy placement for
@@ -137,12 +144,11 @@ type GaggleSibling struct {
 	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
 }
 
-// GaggleSandbox is a per-gaggle posture declaration, never a mechanism
-// selection. It can strengthen an instance opt-out but cannot weaken
-// enforcement.
+// GaggleSandbox mirrors instance.yaml's sandbox block as a per-gaggle
+// override: a posture declaration, never a mechanism selection.
 type GaggleSandbox struct {
 	// Agentic is the posture for agentic stages: "disabled" or "enforced".
-	// Empty inherits the instance-wide posture or the enforced default.
+	// Empty inherits the instance-wide posture.
 	// +kubebuilder:validation:Enum=disabled;enforced
 	// +optional
 	Agentic string `json:"agentic,omitempty" yaml:"agentic,omitempty"`

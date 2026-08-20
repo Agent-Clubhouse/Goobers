@@ -7,15 +7,20 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -42,6 +47,8 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
@@ -112,10 +119,6 @@ func (r runnerWiringHarnessRecorder) RecordArtifact(string, []byte) (journal.Ref
 
 func (r runnerWiringHarnessRecorder) RecordSpanWithSchema(_, _, _ string, data []byte) (journal.Ref, error) {
 	return journal.ArtifactRef(data)
-}
-
-func (r runnerWiringHarnessRecorder) Append(journal.Event) error {
-	return nil
 }
 
 func (r runnerWiringHarnessRecorder) Dir() string {
@@ -222,12 +225,16 @@ func (c *runnerWiringOTLPCollector) Export(
 
 type unavailableRunnerWiringOTLPCollector struct {
 	collectortrace.UnimplementedTraceServiceServer
+	available atomic.Bool
 }
 
-func (unavailableRunnerWiringOTLPCollector) Export(
+func (c *unavailableRunnerWiringOTLPCollector) Export(
 	context.Context,
 	*collectortrace.ExportTraceServiceRequest,
 ) (*collectortrace.ExportTraceServiceResponse, error) {
+	if c.available.Load() {
+		return &collectortrace.ExportTraceServiceResponse{}, nil
+	}
 	return nil, status.Error(codes.Unavailable, "collector unavailable")
 }
 
@@ -308,12 +315,16 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 }
 
 func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) {
+	wantTracerProvider := otel.GetTracerProvider()
+	wantMeterProvider := otel.GetMeterProvider()
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	collectortrace.RegisterTraceServiceServer(server, unavailableRunnerWiringOTLPCollector{})
+	collector := &unavailableRunnerWiringOTLPCollector{}
+	collectortrace.RegisterTraceServiceServer(server, collector)
 	go func() {
 		_ = server.Serve(listener)
 	}()
@@ -322,7 +333,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 		_ = listener.Close()
 	})
 
-	journalExporter := telemetry.NewMemoryExporter()
+	journalExporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: journalExporter,
@@ -334,11 +345,21 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	shutdown := false
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-		_ = client.Shutdown(ctx)
+		if !shutdown {
+			collector.available.Store(true)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = client.Shutdown(ctx)
+		}
 	})
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Fatalf("telemetry.New changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Fatalf("telemetry.New changed the global meter provider: got %v, want %v", got, wantMeterProvider)
+	}
 
 	_, span, err := client.StartRun(context.Background(), telemetry.RunAttributes{
 		Gaggle:     "acme-web",
@@ -362,6 +383,20 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 	}
 	if got := len(journalExporter.Spans()); got != 1 {
 		t.Fatalf("local journal exporter spans = %d, want 1", got)
+	}
+
+	collector.available.Store(true)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown telemetry client: %v", err)
+	}
+	shutdown = true
+	if got := otel.GetTracerProvider(); got != wantTracerProvider {
+		t.Fatalf("client shutdown changed the global tracer provider: got %v, want %v", got, wantTracerProvider)
+	}
+	if got := otel.GetMeterProvider(); got != wantMeterProvider {
+		t.Fatalf("client shutdown changed the global meter provider: got %v, want %v", got, wantMeterProvider)
 	}
 }
 
@@ -396,7 +431,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -452,6 +487,108 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	}
 	if claude.SelfBin != "/opt/goobers/bin/goobers" {
 		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", claude.SelfBin)
+	}
+}
+
+// TestBuildHarnessRegistryAdaptersAreConformanceCovered is the tactical
+// guard #2776 asks for at the actual production registration point: every
+// name buildHarnessRegistry registers must also be in
+// harness.ConformanceCoveredAdapterNames(), and vice versa. A third adapter
+// registered here without also being exercised by
+// internal/harness/conformance_test.go's dimension suite fails immediately,
+// instead of silently shipping an under-tested capability the way tools
+// allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
+// each did for weeks before their own follow-up issue was filed.
+func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+	// Names() returns registration keys (a goober's spec.harness value, e.g.
+	// "copilot") which can differ from an adapter's own diagnostic Name()
+	// (e.g. "copilot-cli") — ConformanceCoveredAdapterNames() tracks the
+	// latter, matching internal/harness/conformance_test.go's own table, so
+	// resolve each key to its adapter's Name() before comparing.
+	var registered []string
+	for _, key := range registry.Names() {
+		adapter, err := registry.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", key, err)
+		}
+		registered = append(registered, adapter.Name())
+	}
+	slices.Sort(registered)
+	covered := append([]string(nil), harness.ConformanceCoveredAdapterNames()...)
+	slices.Sort(covered)
+	if !slices.Equal(registered, covered) {
+		t.Fatalf("registered adapters = %v, conformance-covered adapters = %v — a registered adapter is missing conformance coverage, or a covered name is no longer registered", registered, covered)
+	}
+}
+
+// TestBuildHarnessRegistryAppliesLauncherOverride pins the #2483 config-driven
+// launcher: RunnerConfig.HarnessCommand replaces the base CLI invocation for a
+// named harness (e.g. pointing Copilot at a contract-compatible wrapper like
+// `agency copilot`) while an unset harness keeps its built-in default, and the
+// registered adapter holds a defensive copy so a later mutation of the config
+// map can't reach into it.
+// The preflight and admission paths look adapters up through adapterFor, one
+// hop above buildHarnessRegistry — pin that the override survives that hop, so
+// a regression re-hardcoding nil at a call site cannot pass silently.
+func TestAdapterForAppliesLauncherOverride(t *testing.T) {
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"agency", "copilot"},
+	}
+	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override)
+	if err != nil {
+		t.Fatalf("adapterFor: %v", err)
+	}
+	copilot, ok := adapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("adapter = %T, want *harness.CopilotAdapter", adapter)
+	}
+	if got, want := strings.Join(copilot.Command, " "), "agency copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want overridden %q", got, want)
+	}
+}
+
+func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
+	override := map[string][]string{
+		string(apiv1.HarnessCopilot): {"agency", "copilot"},
+		// claude-code intentionally omitted: it must keep its default launcher.
+	}
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false)
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+
+	copilotAdapter, err := registry.Get(string(apiv1.HarnessCopilot))
+	if err != nil {
+		t.Fatalf("Get(copilot): %v", err)
+	}
+	copilot, ok := copilotAdapter.(*harness.CopilotAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.CopilotAdapter", copilotAdapter)
+	}
+	if got, want := strings.Join(copilot.Command, " "), "agency copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want overridden %q", got, want)
+	}
+
+	claudeAdapter, err := registry.Get(string(apiv1.HarnessClaudeCode))
+	if err != nil {
+		t.Fatalf("Get(claude-code): %v", err)
+	}
+	claude, ok := claudeAdapter.(*harness.ClaudeAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.ClaudeAdapter", claudeAdapter)
+	}
+	if got, want := strings.Join(claude.Command, " "), "claude"; got != want {
+		t.Fatalf("claude launcher = %q, want unset-harness default %q", got, want)
+	}
+
+	// Mutating the override map after registration must not reach the adapter.
+	override[string(apiv1.HarnessCopilot)][0] = "tampered"
+	if got := strings.Join(copilot.Command, " "); got != "agency copilot" {
+		t.Fatalf("copilot launcher = %q after caller mutation, want the registered copy to be isolated", got)
 	}
 }
 
@@ -523,23 +660,14 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			},
 			want: `capability "contents:read" is not declared`,
 		},
-		{
-			name: "unsupported MCP harness",
-			spec: apiv1.GooberSpec{
-				Harness: apiv1.HarnessClaudeCode,
-				MCPServers: []apiv1.MCPServer{{
-					Name:    "context",
-					Command: "context-server",
-				}},
-			},
-			want: `mcpServers are only supported by harness "copilot"`,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := compiledMachinesWithWarnings(
 				&instance.ConfigSet{},
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
+				nil,
+				false,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -561,6 +689,8 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 			},
 		},
 		nil,
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -589,9 +719,9 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	var runRequest harness.RunRequest
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			runRequest = req
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status: apiv1.ResultSuccess,
 			})
 		}}
@@ -610,6 +740,8 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 			},
 		},
 		[]string{"COPILOT_HOME"},
+		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -622,22 +754,14 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 
 	layout := instance.NewLayout(t.TempDir())
-	runnerCfg, _, err := buildRunnerConfig(
-		layout,
-		&instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
-		resolvedGoobers,
-		map[string]string{"coder": "instructions"},
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	runnerCfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               layout,
+		Config:               &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
+		Goobers:              resolvedGoobers,
+		InstructionsByGoober: map[string]string{"coder": "instructions"},
+		SharedRegistry:       journal.NewRegistryScrubber(),
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -661,7 +785,10 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 }
 
-func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+// TestBuildRunnerConfigAcceptsMCPServersForClaudeCode pins #1492: mcpServers
+// is adapter-neutral — declaring it for claude-code is no longer rejected at
+// admission or run-construction time, matching Copilot.
+func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 	const gooberName = "coder"
 	spec := apiv1.GooberSpec{
 		Harness: apiv1.HarnessClaudeCode,
@@ -670,29 +797,88 @@ func TestBuildRunnerConfigRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 			Command: "context-server",
 		}},
 	}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()),
-		&instance.Config{},
-		map[string]apiv1.GooberSpec{gooberName: spec},
-		map[string]string{gooberName: "instructions"},
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	scrubber := journal.NewRegistryScrubber()
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               instance.NewLayout(t.TempDir()),
+		Config:               &instance.Config{},
+		Goobers:              map[string]apiv1.GooberSpec{gooberName: spec},
+		InstructionsByGoober: map[string]string{gooberName: "instructions"},
+		SharedRegistry:       scrubber,
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
 
-	_, err = cfg.NewAgentic(gooberName, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), `mcpServers are only supported by harness "copilot"`) {
-		t.Fatalf("NewAgentic error = %v, want unsupported-harness error", err)
+	goober, err := cfg.NewAgentic(gooberName, runnerWiringHarnessRecorder{dir: t.TempDir()}, scrubber)
+	if err != nil {
+		t.Fatalf("NewAgentic: %v", err)
+	}
+	if goober == nil {
+		t.Fatal("NewAgentic returned a nil goober for a valid claude-code mcpServers declaration")
+	}
+}
+
+func TestBuildDeterministicExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          "goobers",
+		ArtifactRecorder: runnerWiringArtifactRecorder{},
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildDeterministicExecutor returned nil")
+	}
+}
+
+func TestBuildAgenticExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterRegistry := harness.NewRegistry()
+	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	scrubber := journal.NewRegistryScrubber()
+	got, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName:      "coder",
+		Goobers:         map[string]apiv1.GooberSpec{"coder": {}},
+		Instructions:    map[string]string{"coder": "instructions"},
+		AdapterRegistry: adapterRegistry,
+		Resolver:        resolver,
+		SharedRegistry:  scrubber,
+		RunsDir:         t.TempDir(),
+		ArtifactRecorder: runnerWiringHarnessRecorder{
+			dir: t.TempDir(),
+		},
+		SecretRegistrar: scrubber,
+	})
+	if err != nil {
+		t.Fatalf("buildAgenticExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildAgenticExecutor returned nil")
+	}
+}
+
+func TestBuildAgenticExecutorIndependentlyRejectsUnknownGoober(t *testing.T) {
+	_, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName: "missing",
+		Goobers:    map[string]apiv1.GooberSpec{},
+	})
+	if err == nil || !strings.Contains(err.Error(), `goober "missing" not found`) {
+		t.Fatalf("buildAgenticExecutor error = %v, want unknown-goober error", err)
 	}
 }
 
@@ -714,22 +900,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
 		},
 	}}}
-	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -745,6 +922,68 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerConfigGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
+	t.Setenv("GOOBERS_TEST_GITHUB_TOKEN", "test-token")
+	base := t.TempDir()
+	t.Chdir(base)
+
+	authenticated := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		select {
+		case authenticated <- struct{}{}:
+		default:
+		}
+		http.Error(w, "stop after authentication", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	gitConfig := filepath.Join(base, "gitconfig")
+	rewrite := fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/\n", server.URL+"/")
+	if err := os.WriteFile(gitConfig, []byte(rewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	project := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "web",
+	}
+	_, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout: instance.NewLayout(".").ForGaggle("builders"),
+		Config: &instance.Config{Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "web",
+			Token:    instance.TokenRef{Env: "GOOBERS_TEST_GITHUB_TOKEN"},
+		}}},
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
+	if err != nil {
+		t.Fatalf("buildRunnerConfig: %v", err)
+	}
+
+	t.Chdir(manager.Root)
+	_, _ = manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: "https://github.com/acme/web.git",
+		RunID:   "relative-root-auth",
+		BaseRef: "main",
+	})
+	select {
+	case <-authenticated:
+	default:
+		t.Fatal("git did not authenticate after its working directory changed")
+	}
+}
+
 func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 	project := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub,
@@ -757,22 +996,13 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		Name:      "monolith",
 		LargeRepo: true,
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -783,8 +1013,13 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 	}
 	script := `printf '%s' "$MSBUILDDISABLENODEREUSE"`
 	if runtime.GOOS == "windows" {
-		script = `@echo off
-echo|set /p="%MSBUILDDISABLENODEREUSE%"`
+		// cmd.exe's piped `echo|set /p="%VAR%"` no-newline trick spawns a
+		// nested cmd.exe instance to run `set /p`, which doesn't reliably
+		// inherit the script's expanded variable and exits 1 (see the
+		// matching fix/comment on TestShellExecutor_DefaultEnvCanBeOverriddenByStage
+		// in internal/executor/shell_test.go). Use the simpler `echo %VAR%`
+		// construct instead, trimming the trailing CRLF it adds.
+		script = "@echo off\r\necho %MSBUILDDISABLENODEREUSE%"
 	}
 	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
 		TaskID:    "build",
@@ -796,7 +1031,8 @@ echo|set /p="%MSBUILDDISABLENODEREUSE%"`
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("result = %+v, want success", result)
 	}
-	if got := string(recorder["build/stdout.log"]); got != "1" {
+	got := strings.TrimRight(string(recorder["build/stdout.log"]), "\r\n")
+	if got != "1" {
 		t.Fatalf("MSBUILDDISABLENODEREUSE = %q, want preset default 1", got)
 	}
 }
@@ -819,22 +1055,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) 
 			Pinned: true,
 		},
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -1512,22 +1739,16 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 	}
 	build := func(manager *worktree.Manager) *worktree.Manager {
 		t.Helper()
-		_, manager, err := buildRunnerConfig(
-			layout,
-			&instance.Config{Repos: []instance.RepoRef{repo}},
-			map[string]apiv1.GooberSpec{},
-			map[string]string{},
-			nil,
-			journal.NewRegistryScrubber(),
-			manager,
-			nil,
-			apiv1.RepoRef{},
-			nil,
-			harnessPreflightInfo{},
-			nil,
-			instance.SandboxDisabled,
-			nil,
-		)
+		_, manager, err := buildRunnerConfig(runnerCompositionInput{
+			Layout:               layout,
+			Config:               &instance.Config{Repos: []instance.RepoRef{repo}},
+			Goobers:              map[string]apiv1.GooberSpec{},
+			InstructionsByGoober: map[string]string{},
+			SharedRegistry:       journal.NewRegistryScrubber(),
+			WorktreeManager:      manager,
+			HarnessInfo:          harnessPreflightInfo{},
+			SandboxPosture:       instance.SandboxDisabled,
+		})
 		if err != nil {
 			t.Fatalf("buildRunnerConfig: %v", err)
 		}
@@ -1621,7 +1842,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1668,6 +1889,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		journal.NewRegistryScrubber(),
 		nil,
 		localscheduler.NewProviderQuotaState(),
+		nil,
 		nil,
 		nil,
 	)
@@ -2419,6 +2641,10 @@ func (f *escFakeCommenter) UpdateWorkItem(_ context.Context, req providers.Updat
 	return providers.WorkItem{}, nil
 }
 
+func (f *escFakeCommenter) UpdateComment(context.Context, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
 // TestBuildEscalationNotifier is #312: the notifier is wired at the composition
 // root for a repo-backed instance (so runner.Config.Escalation is no longer
 // always nil), and nil for a repo-less instance (nothing to comment on).
@@ -2554,18 +2780,6 @@ func TestEscalationCommenterRoutesADOAwayFromGitHubToken(t *testing.T) {
 // ADO park must remove the status-label form goobers/status:claimed (what
 // ClaimWorkItem writes), not the GitHub plain LabelClaimed, while leaving other
 // removals (LabelReady) untouched.
-func TestADOParkRemovalLabelsTranslatesClaimMarker(t *testing.T) {
-	got := adoParkRemovalLabels([]string{providers.LabelReady, providers.LabelClaimed})
-	want := []string{providers.LabelReady, providers.StatusLabelFor(providers.WorkItemStatusClaimed)}
-	if !slices.Equal(got, want) {
-		t.Fatalf("adoParkRemovalLabels = %v, want %v", got, want)
-	}
-	if want[1] != "goobers/status:claimed" {
-		t.Fatalf("ADO claim marker = %q, want goobers/status:claimed", want[1])
-	}
-}
-
-// --- #353: open-PR-count refresher wiring ---
 
 func cappedWorkflows() []apiv1.Workflow {
 	return []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}}}
@@ -2582,20 +2796,20 @@ func repoConfig() *instance.Config {
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("nil when no workflow opts into the cap", func(t *testing.T) {
 		wfs := []apiv1.Workflow{{Spec: apiv1.WorkflowSpec{Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}}
-		r, err := buildOpenPRRefresher(repoConfig(), wfs, &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), wfs, nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
 			t.Fatalf("want nil,nil; got %v,%v", r, err)
 		}
 	})
 	t.Run("built when a repo and a capped workflow are present", func(t *testing.T) {
-		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), &escTestRegistrar{}, nil, "", nil)
+		r, err := buildOpenPRRefresher(repoConfig(), cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil {
 			t.Fatalf("buildOpenPRRefresher: %v", err)
 		}
@@ -2603,6 +2817,90 @@ func TestBuildOpenPRRefresher(t *testing.T) {
 			t.Fatal("expected a non-nil refresher for a repo-backed, capped instance")
 		}
 	})
+}
+
+// openPRTestRegistrar is escTestRegistrar with a mutex: the per-repo
+// refreshers (#2692) poll concurrently, so Register must be race-safe here.
+type openPRTestRegistrar struct {
+	mu         sync.Mutex
+	registered [][]byte
+}
+
+func (r *openPRTestRegistrar) Register(secret []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registered = append(r.registered, append([]byte(nil), secret...))
+}
+
+// TestBuildOpenPRRefresherRoutesPerGaggleRepo is #2692: with two gaggles bound
+// to two different repos, each gaggle's MaxOpenPRs count must come from a poll
+// of its OWN repo with that repo's own token — never the first repo's. Before
+// the fix a single refresher polled only cfg.Repos[0], so the second gaggle's
+// namespace matched nothing there and its cap was silently unenforced.
+func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
+	t.Setenv("OPENPR_TOK_A", "token-repo-a")
+	t.Setenv("OPENPR_TOK_B", "token-repo-b")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "OPENPR_TOK_A"}},
+		{Provider: "github", Owner: "masra", Name: "site", Token: instance.TokenRef{Env: "OPENPR_TOK_B"}},
+	}}
+	workflows := []apiv1.Workflow{
+		{Spec: apiv1.WorkflowSpec{Gaggle: "main", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 1}}},
+		{Spec: apiv1.WorkflowSpec{Gaggle: "site", Readiness: apiv1.ReadinessConditions{MaxOpenPRs: 3}}},
+	}
+	projects := map[string]apiv1.RepoRef{
+		"main": {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		"site": {Provider: apiv1.ProviderGitHub, Owner: "masra", Name: "site"},
+	}
+	// The first repo carries a decoy head under the site gaggle's namespace: a
+	// misrouted site lookup would count it (1) instead of repo B's own heads (2).
+	headsByToken := map[string][]string{
+		"token-repo-a": {"goobers/implementation/run-1", "goobers-site/implementation/decoy"},
+		"token-repo-b": {"goobers-site/implementation/run-2", "goobers-site/implementation/run-3"},
+	}
+	prev := newOpenPRProvider
+	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+		return &fakeHeadLister{heads: headsByToken[token]}
+	}
+	t.Cleanup(func() { newOpenPRProvider = prev })
+
+	set, err := buildOpenPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
+		map[string]string{"site": "goobers-site"}, "", nil)
+	if err != nil {
+		t.Fatalf("buildOpenPRRefresher: %v", err)
+	}
+	if set == nil {
+		t.Fatal("expected a non-nil refresher set for a two-repo, capped instance")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { set.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	waitCount := func(gaggle string) int {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			if n, known := set.OpenPRCount(gaggle, "implementation"); known {
+				return n
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("count for gaggle %q never became known", gaggle)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	if n := waitCount("site"); n != 2 {
+		t.Fatalf("site count = %d, want 2 from its own repo (a first-repo misroute reads 1)", n)
+	}
+	if n := waitCount("main"); n != 1 {
+		t.Fatalf("main count = %d, want 1 (the site-namespace decoy must not count)", n)
+	}
+	if _, known := set.OpenPRCount("unmapped", "implementation"); known {
+		t.Fatal("a gaggle with no capped workflow must report unknown, not another repo's count")
+	}
 }
 
 type fakeHeadLister struct{ heads []string }
@@ -2662,22 +2960,35 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 // escFakeCommenter, which only keeps the last) — buildBlockedHandler's
 // multi-item fallback path needs every call visible.
 type blockedHandlerFakeCommenter struct {
-	calls []providers.UpdateWorkItemRequest
+	calls    []providers.UpdateWorkItemRequest
+	comments []providers.Comment
+	nextID   int
 }
 
-func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
-	var comments []providers.Comment
-	for _, call := range f.calls {
-		if call.ID == itemID {
-			comments = append(comments, providers.Comment{Body: call.Comment})
-		}
-	}
-	return comments, nil
+func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	return append([]providers.Comment(nil), f.comments...), nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.calls = append(f.calls, req)
+	if req.Comment != "" {
+		f.nextID++
+		f.comments = append(f.comments, providers.Comment{
+			ID:   strconv.Itoa(f.nextID),
+			Body: req.Comment,
+		})
+	}
 	return providers.WorkItem{}, nil
+}
+
+func (f *blockedHandlerFakeCommenter) UpdateComment(_ context.Context, _ providers.RepositoryRef, commentID, body string) error {
+	for i, c := range f.comments {
+		if c.ID == commentID {
+			f.comments[i].Body = body
+			return nil
+		}
+	}
+	return fmt.Errorf("comment %s not found", commentID)
 }
 
 func blockedHandlerTestResolver(t *testing.T) credentials.Resolver {
@@ -3185,6 +3496,160 @@ func TestBuildBlockedHandlerNoBlockersParksNeedsHuman(t *testing.T) {
 	}
 }
 
+// TestBuildBlockedHandlerDropsSelfReferentialBlocker covers #2961: an agent
+// naming the issue it is working on in outputs.blockedBy must not create a
+// one-node self-edge in blocked.json. The cycle detector would (correctly, for
+// persisted graph data) report that self-edge as a circular dependency and
+// park the issue needs-human with a cycle comment for a dependency that does
+// not exist. Filtered to nothing, the block is unattributed — needs-human
+// parking with no record and no cycle comment.
+func TestBuildBlockedHandlerDropsSelfReferentialBlocker(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-self", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "411",
+		Reason:   "content-exclusion-policy",
+		Blockers: []string{"411"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1 (park only, no cycle escalation): %+v", len(fake.calls), fake.calls)
+	}
+	got := fake.calls[0]
+	if got.ID != "411" {
+		t.Fatalf("request ID = %q, want 411", got.ID)
+	}
+	if len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s] — a self-reference is not a sibling dependency", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	if got.Comment != "" {
+		t.Fatalf("comment = %q, want empty — no cycle exists to explain", got.Comment)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked.json = %+v, want empty — a self-edge must never be persisted", recs)
+	}
+}
+
+// TestBuildBlockedHandlerKeepsRealBlockersAlongsideSelfReference proves the
+// #2961 filter is surgical: a result naming both itself and a genuine blocker
+// still records the genuine dependency and parks blocked-on-sibling.
+func TestBuildBlockedHandlerKeepsRealBlockersAlongsideSelfReference(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err := h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-mixed", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", ItemID: "411",
+		Reason:   "waiting on the schema change",
+		Blockers: []string{"411", "512"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1: %+v", len(fake.calls), fake.calls)
+	}
+	if got := fake.calls[0]; len(got.AddLabels) != 1 || got.AddLabels[0] != blockedOnSiblingLabel {
+		t.Fatalf("AddLabels = %v, want [%s] — a real blocker survives the filter", got.AddLabels, blockedOnSiblingLabel)
+	}
+
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	rec, ok := recs[blockedRecordKey(repo, "411")]
+	if !ok {
+		t.Fatalf("blocked.json = %+v, want a record for 411", recs)
+	}
+	if !slices.Equal(rec.Blockers, []string{"512"}) {
+		t.Fatalf("recorded blockers = %v, want [512] — the self-reference is dropped, the real blocker kept", rec.Blockers)
+	}
+}
+
+// TestBuildBlockedHandlerDropsSelfReferenceForClaimLedgerItems proves the
+// #2961 guard is applied per resolved item, not only when the run carried its
+// driving item: a fan-out run that claims its item mid-run resolves the id in
+// the handler, which is exactly where a self-reference would otherwise slip
+// past the runner-side filter.
+func TestBuildBlockedHandlerDropsSelfReferenceForClaimLedgerItems(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("349", "run-fanout-self", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildBlockedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	err = h(context.Background(), runner.BlockedOutcome{
+		RunID: "run-fanout-self", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage: "implement", Reason: "blocked", Blockers: []string{"349"},
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("update calls = %d, want 1 (park only): %+v", len(fake.calls), fake.calls)
+	}
+	if got := fake.calls[0]; len(got.AddLabels) != 1 || got.AddLabels[0] != providers.LabelNeedsHuman {
+		t.Fatalf("AddLabels = %v, want [%s]", got.AddLabels, providers.LabelNeedsHuman)
+	}
+	recs, err := loadBlockedRecords(blockedRecordsPath(l))
+	if err != nil {
+		t.Fatalf("loadBlockedRecords: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("blocked.json = %+v, want empty — no self-edge from a ledger-resolved item", recs)
+	}
+}
+
 // TestBuildBlockedHandlerResolvesItemFromClaimLedgerWhenEmpty proves a run
 // started without StartInput.Item (scheduled/fan-out implementation runs
 // claim their item mid-run) still notifies the right issue: the handler
@@ -3333,12 +3798,65 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
-// TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman proves a run that
-// ends terminal `failed` while claiming an item leaves a human-visible trace
-// with a stable public code and run id, but never the potentially sensitive
-// execution cause. It applies no labels: goobers:needs-human stays reserved for
-// the escalated/park path.
-func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
+func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *instance.Config
+		published string
+		runID     string
+		want      string
+	}{
+		{
+			name:  "default local daemon",
+			cfg:   &instance.Config{},
+			runID: "run-1",
+			want:  "http://127.0.0.1:8080/#/run/run-1",
+		},
+		{
+			name: "TLS daemon and escaped run ID",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "ops.example:8443",
+				TLS:    &instance.APITLSConfig{},
+			}},
+			runID: "run/1",
+			want:  "https://ops.example:8443/#/run/run%2F1",
+		},
+		{
+			name: "published ephemeral port",
+			cfg: &instance.Config{API: instance.APIConfig{
+				Listen: "127.0.0.1:0",
+			}},
+			published: "127.0.0.1:43210",
+			runID:     "run-2",
+			want:      "http://127.0.0.1:43210/#/run/run-2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			l := instance.NewLayout(t.TempDir())
+			if test.published != "" {
+				if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(l.SchedulerDir(), daemonAPIAddressFileName), []byte(test.published+"\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := failureRunURL(l, test.cfg, test.runID)
+			if err != nil {
+				t.Fatalf("failureRunURL() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("failureRunURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
+// posts a streak comment with count=1 but does NOT apply needs-human. The
+// circuit breaker only fires at failureStreakThreshold (3).
+func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
 	newEscalationPoster = func(string) gate.Commenter { return fake }
@@ -3388,22 +3906,80 @@ func TestBuildFailedHandlerPostsTraceCommentWithoutNeedsHuman(t *testing.T) {
 		t.Fatalf("request repository = %+v, want %+v", got.Repository, wantRepo)
 	}
 	if len(got.AddLabels) != 0 || len(got.RemoveLabels) != 0 {
-		t.Fatalf("labels = add %v / remove %v, want NONE — a `failed` terminal must not touch labels (needs-human stays reserved for escalation)", got.AddLabels, got.RemoveLabels)
+		t.Fatalf("labels = add %v / remove %v, want NONE on first failure", got.AddLabels, got.RemoveLabels)
 	}
 	if !strings.Contains(got.Comment, "run-timeout") {
 		t.Fatalf("comment = %q, want it to carry the run id", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "run=run-timeout seq=17") {
-		t.Fatalf("comment = %q, want run+seq marker", got.Comment)
+	if !strings.Contains(got.Comment, "[`run-timeout`](http://127.0.0.1:8080/#/run/run-timeout)") {
+		t.Fatalf("comment = %q, want a durable portal run-details link", got.Comment)
 	}
-	if !strings.Contains(got.Comment, "RUN_FAILED") || !strings.Contains(got.Comment, "local run trace") {
-		t.Fatalf("comment = %q, want stable code and local trace guidance", got.Comment)
+	if !strings.Contains(got.Comment, `data-count="1"`) {
+		t.Fatalf("comment = %q, want data-count=1 on first failure", got.Comment)
+	}
+	if !strings.Contains(got.Comment, "implement") {
+		t.Fatalf("comment = %q, want stage name", got.Comment)
 	}
 	if strings.Contains(got.Comment, sensitivePrompt) || strings.Contains(got.Comment, "claude -p") {
 		t.Fatalf("comment = %q, must not expose harness argv or prompt", got.Comment)
 	}
-	if strings.Contains(got.Comment, providers.LabelNeedsHuman) && (len(got.AddLabels) > 0) {
-		t.Fatalf("comment = %q, must not apply needs-human", got.Comment)
+}
+
+// TestBuildFailedHandlerCircuitBreakerTripsAtThreshold proves that after
+// failureStreakThreshold consecutive failures, needs-human is applied and ready
+// is removed — the circuit breaker engages.
+func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-trip", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+
+	// Simulate failureStreakThreshold failures by calling the handler repeatedly.
+	// Each call reads the streak from prior comments, increments, and upserts.
+	for i := 0; i < failureStreakThreshold; i++ {
+		err = h(context.Background(), runner.FailedOutcome{
+			RunID:   "run-trip",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+			Stage:   "implement",
+		})
+		if err != nil {
+			t.Fatalf("handler call %d: %v", i+1, err)
+		}
+	}
+
+	// Find the label-change call (the one with AddLabels set).
+	var labelCall *providers.UpdateWorkItemRequest
+	for i := range fake.calls {
+		if len(fake.calls[i].AddLabels) > 0 {
+			labelCall = &fake.calls[i]
+			break
+		}
+	}
+	if labelCall == nil {
+		t.Fatal("circuit breaker did not fire after threshold failures")
+	}
+	if !slices.Contains(labelCall.AddLabels, providers.LabelNeedsHuman) {
+		t.Fatalf("AddLabels = %v, want %s", labelCall.AddLabels, providers.LabelNeedsHuman)
+	}
+	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
+		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
 	}
 }
 
@@ -3477,6 +4053,92 @@ func TestBuildFailedHandlerNoClaimIsANoop(t *testing.T) {
 	}
 	if len(fake.calls) != 0 {
 		t.Fatalf("calls = %+v, want none (no driving item anywhere)", fake.calls)
+	}
+}
+
+// TestTerminalCircuitBreakerTripsOnEscalated proves that repeated PhaseEscalated
+// terminals trigger the circuit breaker (needs-human + remove ready).
+func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("4", "run-esc", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	if h == nil {
+		t.Fatal("expected non-nil terminal notifier")
+	}
+
+	for i := 0; i < failureStreakThreshold; i++ {
+		if err := h("run-esc", journal.PhaseEscalated, "open-pr-gate"); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+
+	var labelCall *providers.UpdateWorkItemRequest
+	for i := range fake.calls {
+		if len(fake.calls[i].AddLabels) > 0 {
+			labelCall = &fake.calls[i]
+			break
+		}
+	}
+	if labelCall == nil {
+		t.Fatal("circuit breaker did not fire after threshold escalated terminals")
+	}
+	if !slices.Contains(labelCall.AddLabels, providers.LabelNeedsHuman) {
+		t.Fatalf("AddLabels = %v, want %s", labelCall.AddLabels, providers.LabelNeedsHuman)
+	}
+	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
+		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+// TestTerminalCircuitBreakerSkipsCompleted proves completed terminals do not
+// increment the failure streak.
+func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("5", "run-ok", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+
+	for i := 0; i < failureStreakThreshold+1; i++ {
+		_ = h("run-ok", journal.PhaseCompleted, "done")
+	}
+
+	if len(fake.calls) != 0 {
+		t.Fatalf("completed terminals should not produce any provider calls, got %d", len(fake.calls))
 	}
 }
 

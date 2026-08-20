@@ -79,7 +79,7 @@ const claimsListHelp = "Usage: goobers claims list [--json] [--stale] [--gaggle=
 	"expires-at for each claim. Filters may be combined. Default path is \".\".\n"
 
 func runClaimsList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("claims list", flag.ContinueOnError)
+	fs := newCLIFlagSet("claims list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit claim entries as JSON")
 	staleOnly := fs.Bool("stale", false, "show only claims whose lease has expired")
@@ -167,7 +167,7 @@ const claimsReleaseHelp = "Usage: goobers claims release [--force] [--gaggle=nam
 	"ambiguous, 2 = usage/IO error.\n"
 
 func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("claims release", flag.ContinueOnError)
+	fs := newCLIFlagSet("claims release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gaggle := fs.String("gaggle", "", "gaggle owning the claim")
 	provider := fs.String("provider", "", "provider owning the claim")
@@ -273,7 +273,23 @@ func printClaimReleasePreview(w io.Writer, entry localscheduler.ClaimEntry, now 
 }
 
 func claimHolderTerminal(root string, entry localscheduler.ClaimEntry) (bool, error) {
-	runDir, err := instance.NewLayout(root).FindRunDir(entry.RunID)
+	runID := entry.RunID
+	if owner, ok := parseBacklogReconcileRunID(runID); ok {
+		// A backlog-reconcile claim's holder is the reconcile invocation
+		// itself (backlogreconcile.go's synthesized "<owner-run>/
+		// backlog-reconcile/<pid>/<seq>" RunID), not a run FindRunDir can
+		// look up — it is terminal iff the run that spawned it is.
+		runID = owner
+	} else if strings.Contains(runID, "/") {
+		// Some other slash-containing (and therefore, per FindRunDir,
+		// structurally invalid) run id — including a reconcile-shaped id
+		// whose pid/sequence suffix failed to parse. Hold conservatively
+		// rather than surface FindRunDir's rejection as an inspection error
+		// on every recovery sweep for as long as the entry lives (bounded
+		// by its own TTL either way).
+		return false, nil
+	}
+	runDir, err := instance.NewLayout(root).FindRunDir(runID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil

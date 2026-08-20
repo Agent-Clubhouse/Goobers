@@ -216,7 +216,12 @@ func precedesBranchJoinOnEveryPath(m *Machine, start, producer string) bool {
 	return true
 }
 
-func joinTerminalStates(m *Machine, start string) []string {
+type stateGraph interface {
+	Has(string) bool
+	Outgoing(string) []string
+}
+
+func joinTerminalStates(m stateGraph, start string) []string {
 	var terminals []string
 	for _, state := range branchBody(m, start) {
 		for _, target := range m.Outgoing(state) {
@@ -258,7 +263,7 @@ func branchOwnership(m *Machine) map[string]branchRef {
 // through a reserved target. Reserved targets (@join/@abort/@escalate) and the
 // empty completion target stop the walk, so a branch body never bleeds into the
 // join or a failure route.
-func branchBody(m *Machine, start string) []string {
+func branchBody(m stateGraph, start string) []string {
 	seen := map[string]bool{}
 	var out []string
 	stack := []string{start}

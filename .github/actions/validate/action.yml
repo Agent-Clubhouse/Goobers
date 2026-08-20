@@ -9,7 +9,7 @@ description: >-
 inputs:
   version:
     description: >-
-      Exact Goobers release tag to pin, e.g. v1.2.3. Required — there is no
+      Exact Goobers release tag to pin, e.g. v0.1.0. Required — there is no
       "latest" default, so a config repo's gate never silently changes
       behavior on an unpinned upstream release.
     required: true

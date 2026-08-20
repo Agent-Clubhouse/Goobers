@@ -17,6 +17,16 @@ describe("definition routing", () => {
   });
 });
 
+describe("Getting Started routing", () => {
+  it("round-trips the getting-started route and maps its own primary area", () => {
+    const route = { page: "getting-started" as const };
+
+    expect(routeHash(route)).toBe("#/getting-started");
+    expect(parseRoute("#/getting-started")).toEqual(route);
+    expect(activeArea(route)).toBe("getting-started");
+  });
+});
+
 describe("Insight routing", () => {
   it("round-trips scoped run drill-through filters", () => {
     const route = {
@@ -79,6 +89,24 @@ describe("Insight routing", () => {
     }
   });
 
+  it("round-trips a scoped Insight route with a time window preset (#2528)", () => {
+    const route = {
+      page: "insight" as const,
+      filters: {
+        gaggle: "core tools",
+        workflow: "implementation/v2",
+        stage: "review gate",
+        window: "24h" as const,
+      },
+    };
+
+    const hash = routeHash(route);
+
+    expect(hash).toMatch(/^#\/insight\?/);
+    expect(parseRoute(hash)).toEqual(route);
+    expect(parseRoute("#/insight")).toEqual({ page: "insight" });
+  });
+
   it("round-trips an exact error signature including empty values", () => {
     const route = {
       page: "errors" as const,
@@ -95,5 +123,22 @@ describe("Insight routing", () => {
 
     expect(parseRoute(routeHash(route))).toEqual(route);
     expect(activeArea(route)).toBe("insight");
+  });
+
+  it("orders error drill-through query params with the signature ahead of the time range", () => {
+    const hash = routeHash({
+      page: "errors",
+      filters: {
+        gaggle: "core",
+        code: "harness.crash",
+        errorClass: "unknown",
+        since: "2026-07-01T00:00:00Z",
+        until: "2026-07-08T00:00:00Z",
+      },
+    });
+
+    expect(hash).toMatch(
+      /^#\/errors\?gaggle=core&code=harness\.crash&errorClass=unknown&since=.*&until=.*/,
+    );
   });
 });

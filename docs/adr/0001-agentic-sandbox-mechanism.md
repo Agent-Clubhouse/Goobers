@@ -1,6 +1,6 @@
 # ADR 0001: Use OS-native sandboxes for local agentic stages
 
-- Status: Accepted
+- Status: approved
 - Date: 2026-07-18
 - Decision owner: SEC-Q6 / issue #163
 
@@ -52,12 +52,9 @@ construction executes a bounded bubblewrap preflight so a present but unusable
 installation is reported as unavailable before stage dispatch.
 
 Copilot CLI 1.0.71 exposes `COPILOT_HOME` to override its configuration and
-state directory and `--log-dir` to redirect logs. Enforced runs assign those
-paths and the standard profile variables to private directories in the
-temporary worktree. The native policy masks the host profile roots, apart from
-an exact harness executable installed there; harness authentication uses
-injected credentials, the platform credential store, or a narrowly seeded
-credential file. On 2026-07-18, the opt-in live probe
+state directory and `--log-dir` to redirect logs. The probe assigns both to the
+temporary worktree while retaining the user's `HOME` for credential-store
+authentication. On 2026-07-18, the opt-in live probe
 `GOOBERS_SANDBOX_COPILOT_LIVE=1 go test ./internal/sandbox -run
 TestNativeSandboxCopilotLive -count=1` succeeded on macOS with GitHub Copilot
 CLI 1.0.71: `copilot -p` authenticated through the existing local login,
@@ -73,9 +70,10 @@ allowed no writable root outside the temporary worktree.
 - Bubblewrap is an external Linux dependency and requires user namespaces or a
   correctly installed setuid helper. Availability must be checked before stage
   dispatch.
-- Runtime binaries, shared libraries, certificates, and local platform
-  credential-store authentication remain readable. Host profile directories
-  are masked; only an exact harness executable located there is re-exposed.
+- This decision constrains filesystem mutation, not all reads. Runtime binaries,
+  shared libraries, certificates, and local Copilot authentication remain
+  readable. S2 should narrow read access where platform testing proves it does
+  not break authentication.
 - Host IPC endpoints outside private `/dev` and `/proc` may still delegate side
   effects. S2 must either mask those endpoints or document narrowly reviewed
   exceptions needed for local authentication; this spike does not claim a

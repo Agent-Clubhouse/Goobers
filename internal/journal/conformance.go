@@ -31,11 +31,14 @@ type NormativeEvent struct {
 	Attempt             int
 	AttemptClass        AttemptClass
 	Actor               string
-	InstructionAddendum string
+	Action              string
+	Decision            string
 	Rationale           string
+	InstructionAddendum string
 	Gate                string
 	Verdict             string
 	Target              string
+	Complete            bool
 	Escalated           bool
 	Status              string
 	WorkflowVersion     int
@@ -102,8 +105,9 @@ func projectNormative(e Event) NormativeEvent {
 	ne := NormativeEvent{
 		Schema: e.Schema, Type: e.Type, Branch: e.Branch, Stage: e.Stage,
 		Attempt: e.Attempt, AttemptClass: e.AttemptClass,
-		Actor: e.Actor, InstructionAddendum: e.InstructionAddendum, Rationale: e.Rationale,
-		Gate: e.Gate, Verdict: e.Verdict, Target: e.Target, Escalated: e.Escalated,
+		Actor: e.Actor, Action: e.Action, Decision: e.Decision, Rationale: e.Rationale,
+		InstructionAddendum: e.InstructionAddendum,
+		Gate:                e.Gate, Verdict: e.Verdict, Target: e.Target, Complete: e.Complete, Escalated: e.Escalated,
 		Status: e.Status, WorkflowVersion: e.WorkflowVersion,
 		WorkflowDigest: e.WorkflowDigest, Name: e.Name,
 		Integrity: e.Integrity, MinimumIntegrity: e.MinimumIntegrity,
@@ -220,9 +224,10 @@ func (ne NormativeEvent) String() string {
 	ext := fmt.Sprintf("%s:%s:%s", ne.ExternalRefProvider, ne.ExternalRefKind, ne.ExternalRefID)
 	redaction := fmt.Sprintf("%s:%s->%s:%s", ne.RedactionTarget, ne.RedactionOldDigest, ne.RedactionNewDigest, ne.RedactionReason)
 	return fmt.Sprintf(
-		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|addendum=%s|rationale=%s|gate=%s|verdict=%s|target=%s|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
+		"schema=%s|type=%s|branch=%d|stage=%s|attempt=%d|class=%s|actor=%s|action=%s|decision=%s|rationale=%s|addendum=%s|gate=%s|verdict=%s|target=%s|complete=%t|escalated=%t|status=%s|workflowVersion=%d|workflowDigest=%s|name=%s|ref=%s|refIntegrity=%s|artifacts=%s|integrity=%s|minIntegrity=%s|ext=%s|err=%s|redact=%s|parallel=%s|branchName=%s|branchStatus=%s|completeness=%s|outputs=%s",
 		ne.Schema, ne.Type, ne.Branch, ne.Stage, ne.Attempt, ne.AttemptClass,
-		ne.Actor, ne.InstructionAddendum, ne.Rationale, ne.Gate, ne.Verdict, ne.Target, ne.Escalated, ne.Status,
+		ne.Actor, ne.Action, ne.Decision, ne.Rationale, ne.InstructionAddendum,
+		ne.Gate, ne.Verdict, ne.Target, ne.Complete, ne.Escalated, ne.Status,
 		ne.WorkflowVersion, ne.WorkflowDigest, ne.Name, ne.RefDigest, ne.RefIntegrity, ne.Artifacts,
 		ne.Integrity, ne.MinimumIntegrity, ext, ne.ErrorCode, redaction,
 		ne.Parallel, ne.BranchName, ne.BranchStatus, ne.Completeness, ne.Outputs,

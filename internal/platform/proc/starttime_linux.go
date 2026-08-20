@@ -18,6 +18,7 @@ import (
 // internal timer frequency (CONFIG_HZ) — hardcoding it is standard practice
 // (e.g. util-linux's ps/top do the same) rather than a real portability risk.
 const linuxClockTicksPerSec = 100
+const startTimeSupported = true
 
 func startTime(pid int) (time.Time, bool) {
 	if pid <= 0 {

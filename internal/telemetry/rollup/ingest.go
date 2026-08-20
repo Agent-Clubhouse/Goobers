@@ -4,11 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -56,6 +61,9 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 	if err := insertEvents(ctx, tx, runID, events); err != nil {
 		return err
 	}
+	if err := insertCICheckFailures(ctx, tx, runDir, runID, events); err != nil {
+		return err
+	}
 	if err := insertBacklogProjections(tx, runDir, identity, events); err != nil {
 		return err
 	}
@@ -74,7 +82,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -102,7 +110,7 @@ func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("rollup: commit delete for run %s: %w", runID, err)
 	}
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 
@@ -218,7 +226,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			if standaloneErrorCodes[k] == nil {
 				standaloneErrorCodes[k] = map[string]bool{}
 			}
-			standaloneErrorCodes[k][ev.Error.Code] = true
+			code, _ := errorCodeAndClass(ev)
+			standaloneErrorCodes[k][code] = true
 		}
 	}
 
@@ -262,7 +271,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-						nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+						nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 						return fmt.Errorf("rollup: insert run_error (stage.finished) seq %d: %w", ev.Seq, err)
 					}
 				}
@@ -272,20 +281,34 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			if ev.Error == nil {
 				continue
 			}
-			class := string(telemetry.ClassifyError(ev.Error.Code))
+			code, class := errorCodeAndClass(ev)
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-				nullIfEmpty(class), nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
+				nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
 			}
 			if a := stages[eventStageKeys[i]]; a != nil {
-				a.errorCode = ev.Error.Code
+				a.errorCode = code
 				a.errorClass = class
+				// The producer's own diagnostic context (retry classification,
+				// whether the failed attempt committed work, #2224) is on the
+				// error event, not on stage.started — without this the failing
+				// attempt's runner_json was NULL for exactly the failures an
+				// operator most needs it for.
+				if rj, err := runnerJSON(ev.Runner); err != nil {
+					return err
+				} else if rj.Valid {
+					a.runnerJSON = rj
+				}
 				// Dispatch failures are followed directly by the next
 				// stage.started event, without a stage.finished event. The
 				// error event is therefore the journal's attempt boundary.
+				// Keyed on the journal's own Error.Code, which stays
+				// executor_error for every dispatch failure — the typed cause
+				// resolved above refines the row, it does not redefine which
+				// events close an attempt.
 				if ev.Error.Code == "executor_error" && a.finishedAt.IsZero() {
 					a.status = stageStatusFailure
 					a.finishedAt = ev.Time
@@ -367,6 +390,190 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 		}
 	}
 	return nil
+}
+
+type ciChecksArtifact struct {
+	Checks []struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	} `json:"checks"`
+}
+
+func insertCICheckFailures(ctx context.Context, tx *sql.Tx, runDir, runID string, events []journalEvent) error {
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return err
+	}
+	for _, ev := range events {
+		if ev.Type != eventStageFinished || ev.Outputs["ciStatus"] != "failing" {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, ref := range ev.Artifacts {
+			if ref.MediaType != "application/json" {
+				continue
+			}
+			data, readErr := reader.ArtifactBytes(journal.Ref{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size, MediaType: ref.MediaType,
+			})
+			if readErr != nil {
+				return fmt.Errorf("rollup: read CI checks artifact for run %s: %w", runID, readErr)
+			}
+			var artifact ciChecksArtifact
+			if json.Unmarshal(data, &artifact) != nil || artifact.Checks == nil {
+				continue
+			}
+			for _, check := range artifact.Checks {
+				name := strings.TrimSpace(check.Name)
+				if check.State != "failing" || name == "" || seen[name] {
+					continue
+				}
+				seen[name] = true
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO ci_check_failures (run_id, seq, stage, check_name, artifact_digest, occurred_at)
+					VALUES (?, ?, ?, ?, ?, ?)`,
+					runID, ev.Seq, ev.Stage, name, ref.Digest, formatTime(ev.Time)); err != nil {
+					return fmt.Errorf("rollup: insert CI check failure %q for run %s: %w", name, runID, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT run_id FROM runs`)
+	if err != nil {
+		return fmt.Errorf("query existing runs: %w", err)
+	}
+	runIDs := make(map[string]bool)
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan existing run: %w", err)
+		}
+		runIDs[runID] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate existing runs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close existing runs: %w", err)
+	}
+	if len(runIDs) == 0 {
+		return nil
+	}
+
+	runsRoots := []string{filepath.Join(instanceRoot, "runs")}
+	gaggles, err := os.ReadDir(filepath.Join(instanceRoot, "gaggles"))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read gaggle roots: %w", err)
+	}
+	for _, gaggle := range gaggles {
+		if gaggle.IsDir() {
+			runsRoots = append(runsRoots, filepath.Join(instanceRoot, "gaggles", gaggle.Name(), "runs"))
+		}
+	}
+	seenRoots := make(map[string]bool, len(runsRoots))
+	for _, runsRoot := range runsRoots {
+		canonical, err := canonicalRunsRoot(runsRoot)
+		if err != nil {
+			return err
+		}
+		if seenRoots[canonical] {
+			// instanceRoot/runs commonly symlinks to one of the
+			// gaggles/<gaggle>/runs roots (documented compat layout); without
+			// this dedup the same run directory is scanned — and its CI check
+			// failures inserted — twice, colliding on the failures table's
+			// (run_id, seq, check_name) primary key and aborting the whole
+			// migration transaction.
+			continue
+		}
+		seenRoots[canonical] = true
+
+		// Scan through canonical, not runsRoot: runsRoots lists
+		// instanceRoot/runs (the compat alias) before the gaggle roots, so
+		// the alias would otherwise win the dedup and every runDir below
+		// would be reached through it. internal/journal's artifact reader
+		// resolves the run directory with filepath.EvalSymlinks too (its own
+		// containment check), which cannot see past a Windows junction any
+		// more than canonicalRunsRoot's own resolution can — so a runDir
+		// under the alias fails there with "journal: resolve run directory:
+		// ...The system cannot find the path specified" on Windows, even
+		// though the dedup itself picked the right, single scan. Reading
+		// through the already-resolved real path sidesteps that entirely.
+		dirs, err := runDirs(canonical)
+		if err != nil {
+			return err
+		}
+		for _, runDir := range dirs {
+			runID := filepath.Base(runDir)
+			if !runIDs[runID] {
+				continue
+			}
+			events, err := readEvents(runDir)
+			if err != nil {
+				return err
+			}
+			if err := insertCICheckFailures(ctx, tx, runDir, runID, events); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// canonicalRunsRoot resolves a scan root to a key that's stable across
+// symlink aliasing, so two roots pointing at the same physical directory
+// (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat alias)
+// dedupe to one scan. It goes through instance.ResolveRuntimeAlias rather
+// than filepath.EvalSymlinks directly because that alias is a plain symlink
+// off Windows but a directory junction on Windows (CreateLegacyRuntimeAlias),
+// and Go 1.23+'s EvalSymlinks walks straight past a junction instead of
+// resolving it — only ResolveRuntimeAlias's per-platform reparse-point
+// handling gets the real target on both. A root that doesn't exist yet can't
+// alias anything real, so it resolves to its own cleaned path rather than
+// erroring.
+func canonicalRunsRoot(root string) (string, error) {
+	resolved, err := instance.ResolveRuntimeAlias(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return filepath.Clean(root), nil
+		}
+		return "", fmt.Errorf("rollup: resolve runs root %s: %w", root, err)
+	}
+	return resolved, nil
+}
+
+// Runner-namespace keys carrying a stage failure's typed cause. The producer
+// (internal/runner) writes them alongside the generic Error.Code, which stays
+// executor_error for every dispatch failure because that exact string is the
+// journal's attempt-boundary marker.
+const (
+	runnerErrorCodeKey  = "errorCode"
+	runnerErrorClassKey = "errorClass"
+)
+
+// errorCodeAndClass resolves the code and class one error event contributes to
+// the rollup. The producer's typed refinement wins when present: an unauthorized
+// clone, a broken credential helper, a DNS outage and a claims-lock timeout are
+// four different owners' problems that otherwise share the one executor_error /
+// unknown row, which is what forced the 2026-08-08 audit to reconstruct a
+// failure taxonomy by reading 3,487 journals by hand. Classification is never
+// inferred from the message here — an unrefined event still classifies purely
+// from its own code.
+func errorCodeAndClass(ev journalEvent) (code, class string) {
+	code = ev.Error.Code
+	if typed, ok := ev.Runner[runnerErrorCodeKey].(string); ok && typed != "" {
+		code = typed
+	}
+	class = string(telemetry.ClassifyError(code))
+	if typed, ok := ev.Runner[runnerErrorClassKey].(string); ok && typed != "" {
+		class = typed
+	}
+	return code, class
 }
 
 var curationAgentOutputKeys = []string{
@@ -617,13 +824,13 @@ type schedulerCursor struct {
 // left, so the first incremental pass re-reads the journal head once but writes
 // nothing for events already stored (ON CONFLICT makes each a no-op), then
 // records the cursor so every later pass reads only the new tail.
-func readSchedulerCursor(sqlDB *sql.DB) (schedulerCursor, error) {
+func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, error) {
 	var c schedulerCursor
-	err := sqlDB.QueryRow(`SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
+	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
 		Scan(&c.byteOffset, &c.lastSeq)
 	if err == sql.ErrNoRows {
 		var seed uint64
-		if err := sqlDB.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
+		if err := sqlDB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
 			return schedulerCursor{}, fmt.Errorf("rollup: seed scheduler cursor: %w", err)
 		}
 		return schedulerCursor{byteOffset: 0, lastSeq: seed}, nil
@@ -663,23 +870,85 @@ func (db *DB) resetSchedulerIngestCursor(ctx context.Context) error {
 	return nil
 }
 
+// spansCursor is the scheduler-spans ingest watermark: how far into
+// scheduler/spans/spans.jsonl IngestSchedulerLog has read. Unlike
+// schedulerCursor there is no seq to skip against — the file has no analogous
+// monotonic identity — so the byte offset alone is the whole contract: bytes
+// before it are already ingested, everything at or after is new.
+type spansCursor struct {
+	byteOffset int64
+}
+
+// readSpansCursor loads the spans ingest watermark. A missing row (a fresh
+// Rebuild, or the first ingest after upgrading from the old full-rescan path)
+// starts at offset 0 — the next ingest re-reads the whole spans file once,
+// same as every prior cycle did, and then never again: the per-span
+// delete-then-insert this fix keeps is idempotent, so replaying already-stored
+// spans on that one pass is harmless, just the last full-cost cycle.
+func readSpansCursor(ctx context.Context, sqlDB *sql.DB) (spansCursor, error) {
+	var c spansCursor
+	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset FROM spans_ingest_cursor WHERE id = 1`).Scan(&c.byteOffset)
+	if err == sql.ErrNoRows {
+		return spansCursor{}, nil
+	}
+	if err != nil {
+		return spansCursor{}, fmt.Errorf("rollup: read spans cursor: %w", err)
+	}
+	return c, nil
+}
+
+func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO spans_ingest_cursor (id, byte_offset)
+		VALUES (1, ?)
+		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset`,
+		byteOffset); err != nil {
+		return fmt.Errorf("rollup: write spans cursor: %w", err)
+	}
+	return nil
+}
+
+const defaultSchedulerIngestTimeout = 5 * time.Second
+
+var errSchedulerIngestInProgress = errors.New("rollup: scheduler ingest already in progress")
+
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
 // scheduler decisions, starvation and error signals) and its rolling scheduler
-// spans. It is incremental (#1411): a per-tick call reads only the journal tail
-// past the last ingested offset and inserts only events above the seq
-// watermark, so a steady-state ingest with nothing new performs no writes and
-// the WAL stops churning. Idempotent — safe to call repeatedly or as part of
-// Rebuild; INSERT ... ON CONFLICT keeps a re-read after a journal reset, or a
-// historical duplicate seq (corruption), from ever duplicating a row (the first
-// occurrence wins, so one bad record can't block all rollup).
+// spans. Both halves are incremental: a per-tick call reads only the journal
+// tail past the last ingested offset and inserts only events above the seq
+// watermark (#1411), and reads only the spans tail past its own byte-offset
+// cursor instead of re-parsing and delete+reinserting the entire rolling spans
+// file every call (telemetry storage hygiene audit, 2026-08-08 — this file
+// grows for the instance's entire lifetime, unlike a run's own bounded span
+// file). A steady-state ingest with nothing new performs no writes and the WAL
+// stops churning. Idempotent — safe to call repeatedly or as part of Rebuild;
+// INSERT ... ON CONFLICT (events) and delete-then-insert (spans) keep a
+// re-read after a reset, or a historical duplicate (corruption), from ever
+// duplicating a row (events: the first occurrence wins; spans: the last write
+// wins, since replaying the exact same recorded span converges to the same
+// row either way).
 func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error {
+	ctx, cancel := context.WithTimeout(ctx, db.schedulerIngestTimeout)
+	defer cancel()
+
+	// Scheduler telemetry is derived and retryable. Do not queue daemon ticks,
+	// config applies, or shutdown behind an ingest already doing slow SQLite
+	// cleanup; the active transaction is independently bounded above.
+	if !db.schedulerMu.TryLock() {
+		return errSchedulerIngestInProgress
+	}
+	defer db.schedulerMu.Unlock()
+	return db.ingestSchedulerLog(ctx, schedulerDir)
+}
+
+func (db *DB) rebuildSchedulerLog(ctx context.Context, schedulerDir string) error {
 	db.schedulerMu.Lock()
 	defer db.schedulerMu.Unlock()
 	return db.ingestSchedulerLog(ctx, schedulerDir)
 }
 
 func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error {
-	cursor, err := readSchedulerCursor(db.sql)
+	cursor, err := readSchedulerCursor(ctx, db.sql)
 	if err != nil {
 		return err
 	}
@@ -687,7 +956,11 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	spans, err := readSchedulerSpans(schedulerDir)
+	spanCursor, err := readSpansCursor(ctx, db.sql)
+	if err != nil {
+		return err
+	}
+	spans, newSpanOffset, _, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -727,7 +1000,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 					VALUES (?, ?, ?, ?, ?)
 					ON CONFLICT(seq) DO NOTHING`,
 					ev.Seq, ev.Error.Code, nullIfEmpty(string(telemetry.ClassifyError(ev.Error.Code))),
-					nullIfEmpty(telemetry.Redact(ev.Error.Message)), formatTime(ev.Time)); err != nil {
+					nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
 					return fmt.Errorf("rollup: insert scheduler_error seq %d: %w", ev.Seq, err)
 				}
 			}
@@ -746,6 +1019,13 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 			}
 		}
 	}
+	// Incremental replay applies here too: spans is now bounded to the tail
+	// past spanCursor.byteOffset, not the whole rolling file (previously
+	// re-parsed AND delete+reinserted in full every tick — O(all-spans-ever),
+	// 75K spans / 55.6MB observed in the wild). The per-span delete-then-insert
+	// stays: it is what makes replaying an already-ingested span (the
+	// reset-from-head fallback in readSchedulerSpansFrom) harmless rather than
+	// a duplicate-key error.
 	for _, span := range spans {
 		if span.TraceID == "" {
 			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
@@ -758,6 +1038,9 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 		}
 	}
 	if err := writeSchedulerCursor(ctx, tx, newOffset, maxSeq); err != nil {
+		return err
+	}
+	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -775,7 +1058,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// can legitimately hold the checkpoint back — that's a maintenance
 	// delay, not a correctness problem, so its failure must never surface
 	// as an ingest failure.
-	checkpointWAL(db.sql)
+	checkpointWAL(ctx, db.sql)
 	return nil
 }
 

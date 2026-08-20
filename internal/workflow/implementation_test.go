@@ -87,9 +87,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
 	}
 	for outcome, want := range map[string]string{
-		"pass":  "push-branch",
+		"pass":  "open-pr",
 		"fail":  "implement",
-		"infra": "park-escalated",
+		"infra": "local-ci",
 	} {
 		if got := localGate.Branches[outcome]; got != want {
 			t.Errorf("local-gate %s branch = %q, want %q", outcome, got, want)
@@ -103,7 +103,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		t.Errorf("review.agentic.goober = %+v, want reviewer", review.Agentic)
 	}
 	wantBranches := map[string]string{
-		"pass":          "local-ci",
+		"pass":          "push-branch",
 		"needs-changes": "implement",
 		"fail":          "park-needs-human",
 		BranchEscalate:  "park-escalated",
@@ -113,6 +113,13 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 		if !ok || got != want {
 			t.Errorf("review branch %q = %q,%v; want %q,true", outcome, got, ok, want)
 		}
+	}
+	pushBranch, ok := m.Task("push-branch")
+	if !ok {
+		t.Fatal("push-branch task not found")
+	}
+	if pushBranch.Next != "local-ci" {
+		t.Errorf("push-branch.next = %q, want local-ci", pushBranch.Next)
 	}
 
 	// Review and local failures return to the maintainer-only implement task.
@@ -190,18 +197,22 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	}
 
 	// Capability grants match issue #27's scope, split by least privilege:
-	// implementer=[repo:push], reviewer=[] (pure evaluation, no write).
-	if len(goobers["implementer"].Capabilities) != 1 || goobers["implementer"].Capabilities[0] != "repo:push" {
-		t.Errorf("implementer capabilities = %v, want exactly [repo:push]", goobers["implementer"].Capabilities)
+	// implementer=[repo:push, agent:model], reviewer=[agent:model] (pure
+	// evaluation, no write).
+	if len(goobers["implementer"].Capabilities) != 2 ||
+		goobers["implementer"].Capabilities[0] != "repo:push" ||
+		goobers["implementer"].Capabilities[1] != "agent:model" {
+		t.Errorf("implementer capabilities = %v, want exactly [repo:push agent:model]", goobers["implementer"].Capabilities)
 	}
-	if len(goobers["reviewer"].Capabilities) != 0 {
-		t.Errorf("reviewer capabilities = %v, want none", goobers["reviewer"].Capabilities)
+	if len(goobers["reviewer"].Capabilities) != 1 || goobers["reviewer"].Capabilities[0] != "agent:model" {
+		t.Errorf("reviewer capabilities = %v, want exactly [agent:model]", goobers["reviewer"].Capabilities)
 	}
 
-	// #239: ci-gate gained a "timeout" branch (routes a ci-poll timeout to
-	// @escalate instead of the "fail" branch's implement repass).
-	// #237: a deterministic push-branch stage was inserted between
-	// local-gate and open-pr (the implementer commits but no longer pushes).
+	// #239: ci-gate gained a distinct "timeout" branch so pending CI does not
+	// enter the "fail" branch's implement repass. #3325 now routes that branch
+	// back to ci-poll instead of terminally escalating a healthy open PR.
+	// #237/#3272: deterministic push-branch publishes the reviewed commit
+	// before local-ci, while open-pr remains after local-ci passes.
 	// #361/#355: query-backlog gained excludeLabels (goobers/status:in-review)
 	// and close-out gained inputs.status="in-review" — the issue no longer
 	// closes on PR-open; only `goobers post-merge` (merge-review's opt-in
@@ -216,11 +227,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// theory that the #845 post-mortem falsified — the real cause was terminal
 	// job control (SIGTTOU), fixed by Setsid (#846/#850). The serialize input
 	// was removed so local-ci runs fully parallel again.
-	// #929: ci-gate's timeout branch now routes through park-escalated rather
-	// than straight at "@escalate". The run's terminal phase is unchanged, but
-	// the issue-side bookkeeping (clear ready, release claimed, apply the park
-	// label) only runs if that stage does — see
-	// TestImplementationEscalatingBranchesRunIssueBookkeeping.
+	// #929 still governs genuine mechanical escalations through
+	// park-escalated; pending CI no longer escalates and instead checkpoints by
+	// re-entering ci-poll (#3325).
 	// #947: open-pr now emits an `opened` output and routes through the new
 	// open-pr-gate (opened=false -> @abort) so an issue closed after it was
 	// claimed does not still produce a PR — a re-check immediately before
@@ -235,7 +244,15 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// identical-diff loop, a CI-poll timeout) is a mechanical failure, not a
 	// policy decision. #2333 restricts park-needs-human to an explicit reviewer
 	// fail that states the exact policy or product question a human must answer.
-	const wantDigest = "sha256:2d9f19c4f6bd0acf0ab39ee0085c0860434c9b7d46de43d1331b1e500324f35f"
+	// #2698: the reference workflow migrated dslVersion 1.4 -> 2.0 and pinned
+	// automated.pollIntervalSeconds: 10 explicitly on ci-gate (DSL 2.0's
+	// ci-poll input builder injects that default where 1.4 left it unset), so
+	// the compiled runtime behavior is identical; only the hashed definition
+	// (DSLVersion + the now-explicit pin) moved the digest.
+	// #3272: review now checkpoints the branch before local-ci, local-ci pass
+	// proceeds directly to open-pr, and infrastructure outcomes retry local-ci
+	// under their separate bounded budget.
+	const wantDigest = "sha256:d27cdc7727ae9e89588210a836c3cd39ec533f031a4df769817092064987a928"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

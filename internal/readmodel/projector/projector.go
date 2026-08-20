@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -251,12 +252,10 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 		return ctx.Err()
 	case p.commits <- request:
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-request.result:
-		return err
-	}
+	// Once accepted, the write closure may refer to caller-owned result state.
+	// Wait for it to finish even if the context is canceled so the caller cannot
+	// observe that state while the commit loop is still updating it.
+	return <-request.result
 }
 
 // UpsertRun commits a prepared projection through the sole-writer loop.
@@ -475,20 +474,26 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 	if p.prepareForTest != nil {
 		return p.prepareForTest(ctx, runID)
 	}
-	dir, found := p.locate(runID)
-	if !found {
-		return Projection{}, false, nil
+	dir, found, err := p.locate(runID)
+	if err != nil {
+		return Projection{}, false, err
 	}
-	if !journal.Recorded(dir) {
+	if !found {
 		return Projection{}, false, nil
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
-		return Projection{}, false, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return Projection{}, false, nil
+		}
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return Projection{}, false, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return Projection{}, false, nil
+		}
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	events, err := reader.Events()
 	if err != nil {
@@ -497,18 +502,36 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 		// read model quietly incomplete.
 		return Projection{}, false, fmt.Errorf("projector: read events for %s: %w", runID, err)
 	}
-	return readmodel.ProjectRun(identity, Projection{}, events), true, nil
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return Projection{}, false, fmt.Errorf("projector: project operator facts for %s: %w", runID, err)
+	}
+	return projection, true, nil
 }
 
 // locate finds a run's directory across the configured roots.
-func (p *Projector) locate(runID string) (string, bool) {
+func (p *Projector) locate(runID string) (string, bool, error) {
 	for _, root := range p.options.RunsDirs {
 		candidate := filepath.Join(root, runID)
-		if journal.Recorded(candidate) {
-			return candidate, true
+		info, err := os.Stat(candidate)
+		if err == nil {
+			if !info.IsDir() {
+				return "", false, fmt.Errorf("projector: locate journal for %s: %s is not a directory", runID, candidate)
+			}
+			_, err = os.Stat(filepath.Join(candidate, "run.yaml"))
+			if err == nil {
+				return candidate, true, nil
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // Restart performs the bounded startup pass: drain intake, then reproject the

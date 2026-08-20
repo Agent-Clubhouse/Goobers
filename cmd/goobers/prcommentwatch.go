@@ -123,7 +123,7 @@ type prCommentWatchResult struct {
 }
 
 func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("pr-comment-watch", flag.ContinueOnError)
+	fs := newCLIFlagSet("pr-comment-watch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "pr-comment-watch")
 	if err := fs.Parse(args); err != nil {

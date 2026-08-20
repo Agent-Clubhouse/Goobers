@@ -86,13 +86,19 @@ func renewLiveClaims(l instance.Layout, runIDs []string, leaseDuration time.Dura
 
 // recoverClaims releases expired leases and leases whose owning run is already
 // terminal. The latter retries claim cleanup deferred by a claims-lock timeout.
-func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) ([]localscheduler.ClaimEntry, error) {
+func recoverClaims(
+	l instance.Layout,
+	log *journal.InstanceLog,
+	now time.Time,
+	interventionActive func(string) bool,
+) ([]localscheduler.ClaimEntry, error) {
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	snapshot, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
 		return nil, err
 	}
 	var terminalEntries []localscheduler.ClaimEntry
+	terminalUpdates := make(map[string]remediationNoopUpdate)
 	for _, entry := range snapshot.Snapshot() {
 		terminal, err := claimHolderTerminal(l.Root, entry)
 		if err != nil {
@@ -101,6 +107,24 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		}
 		if terminal {
 			terminalEntries = append(terminalEntries, entry)
+			if _, isReconcileClaim := parseBacklogReconcileRunID(entry.RunID); isReconcileClaim {
+				// A backlog-reconcile claim's RunID (backlogreconcile.go) is a
+				// synthesized lease identity, not a workflow run — it has no
+				// rebase-pr/implement stages of its own for
+				// preparePRRemediationNoopUpdate to find, and FindRunDir
+				// rejects the id outright (it contains "/"). claimHolderTerminal
+				// above already resolved terminality against the OWNING run;
+				// that run's own claim (if any) still gets its own remediation
+				// update prepared when this loop reaches it directly.
+			} else if _, prepared := terminalUpdates[entry.RunID]; !prepared {
+				update, err := preparePRRemediationNoopUpdate(l, entry.RunID)
+				if err != nil {
+					return nil, err
+				}
+				if update != nil {
+					terminalUpdates[entry.RunID] = *update
+				}
+			}
 		}
 	}
 
@@ -113,14 +137,43 @@ func recoverClaims(l instance.Layout, log *journal.InstanceLog, now time.Time) (
 		if err != nil {
 			return err
 		}
+		recorded := make(map[string]struct{})
+		for _, entry := range terminalEntries {
+			current, held := currentClaimEntry(ledger, entry)
+			if !held || current.RunID != entry.RunID {
+				continue
+			}
+			update, ok := terminalUpdates[entry.RunID]
+			if !ok {
+				continue
+			}
+			if _, ok := recorded[entry.RunID]; ok {
+				continue
+			}
+			if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
+				return err
+			}
+			recorded[entry.RunID] = struct{}{}
+		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {
 			return err
 		}
 		released = append(released, expired...)
 		for _, entry := range terminalEntries {
+			if interventionActive != nil && interventionActive(entry.RunID) {
+				continue
+			}
 			current, held := currentClaimEntry(ledger, entry)
 			if !held || current.RunID != entry.RunID {
+				continue
+			}
+			terminal, err := claimHolderTerminal(l.Root, current)
+			if err != nil {
+				recordTerminalClaimInspectionError(log, current, err)
+				continue
+			}
+			if !terminal {
 				continue
 			}
 			if err := ledger.ReleaseEntry(current, current.RunID); err != nil {

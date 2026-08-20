@@ -6,7 +6,7 @@ create a regular instance and adopt production-oriented configuration. See
 `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 If declarative systems are new to you, read
-[How Goobers works: desired state, not scripts](../concepts/README.md) first.
+[How Goobers works: desired state, not scripts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md) first.
 It explains the config/runtime split and why agents propose definition changes
 through pull requests.
 
@@ -16,53 +16,199 @@ through pull requests.
 go build -o bin/goobers ./cmd/goobers    # or: make build
 ```
 
+## Pick an agent harness
+
+Every agentic goober needs one configured harness: GitHub Copilot CLI or
+Claude Code CLI. Install and sign in to whichever one your goobers declare
+(`harness: copilot` or `harness: claude-code` in their `goober.yaml`) before
+section 2 below — the deterministic demo in section 1 needs neither. For
+Claude Code:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+claude auth login
+```
+
+For host setup differences (Homebrew paths, WSL 2, launchd/systemd PATH
+quirks), see the platform guide linked in section 1 below. Section 2
+shows how to confirm Goobers can see whichever harness you installed.
+
 ## 1. Run the zero-credential demo
 
 The hermetic demo uses mock providers and requires no repository, provider
 credentials, model tokens, or network writes. It is supported on Linux and
 macOS, where Goobers enforces network isolation.
 
-For host setup differences, see the [Linux](quickstart-linux.md) or
-[Windows](quickstart-windows.md) guide. Native Windows cannot enforce the
-demo's network isolation; use its documented WSL 2 path instead.
+For host setup differences, see the [macOS](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-macos.md),
+[Linux](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-linux.md), or [Windows](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md) guide. Native
+Windows cannot enforce the demo's network isolation; use its documented WSL 2
+path instead.
 
 ```sh
 bin/goobers init --demo ./demo-instance
 bin/goobers run demo ./demo-instance
-bin/goobers trace <run-id> ./demo-instance
 ```
 
-The run walks through curate -> implement -> review, pauses at the
-`review-verdict` gate, and then produces a merge-preview artifact before
-finishing. `run` prints the run ID used by `trace`; the trace shows the complete
-journal and gate transition.
+`run` waits for the run to reach a terminal state by default, so by the time
+it returns the demo has already flowed through curate -> implement -> review,
+passed the automated `review-verdict` gate, and produced a merge-preview
+artifact — fully deterministic and offline, with no pause for user input.
+`run` prints the run ID used by `trace`.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal:
+
+```sh
+# second terminal
+bin/goobers dashboard ./demo-instance
+```
+
+Press Ctrl-C in that terminal when you're done. Back in the first terminal,
+inspect the complete journal, including the gate's recorded verdict:
+
+```sh
+bin/goobers trace <run-id> ./demo-instance
+```
 
 ## 2. Graduate to the token-bearing quickstart template
 
 Next, use the versioned `quickstart@v1` template for a first autonomous run
-against a disposable GitHub repository. This path requires a GitHub token and
-an authenticated Copilot CLI. Copy the paired sample into a separate throwaway
-directory:
+against a disposable GitHub repository you control. This path requires a
+GitHub token and an authenticated agent harness. The shipped template's
+goobers default to `harness: copilot`; to run it on Claude Code instead, set
+`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
+after materializing the instance below (see
+[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
+for a full claude-code gaggle reference).
+
+### Check prerequisites
+
+The sample's CI command requires Node.js 20 or newer and npm. Confirm both are
+available on the same `PATH` Goobers will use before materializing the sample:
+
+```sh
+node --version
+npm --version
+```
+
+The first command must report `v20.0.0` or newer, and both commands must
+succeed. At run start, Goobers preflights the configured `npm` CI executable
+before any workflow stage executes. If npm is missing, the run fails before it
+claims or changes an issue with a `ciCommand executable "npm" not found` error;
+install Node.js 20+ and npm, then run the command again. The preflight checks
+that npm exists, not the Node.js major version, so do not skip the literal
+version checks above.
+
+### Materialize the sample and the instance
+
+Copy the paired sample into a separate throwaway directory, then scaffold the
+instance that will operate on it:
 
 ```sh
 bin/goobers onboarding stub-sample \
   --destination ./getting-started-task-api \
   --json
+bin/goobers init --template=quickstart ./tutorial-instance
 ```
 
-The action is non-interactive, embeds the release-matched sample, and is safe to
-re-run. It reports every created or skipped file plus the destination and next
-command. It refuses conflicting user-owned files unless `--force` is explicit.
-To also seed the catalog's labels and issues into an existing disposable GitHub
-repository, add `--work-tracking owner/repo`; the command reads
-`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,
-the JSON envelope reports the issues pending and still materializes the local
-sample without network access. It never creates or pushes a remote.
+`stub-sample` is non-interactive, embeds the release-matched sample, and is
+safe to re-run; it refuses conflicting user-owned files unless `--force` is
+explicit, and never creates or pushes a remote itself. Its `--json` output is
+a versioned action envelope:
+
+```json
+{
+  "action": "stub-sample",
+  "version": 2,
+  "created": [".github/workflows/ci.yml", "package.json", "..."],
+  "skipped": [],
+  "path": "/absolute/path/to/getting-started-task-api",
+  "nextCommand": "goobers init --template=quickstart ./tutorial-instance"
+}
+```
+
+`created` lists paths written in this run; `skipped` lists paths already
+present. `nextCommand` is the next command to run. `init --template=quickstart`
+materializes `./tutorial-instance` still pointing at the template's
+placeholder repository (`your-org/your-repo`); the next step replaces that
+with a real one.
+
+### Create a disposable repository and connect the instance to it
+
+1. Create a new, empty GitHub repository to hold the sample, and push it —
+   any name, delete it whenever you're done. With the GitHub CLI:
+
+   ```sh
+   gh repo create <owner>/<repo> --private --source ./getting-started-task-api --push
+   ```
+
+   Without it, create the repository at <https://github.com/new>, then:
+
+   ```sh
+   git -C ./getting-started-task-api init -b main
+   git -C ./getting-started-task-api add -A
+   git -C ./getting-started-task-api commit -m "Getting Started sample"
+   git -C ./getting-started-task-api remote add origin https://github.com/<owner>/<repo>.git
+   git -C ./getting-started-task-api push -u origin main
+   ```
+
+   Already have a disposable repository you'd rather reuse? Skip this step
+   and use its `<owner>/<repo>` below instead.
+
+2. Export a GitHub token with repo/issues access, once, under the name
+   `connect` expects by default:
+
+   ```sh
+   export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+3. Point the instance at the repository, and seed it in the same step:
+
+   ```sh
+   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance
+   ```
+
+   `connect` rewrites the placeholder `your-org/your-repo` in
+   `./tutorial-instance`'s `instance.yaml` and gaggle config to the repository
+   you gave it, records `GOOBERS_GITHUB_TOKEN` (or the name you passed via
+   `--token-env NAME`, if you keep the token under a different variable) as
+   the credential reference by name only — the value never passes through
+   this command — and validates the result in-process. `--seed` derives the
+   labels the quickstart workflow's backlog selector requires, ensures they
+   exist on the repository, and files one safe starter issue, using that same
+   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.
+   Configuration already pointing at a real repository is left alone unless
+   you pass `--replace`.
+
+4. Confirm Goobers can see and use your installed harness before the first
+   run — `--check-harness` preflights every harness referenced by the
+   instance's goobers and prints `HARNESS claude-code: OK` (or `HARNESS
+   copilot: OK`) once the CLI is installed and signed in:
+
+   ```sh
+   bin/goobers validate --check-harness ./tutorial-instance
+   ```
+
+### Run it
 
 ```sh
-bin/goobers init --template=quickstart ./tutorial-instance
-bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
+```
+
+`run` waits for the run to reach a terminal state by default. This is a real
+autonomous run against your disposable repository, so it takes noticeably
+longer than the offline demo: it claims one approved issue, implements it,
+performs an advisory code-review task, pushes the run branch, and opens a
+pull request. It is **not for production**: it intentionally omits CI gates,
+remediation loops, bounded escalation, merge policy, and issue close-out so
+the onboarding happy path has no stall points.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal, and press Ctrl-C there when you're done:
+
+```sh
+# second terminal
+bin/goobers dashboard ./tutorial-instance
 ```
 
 To seed the same template as a checked-in config source without runtime state,
@@ -74,14 +220,14 @@ bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
-This linear template claims one approved issue, implements it, performs an
-advisory code-review task, pushes the run branch, and opens a pull request. It
-is **not for production**: it intentionally omits CI gates, remediation loops,
-bounded escalation, merge policy, and issue close-out so the onboarding happy
-path has no stall points.
+Prefer a guided walkthrough over typing these commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md#goobers-getting-started)
+for its exact steps.
 
-Continue with section 3 to scaffold a regular instance and run its starter
-`default-implement` workflow. Once that works, read the
+Continue with section 3 to configure a regular instance and run its selected
+canonical workflow. Once that works, read the
 [`config-examples` reference layout](../../config-examples/README.md) and adapt
 its
 [`implementation` workflow](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
@@ -89,20 +235,79 @@ for production-oriented review, local CI with bounded implementation repasses,
 explicit escalation paths, and PR CI polling. Add the separate `merge-review`
 workflow only after those safeguards are configured.
 
-## 3. `init` — scaffold a regular instance root
+## 3. `init --guided` — configure a regular instance
 
 ```sh
-bin/goobers init ./my-instance
+export PATH="$PWD/bin:$PATH"
+goobers init --guided ./my-instance
 ```
 
-Creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
-`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and
-`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
-gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Safe to re-run —
-existing pieces are left untouched.
+The guided flow uses the same configuration sequence as the release installer.
+It separately selects a checked-in config source and target GitHub application
+repository, prompts for credential references and canonical workflows, and
+validates both the source and materialized instance. Use a fresh instance path;
+a new config source path must also be empty, while an existing source is
+validated and left unchanged. Guided init is first-run only and refuses an
+already initialized target before prompting.
 
 A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
+
+After validation, guided mode prints the config-source-to-instance mapping and
+the commands for applying later source edits:
+
+```text
+After editing the checked-in source, validate and materialize it before startup:
+  goobers validate --source-tree "<config-source>"
+  goobers config materialize "<instance-root>"
+  goobers up "<instance-root>"
+```
+
+It then prints the runnable next commands and developer documentation:
+
+```text
+Ready to run from <instance-root>:
+  goobers up
+  goobers run <workflow>
+
+Developer docs:
+  Author workflows:         https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md
+  Make custom agent stages: https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md and https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/stage-contract.md
+  View journal telemetry:   https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md (`goobers trace` / `goobers telemetry`)
+```
+
+Run those commands from the printed instance root. Tagged release binaries use
+the corresponding release tag instead of `main` in the documentation URLs.
+
+### Manual/advanced alternative: bare `init`
+
+Use bare init when you intentionally want to scaffold and edit every
+configuration layer yourself:
+
+```sh
+goobers init ./my-instance
+```
+
+This creates `instance.yaml`, a starter `config/` (one gaggle, one goober, one
+`default-implement` workflow), and the empty `gaggles/`, `scheduler/`, and
+`telemetry.db` placeholders (ARCHITECTURE.md §6). The daemon creates each
+gaggle's `runs/` and `workcopies/` beneath `gaggles/<gaggle>/`. Bare init is safe
+to re-run because existing pieces are left untouched.
+
+Before starting the instance, edit `my-instance/instance.yaml` to point at your
+repository and set the referenced provider token (env var or file, never inline;
+CFG-009/SEC-010). Edit `my-instance/config/` to shape the workforce: the gaggle's
+`project` and `backlog` repo references, the goober's
+`harness`/`skills`/`tools`, and the workflow's `triggers`/`tasks`/`gates`. Then
+validate the manual configuration:
+
+```sh
+goobers validate ./my-instance
+```
+
+`validate` checks `instance.yaml` and every document under `config/` against the
+canonical schemas. Exit codes are `0` for valid configuration, `1` for
+validation errors, and `2` for usage or I/O errors.
 
 ### Prerequisites for regular workflows
 
@@ -124,46 +329,15 @@ returns to one gaggle, because mixed historical state cannot be assigned safely.
 Operators may relocate retained journals by their recorded gaggle during a
 maintenance window; retained Git workcopies should stay at their legacy paths.
 
-## 4. Configure
-
-Edit `my-instance/instance.yaml` to point at your own repo and set the
-referenced provider token (env var or file — never inline, CFG-009/SEC-010).
-Edit `my-instance/config/` to shape your workforce: the gaggle's `project`
-and `backlog` repo references, the goober's `harness`/`skills`/`tools`, and the
-workflow's `triggers`/`tasks`/`gates`.
-
-For event-driven workflows, see [GitHub webhook triggers](github-webhooks.md).
+For event-driven workflows, see [GitHub webhook triggers](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-webhooks.md).
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
 an operator choice.
 
-## 5. `validate` — check it
+## 4. `up` — run the daemon
 
 ```sh
-bin/goobers validate ./my-instance
-```
-
-Checks `instance.yaml` and every document under `config/` against the
-canonical schemas. Exit codes: `0` valid, `1` validation errors, `2` usage/IO
-error (e.g. not an instance root yet).
-
-## 6. `run` — trigger one manually
-
-```sh
-bin/goobers run default-implement ./my-instance
-```
-
-Triggers a run of the named `config/` workflow manually, still honoring run
-conditions (max-parallel, budgets). Pins the workflow's compiled digest,
-creates its run journal (ARCHITECTURE.md §4), and advances it through the
-real local runner — deterministic tasks execute in a fresh worktree, agentic
-tasks/gates invoke the goober's harness (Copilot CLI by default) — blocking
-until the run reaches a terminal state or pauses (e.g. a human gate). Prints
-the run id up front and the final phase/state once it returns.
-
-## 7. `up` — run the daemon
-
-```sh
-bin/goobers up ./my-instance
+cd ./my-instance
+goobers up
 ```
 
 Runs the daemon: the embedded scheduler (cron triggers + run conditions, #21)
@@ -178,17 +352,37 @@ heartbeat while retaining startup and shutdown messages.
 
 `instance.yaml` is read once, at startup — editing it while `up` is running
 (a new repo, a `runConditions` change, etc.) has no effect until you restart
-the daemon. Definitions under `config/` can be watched and reloaded live with
-the opt-in `goobers up --watch-config` flag (off by default): after a valid edit
-the new definitions swap in atomically, and an invalid edit leaves the
-last-known-good definitions active. Without the flag, `config/` is also read once
-at startup. (Live watch is experimental and will be superseded by the Workflow CD
-config source, #453.)
+the daemon. How definitions reach the materialized `config/` directory depends
+on the configured source:
 
-## 8. `status` — list runs
+- With the default instance-local config, `config/` is also read once at
+  startup. Pass the opt-in `goobers up --watch-config` flag to watch direct
+  edits to that directory. Valid edits swap in atomically; invalid edits leave
+  the last-known-good definitions active.
+- A Git `workflowSource` continuously reconciles its tracked ref without
+  `--watch-config`. Periodic fetch-and-compare polling is always active, local
+  Git ref changes wake reconciliation immediately, and authenticated GitHub
+  push deliveries also wake it when `webhook.secret` is configured. Invalid
+  revisions are rejected while the last-known-good definitions keep running.
+
+In-flight runs stay pinned to the definitions they started with in either mode.
+
+To trigger one workflow manually instead of starting the daemon, use the other
+command from the guided banner:
 
 ```sh
-bin/goobers status ./my-instance
+goobers run <workflow>
+```
+
+This honors run conditions (max-parallel, budgets), pins the workflow's compiled
+digest, creates its run journal (ARCHITECTURE.md §4), and advances it through the
+local runner. It prints the run ID up front and the final phase and state when it
+returns.
+
+## 5. `status` — list runs
+
+```sh
+goobers status
 ```
 
 `status` revalidates the active configuration before listing runs. On a new
@@ -207,10 +401,10 @@ RUN ID                              WORKFLOW                  GAGGLE      PHASE 
 a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
 ```
 
-## 9. `trace` — inspect one run
+## 6. `trace` — inspect one run
 
 ```sh
-bin/goobers trace a671b69fe766595e550677b91658726a ./my-instance
+goobers trace a671b69fe766595e550677b91658726a
 ```
 
 Prints the run's pinned identity, current phase/checkpoint, and every journal
@@ -220,14 +414,14 @@ in `internal/journal/README.md` use, just pre-formatted. If the telemetry
 rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
 this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
 
-## 10. `reset-rate-limit` — run again without losing history
+## 7. `reset-rate-limit` — run again without losing history
 
 A workflow's `maxRunsPerHour` budget can leave you rate-limited when you want to
 trigger another run immediately (e.g. during acceptance testing). Reset just the
 hourly budget — **never** `rm -rf ./my-instance` to clear it:
 
 ```sh
-bin/goobers reset-rate-limit ./my-instance
+goobers reset-rate-limit
 ```
 
 This writes a small marker under `scheduler/` that moves the rate window's floor
@@ -243,8 +437,8 @@ scheduler next reconstructs its budget window at startup.
 Every subcommand follows the same convention: `0` = OK, `1` = validation/
 business error (invalid config, unknown workflow), `2` = usage/IO error (bad
 flags, not an instance root, missing run).
-See also: [V0-ACCEPTANCE.md](../V0-ACCEPTANCE.md) — the end-to-end acceptance runbook that assembles these commands into a full live run.
+See also: [V0-ACCEPTANCE.md](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/V0-ACCEPTANCE.md) — the end-to-end acceptance runbook that assembles these commands into a full live run.
 
 For the production-oriented path from a foreign GitHub repository through
 curation and an implementation PR, including multi-gaggle configuration, see
-[Onboard an arbitrary repository](arbitrary-repo-onboarding.md).
+[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).

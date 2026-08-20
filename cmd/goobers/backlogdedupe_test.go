@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -26,6 +27,64 @@ type dedupeRecallFixture struct {
 type dedupeFixturePair struct {
 	OlderID string `json:"olderId"`
 	NewerID string `json:"newerId"`
+}
+
+func TestBacklogDedupeProviderDispatchesADOAndGitea(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root, repo := providerDispatchFixture(t, kind)
+			provider, err := backlogDedupeProvider(root, repo)
+			if err != nil {
+				t.Fatalf("backlogDedupeProvider(%s): %v", kind, err)
+			}
+			assertDispatchedProviderKind(t, provider, kind)
+		})
+	}
+}
+
+func providerDispatchFixture(t *testing.T, kind providers.ProviderKind) (string, providers.RepositoryRef) {
+	t.Helper()
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := providers.RepositoryRef{Provider: kind, Owner: "acme", Name: "web"}
+	configured := instance.RepoRef{Provider: string(kind), Owner: repo.Owner, Name: repo.Name}
+	switch kind {
+	case providers.ProviderADO:
+		repo.Project = "project"
+		configured.Project = repo.Project
+		configured.Token = instance.TokenRef{Env: "ADO_DISPATCH_TOKEN"}
+		t.Setenv("ADO_DISPATCH_TOKEN", "ado-token")
+	case providers.ProviderGitea:
+		configured.BaseURL = "https://gitea.example.test"
+		configured.Token = instance.TokenRef{Env: "GITEA_DISPATCH_TOKEN"}
+		t.Setenv("GITEA_DISPATCH_TOKEN", "configured-gitea-token")
+		t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "gitea-issues-token")
+		t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "gitea-pr-token")
+	default:
+		t.Fatalf("unsupported fixture provider %q", kind)
+	}
+	cfg.Repos = []instance.RepoRef{configured}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	return root, repo
+}
+
+func assertDispatchedProviderKind(t *testing.T, provider any, kind providers.ProviderKind) {
+	t.Helper()
+	switch kind {
+	case providers.ProviderADO:
+		if _, ok := provider.(*providers.ADOProvider); !ok {
+			t.Fatalf("provider = %T, want *providers.ADOProvider", provider)
+		}
+	case providers.ProviderGitea:
+		if _, ok := provider.(*providers.GiteaProvider); !ok {
+			t.Fatalf("provider = %T, want *providers.GiteaProvider", provider)
+		}
+	}
 }
 
 func TestDuplicateCandidateRecallImprovesOverPersonaOnly(t *testing.T) {
@@ -202,7 +261,7 @@ func TestBacklogDedupeScansOpenBacklogAndBoundsArtifact(t *testing.T) {
 		t.Fatalf("claim fixture item: ok=%v err=%v", ok, err)
 	}
 
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	t.Setenv("GOOBERS_INPUT_MAXCANDIDATES", "1")
 	workDir := t.TempDir()

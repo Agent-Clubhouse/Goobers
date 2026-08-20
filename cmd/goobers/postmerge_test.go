@@ -598,6 +598,25 @@ func TestPostMergeLabelsOnlyConflictedSibling(t *testing.T) {
 	assertLabeledExactly(t, st.labeledSnapshot(), 21)
 }
 
+func TestPostMergeDoesNotRearmEscalatedSibling(t *testing.T) {
+	st := newPostMergeServerState(20, "main", "fix", []string{"cmd/a.go"}, []int{21})
+	st.setConflicted(21)
+	st.issueLabels[21] = []string{remediationEscalatedLabel}
+	server := newPostMergeServer(t, "your-org", "your-repo", st)
+	root, _ := postMergeEnv(t, server.URL, false, map[string]string{"pullNumber": "20"})
+
+	code, _, stderr := runArgs(t, "post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if labeled := st.labeledSnapshot(); len(labeled) != 0 {
+		t.Fatalf("labeled PRs = %v, want escalated sibling left untouched", labeled)
+	}
+	if hasAnyLabel(st.issueLabels[21], []string{needsRemediationLabel}) {
+		t.Fatalf("labels = %v, did not want %s", st.issueLabels[21], needsRemediationLabel)
+	}
+}
+
 // TestPostMergeLabelsOnlyFileOverlappingSibling is the file-overlap half of
 // the same discrimination proof: #22 shares a file with the merged PR, #21
 // does not — only #22 is labeled.

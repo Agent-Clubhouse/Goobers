@@ -35,6 +35,19 @@ type InitResult struct {
 	Skipped []string
 }
 
+// TargetConflictError marks an init refusal caused by pre-existing content at
+// the target path, so callers can attach invocation-specific hints (for
+// example, that the target defaulted to the current directory).
+type TargetConflictError struct {
+	msg string
+}
+
+func (e *TargetConflictError) Error() string { return e.msg }
+
+func targetConflictf(format string, args ...any) error {
+	return &TargetConflictError{msg: fmt.Sprintf(format, args...)}
+}
+
 // ConfigSourceSeedResult reports the config source files that were created or
 // preserved.
 type ConfigSourceSeedResult struct {
@@ -135,6 +148,10 @@ func initWithSeed(root string, cfg *Config, seedConfig func(string) error) (*Ini
 	l := NewLayout(root)
 	res := &InitResult{Root: root}
 
+	if err := checkInitTarget(l); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("create instance root %s: %w", root, err)
 	}
@@ -211,6 +228,59 @@ func demoConfig() *Config {
 		Kind:          ConfigKind,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
 	}
+}
+
+// checkInitTarget refuses a first-run init whose config/ already contains
+// files that are not Goobers instance config — most commonly the target
+// defaulted to a source checkout of this repository, whose tracked config/
+// holds CRD manifests (#2513). Nothing is written on refusal. Re-runs over an
+// existing instance (instance.yaml present) and config-first layouts (config/
+// carries a Manifest) stay allowed, preserving idempotent init (INST-008).
+func checkInitTarget(l Layout) error {
+	if exists(l.ConfigFile()) {
+		return nil
+	}
+	populated, err := dirHasFiles(l.ConfigDir())
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", ConfigDirName, err)
+	}
+	if !populated {
+		return nil
+	}
+	hasManifest, err := configDirHasManifest(l.ConfigDir())
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", ConfigDirName, err)
+	}
+	if hasManifest {
+		return nil
+	}
+	return targetConflictf("refusing to initialize %s: %s already contains files, but none is Goobers config (no `kind: Manifest` document) — the target looks like an unrelated project (for example a Goobers source checkout, whose config/ holds CRD manifests); choose an empty directory instead, e.g. `goobers init ./my-instance`", absPath(l.Root), ConfigDirName)
+}
+
+// configDirHasManifest reports whether any YAML document under dir declares
+// kind: Manifest — the marker distinguishing an instance config directory from
+// an unrelated directory that happens to be named config/.
+func configDirHasManifest(dir string) (bool, error) {
+	docs, err := readDocs(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, doc := range docs {
+		if doc.kind == "Manifest" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// absPath resolves path for display, falling back to the raw path when
+// resolution fails.
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }
 
 func exists(path string) bool {

@@ -126,7 +126,8 @@ func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (ma
 		       su.input_tokens,
 		       su.output_tokens,
 		       su.copilot_premium_requests,
-		       su.cost_usd
+		       su.cost_usd,
+		       sar.run_id IS NOT NULL
 		FROM stage_attempts sa
 		JOIN runs r ON r.run_id = sa.run_id
 		%s
@@ -137,8 +138,9 @@ func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (ma
 			FROM stage_attempts
 			GROUP BY run_id, stage, branch
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage AND latest.branch IS sa.branch
+		LEFT JOIN (%s) sar ON sar.run_id = r.run_id
 		%s
-		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, where, groupedColumns(dimensions))
+		ORDER BY r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`, prefixedColumns(dimensions), join, stuckAbortedRunsSubquery, where, groupedColumns(dimensions))
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query stage distributions: %w", err)
@@ -148,13 +150,13 @@ func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (ma
 	accums := make(map[stageDistributionKey]*stageDistributionAccum)
 	for rows.Next() {
 		var key stageDistributionKey
-		var wasted bool
+		var wasted, stuckAborted bool
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
 		var branch sql.NullInt64
 		scan := []any{&key.gaggle, &key.workflow, &key.stage}
 		scan = appendStageDimensionScan(scan, req, &branch, &key.model, &key.harnessVersion)
-		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &premiumRequests, &costUSD)
+		scan = append(scan, &wasted, &durationMs, &inputTokens, &outputTokens, &premiumRequests, &costUSD, &stuckAborted)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage distribution: %w", err)
 		}
@@ -175,7 +177,15 @@ func (db *DB) stageDistributionAccums(ctx context.Context, req StatsRequest) (ma
 			if durationMs.Int64 < 0 {
 				return nil, fmt.Errorf("rollup: stage %s has negative duration %d", key.stage, durationMs.Int64)
 			}
-			accum.durations = append(accum.durations, durationMs.Int64)
+			// A stuck-aborted attempt's duration is excluded from the
+			// percentile samples so a hung-then-aborted run doesn't get
+			// ranked as "genuinely long running" (#2534). The disclosed
+			// exclusion count comes from stageStats(), computed over every
+			// qualifying attempt regardless of whether it recorded a
+			// duration — the correct denominator for TotalAttempts.
+			if !stuckAborted {
+				accum.durations = append(accum.durations, durationMs.Int64)
+			}
 		}
 		var tokens int64
 		hasTokens := inputTokens.Valid && outputTokens.Valid
@@ -354,6 +364,12 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum, in
 			stat.HasCost = true
 			stat.P50CostUSD = nearestRankFloat64(accum.costs, 0.50)
 			stat.P95CostUSD = nearestRankFloat64(accum.costs, 0.95)
+			for _, cost := range accum.costs {
+				stat.CostUSD += cost
+				if math.IsInf(stat.CostUSD, 0) {
+					return nil, fmt.Errorf("rollup: cost overflow for %s usage", key.scope)
+				}
+			}
 		}
 		out = append(out, stat)
 	}

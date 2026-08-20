@@ -21,14 +21,13 @@ import (
 	"github.com/goobers/goobers/internal/app"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gooberruntime"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/providers"
 )
-
-const defaultTaskQueue = "goobers-engine"
 
 func main() {
 	secretReg, scrubber := journal.DefaultScrubber()
@@ -48,17 +47,33 @@ type config struct {
 	environment       string
 }
 
-func configFromEnv() config {
+func configFromEnv() (config, error) {
+	engineConfig, err := runtimeEngineConfig(os.Getenv("GOOBERS_INSTANCE_ROOT"))
+	if err != nil {
+		return config{}, err
+	}
 	return config{
-		temporalHostPort:  envDefault("GOOBERS_TEMPORAL_HOSTPORT", "GOOBERS_TEMPORAL_ADDRESS", "TEMPORAL_ADDRESS", "127.0.0.1:7233"),
-		temporalNamespace: envDefault("GOOBERS_TEMPORAL_NAMESPACE", "TEMPORAL_NAMESPACE", "default"),
-		taskQueue:         envDefault("GOOBERS_TASK_QUEUE", "GOOBERS_TEMPORAL_TASK_QUEUE", "TEMPORAL_TASK_QUEUE", defaultTaskQueue),
+		temporalHostPort:  engineConfig.HostPort,
+		temporalNamespace: engineConfig.Namespace,
+		taskQueue:         engineConfig.TaskQueue,
 		workspaceRoot:     envDefault("GOOBERS_WORKSPACE_ROOT", "GOOBER_WORKSPACE_ROOT", ""),
 		harnessCommand:    commandFromEnv("GOOBERS_COPILOT_HARNESS_COMMAND", "GOOBER_HARNESS_COMMAND"),
 		exporter:          telemetry.ExporterKind(envDefault("GOOBERS_OTEL_EXPORTER", string(telemetry.ExporterStdout))),
 		otlpEndpoint:      os.Getenv("GOOBERS_OTLP_ENDPOINT"),
 		environment:       os.Getenv("GOOBERS_ENV"),
+	}, nil
+}
+
+func runtimeEngineConfig(root string) (instance.EngineConfig, error) {
+	if root != "" {
+		cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+		if err != nil {
+			return instance.EngineConfig{}, err
+		}
+		return cfg.EffectiveEngineConfig(), nil
 	}
+	resolved, _, err := (&instance.Config{}).ResolveEngineConfig(os.LookupEnv)
+	return resolved, err
 }
 
 func (c config) validate() error {
@@ -74,7 +89,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 }
 
 func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.RegistryScrubber, scrubber journal.Scrubber) error {
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		return err
+	}
 	if err := cfg.validate(); err != nil {
 		return err
 	}
@@ -85,7 +103,7 @@ func runWithScrubber(ctx context.Context, log *slog.Logger, secretReg *journal.R
 	}
 	defer func() { _ = tel.Shutdown(context.Background()) }()
 
-	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber, tel))
+	rw, err := newWorkerRunner(cfg, newRuntime(cfg, secretReg, scrubber, tel), scrubber)
 	if err != nil {
 		return err
 	}
@@ -121,6 +139,7 @@ func runtimeTelemetryConfig(cfg config, scrubber journal.Scrubber) telemetry.Con
 	return telemetry.Config{
 		ServiceName:    "goober-runtime",
 		ServiceVersion: version.Get().Version,
+		BuildCommit:    version.Get().Commit,
 		Environment:    cfg.environment,
 		Exporter:       cfg.exporter,
 		OTLPEndpoint:   cfg.otlpEndpoint,
@@ -144,18 +163,18 @@ type temporalWorkerRunner struct {
 	once   sync.Once
 }
 
-func newTemporalWorkerRunner(cfg config, goober invoke.Goober) (runtimeWorker, error) {
+func newTemporalWorkerRunner(cfg config, goober invoke.Goober, scrubber journal.Scrubber) (runtimeWorker, error) {
 	c, err := client.Dial(client.Options{HostPort: cfg.temporalHostPort, Namespace: cfg.temporalNamespace})
 	if err != nil {
 		return nil, err
 	}
 	w := worker.New(c, cfg.taskQueue, worker.Options{})
-	registerEngine(w, c, goober)
+	registerEngine(w, c, goober, scrubber)
 	return &temporalWorkerRunner{client: c, worker: w}, nil
 }
 
-func registerEngine(w worker.Worker, temporalClient client.Client, goober invoke.Goober) {
-	bootstrap.RegisterEngine(w, temporalClient, bootstrap.EngineDeps{Goober: goober})
+func registerEngine(w worker.Worker, temporalClient client.Client, goober invoke.Goober, scrubber journal.Scrubber) {
+	bootstrap.RegisterEngine(w, temporalClient, bootstrap.EngineDeps{Goober: goober, Scrubber: scrubber})
 }
 
 func (r *temporalWorkerRunner) Start() error {

@@ -32,6 +32,9 @@ const (
 	// that can't read the daemon's in-memory ProviderQuotaState directly)
 	// needs the resume time recoverable from the journal alone.
 	ReasonProviderQuota = "provider-quota"
+	// ReasonProviderAuth identifies a workflow whose provider credential needs
+	// operator repair. The scheduler does not retry this permanent condition.
+	ReasonProviderAuth = "provider-auth-failed"
 )
 
 // OpenPRCounter reports the most recently polled count of a gaggle-scoped
@@ -284,6 +287,28 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 	}
 	c.starts[identity] = append(starts, now)
 
+	c.active[identity]++
+	c.totalActive++
+	return true, ""
+}
+
+// ReserveContinuation reacquires concurrency capacity for an existing run.
+// Resuming a run is not a new start, so it does not consume rolling run
+// budgets or re-evaluate start-only provider and open-PR gates.
+func (c *Conditions) ReserveContinuation(identity WorkflowIdentity, r apiv1.ReadinessConditions) (ok bool, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	maxConcurrent := r.MaxConcurrentRuns
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	if c.active[identity] >= int(maxConcurrent) {
+		return false, ReasonMaxParallel
+	}
+	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
+		return false, ReasonInstanceMaxParallel
+	}
 	c.active[identity]++
 	c.totalActive++
 	return true, ""

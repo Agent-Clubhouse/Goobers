@@ -1,9 +1,8 @@
-# Journal & artifact storage (k8s-infra-shape.md §4): same on-disk layout as
-# tiers 1-2 (runs/, scheduler/) on a cluster volume. Requires a
-# ReadWriteMany-capable StorageClass or a blob-backed CSI class — append-only
-# usage, digested artifacts; shared storage is a projection target, never a
-# coordination mechanism (run ownership = Temporal workflow identity).
-# `goobers doctor --k8s` verifies an RWX-capable class exists.
+# Instance-root storage (k8s-infra-shape.md §4): the same on-disk layout as
+# tiers 1-2, including lock files and SQLite databases. Use a ReadWriteOnce
+# block volume mounted by a single node; RWX/network storage cannot guarantee
+# the cross-client flock and SQLite WAL semantics this state requires.
+# Multi-worker content-addressed artifacts belong on the RWX blobs PVC instead.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,8 +12,8 @@ metadata:
     app.kubernetes.io/name: goobers-journal
 spec:
   accessModes:
-    - ReadWriteMany
-  storageClassName: CHANGE-ME # e.g. an azurefile-csi / blob-csi / NFS class
+    - ReadWriteOnce
+  storageClassName: CHANGE-ME # a block-backed RWO class for your platform
   resources:
     requests:
       storage: 50Gi

@@ -1,6 +1,6 @@
 # Design: Human-in-the-Loop — escalation visibility & intervention
 
-> Status: **Draft for review — tiers 1–2 for build, tier 3 is a forward sketch** · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
+> Status: **draft — for review; tiers 1–2 for build, tier 3 is a forward sketch** · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
 > Requirements: [`docs/requirements/gate.md`](../requirements/gate.md), [`docs/requirements/portal.md`](../requirements/portal.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #168 (human-gate evaluator + durable pause/resume), #170 (CLI approve/approvals), #172 (access-control seam), #309 (surface terminal run_failed cause)
@@ -25,20 +25,20 @@ Goal ladder (PO):
   selected configured branch as `gate.evaluated`. Decisions bind to the paused event's sequence
   so a delayed request cannot resolve a later visit to the same gate. A restart with no decision
   remains paused, and an unknown, mismatched, stale, or unauthorized decision fails closed.
-  Configured approvers are enforced against the submitted actor identity. The CLI/API approval
-  surface remains separate work (#170); configured timeout behavior is rejected until the runner
-  can enforce it durably.
+  Configured approvers are enforced against the submitted actor identity. `goobers approve` and the
+  versioned intervention API submit those decisions through the shared access-control seam;
+  configured timeout behavior is rejected until the runner can enforce it durably.
 - **Automated/agentic escalation works:** bounded repass budget (`DefaultMaxRepasses = 3`) → on exceed,
   the gate branch is overridden to `@escalate` (`internal/gate/evaluate.go`), and `EscalationNotifier`
   posts a **comment on the driving issue/PR** (`internal/gate/escalate.go`) — that's the *entire* surface.
 - Phases are `running/completed/failed/aborted/escalated` (`internal/journal/state.go`).
   `@escalate` → `PhaseEscalated`, retries-exhausted → `PhaseFailed`. The runner exposes a durable,
-  human-triggered `ResumeFromTerminal` primitive for those two phases; the CLI/API action surface that
-  invokes it remains separate work. Crash-`Resume` restarts interrupted running segments and preserves
+  human-triggered `ResumeFromTerminal` primitive for those two phases; the CLI/API approve and
+  override actions invoke it. Crash-`Resume` restarts interrupted running segments and preserves
   unresolved human-gate pauses without advancing them.
-- The runner implements recorded instruction addenda and nondeterministic gate-verdict overrides,
-  including required operator rationale. The external intervention actions remain unimplemented:
-  no `goobers approve`/`approvals` (#170), no checkout/drive, and no access-control seam (#172).
+- Tier-2 intervention actions are available through the API-first `goobers approve`,
+  `goobers override`, and `goobers rerun-stage` commands. The tier-3 checkout/drive surface remains
+  unimplemented.
   The failure *cause* is journaled as an `EventError` but there's no summarized "why it escalated"
   surface (#309).
 - The journal **does** already carry what tier-1 needs: per-stage `Attempt`/`AttemptClass`, gate
@@ -60,9 +60,8 @@ milestone #14 DASH-6; this milestone owns the read model + CLI).
 ## 4. Tier 2 — Minor fixes to unblock (build now)
 
 Light-touch, **recorded**, one-off interventions that do not mutate the workflow definition. The durable
-pause/resume engine capability (#168) is available; these actions still require a **CLI action surface**
-(#170), routed through the (future) access-control seam (#172). The dashboard calls these same actions
-(API-first, #14).
+pause/resume engine capability (#168), CLI action surface (#170), and access-control seam (#172) are
+available. The dashboard calls these same versioned API actions (API-first, #14).
 
 - **Rerun a stage with an instruction addendum**: re-execute a single stage of an escalated run with an
   explicit **one-off addendum** appended to the agent's instructions — e.g. an implement stage gets
@@ -78,6 +77,9 @@ pause/resume engine capability (#168) is available; these actions still require 
 
 **Recording is a first-class requirement**, not a nicety: every tier-2 action is an auditable journal
 event so the play-by-play (and the Tutor, and telemetry) can see that a human intervened and how.
+Terminal actions use normative `run.resumed` action, actor, gate, decision, rationale, and target
+fields; its `complete` field is also the durable crash-recovery marker when the selected branch is
+`@complete`.
 
 ## 5. Tier 3 — Extreme measures (forward sketch only, v3/future)
 

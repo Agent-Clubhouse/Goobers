@@ -64,7 +64,7 @@ back with escalation on failed health. Config delivery remains owned by Workflow
 
 ## Linux (systemd)
 
-Template: [`packaging/systemd/goobers.service`](../../packaging/systemd/goobers.service)
+Template: [`packaging/systemd/goobers.service`](https://github.com/Agent-Clubhouse/Goobers/blob/main/packaging/systemd/goobers.service)
 (a **user** service — recommended, so it runs as you with your credentials).
 
 **Native equivalent of `goobers service install`:**
@@ -100,7 +100,7 @@ unit in `/etc/systemd/system/`, add `User=`/`Group=`, and use `systemctl` withou
 
 ## macOS (launchd)
 
-Template: [`packaging/launchd/com.agent-clubhouse.goobers.plist`](../../packaging/launchd/com.agent-clubhouse.goobers.plist)
+Template: [`packaging/launchd/com.agent-clubhouse.goobers.plist`](https://github.com/Agent-Clubhouse/Goobers/blob/main/packaging/launchd/com.agent-clubhouse.goobers.plist)
 (a per-user **LaunchAgent**).
 
 **Native equivalent of `goobers service install`:**
@@ -136,14 +136,14 @@ stop.
 
 ## Windows (Windows Service)
 
-The stable host uses [`internal/winsvc`](../../internal/winsvc) to translate SCM
+The stable host uses [`internal/winsvc`](https://github.com/Agent-Clubhouse/Goobers/tree/main/internal/winsvc) to translate SCM
 stop/shutdown controls into supervisor cancellation, then writes the same
 cross-platform daemon drain request used for update handoffs.
 
 Run `goobers service install <instance-root>` from an elevated PowerShell or
 Command Prompt. Its native equivalent is below. First put
 `goobers.exe` on disk — download and verify a release per the
-[Windows quickstart](quickstart-windows.md), placing it at
+[Windows quickstart](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md), placing it at
 `C:\Program Files\goobers\goobers.exe` (the path the service below references):
 
 ```powershell

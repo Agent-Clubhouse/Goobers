@@ -158,7 +158,13 @@ func (s *Store) migrateWithBusyRetry(ctx context.Context) error {
 		if err = s.migrateOnce(ctx); err == nil || !isSQLiteBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return err
 }

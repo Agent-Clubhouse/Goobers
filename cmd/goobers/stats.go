@@ -69,7 +69,7 @@ const statsHelp = "Usage: goobers stats [--since <duration>] [--json] [path]\n\n
 	"2 = usage/IO error.\n"
 
 func runStats(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+	fs := newCLIFlagSet("stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sinceDuration := fs.Duration("since", 0, "only include activity from the preceding duration")
 	jsonOutput := fs.Bool("json", false, "emit the summary as JSON")

@@ -17,6 +17,7 @@ type versionedInterpreter struct {
 	checkSchedules              func(Definition) []string
 	checkTriggerFields          func(Definition) []string
 	checkWorkflowAdmission      func(Definition, map[string]apiv1.GooberSpec) []string
+	checkPushBoundaries         func(Definition, []string) []string
 	checkGateParameters         func(Definition) []string
 	checkGateOutcomes           func(Definition) []string
 	checkStageRequiredInputs    func(Definition) []string
@@ -24,7 +25,12 @@ type versionedInterpreter struct {
 	checkStageContractWarnings  func(Definition) []string
 	checkStageTimeoutCoherence  func(Definition) []string
 	checkPathSimulation         func(Definition) []string
+	newFeatureRegistry          func([]Feature) (FeatureRegistry, error)
+	featuresAtDSLVersion        func([]Feature, string) ([]Feature, error)
 	featuresForWorkflow         func(Definition) ([]Feature, error)
+	featuresForGaggle           func(apiv1.GaggleSpec) ([]Feature, error)
+	featuresForGoober           func(apiv1.GooberSpec) ([]Feature, error)
+	checkFeatureSupport         func([]Feature, bool) []FeatureDiagnostic
 	checkWorkflowFeatureSupport func(Definition, bool) []FeatureDiagnostic
 	taskInvocationInputs        func(*Machine, apiv1.Task) map[string]string
 	taskLimits                  func(apiv1.Task) apiv1.Limits
@@ -38,6 +44,7 @@ var currentInterpreter = versionedInterpreter{
 	checkSchedules:              vcurrent.CheckSchedules,
 	checkTriggerFields:          vcurrent.CheckTriggerFields,
 	checkWorkflowAdmission:      vcurrent.CheckWorkflowAdmission,
+	checkPushBoundaries:         vcurrent.CheckPushBoundaries,
 	checkGateParameters:         vcurrent.CheckGateParameters,
 	checkGateOutcomes:           vcurrent.CheckGateOutcomes,
 	checkStageRequiredInputs:    vcurrent.CheckStageRequiredInputs,
@@ -45,7 +52,12 @@ var currentInterpreter = versionedInterpreter{
 	checkStageContractWarnings:  vcurrent.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vcurrent.CheckStageTimeoutCoherence,
 	checkPathSimulation:         vcurrent.CheckPathSimulation,
+	newFeatureRegistry:          newCurrentFeatureRegistry,
+	featuresAtDSLVersion:        vcurrent.FeaturesAtDSLVersion,
 	featuresForWorkflow:         vcurrent.FeaturesForWorkflow,
+	featuresForGaggle:           vcurrent.FeaturesForGaggle,
+	featuresForGoober:           vcurrent.FeaturesForGoober,
+	checkFeatureSupport:         vcurrent.CheckFeatureSupport,
 	checkWorkflowFeatureSupport: vcurrent.CheckWorkflowFeatureSupport,
 	taskInvocationInputs:        vcurrent.TaskInvocationInputs,
 	taskLimits:                  vcurrent.TaskLimits,
@@ -59,6 +71,7 @@ var nextInterpreter = versionedInterpreter{
 	checkSchedules:              vnext.CheckSchedules,
 	checkTriggerFields:          vnext.CheckTriggerFields,
 	checkWorkflowAdmission:      vnext.CheckWorkflowAdmission,
+	checkPushBoundaries:         vnext.CheckPushBoundaries,
 	checkGateParameters:         vnext.CheckGateParameters,
 	checkGateOutcomes:           vnext.CheckGateOutcomes,
 	checkStageRequiredInputs:    vnext.CheckStageRequiredInputs,
@@ -66,7 +79,12 @@ var nextInterpreter = versionedInterpreter{
 	checkStageContractWarnings:  vnext.CheckStageContractWarnings,
 	checkStageTimeoutCoherence:  vnext.CheckStageTimeoutCoherence,
 	checkPathSimulation:         vnext.CheckPathSimulation,
+	newFeatureRegistry:          newNextFeatureRegistry,
+	featuresAtDSLVersion:        nextFeaturesAtDSLVersion,
 	featuresForWorkflow:         featuresForNextWorkflow,
+	featuresForGaggle:           featuresForNextGaggle,
+	featuresForGoober:           featuresForNextGoober,
+	checkFeatureSupport:         checkNextFeatureSupport,
 	checkWorkflowFeatureSupport: checkNextWorkflowFeatureSupport,
 	taskInvocationInputs:        vnext.TaskInvocationInputs,
 	taskLimits:                  vnext.TaskLimits,
@@ -74,14 +92,16 @@ var nextInterpreter = versionedInterpreter{
 }
 
 type compileConfig struct {
-	goobers              map[string]apiv1.GooberSpec
-	goobersSet           bool
-	knownChecks          []string
-	knownChecksSet       bool
-	knownHarnesses       []string
-	knownHarnessesSet    bool
-	allowPreviewFeatures bool
-	previewFeaturesSet   bool
+	goobers                       map[string]apiv1.GooberSpec
+	goobersSet                    bool
+	knownChecks                   []string
+	knownChecksSet                bool
+	knownHarnesses                []string
+	knownHarnessesSet             bool
+	allowPreviewFeatures          bool
+	previewFeaturesSet            bool
+	gaggleRequiredCapabilities    []string
+	gaggleRequiredCapabilitiesSet bool
 }
 
 // Option customizes compilation.
@@ -111,6 +131,17 @@ func WithKnownHarnesses(names []string) Option {
 	}
 }
 
+// WithGaggleRequiredCapabilities supplies the workflow's gaggle-level runner
+// capability requirements (GaggleSpec.RequiredCapabilities) so push-boundary
+// admission (#2861) evaluates each stage's effective requirement set —
+// gaggle-level tokens union stage-level ones.
+func WithGaggleRequiredCapabilities(caps []string) Option {
+	return func(config *compileConfig) {
+		config.gaggleRequiredCapabilities = caps
+		config.gaggleRequiredCapabilitiesSet = true
+	}
+}
+
 // PreviewFeaturesAnnotation enables preview DSL features on an instance.
 const PreviewFeaturesAnnotation = "goobers.dev/allow-preview-features"
 
@@ -129,6 +160,12 @@ func WithPreviewFeatures(enabled bool) Option {
 
 // Compile dispatches a pinned definition to its versioned interpreter.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	def.Spec.Tasks = append([]apiv1.Task(nil), def.Spec.Tasks...)
+	for i := range def.Spec.Tasks {
+		if def.Spec.Tasks[i].OutboxMirrorPath == "" {
+			def.Spec.Tasks[i].OutboxMirrorPath = def.Spec.OutboxMirrorPath
+		}
+	}
 	if err := runcontrol.ValidateWorkflow(def.Spec); err != nil {
 		return nil, fmt.Errorf("compile workflow %q: %w", def.Name, err)
 	}
@@ -157,6 +194,9 @@ func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 	if config.previewFeaturesSet {
 		opts = append(opts, vcurrent.WithPreviewFeatures(config.allowPreviewFeatures))
 	}
+	if config.gaggleRequiredCapabilitiesSet {
+		opts = append(opts, vcurrent.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
+	}
 	return vcurrent.Compile(def, opts...)
 }
 
@@ -173,6 +213,9 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	}
 	if config.previewFeaturesSet {
 		opts = append(opts, vnext.WithPreviewFeatures(config.allowPreviewFeatures))
+	}
+	if config.gaggleRequiredCapabilitiesSet {
+		opts = append(opts, vnext.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
 	}
 	return vnext.Compile(def, opts...)
 }

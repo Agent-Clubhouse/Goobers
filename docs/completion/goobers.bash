@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -14,8 +14,17 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
+        version)
+            flags+=" --json"
+            ;;
+        versions)
+            flags+=" --json"
+            ;;
         init)
-            flags+=" --demo --guided --template --source-tree --json"
+            flags+=" --demo --insecure --guided --template --source-tree --json"
+            ;;
+        connect)
+            flags+=" --token-env --seed --replace --json"
             ;;
         preflight)
             flags+=" --distro --launch-wsl"
@@ -30,6 +39,7 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 goober) flags+=" --force" ;;
                 workflow) flags+=" --force" ;;
+                gaggle) flags+=" --force --from" ;;
             esac
             ;;
         agent-kit)
@@ -39,10 +49,16 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
             ;;
         lint)
-            flags+=" --json --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            ;;
+        fix)
+            flags+=" --to --write"
+            ;;
+        doctor)
+            flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
@@ -57,13 +73,42 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=" --quiet --diagnostics --notify --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
+            ;;
+        self-update)
+            flags+=" --policy --branch --target --health-ticks --health-timeout"
+            ;;
+        service)
+            case "${COMP_WORDS[2]:-}" in
+                status) flags+=" --json" ;;
+            esac
+            ;;
+        engine-start)
+            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key"
+            ;;
+        engine-project)
+            flags+=" --gaggle --temporal-hostport --temporal-namespace"
+            ;;
+        worker)
+            flags+=" --instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
-            flags+=" --port --no-open --dev-assets"
+            flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
+            ;;
+        getting-started)
+            flags+=" --port --no-open --workdir"
             ;;
         run)
-            flags+=" --no-wait"
+            flags+=" --gaggle --no-wait"
+            ;;
+        approve)
+            flags+=" --decision --actor"
+            ;;
+        override)
+            flags+=" --rationale --decision --actor"
+            ;;
+        rerun-stage)
+            flags+=" --addendum --actor"
             ;;
         workflow)
             case "${COMP_WORDS[2]:-}" in
@@ -72,12 +117,12 @@ _goobers_completion()
             ;;
         runs)
             case "${COMP_WORDS[2]:-}" in
-                list) flags+=" --json --phase --workflow --limit" ;;
+                list) flags+=" --json --phase --workflow --gaggle --limit" ;;
                 du) flags+=" --json" ;;
             esac
             ;;
         status)
-            flags+=" --daemon --json --phase --workflow --limit --watch --interval"
+            flags+=" --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -103,16 +148,22 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --json --follow --transcripts --transcript"
+            flags+=" --json --follow --summary --verdicts --transcripts --transcript"
             ;;
         escalations)
             flags+=" --json"
+            case "${COMP_WORDS[2]:-}" in
+                show) flags+=" --include-verdict" ;;
+            esac
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
-                stats) flags+=" --json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild" ;;
+                stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
+                export) flags+=" --since --until" ;;
+                prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
+                compact) flags+=" --dry-run" ;;
             esac
             ;;
         journal)
@@ -120,17 +171,29 @@ _goobers_completion()
                 redact) flags+=" --run --path --reason --secret-file" ;;
             esac
             ;;
+        backlog-health)
+            flags+=" --feedback"
+            ;;
         backlog-query)
-            flags+=" --claim --release"
+            flags+=" --claim --debug --release --read-only --reconcile"
             ;;
         reconcile-branches)
             flags+=" --delete --max --min-age --after"
             ;;
+        set-milestone)
+            flags+=" --item --milestone"
+            ;;
+        reconcile-post-merge)
+            flags+=" --max --lookback"
+            ;;
         telemetry-query)
-            flags+=" --window --aggregate --threshold --format"
+            flags+=" --window --aggregate --threshold --format --gaggle --workflow"
             ;;
         docs-churn)
             flags+=" --repo --workflow --gaggle --since --buffer-multiplier --format"
+            ;;
+        ios-simulator-test)
+            flags+=" --project --workspace --scheme --device --runtime --only-testing --result-bundle"
             ;;
         gather-sibling-context)
             flags+=" --no-cache --no-verdict-cache"
@@ -141,8 +204,17 @@ _goobers_completion()
         elect-lander)
             flags+=" --gate"
             ;;
+        pr-claim)
+            flags+=" --release"
+            ;;
         remediation-checkpoint)
-            flags+=" --budget --escalate"
+            flags+=" --budget --escalate --escalation-outcome"
+            ;;
+        respond-to-findings)
+            flags+=" --check"
+            ;;
+        mcp-io)
+            flags+=" --config"
             ;;
     esac
     if [[ "${cur}" == -* ]]; then
@@ -167,7 +239,7 @@ _goobers_completion()
             ;;
         scaffold)
             if (( COMP_CWORD == 2 )); then
-                candidates="goober workflow"
+                candidates="goober workflow gaggle"
             fi
             ;;
         agent-kit)
@@ -193,7 +265,7 @@ _goobers_completion()
         run)
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
-                candidates="abort cancel approve override rerun $(command goobers __complete workflows 2>/dev/null)"
+                candidates="abort cancel $(command goobers __complete workflows 2>/dev/null)"
             elif [[ "${COMP_WORDS[2]:-}" == "abort" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
@@ -258,7 +330,7 @@ _goobers_completion()
             ;;
         help)
             if (( COMP_CWORD == 2 )); then
-                candidates="all stages"
+                candidates="all stages instance gaggle goober workflow stage gate harness capability"
             fi
             ;;
     esac

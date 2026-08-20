@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
@@ -38,7 +39,7 @@ func TestIngestStageEmissionsMergesMetricsAndAnnotatesSpan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "stage-emission-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +169,7 @@ func TestIngestStageEmissionsRejectsOversizedAttributesWithoutTruncatingMetadata
 		t.Fatal(err)
 	}
 
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "stage-emission-attribute-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)

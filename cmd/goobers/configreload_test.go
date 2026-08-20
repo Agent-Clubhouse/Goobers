@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
@@ -37,7 +39,17 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	address := freeLoopbackAddress(t)
 	setAPIListenAddress(t, root, address)
 	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	gagglePath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "gaggle.yaml")
 	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	mirrorPath := t.TempDir()
+	gaggle, err := os.ReadFile(gagglePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaggle = append(gaggle, []byte("  outboxMirrorPath: "+mirrorPath+"\n")...)
+	if err := os.WriteFile(gagglePath, gaggle, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &daemonStartedWriter{started: make(chan struct{})}
@@ -99,7 +111,39 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		)
 	}
 
-	reloadedWorkflow := strings.Replace(deterministicWorkflowYAML, "name: default-implement", "name: reloaded-implement", 1)
+	reloadedWorkflow := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: reloaded-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: local-ci
+  tasks:
+    - name: local-ci
+      type: deterministic
+      goal: run a no-op local command
+      run:
+        command: ["sh", "-c", "mkdir -p reports && printf reloaded > reports/report.txt"]
+      outbox:
+        - reports/report.txt
+      next: approval
+    - name: finish
+      type: deterministic
+      goal: finish after approval
+      run:
+        command: ["true"]
+  gates:
+    - name: approval
+      evaluator: human
+      human: {}
+      branches:
+        pass: finish
+        fail: "@abort"
+`
 	if err := os.WriteFile(workflowPath, []byte(reloadedWorkflow), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +154,52 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	// without it this test fails on loaded runners with
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
-	waitForRunnableWorkflow(t, root, "reloaded-implement")
+	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
+	runID := runIDFromRunStdout(t, stdout)
+	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
+		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data, true
+	})
+	if string(mirrored) != "reloaded" {
+		t.Fatalf("mirrored outbox = %q, want reloaded", mirrored)
+	}
+	runDir := filepath.Join(layout.ForGaggle("example").RunsDir(), runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, readErr := reader.Events()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			paused := false
+			for _, event := range events {
+				if event.Type == journal.EventGatePaused && event.Gate == "approval" {
+					paused = true
+					break
+				}
+			}
+			if paused {
+				break
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("post-reload run %s did not pause at approval", runID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	code, stdout, stderr := runArgs(t, "approve", "--actor=config-reloader", runID, "approval", root)
+	if code != 0 {
+		t.Fatalf("approve post-reload run: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
 
 	if err := os.WriteFile(workflowPath, []byte("kind: Workflow\nmetadata: [\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -120,7 +209,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
 
-	code, stdout, stderr := runArgs(t, "run", "reloaded-implement", root)
+	code, stdout, stderr = runArgs(t, "run", "--no-wait", "reloaded-implement", root)
 	if code != 0 {
 		t.Fatalf("last-known-good workflow unavailable after rejected edit: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -539,8 +628,15 @@ spec:
       type: agentic
       goober: coder
       goal: Complete the fixture task.
+      capabilities:
+        - agent:model
 `)
-	skillPath := filepath.Join(root, "skills", "implement", "SKILL.md")
+	// Scoped (gaggles/example/skills/implement) always wins over the shared
+	// instance-level fallback (skillPackagePaths) — and the starter scaffold
+	// now ships a scoped implement package by default (SKILL002 fix) — so
+	// the digest transition below must be authored at the scoped path, or it
+	// is masked by that (untouched) scoped package.
+	skillPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "skills", "implement", "SKILL.md")
 	writeFixture(t, skillPath, "# Original implementation skill\n")
 
 	fixtureRepo := newDaemonFixtureRepo(t)
@@ -548,8 +644,8 @@ spec:
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "completed fixture task",
 			})
@@ -699,17 +795,17 @@ func waitForDaemonHealth(t *testing.T, address, name string, environment apiv1.E
 // the "unknown workflow" stderr is retried: any other non-zero exit fails
 // immediately, so a genuine regression still surfaces rather than being spun on
 // until the deadline.
-func waitForRunnableWorkflow(t *testing.T, root, workflow string) {
+func waitForRunnableWorkflow(t *testing.T, root, workflow string) string {
 	t.Helper()
-	waitForConfigValue(t, workflow+" to become runnable", func() (struct{}, bool) {
-		code, stdout, stderr := runArgs(t, "run", workflow, root)
+	return waitForConfigValue(t, workflow+" to become runnable", func() (string, bool) {
+		code, stdout, stderr := runArgs(t, "run", "--no-wait", workflow, root)
 		if code == 0 {
-			return struct{}{}, true
+			return stdout, true
 		}
 		if !strings.Contains(stderr, "unknown workflow") {
 			t.Fatalf("run %s: code=%d stdout=%q stderr=%q", workflow, code, stdout, stderr)
 		}
-		return struct{}{}, false
+		return "", false
 	})
 }
 

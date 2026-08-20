@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -94,9 +95,11 @@ func decompositionInstanceEnv(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("GOOBERS_RUN_ID", "decomposition-run-1")
 	t.Setenv("GOOBERS_WORKFLOW", "decomposition")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", providers.LabelApproved)
 }
 
 func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
+	const trustLabel = "acme:maintainer-approved"
 	root := t.TempDir()
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-1",
@@ -108,9 +111,10 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	})
 
 	server := newFakeGitHubServer(t, "acme", "widgets")
-	server.addIssue(501, "A very large issue", providers.LabelApproved)
+	server.addIssue(501, "A very large issue", trustLabel)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
 	decompositionInstanceEnv(t, root)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", trustLabel)
 
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -148,6 +152,19 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	}
 	if !ok || entry.RunID != "decomposition-run-1" {
 		t.Fatalf("ledger entry for 501 = %+v, ok=%v, want held by decomposition-run-1", entry, ok)
+	}
+}
+
+func TestSelectSourceFailsClosedWithoutTrustLabel(t *testing.T) {
+	root := t.TempDir()
+	providerCmdEnv(t, newFakeGitHubServer(t, "acme", "widgets"), "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_RUN_ID", "decomposition-run-1")
+	t.Setenv("GOOBERS_WORKFLOW", "decomposition")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "select-source", root)
+	if code != 1 || !strings.Contains(stderr, "trustLabel is required") {
+		t.Fatalf("select-source: code = %d, stderr = %q, want missing trustLabel error", code, stderr)
 	}
 }
 
@@ -474,20 +491,16 @@ func TestSelectSourceFailsClosedOnIneligibleParent(t *testing.T) {
 	}
 }
 
-// TestSelectSourceClaimPreventsDoubleClaim exercises the exact ClaimScoped
-// call select-source makes against the exact key it builds, from concurrent
-// goroutines with distinct run IDs — the property the acceptance boundary
-// requires ("concurrent selector runs against the same parent must not
-// double-claim"). A full concurrent CLI-process test can't easily vary
-// GOOBERS_RUN_ID per goroutine (env vars are process-global in Go's testing
-// model), so this drives the ledger call directly instead of through
-// runSelectSource's env-var-derived run identity.
+// TestSelectSourceClaimPreventsDoubleClaim uses a fresh ledger snapshot for
+// every attempt, matching separate select-source processes racing on one file.
 func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 	root := t.TempDir()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "claims.json"))
+	schedulerDir := filepath.Join(root, "scheduler")
+	instanceLog, _, err := journal.OpenInstanceLog(schedulerDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = instanceLog.Close() }()
 	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "555"}
 
 	const attempts = 8
@@ -497,9 +510,16 @@ func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ok, _, err := ledger.ClaimScoped(key, "decomposition-run-"+itoa(i), "decomposition", time.Hour)
+			ok, _, err := claimSelectSourceParent(
+				schedulerDir,
+				instanceLog,
+				key,
+				"decomposition-run-"+itoa(i),
+				"decomposition",
+				time.Hour,
+			)
 			if err != nil {
-				t.Errorf("ClaimScoped run %d: %v", i, err)
+				t.Errorf("claim run %d: %v", i, err)
 				return
 			}
 			results[i] = ok

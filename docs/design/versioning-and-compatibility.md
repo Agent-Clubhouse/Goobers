@@ -1,6 +1,6 @@
 # Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix
 
-> Status: **Draft for review — not implemented** · Area prefix: `VER` (new), `REL` (new) · Milestone: **Versioning & Releases** (#12)
+> Status: **implemented — shipped** (VER-1..4 + REL-1..3 #427–#434 closed — feature registry, coded warnings, generated feature-matrix live; §5.2 resolved by `dsl-version-lifecycle.md`; task.expectedOutputs remains declared-not-enforced; header refreshed 2026-08-07) · Area prefix: `VER` (new), `REL` (new) · Milestone: **Versioning & Releases** (#12)
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md) (CFG-Q5), [`docs/requirements/workflow.md`](../requirements/workflow.md) (WF-016)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #279 (`--version`), #33 (packaging/release binaries), #252 (one validation path), #150 (Goober.spec.model)
@@ -55,7 +55,8 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
   - `deprecated` feature used → **warning** (still compiles/runs), message names the replacement + removal target.
   - `preview` feature used → **info/warning** (works, flagged unstable), gated behind the explicit
     instance Manifest annotation `goobers.dev/allow-preview-features: "true"` so preview usage is
-    never accidental.
+    never accidental. The gate is default-off: `goobers init` omits the annotation, and operators
+    add it only when their configuration deliberately uses a preview feature.
   - `ga` → silent.
 - **Non-breaking vs breaking policy** (documented contract, enforced by CI test over the registry):
   - *Non-breaking* (allowed within an `apiVersion`): adding optional fields, adding enum values,

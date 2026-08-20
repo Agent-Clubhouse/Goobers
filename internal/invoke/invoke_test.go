@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestProgressReporter(t *testing.T) {
@@ -48,6 +49,24 @@ func TestInfrastructureFailure(t *testing.T) {
 	}
 	if IsInfrastructureFailure(cause) {
 		t.Fatal("unmarked error classified as infrastructure")
+	}
+}
+
+func TestInfrastructureFailureUntil(t *testing.T) {
+	cause := errors.New("rate limited")
+	retryAt := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
+	err := fmt.Errorf("dispatch: %w", InfrastructureFailureUntil(cause, retryAt))
+	if !IsInfrastructureFailure(err) {
+		t.Fatal("InfrastructureFailureUntil did not apply its marker")
+	}
+	if got, ok := InfrastructureRetryAt(err); !ok || !got.Equal(retryAt) {
+		t.Fatalf("InfrastructureRetryAt = %v, %v; want %v, true", got, ok, retryAt)
+	}
+	if _, ok := InfrastructureRetryAt(InfrastructureFailure(cause)); ok {
+		t.Fatal("plain InfrastructureFailure unexpectedly carried a retry time")
+	}
+	if got := InfrastructureFailureUntil(nil, retryAt); got != nil {
+		t.Fatalf("InfrastructureFailureUntil(nil) = %v, want nil", got)
 	}
 }
 

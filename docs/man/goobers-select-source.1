@@ -14,7 +14,8 @@ runs for an unconsumed, non-retryable ISSUE_OVER_SCOPE/NEEDS_DECOMPOSITION
 disposition (#415), resolves the oldest eligible one's claimed parent issue,
 and — if it is still open, maintainer-approved, not already claimed or
 decomposed — claims it in the local claim ledger and writes the immutable
-selection artifact to the declared result file.
+selection artifact to the declared result file. The maintainer approval
+label is configured by the required trustLabel input (SEC-047).
 
 Exit codes: 0 = a source was selected (or none was eligible — a no-work
 result, not an error) / 1 = business error (provider/credential/config

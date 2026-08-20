@@ -37,6 +37,12 @@ describe("Insight page", () => {
     );
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Highest-contributing nodes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
     expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
@@ -263,6 +269,183 @@ describe("Insight page", () => {
     );
   });
 
+  it("shows a cost trend and a same-length prior-period comparison for the selected scope", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Cost over time" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /AI cost trend by bucket/ })).toBeInTheDocument();
+    expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
+
+    await waitFor(() => {
+      const ranges = getTelemetryStats.mock.calls.map(([request]) => ({
+        since: request?.since,
+        until: request?.until,
+      }));
+      // One call per trend bucket (7 for the default 7d window), plus one for
+      // the immediately preceding 7-day period, plus the page's own snapshot
+      // fetch for the selected window.
+      expect(ranges.length).toBeGreaterThanOrEqual(9);
+      const uniqueRanges = new Set(ranges.map((range) => `${range.since}:${range.until}`));
+      expect(uniqueRanges.size).toBeGreaterThanOrEqual(8);
+    });
+
+    await user.selectOptions(screen.getByLabelText("Time window"), "all");
+    expect(
+      await screen.findByText(
+        "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    getTelemetryStats.mockResolvedValue({
+      creditAssignment: [],
+      gaggles: [
+        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
+        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+      ],
+      runs: [],
+      stages: [],
+      usage: [
+        {
+          scope: "gaggle",
+          gaggle: "core",
+          totalAttempts: 9,
+          tokenSamples: 8,
+          premiumRequestSamples: 0,
+          costSamples: 8,
+          costUSD: 4,
+          p50CostUSD: 0.8,
+          p95CostUSD: 2.5,
+          retryWasteAttempts: 0,
+        },
+        {
+          scope: "gaggle",
+          gaggle: "tools",
+          totalAttempts: 1,
+          tokenSamples: 0,
+          premiumRequestSamples: 0,
+          costSamples: 3,
+          costUSD: 6,
+          p50CostUSD: 0.1,
+          p95CostUSD: 5.8,
+          retryWasteAttempts: 0,
+        },
+      ],
+      models: [
+        { model: "claude", usageSamples: 8, inputTokenSamples: 8, outputTokenSamples: 8, premiumRequestSamples: 0, costSamples: 6, costUSD: 6 },
+        { model: "gpt", usageSamples: 2, inputTokenSamples: 2, outputTokenSamples: 2, premiumRequestSamples: 0, costSamples: 2, costUSD: 4 },
+      ],
+      curation: {
+        everRecorded: false,
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
+    expect(screen.getByText("Total AI cost · all gaggles")).toBeInTheDocument();
+    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    const coreLink = screen.getByRole("link", {
+      name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+    });
+    expect(coreLink).toBeInTheDocument();
+    const toolsLink = screen.getByRole("link", {
+      name: /View instance spend for gaggle tools: 3 samples, P50 \$0\.10, P95 \$5\.80/,
+    });
+    expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    // Selecting a narrower scope must not change the instance-wide rollup —
+    // it always reports across all gaggles regardless of the Scope dropdown.
+    await user.selectOptions(
+      screen.getByLabelText("Scope"),
+      screen.getByRole("option", { name: "Gaggle · core" }),
+    );
+    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(coreLink).toBeInTheDocument();
+  });
+
+  it("flags spend against a configured soft budget threshold", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
+      creditAssignment: [],
+      gaggles: [],
+      runs: [],
+      stages: [],
+      usage: [],
+      models: [
+        { model: "claude", usageSamples: 1, inputTokenSamples: 1, outputTokenSamples: 1, premiumRequestSamples: 0, costSamples: 1, costUSD: 10 },
+      ],
+      curation: {
+        everRecorded: false,
+        runs: 0,
+        reportedRuns: 0,
+        ready: 0,
+        needsHuman: 0,
+        closed: 0,
+        deduped: 0,
+        split: 0,
+        stale: 0,
+        reconciled: 0,
+        milestoned: 0,
+        bounced: 0,
+      },
+      readyPool: {
+        sampleEverRecorded: false,
+        bounceEverRecorded: false,
+        claimAgeSamples: 0,
+        inFlightClaimSamples: 0,
+        averageInFlightClaimAgeSeconds: 0,
+        oldestInFlightClaimAgeSeconds: 0,
+        forwardCurationThroughput: 0,
+        implementationDemand: 0,
+      },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByText("$10.00")).toBeInTheDocument();
+    const budgetInput = screen.getByLabelText("Soft budget (USD)");
+
+    await user.type(budgetInput, "5");
+    await user.tab();
+    expect(await screen.findByText(/over by \$5\.00/)).toBeInTheDocument();
+
+    await user.clear(budgetInput);
+    await user.type(budgetInput, "50");
+    await user.tab();
+    expect(await screen.findByText("20% of budget")).toBeInTheDocument();
+    expect(screen.queryByText(/over by/)).not.toBeInTheDocument();
+  });
+
   it("drills into every matching run error while keeping the selected filters", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");
@@ -371,6 +554,7 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],
@@ -436,6 +620,38 @@ describe("Insight page", () => {
     expect(screen.queryByRole("heading", { name: "Success and failure" })).not.toBeInTheDocument();
   });
 
+  it("pre-selects the scope and time window from a deep link (#2528)", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation&window=24h";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+    expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
+    expect(screen.getByRole("link", { name: "Clear filters" })).toHaveAttribute(
+      "href",
+      "#/insight?window=24h",
+    );
+  });
+
+  it("keeps a gaggle/workflow scope when navigating to Runs and back via the primary nav (#2528)", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByLabelText("Scope");
+    await user.click(screen.getByRole("button", { name: "Runs" }));
+
+    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
+    expect(screen.getByText("core / implementation")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Insight" }));
+
+    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
+  });
+
   it("distinguishes a never-recorded writer from an empty window and from measured data", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
@@ -450,6 +666,7 @@ describe("Insight page", () => {
     // bounce-cohort writers never once fired for this scope — the exact
     // #2277 bug shape (one writer dead, a sibling writer fine).
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],
@@ -489,6 +706,7 @@ describe("Insight page", () => {
     // Same writers HAVE fired historically, but this window has no rows —
     // must read differently from "never recorded" above.
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
       gaggles: [],
       runs: [],
       stages: [],

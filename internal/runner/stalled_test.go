@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,20 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// stalledWaitTimeout is the budget these tests give an async run/escalation
+// to reach the state they're polling for. Windows CI runners are measurably
+// slower at the process/goroutine-scheduling and file I/O this package
+// exercises than POSIX ones (ci.yml's windows-smoke job documents the same
+// finding for the package-level `go test` timeout), so 5s that's comfortable
+// on Linux/macOS CI intermittently starved these tests of time on Windows.
+// Widen instead of shrinking the margin further with the flake.
+func stalledWaitTimeout() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 20 * time.Second
+	}
+	return 5 * time.Second
+}
 
 type wedgedDeterministic struct {
 	started chan struct{}
@@ -54,7 +69,7 @@ func waitForRunEvent(t *testing.T, runDir, description string, matches func(jour
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(5 * time.Second)
+	timeout := time.NewTimer(stalledWaitTimeout())
 	defer timeout.Stop()
 	for {
 		reader, err := journal.OpenRead(runDir)
@@ -357,6 +372,99 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseAborted) {
 		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)
+	}
+}
+
+// TestInterruptStageEscalatesLiveRun is #1995's core: an operator interrupt of
+// a single running stage stops its active attempt and finalizes the run
+// escalated (recoverable) rather than aborted, recording an operator-attributed
+// stage_interrupted note and driving FinalizeTerminal with phase escalated —
+// all through the same activeRun handshake CancelRun and the stall watchdog
+// use. A stale target (a stage the run has already left) is refused rather than
+// interrupting whatever is running now.
+func TestInterruptStageEscalatesLiveRun(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 100}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	var finalizedPhase journal.RunPhase
+	var finalizeCalls int32
+	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase) error {
+		if runID == "interrupt-live" {
+			finalizedPhase = phase
+			atomic.AddInt32(&finalizeCalls, 1)
+		}
+		return nil
+	}
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "interrupt-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "interrupt-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+
+	// A stale target — a stage the run is not currently at — is refused, and
+	// leaves the run running rather than interrupting the real stage.
+	if _, escalated, err := r.InterruptStage("interrupt-live", "review", "operator@example", time.Now()); err == nil || escalated {
+		t.Fatalf("stale-target interrupt = escalated %v, err %v, want refusal", escalated, err)
+	}
+
+	const actor = "operator@example"
+	start := time.Now()
+	result, escalated, err := r.InterruptStage("interrupt-live", "implement", actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !escalated || result.Phase != journal.PhaseEscalated {
+		t.Fatalf("escalated=%v result=%+v, want escalated", escalated, result)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("interrupt took %s to stop the run", elapsed)
+	}
+
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseEscalated {
+		t.Fatalf("Start() = %+v, %v, want escalated", outcome.result, outcome.err)
+	}
+	if atomic.LoadInt32(&finalizeCalls) == 0 || finalizedPhase != journal.PhaseEscalated {
+		t.Fatalf("FinalizeTerminal calls=%d phase=%s, want escalated teardown", finalizeCalls, finalizedPhase)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := events[len(events)-2]
+	if len(events) < 2 ||
+		note.Error == nil ||
+		note.Error.Code != StageInterruptedErrorCode ||
+		note.Stage != "implement" ||
+		note.Actor != actor ||
+		events[len(events)-1].Type != journal.EventRunFinished ||
+		events[len(events)-1].Status != string(journal.PhaseEscalated) {
+		t.Fatalf("terminal events = %+v, want stage_interrupted(implement, %s) + run.finished(escalated)", events, actor)
 	}
 }
 
@@ -678,7 +786,7 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 
 	select {
 	case <-prepareStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not enter normal terminal preparation")
 	}
 
@@ -773,7 +881,7 @@ func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T
 
 	select {
 	case <-wedged.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("wedged executor did not start")
 	}
 	for i := 0; i < 2; i++ {
@@ -908,7 +1016,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 		if outcome.err != nil || outcome.result.Phase != journal.PhaseCompleted {
 			t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not finish after reviewer release")
 	}
 }

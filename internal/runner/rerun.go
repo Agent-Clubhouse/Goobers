@@ -23,6 +23,9 @@ type RerunStageInput struct {
 	Stage               string
 	Actor               string
 	InstructionAddendum string
+	// ExpectedTerminalSeq binds the request to the escalation that was
+	// inspected before the operator action was accepted.
+	ExpectedTerminalSeq uint64
 }
 
 type rerunContext struct {
@@ -55,6 +58,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	addendum := strings.TrimSpace(in.InstructionAddendum)
 	if addendum == "" {
 		return Result{}, fmt.Errorf("runner: InstructionAddendum is required")
+	}
+	if in.ExpectedTerminalSeq == 0 {
+		return Result{}, fmt.Errorf("runner: expected terminal sequence is required")
 	}
 
 	isGate, err := validateRerunTarget(in.Machine, in.Stage)
@@ -102,6 +108,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		events, err := rd.Events()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read events for run %q: %w", in.RunID, err)
+		}
+		if err := validateTerminalGeneration(in.RunID, events, in.ExpectedTerminalSeq); err != nil {
+			return Result{}, err
 		}
 		seedEvents, err := rerunSeedEvents(events, in.Stage, isGate)
 		if err != nil {
@@ -163,27 +172,31 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if activeParallel != nil {
 			pointerEvents = seedEvents[:parallelStart]
 		}
-		seed := walkSeed{
-			pointers:     reconstructPointers(pointerEvents, in.Machine),
-			stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
-			parallel:     activeParallel,
-			fanIn:        rerunFanIn(seedEvents, in.Machine, in.Stage),
-		}
+		ws := newWalkState(jr, startIn, registrar, in.Stage)
+		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+		ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+		ws.visitedStages = stageVisitSeed(seedEvents)
+		ws.parallel = activeParallel
+		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
 		if activeParallel != nil {
-			seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+			ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		}
-		seed.lastStage, seed.lastResult, _ = lastFinishedSubject(seedEvents)
-		seed.lastResult = discardToleratedFailureOutputs(in.Machine, seed.lastStage, seed.lastResult)
-		seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
-		seed.branchRecorded = hasRunBranchRef(events)
+		ws.lastStage, ws.lastResult, _ = lastFinishedSubject(seedEvents)
+		ws.lastResult = discardToleratedFailureOutputs(in.Machine, ws.lastStage, ws.lastResult)
+		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+		ws.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
+		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
+		ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
+		ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
+		ws.rerun = rerun
 
 		ctx, span := r.startRunSpan(ctx, startIn)
 		defer span.End()
 		setStalledAttemptContext(ctx)
 
-		result, err = r.walk(ctx, jr, startIn, in.Stage, nil, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+		result, err = r.walk(ctx, ws)
 		if err != nil {
 			span.Fail(err)
 			return result, err

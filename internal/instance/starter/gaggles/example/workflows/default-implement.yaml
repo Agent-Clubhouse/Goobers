@@ -1,11 +1,11 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
   gaggle: example
-  displayName: Default (implement-only)
+  displayName: Default (implement + PR)
   # The default starter is intentionally manual-only so a fresh install never
   # starts provider work without an operator action. Run it explicitly with
   # `goobers run default-implement`; query-backlog then claims one
@@ -35,7 +35,37 @@ spec:
     - name: implement
       type: agentic
       goober: coder
-      goal: Implement the backlog item and open a PR.
+      goal: Implement the claimed backlog item and commit the change.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      next: push-branch
+    - name: push-branch
+      type: deterministic
+      goal: Push the implemented change as a branch.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      next: open-pr
+    - name: open-pr
+      type: deterministic
+      goal: Open the pull request for the pushed branch.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        resultFile: "pr-result.json"
+      capabilities:
+        - provider:pr:write
+      policyActions:
+        - open-or-update-pr
       expectedOutputs:
-        - pull-request
-      # No `next` — this is the single, terminal state of the workflow.
+        - pull-request-url
+        - prNumber
+        - opened
+      # Terminal: the opened pull request is the first-run success artifact
+      # the quickstart promises (#2447).

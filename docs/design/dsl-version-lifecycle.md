@@ -1,6 +1,6 @@
 # Design: DSL Version Lifecycle & Multi-Version Runtime
 
-> Status: **Draft for review — not implemented** · Area prefix: `DVL` (new) · Milestone: **Versioning & Releases** (#12)
+> Status: **implemented — shipped** (epic #860; DVL-1..9 #861–#869 closed — dslVersion pins, SupportMatrix, coexisting interpreters, `goobers versions|fix|features` all live; header refreshed 2026-08-07, see `onboarding-first-value-ladder.md` §2.2) · Area prefix: `DVL` (new) · Milestone: **Versioning & Releases** (#12)
 > Companion to: [`versioning-and-compatibility.md`](./versioning-and-compatibility.md) — **this doc resolves that doc's Open Question §5.2** ("version the DSL independently, or app-SemVer + registry-as-authority?") in favour of an *independently-versioned, per-workflow-pinnable DSL with multiple interpreters coexisting in one binary.*
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §11 (substrate-neutral workflow core)
 > Grounded in: `internal/workflow/{compile,machine}.go`, `api/v1alpha1/`, `api/validate/validate.go`, `internal/configsync/loader.go`, `internal/instance/config.go`
@@ -379,8 +379,15 @@ interpreter *stayed* frozen.
 - **8.3 `dslVersion` default during the transition window.** Lowest-supported-with-warning, then
   hard error (§3.2) — confirm the window length and the exact cutover release.
 - **8.4 Do gaggle/goober/manifest objects get their own `dslVersion`, or does the Workflow's pin
-  cover the whole gaggle?** Leaning: version the Workflow (that's where semantics live); other
-  objects follow the CRD `apiVersion`. Needs confirmation against `internal/instance/config.go`.
+  cover the whole gaggle?** **Resolved (#3297): only the Workflow is versioned.** A gaggle/goober
+  carries no `dslVersion` field; its *effective* DSL version is the set of pins its workflows
+  declare. Feature-support checks fan out one probe per distinct pin
+  (`workflow.FeatureDefinitionsByDSLVersion` — shared by `api/validate` and
+  `goobers features --used`), so a gaggle-scoped feature must be supported at *every* pin present.
+  An object with no workflows at all resolves at the newest `supported` version from the
+  `SupportMatrix` — deliberately not the transitional default, which is deprecated and would strand
+  the author with an unactionable migration error (no field to edit) the moment it turns
+  unsupported.
 - **8.5 Interaction with run-pinning (WF-016).** A run already pins a compiled machine + digest for
   life. Confirm the version router sits *before* that pin (compile-time), so an in-flight run is
   wholly unaffected by a support-level change mid-flight.

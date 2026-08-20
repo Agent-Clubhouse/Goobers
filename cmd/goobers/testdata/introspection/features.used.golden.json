@@ -5,6 +5,54 @@
   "dslVersion": "all",
   "features": [
     {
+      "name": "gaggle.spec.backlog",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.backlog.labels",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.backlog.provider.github",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.isolation.namespace",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.project",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "gaggle.spec.project.provider.github",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "goober.spec.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
       "name": "goober.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev",
@@ -150,6 +198,12 @@
     },
     {
       "name": "task.onTimeout.fail",
+      "stability": "ga",
+      "sinceVersion": "dev",
+      "used": true
+    },
+    {
+      "name": "task.policyActions",
       "stability": "ga",
       "sinceVersion": "dev",
       "used": true

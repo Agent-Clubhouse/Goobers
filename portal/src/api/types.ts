@@ -372,6 +372,8 @@ export interface RunSummary {
   finishedAt?: string;
   durationMillis: number;
   lastActivityAt: string;
+  /** Running run whose activity and daemon heartbeat both exceed runner.livenessTimeout. */
+  stale: boolean;
   lastSeq: number;
   repassCount: number;
   retryCount: number;
@@ -379,6 +381,27 @@ export interface RunSummary {
   infraRetryCount: number;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
+  operator?: OperatorRunSummary;
+}
+
+export interface OperatorRunSummary {
+  issue?: { number: string; title?: string };
+  currentStage?: string;
+  lastHeartbeatAt?: string;
+  heartbeatAgeMillis?: number;
+  liveness: string;
+  trajectory: string;
+  pullRequest?: { provider: string; kind: string; id: string; url?: string };
+  prOpenerStage?: string;
+  claim: {
+    leaseStatus: string;
+    expiresAt?: string;
+    providerMarker: string;
+  };
+  latestError?: { code: string; message?: string };
+  review?: { verdict: string; rationale?: string };
+  nextTransition?: string;
+  potentialBlockers: string[];
 }
 
 export interface RunDetail extends RunSummary {
@@ -497,8 +520,16 @@ export interface RunEvent {
   gate?: string;
   verdict?: string;
   target?: string;
+  complete?: boolean;
   escalated?: boolean;
   status?: RunPhase | StageAttemptStatus;
+  actor?: string;
+  action?: string;
+  decision?: string;
+  rationale?: string;
+  instructionAddendum?: string;
+  workflowVersion?: number;
+  workflowDigest?: string;
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];
   artifact?: ArtifactMetadata;
@@ -612,8 +643,22 @@ export interface TelemetryStatsResult {
   stages: TelemetryStageStats[];
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
+  creditAssignment: NodeCredit[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+}
+
+export interface NodeCredit {
+  gaggle: string;
+  workflow: string;
+  kind: "stage" | "gate";
+  stage: string;
+  identity?: string;
+  routedRuns: number;
+  failureRuns: number;
+  failureShare: number;
+  escalationRuns: number;
+  retryWasteAttempts: number;
 }
 
 export interface TelemetryCurationStats {
@@ -672,6 +717,10 @@ export interface TelemetryRunStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  // How many of totalRuns hung and were later aborted (the watchdog's
+  // max-duration expiry), excluded from avg/min/maxDurationMs — disclosed
+  // rather than silently dropped (#2534, #1439).
+  stuckAbortedRuns: number;
 }
 
 export interface TelemetryStageStats {
@@ -699,6 +748,11 @@ export interface TelemetryStageStats {
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
+  // How many of totalAttempts belong to a run that hung and was later
+  // aborted (the watchdog's max-duration expiry), excluded from
+  // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
+  // silently dropped (#2534, #1439).
+  stuckAbortedAttempts: number;
 }
 
 export interface TelemetryUsageStats {
@@ -715,6 +769,7 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costUSD?: number;
   p50CostUSD?: number;
   p95CostUSD?: number;
   retryWasteAttempts: number;

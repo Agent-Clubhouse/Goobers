@@ -5,7 +5,22 @@
   "ok": true,
   "counts": {
     "errors": 0,
-    "warnings": 0
+    "warnings": 2
   },
-  "findings": []
+  "findings": [
+    {
+      "file": "config/gaggles/example/gaggle.yaml",
+      "path": "/",
+      "code": "PLACEHOLDER001",
+      "severity": "warning",
+      "message": "contains unedited template marker(s) your-org, your-repo; replace them with the target repository coordinates"
+    },
+    {
+      "file": "instance.yaml",
+      "path": "/",
+      "code": "PLACEHOLDER001",
+      "severity": "warning",
+      "message": "contains unedited template marker(s) your-org, your-repo; replace them with the target repository coordinates"
+    }
+  ]
 }

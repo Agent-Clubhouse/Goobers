@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,6 +120,7 @@ func TestKillTreeReapsDescendantInEscapedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	var child int
 	if !waitUntil(t, 5*time.Second, func() bool {
 		var ok bool
@@ -136,6 +138,118 @@ func TestKillTreeReapsDescendantInEscapedSession(t *testing.T) {
 	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
 		_ = syscall.Kill(child, syscall.SIGKILL)
 		t.Fatalf("escaped child process %d survived KillTree", child)
+	}
+}
+
+func TestKillTreeReapsEscapedDescendantAfterDumpReparentsIt(t *testing.T) {
+	dir := t.TempDir()
+	script := `"$TESTBIN" -test.run=^TestEscapedSessionProcess$ -- "$PIDDIR/child.pid" & wait`
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PIDDIR="+dir, "TESTBIN="+os.Args[0])
+
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var child int
+	if !waitUntil(t, 5*time.Second, func() bool {
+		var ok bool
+		child, ok = readPID(t, filepath.Join(dir, "child.pid"))
+		return ok
+	}) {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+		t.Fatal("escaped child never recorded its pid")
+	}
+
+	if _, err := tree.RequestDump(); err != nil {
+		t.Fatalf("RequestDump: %v", err)
+	}
+	_ = cmd.Wait()
+	if err := tree.Kill(); err != nil && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("Kill: %v", err)
+	}
+	if !waitUntil(t, 5*time.Second, func() bool { return !probeAlive(child) }) {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		t.Fatalf("escaped, reparented child process %d survived KillTree", child)
+	}
+}
+
+func TestKillTreeDoesNotSignalReusedDescendantPID(t *testing.T) {
+	if _, ok := StartTime(os.Getpid()); !ok {
+		t.Skip("process start time is unavailable on this platform")
+	}
+
+	cmd := exec.Command("sleep", "300")
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatalf("Start tree: %v", err)
+	}
+
+	unrelated := exec.Command("sleep", "300")
+	if err := unrelated.Start(); err != nil {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("Start unrelated process: %v", err)
+	}
+	unrelatedPID := unrelated.Process.Pid
+	defer func() {
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	}()
+
+	started, ok := StartTime(unrelatedPID)
+	if !ok {
+		t.Fatal("start time unavailable for running process")
+	}
+	tree.descendants = []processIdentity{{
+		pid:       unrelatedPID,
+		startTime: started.Add(-time.Second),
+	}}
+
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill tree: %v", err)
+	}
+	_ = cmd.Wait()
+	if !probeAlive(unrelatedPID) {
+		t.Fatalf("Kill signaled unrelated process %d after descendant PID reuse", unrelatedPID)
+	}
+}
+
+func TestProcessIdentityWithoutStartTimeUsesOnlyUnsupportedPlatformFallback(t *testing.T) {
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start process: %v", err)
+	}
+
+	processIdentity{pid: cmd.Process.Pid}.signal(syscall.SIGKILL)
+	if startTimeSupported {
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}()
+		if !probeAlive(cmd.Process.Pid) {
+			t.Fatalf("process %d was signaled after its start-time lookup failed", cmd.Process.Pid)
+		}
+		return
+	}
+
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("Wait unexpectedly succeeded after unsupported-platform fallback SIGKILL")
+	}
+	if probeAlive(cmd.Process.Pid) {
+		t.Fatalf("process %d survived unsupported-platform fallback signal", cmd.Process.Pid)
+	}
+}
+
+func TestIdentifyProcessesKeepsOnlyVerifiableIdentities(t *testing.T) {
+	const nonexistentPID = -1
+	identities := identifyProcesses([]int{nonexistentPID})
+	if startTimeSupported && len(identities) != 0 {
+		t.Fatalf("identifyProcesses returned unverifiable identity on supported platform: %+v", identities)
+	}
+	if !startTimeSupported && len(identities) != 1 {
+		t.Fatalf("identifyProcesses returned %d identities on unsupported platform, want 1", len(identities))
 	}
 }
 

@@ -358,6 +358,130 @@ func TestSweepCostPerStepIsBoundedByBatchSize(t *testing.T) {
 	}
 }
 
+func TestReverseSweepSharesBudgetAndResumesAfterLastProbe(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	startedAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runIDs := make([]string, 8)
+	for i := range runIDs {
+		runIDs[i] = fmt.Sprintf("%032x", i)
+		if err := os.Mkdir(filepath.Join(root, runIDs[i]), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+			RunID: runIDs[i], Gaggle: "alpha", Workflow: "wf",
+			Phase: journal.PhaseRunning, StartedAt: startedAt,
+		}}); err != nil {
+			t.Fatalf("seed %s: %v", runIDs[i], err)
+		}
+	}
+
+	sweeper := New(store, store, nil, Options{
+		RunsDirs:  []string{root},
+		BatchSize: 4,
+		Now:       func() time.Time { return startedAt.Add(time.Hour) },
+	})
+	statCalls := make(map[string]int)
+	sweeper.stat = func(path string) (os.FileInfo, error) {
+		statCalls[path]++
+		return os.Stat(path)
+	}
+
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatalf("first step: %v", err)
+	}
+	if got := sweeper.Stats().EntriesExamined; got != 4 {
+		t.Fatalf("first step examined %d entries, want the shared batch budget of 4", got)
+	}
+	oldestCalls := []int{
+		statCalls[filepath.Join(root, runIDs[0])],
+		statCalls[filepath.Join(root, runIDs[1])],
+	}
+
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatalf("second step: %v", err)
+	}
+	if got := sweeper.Stats().EntriesExamined; got != 8 {
+		t.Fatalf("two steps examined %d entries, want 8", got)
+	}
+	for i, runID := range runIDs[:2] {
+		if got := statCalls[filepath.Join(root, runID)]; got != oldestCalls[i] {
+			t.Errorf("second step re-probed oldest run %s: stat calls = %d, want %d",
+				runID, got, oldestCalls[i])
+		}
+	}
+
+	for step := 3; step <= 5; step++ {
+		before := sweeper.Stats().EntriesExamined
+		if err := sweeper.Step(ctx); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+		if examined := sweeper.Stats().EntriesExamined - before; examined > 4 {
+			t.Fatalf("step %d examined %d entries, batch budget is 4", step, examined)
+		}
+	}
+	beforeRestart := statCalls[filepath.Join(root, runIDs[0])]
+	if err := sweeper.Step(ctx); err != nil {
+		t.Fatalf("cycle restart step: %v", err)
+	}
+	if got := statCalls[filepath.Join(root, runIDs[0])]; got <= beforeRestart {
+		t.Error("reverse scan did not restart from the oldest row after completing its cycle")
+	}
+}
+
+func TestOneEntryBatchMakesProgressInBothDirectionsAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	root := t.TempDir()
+	startedAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	runID := fmt.Sprintf("%032x", 1)
+	if err := os.Mkdir(filepath.Join(root, runID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(ctx, readmodel.Projection{Run: readmodel.RunRow{
+		RunID: runID, Gaggle: "alpha", Workflow: "wf",
+		Phase: journal.PhaseRunning, StartedAt: startedAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	options := Options{
+		RunsDirs:  []string{root},
+		BatchSize: 1,
+		Now:       func() time.Time { return startedAt.Add(time.Hour) },
+	}
+	reverse := New(store, store, nil, options)
+	if err := reverse.Step(ctx); err != nil {
+		t.Fatalf("reverse step: %v", err)
+	}
+	cursor, err := store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.ReverseAfterRunID != runID {
+		t.Fatalf("reverse cursor = %q, want %q", cursor.ReverseAfterRunID, runID)
+	}
+	if !cursor.ForwardNext {
+		t.Fatal("one-entry scheduler did not persist the forward turn")
+	}
+
+	forward := New(store, store, nil, options)
+	if err := forward.Step(ctx); err != nil {
+		t.Fatalf("forward step after restart: %v", err)
+	}
+	cursor, err = store.SweepCursor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.EntriesThisCycle != 1 {
+		t.Fatalf("forward entries after two one-entry steps = %d, want 1", cursor.EntriesThisCycle)
+	}
+	if cursor.ForwardNext {
+		t.Fatal("one-entry scheduler did not persist the next reverse turn")
+	}
+}
+
 // TestSweepCursorResumesAcrossRestart pins that the position is durable.
 //
 // A fixed budget only produces a complete cycle if the walk resumes. A cursor

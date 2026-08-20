@@ -52,6 +52,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		source, err := instance.NewWorkflowGitSource(
 			t.TempDir(),
 			*config.WorkflowSource,
+			nil,
 			sourceRegistrar,
 			nil,
 		)
@@ -77,7 +78,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 			Ref:   "main",
 			Token: &instance.TokenRef{Env: fixture.WorkflowSource.TokenEnv},
 		}
-		crossedSource, err := instance.NewWorkflowGitSource(t.TempDir(), codeWithCDToken, &workflowCDIsolationRegistrar{}, nil)
+		crossedSource, err := instance.NewWorkflowGitSource(t.TempDir(), codeWithCDToken, nil, &workflowCDIsolationRegistrar{}, nil)
 		if err != nil {
 			t.Fatalf("NewWorkflowGitSource for adversarial code-repo probe: %v", err)
 		}
@@ -155,6 +156,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		source, err := instance.NewWorkflowGitSource(
 			t.TempDir(),
 			crossedWorkflowSource,
+			nil,
 			&workflowCDIsolationRegistrar{},
 			nil,
 		)

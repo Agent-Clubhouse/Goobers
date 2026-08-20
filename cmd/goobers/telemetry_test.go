@@ -213,13 +213,13 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	)
 	assertJSONObjectKeys(t, document.Runs[0],
 		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
-		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs", "stuckAbortedRuns",
 	)
 	assertJSONObjectKeys(t, document.Stages[0],
 		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"durationSamples", "p50DurationMs", "p95DurationMs",
-		"tokenSamples", "costSamples", "retryWasteAttempts",
+		"tokenSamples", "costSamples", "retryWasteAttempts", "stuckAbortedAttempts",
 	)
 	assertJSONObjectKeys(t, document.Models[0],
 		"model", "usageSamples",
@@ -342,7 +342,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"curation":{"everRecorded":false,"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"sampleEverRecorded":false,"claimAgeSamples":0,"bounceEverRecorded":false,"forwardCurationThroughput":0,"implementationDemand":0,"inFlightClaimSamples":0,"averageInFlightClaimAgeSeconds":0,"oldestInFlightClaimAgeSeconds":0}}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"creditAssignment":[],"curation":{"everRecorded":false,"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"sampleEverRecorded":false,"claimAgeSamples":0,"bounceEverRecorded":false,"forwardCurationThroughput":0,"implementationDemand":0,"inFlightClaimSamples":0,"averageInFlightClaimAgeSeconds":0,"oldestInFlightClaimAgeSeconds":0}}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -588,11 +588,20 @@ func TestTelemetryExportClassifiesStagingWriteFailureAsOutputError(t *testing.T)
 func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t *testing.T) {
 	root := initDemo(t)
 	runsDir := instance.NewLayout(root).RunsDir()
-	validPath := filepath.Join(runsDir, "a-valid", "spans", "otlp.jsonl")
-	corruptPath := filepath.Join(runsDir, "b-corrupt", "spans", "otlp.jsonl")
-	if err := os.MkdirAll(filepath.Dir(validPath), 0o755); err != nil {
-		t.Fatal(err)
+	createRun := func(runID string) string {
+		t.Helper()
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "fixture", WorkflowVersion: 1, Gaggle: "example",
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(runsDir, runID, "spans", "otlp.jsonl")
 	}
+	validPath := createRun("a-valid")
 	valid := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"11111111111111111111111111111111","spanId":"2222222222222222","name":"valid","startTimeUnixNano":"1784656800000000000","endTimeUnixNano":"1784656801000000000"}]}]}]}` + "\n"
 	if err := os.WriteFile(validPath, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
@@ -603,9 +612,7 @@ func TestTelemetryExportEmitsWindowAndDoesNotEmitPartialOutputOnCorruptJournal(t
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	corruptPath := createRun("b-corrupt")
 	if err := os.WriteFile(corruptPath, []byte("{\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -141,22 +142,45 @@ func TestShellExecutor_DefaultEnvCanBeOverriddenByStage(t *testing.T) {
 	exec, rec := newPortableTestExecutor(t, nil)
 	exec.DefaultEnv = map[string]string{"GOOBERS_TEST_DEFAULT": "default"}
 	env := baseEnvelope(t)
-	command := []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`}
+	run := apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`},
+		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+	}
 	if runtime.GOOS == "windows" {
-		command = []string{"cmd.exe", "/D", "/S", "/C", `echo|set /p="%GOOBERS_TEST_DEFAULT%"`}
+		// cmd.exe's /C parsing does not follow CommandLineToArgvW quoting
+		// (see the comment in script_windows.go) — a quoted command like
+		// `echo "%VAR%"` built directly as a Command argv element gets
+		// re-escaped by Go's Windows argv quoting before it ever reaches
+		// cmd.exe, so it no longer parses the way it would typed at a
+		// prompt. Route the same command through Script instead:
+		// scriptCommand writes it to a real .cmd file and invokes that file
+		// by path, so the syntax reaches cmd.exe byte-for-byte unmodified —
+		// the same mechanism TestShellExecutor_RunScript below already
+		// exercises successfully on Windows.
+		//
+		// A first attempt used the classic `echo|set /p="%VAR%"` no-newline
+		// trick to keep the stdout comparison below exact, but that piped
+		// form still exited 1 when invoked from a script file (the pipe
+		// spawns cmd.exe's own second shell instance to run `set /p`, and
+		// that nested instance failed to inherit the batch file's expanded
+		// variable reliably). `echo %VAR%` is the same construct
+		// TestShellExecutor_RunScript already proves works from a script
+		// file; it costs a trailing CRLF, which the comparison below
+		// trims for rather than fighting for an exact no-newline capture.
+		run = apiv1.DeterministicRun{
+			Script: "@echo off\r\necho %GOOBERS_TEST_DEFAULT%",
+			Env:    map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+		}
 	}
 
-	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		Command: command,
-		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
-	})
+	result, err := exec.Run(context.Background(), env, run)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
 	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "override" {
+	if got := strings.TrimSpace(string(rec.recorded["task-1/stdout.log"])); got != "override" {
 		t.Fatalf("stdout = %q, want stage override", got)
 	}
 }
@@ -1110,6 +1134,50 @@ func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	want := "run= gaggle= wf= root= input=goobers:approved\n"
 	if got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestShellExecutor_DeterministicStagesReceiveAdditionalRepoPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		run  apiv1.DeterministicRun
+	}{
+		{
+			name: "command",
+			run: apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`},
+			},
+		},
+		{
+			name: "script",
+			run: apiv1.DeterministicRun{
+				Script: `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.RunID = "run-123"
+			env.Capabilities = []string{string(capability.ContentsRead)}
+			env.AdditionalWorkspaces = []apiv1.AdditionalWorkspace{{
+				Name: "clubhouse",
+				Path: "/work/refs/clubhouse",
+			}}
+
+			result, err := exec.Run(context.Background(), env, tt.run)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != "clubhouse|/work/refs/clubhouse|" {
+				t.Fatalf("stdout = %q, want additional repo paths without run identity", got)
+			}
+		})
 	}
 }
 

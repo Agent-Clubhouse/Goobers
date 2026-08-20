@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
@@ -52,14 +53,19 @@ var newRunAbortLabelProvider = func(source providers.TokenSource) workItemUpdate
 }
 
 // buildTerminalRunAbortLabeler mirrors buildTerminalBranchDelete's shape: the
-// same credential/capability wiring, but github:pr:write (already used for PR
-// open/poll/close) rather than github:branch:delete, since labeling a PR is a
-// PR-write operation.
-func buildTerminalRunAbortLabeler(cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) (prLabelFunc, error) {
+// same credential/capability wiring — including the per-gaggle project scoping
+// (#2692 sibling), since the PR being labeled lives in the run gaggle's own
+// repo — but github:pr:write (already used for PR open/poll/close) rather than
+// github:branch:delete, since labeling a PR is a PR-write operation.
+func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (prLabelFunc, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, "", "", nil, registrar)
+	gaggleOwner := project.Owner
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		gaggleOwner += "/" + project.Project
+	}
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
 	if err != nil {
 		return nil, err
 	}

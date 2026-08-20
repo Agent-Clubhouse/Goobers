@@ -56,7 +56,7 @@ const journalRedactHelp = "Usage: goobers journal redact --run <id> --path <blob
 // remediation for a leaked credential does not itself leak it into argv, the
 // process table, or shell history.
 func runJournalRedact(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("journal redact", flag.ContinueOnError)
+	fs := newCLIFlagSet("journal redact", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	runID := fs.String("run", "", "run id whose stored blob holds the leaked secret (required)")
 	blobPath := fs.String("path", "", "journal-relative path of the blob to redact, e.g. inputs/creds.env "+

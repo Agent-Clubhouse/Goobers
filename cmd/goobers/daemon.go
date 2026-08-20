@@ -81,10 +81,11 @@ type schedulerSetup struct {
 	Validation        *validate.Report
 	ConfigDigest      string
 	RecoveredClaims   []localscheduler.ClaimEntry
-	// OpenPRRefresher backs the #353 MaxOpenPRs cap; nil when no workflow opts
-	// in (or no repo is configured). Only the `up` daemon starts its Run loop
-	// and wires it as a scheduler option — see up.go.
-	OpenPRRefresher *localscheduler.OpenPRRefresher
+	// OpenPRRefresher backs the #353 MaxOpenPRs cap — one refresher per
+	// distinct gaggle repo (#2692); nil when no workflow opts in (or no repo
+	// is configured). Only the `up` daemon starts its Run loop and wires it as
+	// a scheduler option — see up.go.
+	OpenPRRefresher *localscheduler.OpenPRRefresherSet
 	// ProviderQuota is the shared provider budget ledger. Stage rate-limit
 	// failures and provider response headers write to it; SchedulerOptions wires
 	// the same pointer into polling and run admission. Unlike OpenPRRefresher it
@@ -94,6 +95,9 @@ type schedulerSetup struct {
 	SharedRegistry   *journal.RegistryScrubber
 	TerminalNotifier runner.TerminalNotifier
 	RunnerRegistry   *daemonRunnerRegistry
+	// Interventions is the atomically replaced definition snapshot used by the
+	// daemon's mutation service during config reload.
+	Interventions *interventionDefinitionRegistry
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that
@@ -112,7 +116,7 @@ type schedulerDefinitions struct {
 	GooberDigests     map[localscheduler.WorkflowIdentity]string
 	Goobers           map[string]apiv1.GooberSpec
 	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
-	OpenPRRefresher   *localscheduler.OpenPRRefresher
+	OpenPRRefresher   *localscheduler.OpenPRRefresherSet
 	Worktrees         *worktree.Manager
 	WorktreesByGaggle map[string]*worktree.Manager
 }
@@ -136,6 +140,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	for _, apply := range setupOpts {
 		apply(&options)
 	}
+	reportStartupProgress(options.startupProgress, "loading instance and workflow configuration")
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		return nil, err
@@ -165,6 +170,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 		err = nil
 	}
+	reportStartupProgress(options.startupProgress, fmt.Sprintf(
+		"loaded configuration (%d gaggle(s), %d workflow(s))",
+		len(set.Gaggles), len(set.Workflows),
+	))
 	defer func() {
 		if err != nil {
 			err = &configReportError{report: report, err: err}
@@ -174,11 +183,29 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// stage before the workflows are compiled, so the runner executes the
 	// gaggle's own suite in place of the stage's declared `make ci` default.
 	instance.ApplyGaggleCICommand(set)
-	// RRQ-1/#1101: fail closed at startup when a gaggle/stage requires a runner
-	// capability the runner (instance.yaml runner.capabilities) does not claim,
-	// rather than letting every schedule tick refuse the run at runtime.
+	// RRQ-1/#1101, revised for fleets (#2860): a gaggle/stage requiring a runner
+	// capability nothing claims is REPORTED at startup, not fatal.
+	//
+	// It used to return an error and kill the daemon. That was defensible when a
+	// runner was a single process whose capabilities could not change while it
+	// ran. It stopped being defensible once stages can be placed on OTHER
+	// workers: the daemon is then admitting on behalf of a fleet it cannot
+	// enumerate, and "no runner claims os=windows" may simply mean the Windows
+	// worker has not started yet. The sibling provider-capability check below
+	// says as much in its own comment — a missing runner capability CAN
+	// self-heal at runtime, which is exactly why it must not be terminal.
+	//
+	// Nothing is lost by downgrading it. localscheduler already enforces the
+	// same invariant per entry at dispatch (scheduler.go, ReasonMissingCapability):
+	// the run is refused, journalled as tick.skipped with the missing capability
+	// named, and marked Blocked in telemetry. That path is per-run, self-healing,
+	// and describes itself as the seam a multi-runner router grows from. The
+	// startup check was an eager, whole-instance, fatal copy of it.
+	//
+	// So: one unsatisfiable stage no longer takes the whole instance down, and
+	// every OTHER gaggle keeps running.
 	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
 	// capability its gaggle's connected provider does not declare — a
@@ -235,11 +262,30 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if rollupDB != nil {
 			_ = rollupDB.Close()
 		}
+		// Same order as schedulerSetup.Shutdown: stop the projector before
+		// closing the store its commit loop writes through, then release the
+		// read model and intake stores. A setup failure between these opening
+		// (line ~291 onward) and this function's success return used to leak
+		// both handles — invisible on POSIX (an unlinked-but-open file is
+		// fine), but on Windows the open handle keeps the underlying temp
+		// dir's *.db files locked, so a caller's t.TempDir() cleanup fails
+		// outright with "The process cannot access the file because it is
+		// being used by another process."
+		if stopProjector != nil {
+			stopProjector()
+		}
+		if readModel != nil {
+			_ = readModel.Close()
+		}
+		if watermarks != nil {
+			_ = watermarks.Close()
+		}
 		if instanceLog != nil {
 			_ = instanceLog.Close()
 		}
 	}()
 	if cfg.TelemetryEnabled() {
+		reportStartupProgress(options.startupProgress, "opening telemetry state")
 		var otlpConfig instance.OTLPConfig
 		if cfg.Telemetry.OTLP != nil {
 			otlpConfig = *cfg.Telemetry.OTLP
@@ -288,6 +334,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	} else if discarded > 0 {
 		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
 	}
+	reportStartupProgress(options.startupProgress, "opening read-model state")
 	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
 	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
@@ -341,6 +388,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	var recoveredClaims []localscheduler.ClaimEntry
+	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
 	if err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
@@ -375,17 +423,19 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// not a Scheduler-owned field, is needed here.
 	providerQuota := localscheduler.NewProviderQuotaState()
 	runnerRegistry := newDaemonRunnerRegistry()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores)
+	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress)
 	if err != nil {
 		return nil, err
 	}
 	runnerRegistry.Replace(definitions.Runners)
+	reportStartupProgress(options.startupProgress, "initializing retained legacy runtime")
 	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
 		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
 	)
 	if err != nil {
 		return nil, err
 	}
+	interventionRegistry := newInterventionDefinitionRegistry(interventionDefinitions(definitions, legacyRunner))
 	stableDigest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil || stableDigest != configDigest {
 		if err != nil {
@@ -423,8 +473,15 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		SharedRegistry:    sharedReg,
 		TerminalNotifier:  terminalNotifier,
 		RunnerRegistry:    runnerRegistry,
+		Interventions:     interventionRegistry,
 		SecretStores:      secretStores,
 	}, nil
+}
+
+func reportStartupProgress(report func(string), message string) {
+	if report != nil {
+		report(message)
+	}
 }
 
 func journalLegacyRuntimeMigration(l instance.Layout, instanceLog *journal.InstanceLog, migration instance.RuntimeMigration) error {
@@ -535,14 +592,17 @@ func buildSchedulerDefinitions(
 	providerQuota *localscheduler.ProviderQuotaState,
 	terminalNotifier runner.TerminalNotifier,
 	stores credentials.StoreResolver,
+	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
+	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, err
 	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		true,
 	)
 	if err != nil {
 		return nil, err
@@ -550,7 +610,7 @@ func buildSchedulerDefinitions(
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows)
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
 	if err != nil {
 		return nil, err
 	}
@@ -597,6 +657,7 @@ func buildSchedulerDefinitions(
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
 	for _, gaggle := range configuredGaggleNames(set) {
+		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
@@ -604,13 +665,14 @@ func buildSchedulerDefinitions(
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
 		}
 		wtManagers[gaggle] = manager
 		runners[gaggle] = rn
+		reportStartupProgress(startupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
+	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, gaggleProjects, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
 	if err != nil {
 		return nil, err
 	}
@@ -641,6 +703,7 @@ func buildSchedulerDefinitions(
 		// config did nothing at runtime; Scheduler.Signal fires every
 		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
+		var scheduleBackoffs []localscheduler.IdleBackoffConfig
 		var sigs []string
 		hasRepositoryWebhook := false
 		var pollPriority int32
@@ -652,6 +715,11 @@ func buildSchedulerDefinitions(
 					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
 				}
 				scheds = append(scheds, localscheduler.InLocation(schedule, loc))
+				backoff, err := localscheduler.ParseIdleBackoff(trigger.IdleBackoff)
+				if err != nil {
+					return nil, fmt.Errorf("workflow %q: %w", wf.Name, err)
+				}
+				scheduleBackoffs = append(scheduleBackoffs, backoff)
 			}
 			if trigger.Type == apiv1.TriggerSignal && trigger.Signal != "" {
 				sigs = append(sigs, trigger.Signal)
@@ -667,6 +735,12 @@ func buildSchedulerDefinitions(
 					pollPriority = trigger.Priority
 					pollPrioritySet = true
 				}
+			}
+		}
+		if len(scheds) > 0 {
+			project := gaggleProjects[wf.Spec.Gaggle]
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project); err != nil {
+				return nil, err
 			}
 		}
 		pollFallbackCause := ""
@@ -709,6 +783,7 @@ func buildSchedulerDefinitions(
 			Gaggle:            wf.Spec.Gaggle,
 			Readiness:         wf.Spec.Readiness,
 			Schedules:         scheds,
+			ScheduleBackoffs:  scheduleBackoffs,
 			Signals:           sigs,
 			PollFallbackCause: pollFallbackCause,
 			BacklogCounter:    backlogCounter,
@@ -750,6 +825,152 @@ func buildSchedulerDefinitions(
 		Worktrees:         firstWorktrees,
 		WorktreesByGaggle: wtManagers,
 	}, nil
+}
+
+func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {
+	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project)
+	if err != nil {
+		return err
+	}
+	required := staticallyRequiredWorkflowStates(machine.Graph())
+	for _, task := range machine.Def.Spec.Tasks {
+		if !required[task.Name] {
+			continue
+		}
+		for _, capability := range task.Capabilities {
+			env, credentialed := envByCapability[capability]
+			if !credentialed {
+				continue
+			}
+			value, set := os.LookupEnv(env)
+			switch {
+			case !set:
+				return fmt.Errorf("workflow %q cannot be scheduled: credential capability %q requires environment variable %q, which is not set", machine.Def.Name, capability, env)
+			case strings.TrimSpace(value) == "":
+				return fmt.Errorf("workflow %q cannot be scheduled: credential capability %q requires environment variable %q, which is empty", machine.Def.Name, capability, env)
+			}
+		}
+	}
+	return nil
+}
+
+func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef) (map[string]string, error) {
+	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	envByRef := make(map[string]string, len(cfg.Repos)+len(cfg.Credentials)+1)
+	for _, repo := range cfg.Repos {
+		owner := repo.Owner
+		if repo.Provider == string(apiv1.ProviderADO) && repo.Project != "" {
+			owner += "/" + repo.Project
+		}
+		ref := owner + "/" + repo.Name
+		tokenRef := ""
+		if repo.Token.Configured() || repo.GitHubAppAuth() {
+			tokenRef = ref
+		}
+		if repo.Token.Env != "" {
+			envByRef[ref] = repo.Token.Env
+		} else if repo.GitHubAppAuth() && repo.Auth.PrivateKey != nil && repo.Auth.PrivateKey.Env != "" {
+			envByRef[ref] = repo.Auth.PrivateKey.Env
+		}
+		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
+	}
+
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
+	if cfg.DaemonIdentity != nil {
+		for _, capability := range daemonIdentityCapabilities {
+			overrides = append(overrides, credentials.Grant{Capability: string(capability), Ref: daemonIdentityRefName})
+		}
+		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
+			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
+		} else if cfg.DaemonIdentity.GitHubApp() && cfg.DaemonIdentity.PrivateKey != nil && cfg.DaemonIdentity.PrivateKey.Env != "" {
+			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.PrivateKey.Env
+		}
+	}
+	for _, grant := range cfg.Credentials {
+		key, err := credentialGrantKey(grant)
+		if err != nil {
+			return nil, fmt.Errorf("build scheduled workflow credential preflight: %w", err)
+		}
+		ref := credentialRefName(key)
+		overrides = append(overrides, credentials.Grant{Capability: key, Ref: ref})
+		if grant.Token.Env != "" {
+			envByRef[ref] = grant.Token.Env
+		}
+	}
+
+	owner := project.Owner
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		owner += "/" + project.Project
+	}
+	caps := make([]string, len(credentialedCapabilities))
+	for i, capability := range credentialedCapabilities {
+		caps[i] = string(capability)
+	}
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	envByCapability := make(map[string]string, len(grants))
+	for _, grant := range grants {
+		if env := envByRef[grant.Ref]; env != "" {
+			envByCapability[grant.Capability] = env
+		}
+	}
+	return envByCapability, nil
+}
+
+func staticallyRequiredWorkflowStates(graph workflow.Graph) map[string]bool {
+	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
+	parallel := make(map[string]bool, len(graph.Nodes))
+	for _, edge := range graph.Edges {
+		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
+	}
+	for _, node := range graph.Nodes {
+		parallel[node.ID] = node.Kind == workflow.GraphNodeParallel
+	}
+	required := make(map[string]bool, len(graph.Nodes))
+	for _, candidate := range graph.Nodes {
+		canFinish := make(map[string]bool, len(graph.Nodes))
+		changed := true
+		for changed {
+			changed = false
+			for _, node := range graph.Nodes {
+				if node.ID == candidate.ID || canFinish[node.ID] {
+					continue
+				}
+				edges := outgoing[node.ID]
+				if parallel[node.ID] {
+					hasBranches := false
+					allBranchesFinish := true
+					for _, edge := range edges {
+						if edge.Branch == "" {
+							if edge.Terminal != "" || canFinish[edge.Target] {
+								canFinish[node.ID] = true
+								changed = true
+								break
+							}
+							continue
+						}
+						hasBranches = true
+						if !canFinish[edge.Target] {
+							allBranchesFinish = false
+						}
+					}
+					if !canFinish[node.ID] && hasBranches && allBranchesFinish {
+						canFinish[node.ID] = true
+						changed = true
+					}
+					continue
+				}
+				for _, edge := range edges {
+					if edge.Terminal != "" || canFinish[edge.Target] {
+						canFinish[node.ID] = true
+						changed = true
+						break
+					}
+				}
+			}
+		}
+		required[candidate.ID] = !canFinish[graph.Start]
+	}
+	return required
 }
 
 func buildRetainedLegacyRunner(
@@ -825,16 +1046,29 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, error) {
-	runnerCfg, manager, err := buildRunnerConfig(
-		l, cfg, goobers, instructions, tel, sharedReg, manager, branchNamespaces, gaggleProject, additionalRepos, harnessInfo, stores, sandboxPosture, providerQuota,
-	)
+	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               l,
+		Config:               cfg,
+		Goobers:              goobers,
+		InstructionsByGoober: instructions,
+		Telemetry:            tel,
+		SharedRegistry:       sharedReg,
+		WorktreeManager:      manager,
+		BranchNamespaces:     branchNamespaces,
+		GaggleProject:        gaggleProject,
+		AdditionalRepos:      additionalRepos,
+		HarnessInfo:          harnessInfo,
+		CredentialStores:     stores,
+		SandboxPosture:       sandboxPosture,
+		ProviderQuota:        providerQuota,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
-	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, sharedReg, stores)
+	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -842,7 +1076,15 @@ func buildRuntimeRunner(
 		return finalizeTerminalRun(l, instanceLog, manager, runID)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	runnerCfg.NotifyTerminal = terminalNotifier
+	if terminalNotifier != nil {
+		circuitBreaker := runnerCfg.NotifyTerminal
+		runnerCfg.NotifyTerminal = func(runID string, phase journal.RunPhase, finalState string) error {
+			if circuitBreaker != nil {
+				_ = circuitBreaker(runID, phase, finalState)
+			}
+			return terminalNotifier(runID, phase, finalState)
+		}
+	}
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
@@ -982,6 +1224,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
+		NoWork:         res.NoWork,
 		FailureStage:   res.FailureStage,
 		FailureCode:    res.FailureCode,
 		FailureMessage: res.FailureMessage,
@@ -1028,6 +1271,13 @@ func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Ru
 	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 }
 
+func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
+	if id.WorkflowDigest != "" && current.Digest() != id.WorkflowDigest {
+		return nil, "pinned-snapshot"
+	}
+	return current, "current-config"
+}
+
 func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -1048,7 +1298,10 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			dir := filepath.Join(runsDir, e.Name())
 			rd, err := journal.OpenRead(dir)
 			if err != nil {
-				continue // not a run directory
+				if errors.Is(err, journal.ErrNotRunDirectory) {
+					continue
+				}
+				return resumed, warned, fmt.Errorf("open run journal %q: %w", e.Name(), err)
 			}
 			id, err := rd.Identity()
 			if err != nil {
@@ -1116,17 +1369,37 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				}
 				continue
 			}
+			// Never reinterpret a historical run under the current workflow
+			// merely because the name still matches.
+			machine, machineSource := interruptedRunMachine(id, machine)
 			repoRef := repoRefs[identity]
 			gooberDigest := gooberDigests[identity]
 
 			resumed = append(resumed, id.RunID)
+			if log != nil {
+				if err := log.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+					Runner: map[string]any{
+						"kind":                     journal.RunnerAnnotationRunRecovery,
+						"reason":                   "daemon_restart",
+						"action":                   journal.RecoveryActionResumed,
+						"workflowDigest":           id.WorkflowDigest,
+						"workflowDefinitionSource": machineSource,
+					},
+				}); err != nil {
+					return resumed, warned, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+				}
+			}
 			wg.Add(1)
 			untrack := runnerRegistry.Track(id.RunID, id.Workflow, rn)
 			go func(runID, gaggle, wfName, gooberDigest string, rn *runner.Runner, runLayout instance.Layout, untrack func()) {
 				defer wg.Done()
 				defer release(runID, wfName)
 				defer untrack()
-				result, err := rn.Resume(ctx, runner.ResumeInput{RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef})
+				result, err := rn.Resume(ctx, runner.ResumeInput{
+					RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
+					RecoveryReason: "daemon_restart",
+				})
 				ingestRunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:

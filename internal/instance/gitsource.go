@@ -162,15 +162,26 @@ func validateRemoteGitURL(repository string) error {
 
 // NewWorkflowGitSource constructs a Git source from instance.yaml's
 // workflowSource block. Remote authentication is isolated behind a dedicated
-// configrepo:read grant backed only by workflowSource.token. stores resolves
-// a store-backed token ref (#683); it may be nil only when the token is
-// env/file-backed — a store ref without it fails closed at construction.
-func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (*GitSource, error) {
+// configrepo:read grant backed by workflowSource.token or — for auth kind
+// github-app (#3274) — by appTokens, the installation-token minting source the
+// composition root wires in. The minting seam arrives as a GitTokenSource
+// because this package cannot import internal/githubapp (which imports it);
+// cmd/goobers constructs the minter exactly as it already does for
+// daemonIdentity's github-app kind. stores resolves a store-backed token ref
+// (#683); it may be nil only when the token is env/file-backed — a store ref
+// without it fails closed at construction.
+func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, appTokens GitTokenSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (*GitSource, error) {
 	if err := source.Validate(); err != nil {
 		return nil, fmt.Errorf("git config source: workflowSource: %w", err)
 	}
 	if source.Kind != WorkflowSourceKindGit {
 		return nil, fmt.Errorf("git config source: workflowSource kind must be %q", WorkflowSourceKindGit)
+	}
+	if appTokens != nil && !source.GitHubAppAuth() {
+		// Fail closed on a wiring bug: a minting source alongside a static
+		// token ref would make it ambiguous which credential reads the config
+		// repo (#3274).
+		return nil, fmt.Errorf("git config source: an installation-token source is only valid for workflowSource auth kind %q", GitHubAuthApp)
 	}
 
 	repository := source.Path
@@ -180,9 +191,25 @@ func NewWorkflowGitSource(instanceRoot string, source WorkflowSource, registrar 
 			return nil, errors.New("git config source: remote workflow source requires a secret registrar")
 		}
 		repository = source.URL
-		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
-			source.Token.CredentialTokenRef(workflowSourceCredentialRef),
-		}, stores)
+		var resolver credentials.Resolver
+		var err error
+		if source.GitHubAppAuth() {
+			// #3274: the configrepo:read grant is backed by minted installation
+			// tokens instead of a static ref. Registering the mint function as
+			// a dynamic source keeps the injector path — and with it the
+			// journal-scrubber registration of every token this source uses —
+			// identical to the static path.
+			if appTokens == nil {
+				return nil, fmt.Errorf("git config source: workflowSource auth kind %q requires an installation-token source from the composition root", GitHubAuthApp)
+			}
+			resolver, err = credentials.NewResolverWith(nil, nil, map[string]credentials.ResolveFunc{
+				workflowSourceCredentialRef: appTokens.Token,
+			})
+		} else {
+			resolver, err = credentials.NewResolverWithStores([]credentials.TokenRef{
+				source.Token.CredentialTokenRef(workflowSourceCredentialRef),
+			}, stores)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("git config source: build workflow-source resolver: %w", err)
 		}

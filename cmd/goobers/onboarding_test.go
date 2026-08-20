@@ -89,13 +89,23 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 			t.Fatalf("%v: decode validation: %v\n%s", args, err, stdout)
 		}
-		if !result.OK || result.Counts.Errors != 0 || result.Counts.Warnings != 0 || len(result.Findings) != 0 {
-			t.Fatalf("%v: validation was not clean: %s", args, stdout)
+		if !result.OK || result.Counts.Errors != 0 {
+			t.Fatalf("%v: validation had errors: %s", args, stdout)
+		}
+		for _, finding := range result.Findings {
+			if finding.Code != placeholderFindingCode || finding.Severity != "warning" {
+				t.Fatalf("%v: validation had a non-placeholder finding: %s", args, stdout)
+			}
 		}
 	}
 
-	skills := []string{"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis"}
-	createDeclaredSkillPackages(t, filepath.Dir(sourceRoot), skills...)
+	// implement/run-tests/review already ship as gaggle-scoped packages inside
+	// the quickstart-v1 template (SKILL002 fix); declaring shared-level
+	// stand-ins for those too would collide with the scoped ones (SKILL001)
+	// instead of being a harmless no-op. Only the stub-agent-instructions
+	// additions still need a stand-in.
+	tutorSkills := []string{"config-authoring", "nomination", "triage", "tutor-diagnosis"}
+	createDeclaredSkillPackages(t, filepath.Dir(sourceRoot), tutorSkills...)
 	assertCleanValidation("validate", "--source-tree", "--json", sourceRoot)
 
 	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
@@ -105,7 +115,7 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
 		t.Fatalf("materialize composed instance: %v", err)
 	}
-	createDeclaredSkillPackages(t, instanceRoot, skills...)
+	createDeclaredSkillPackages(t, instanceRoot, tutorSkills...)
 	assertCleanValidation("validate", "--json", instanceRoot)
 
 	var golden bytes.Buffer

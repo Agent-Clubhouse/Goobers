@@ -1,6 +1,6 @@
 # Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments
 
-> Status: **Scoping note — not a build-ready design.** Placeholder issue #2306,
+> Status: **draft — scoping note; not a build-ready design.** Placeholder issue #2306,
 > follow-up to #2305 (the run-level reveal button itself, not yet implemented).
 > This resolves the open questions #2306 lists so a future issue can be scoped
 > and approved; it does not itself authorize implementation.

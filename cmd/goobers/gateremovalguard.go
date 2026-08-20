@@ -33,7 +33,7 @@ const gateRemovalGuardHelp = "Usage: goobers gate-removal-guard [path]\n\n" +
 	"Exit codes: 0 = clear (or nothing to check), 1 = blocked, 2 = usage/IO error.\n"
 
 func runGateRemovalGuard(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gate-removal-guard", flag.ContinueOnError)
+	fs := newCLIFlagSet("gate-removal-guard", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gate-removal-guard")
 	if err := fs.Parse(args); err != nil {

@@ -17,7 +17,8 @@
       "required": ["errors", "warnings"],
       "properties": {
         "errors": { "type": "integer", "minimum": 0 },
-        "warnings": { "type": "integer", "minimum": 0 }
+        "warnings": { "type": "integer", "minimum": 0 },
+        "infos": { "description": "Number of informational findings.", "type": "integer", "minimum": 0 }
       }
     },
     "findings": {
@@ -36,7 +37,7 @@
         "col": { "type": "integer", "minimum": 1 },
         "path": { "type": "string", "pattern": "^/" },
         "code": { "type": "string", "minLength": 1 },
-        "severity": { "type": "string", "enum": ["error", "warning"] },
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
         "message": { "type": "string", "minLength": 1 }
       },
       "anyOf": [

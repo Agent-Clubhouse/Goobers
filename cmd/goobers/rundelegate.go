@@ -75,9 +75,10 @@ const (
 // use. Before this was atomic, os.CreateTemp minted the request file already
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
-func writeTriggerRequest(schedulerDir, workflow string) (requestID string, err error) {
+func writeTriggerRequest(schedulerDir, gaggle, workflow string) (requestID string, err error) {
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
 		Workflow:  workflow,
+		Gaggle:    gaggle,
 		CreatedAt: time.Now().UTC(),
 	})
 }
@@ -279,6 +280,10 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 					runID, terr = sched.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
 						Gaggle: req.Gaggle, Workflow: req.Workflow,
 					}, req.SourceRun, sweepTime)
+				} else if req.Gaggle != "" {
+					runID, terr = sched.TriggerExact(ctx, localscheduler.WorkflowIdentity{
+						Gaggle: req.Gaggle, Workflow: req.Workflow,
+					}, sweepTime)
 				} else {
 					runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
 				}
@@ -309,6 +314,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 					}
 				default:
 					resp.RunID = runID
+					sched.RecordRecoveredTrigger(requestID, req.Workflow, runID)
 				}
 			}
 		}

@@ -161,9 +161,12 @@ func groupChecksOnly(all []check, group string) []check {
 //     dropping the coverage profile (partial per shard; the coverage *gate* is
 //     the separate full-tier cover-check). Timing capture stays with the
 //     unsharded owner (it only emits when GOOBERS_TEST_TIMING_FILE is set).
+//   - GOOBERS_CI_TEST_TIMEOUT raises the per-package timeout for slower
+//     platforms without weakening the suite or changing its package set.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
 	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
+	testTimeout := strings.TrimSpace(getenv("GOOBERS_CI_TEST_TIMEOUT"))
 	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
 	// Linux runner. It sets GOOS for the golangci-lint *subprocess* only — never
 	// as an ambient GOOS, which would make `go run ./test/ci` build this tool
@@ -177,10 +180,24 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		if shard != "" && current.label == "test" {
 			current.args = shardUnitArgs(current.args, shard)
 		}
+		if testTimeout != "" && (current.label == "test" || current.label == "shipped-workflows") {
+			current.args = replaceFlagValue(current.args, "-timeout", testTimeout)
+		}
 		if lintGOOS != "" && current.label == "lint" {
 			current.env = append(append([]string(nil), current.env...), "GOOS="+lintGOOS)
 		}
 		result = append(result, current)
+	}
+	return result
+}
+
+func replaceFlagValue(args []string, flag, value string) []string {
+	result := append([]string(nil), args...)
+	for i := 0; i+1 < len(result); i++ {
+		if result[i] == flag {
+			result[i+1] = value
+			break
+		}
 	}
 	return result
 }
@@ -294,8 +311,11 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
+		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
+		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
+		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 	}
 
 	portalPrepared := false
@@ -420,6 +440,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			group:        groupChecks,
 		},
 		check{
+			label:        "portal-deadcode",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "deadcode"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
+			label:        "portal-e2e",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "run", "test:e2e"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		check{
 			label:   "portal-contract-generate",
 			command: tools.goCommand,
 			args:    []string{"generate", "./internal/apicontract"},
@@ -517,6 +551,13 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:        "portal-install",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "ci", "--no-audit", "--no-fund"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		{
+			label:        "portal-playwright-install",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

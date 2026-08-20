@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/agentkit"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -198,6 +199,15 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		{"agent-toolkit/.gitattributes", ".gitattributes"},
 		{"agent-toolkit/README.md", "README.md"},
 		{"docs/ARCHITECTURE.md", "docs/ARCHITECTURE.md"},
+		{"docs/VISION.md", "docs/VISION.md"},
+		{"docs/adr/0001-agentic-sandbox-mechanism.md", "docs/adr/0001-agentic-sandbox-mechanism.md"},
+		{"docs/adr/0002-provider-neutral-capability-namespaces.md", "docs/adr/0002-provider-neutral-capability-namespaces.md"},
+		{"docs/design/cobrand.md", "docs/design/cobrand.md"},
+		{"docs/design/notification-output.md", "docs/design/notification-output.md"},
+		{"docs/design/static-fan-out-fan-in.md", "docs/design/static-fan-out-fan-in.md"},
+		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
+		{"docs/guides/quickstart.md", "docs/guides/quickstart.md"},
+		{"docs/guides/supervision.md", "docs/guides/supervision.md"},
 		{"docs/stage-contract.md", "docs/stage-contract.md"},
 		{"internal/capability/capability.go", "internal/capability/capability.go"},
 	}
@@ -265,7 +275,7 @@ func readAgentToolkitFile(repoRoot, source, destination string) (agentToolkitPay
 	return newAgentToolkitPayloadAsset(
 		agentToolkitProductRoot+"/"+filepath.ToSlash(destination),
 		data,
-		info.Mode().Perm(),
+		agentkit.SourceMode(sourcePath),
 	), nil
 }
 
@@ -307,7 +317,7 @@ func readAgentToolkitTree(
 		assets = append(assets, newAgentToolkitPayloadAsset(
 			agentToolkitProductRoot+"/"+destinationDir+"/"+relative,
 			data,
-			info.Mode().Perm(),
+			agentkit.SourceMode(path),
 		))
 		return nil
 	})

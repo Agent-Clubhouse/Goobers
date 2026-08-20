@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/goobers/goobers/internal/sandbox"
@@ -40,9 +39,7 @@ type copilotConfinement struct {
 	copilotHome   string
 	tempDir       string
 	logDir        string
-	profileDir    string
 	writableRoots []string
-	privateRoots  []string
 }
 
 // prepareCopilotConfinement creates the in-workspace runtime directories and
@@ -53,9 +50,8 @@ func prepareCopilotConfinement(workspace string) (*copilotConfinement, error) {
 		copilotHome: filepath.Join(base, "copilot-home"),
 		tempDir:     filepath.Join(base, "tmp"),
 		logDir:      filepath.Join(base, "logs"),
-		profileDir:  filepath.Join(base, "profile"),
 	}
-	for _, dir := range []string{c.copilotHome, c.tempDir, c.logDir, c.profileDir} {
+	for _, dir := range []string{c.copilotHome, c.tempDir, c.logDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create sandbox runtime directory: %w", err)
 		}
@@ -187,68 +183,20 @@ func commonDirWritableRoots(commonDir string) ([]string, error) {
 // sandbox seam rewrites an exec.Cmd in place; the resulting argv is handed to
 // the ProcessRunner unchanged, so the runner's session/tree-kill semantics
 // (internal/platform/proc) apply to the wrapper exactly as to a bare command.
-func confineArgv(sb sandbox.Sandbox, argv []string, workspace string, extraRoots, privateRoots []string) ([]string, int, error) {
+func confineArgv(sb sandbox.Sandbox, argv []string, workspace string, extraRoots []string) ([]string, int, error) {
 	command := exec.Command(argv[0], argv[1:]...)
 	command.Dir = workspace
-	if err := sb.Wrap(command, sandbox.Policy{
-		Workspace:     workspace,
-		WritableRoots: extraRoots,
-		PrivateRoots:  privateRoots,
-	}); err != nil {
+	if err := sb.Wrap(command, sandbox.Policy{Workspace: workspace, WritableRoots: extraRoots}); err != nil {
 		return nil, 0, err
 	}
 	return command.Args, len(command.Args) - len(argv), nil
-}
-
-var sandboxProfileVars = []string{
-	"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
-}
-
-func isolateSandboxProfile(env []string, profileDir string) ([]string, []string, error) {
-	privateRoots := make([]string, 0, len(sandboxProfileVars))
-	seen := make(map[string]struct{}, len(sandboxProfileVars))
-	for _, entry := range env {
-		name, value, ok := strings.Cut(entry, "=")
-		if !ok || value == "" || !slices.Contains(sandboxProfileVars, name) {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(value)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, nil, fmt.Errorf("resolve sandbox profile %s: %w", name, err)
-		}
-		if _, duplicate := seen[resolved]; !duplicate {
-			seen[resolved] = struct{}{}
-			privateRoots = append(privateRoots, resolved)
-		}
-	}
-	locations := map[string]string{
-		"HOME":            profileDir,
-		"USERPROFILE":     profileDir,
-		"APPDATA":         filepath.Join(profileDir, "config"),
-		"LOCALAPPDATA":    filepath.Join(profileDir, "data"),
-		"XDG_CONFIG_HOME": filepath.Join(profileDir, "config"),
-		"XDG_DATA_HOME":   filepath.Join(profileDir, "data"),
-	}
-	for _, path := range locations {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			return nil, nil, fmt.Errorf("create sandbox profile directory: %w", err)
-		}
-	}
-	for _, name := range sandboxProfileVars {
-		env = overrideEnv(env, name, locations[name])
-	}
-	return env, privateRoots, nil
 }
 
 // overrideEnv returns env with any existing name entries removed and a single
 // name=value appended — an unambiguous override regardless of how a consumer
 // scans the slice (first match or last-wins exec semantics).
 func overrideEnv(env []string, name, value string) []string {
-	out := make([]string, 0, len(env)+1)
+	out := env[:0]
 	prefix := name + "="
 	for _, entry := range env {
 		if strings.HasPrefix(entry, prefix) {

@@ -23,6 +23,8 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -33,12 +35,37 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
+          # The shipped image includes the Copilot CLI default agent harness.
+          # Set runner.harnessCommand in instance.yaml when selecting another
+          # installed harness.
           image: goobers # rewritten by the kustomization images: transformer
           # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
           # (#632): it serves the named task queue(s) until SIGTERM, then
           # drains. One task queue per Deployment — set the queue to the one
           # this gaggle/workflow dispatches to (default "goobers-engine").
-          args: ["worker", "--task-queue", "goobers-engine"]
+          #
+          # --instance IS REQUIRED TO EXECUTE ANYTHING. Without it the worker
+          # wires no executors: it serves workspaces and automated gates, and
+          # every real stage fails closed with "not configured". This manifest
+          # predates the flag and silently started nothing.
+          #
+          # --blob-store is required only when a run's stages are served by
+          # MORE THAN ONE worker. Stage artifacts are content-addressed into
+          # the node-local staging area; without a shared store the first
+          # ContextPointer resolved on a different node finds no file and the
+          # stage fails closed on an integrity fault. Point it at a
+          # ReadWriteMany volume (see the blobs volume below) or omit it and
+          # accept single-worker runs.
+          args:
+            - "worker"
+            - "--task-queue"
+            - "goobers-engine"
+            - "--work-root"
+            - "/var/lib/goobers-worker"
+            - "--instance"
+            - "/var/lib/goobers"
+            - "--blob-store"
+            - "/var/lib/goobers-blobs"
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
@@ -46,11 +73,26 @@ spec:
             - name: GOOBERS_TEMPORAL_HOSTPORT
               value: temporal-frontend.goobers-temporal:7233
           volumeMounts:
-            # Journal & artifacts: same on-disk layout as tiers 1-2 (§4);
-            # single-writer is enforced by Temporal workflow identity, not
-            # file locks — this mount is a projection target.
+            # Lock-bearing instance root: same on-disk layout as tiers 1-2
+            # (§4), on the RWO block volume mounted by a single node.
             - name: journal
               mountPath: /var/lib/goobers
+            # Worktrees are pod-private: their PID ownership records are not
+            # meaningful across pod process namespaces.
+            - name: workspaces
+              mountPath: /var/lib/goobers-worker
+            # The fleet artifact store. ReadWriteMany because it is the one
+            # volume more than one worker touches at once — that is the whole
+            # point of it. A content-addressed store never locks (a digest is
+            # written once, by rename, and two writers racing on one digest
+            # are writing identical bytes), so unlike the journal it is safe
+            # on storage classes without dependable POSIX locking (cf. #2854).
+            - name: blobs
+              mountPath: /var/lib/goobers-blobs
+            # Copilot keeps runtime state under $HOME/.copilot. The container
+            # root stays read-only; this state lasts for the life of the pod.
+            - name: harness-home
+              mountPath: /home/nonroot
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -69,3 +111,15 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
+        - name: workspaces
+          emptyDir: {}
+        - name: harness-home
+          emptyDir: {}
+        # ReadWriteMany, because more than one worker mounts it. Provision it
+        # with a filesystem your platform can serve RWX (Azure Files, EFS,
+        # Filestore, CephFS, NFS). If you only ever run ONE worker, drop this
+        # volume, its mount, and the --blob-store flag together — a single
+        # worker resolves every ContextPointer from its own staging area.
+        - name: blobs
+          persistentVolumeClaim:
+            claimName: goobers-blobs

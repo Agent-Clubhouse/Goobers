@@ -1,6 +1,6 @@
 # Design: PR lifecycle loop — closing "issue → PR" into "issue → merged change" (V0.5)
 
-> Status: **Superseded in part (2026-07-23)** — the shipped loop's normative contract now
+> Status: **superseded — in part (2026-07-23)** — the shipped loop's normative contract now
 > lives in [`docs/requirements/pr-lifecycle.md`](../../requirements/pr-lifecycle.md) (PRL-*);
 > this doc remains the design rationale. Known-stale details vs shipped code: §6 D7's
 > one-merge-per-tick became a poll→decide→land lock window only (#719,

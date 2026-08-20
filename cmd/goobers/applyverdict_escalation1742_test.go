@@ -131,6 +131,61 @@ func TestApplyVerdictDoesNotRearmEscalatedRemediation(t *testing.T) {
 	}
 }
 
+func TestApplyVerdictFailReplacesNeedsRemediationWithEscalation(t *testing.T) {
+	const (
+		prNumber = 2760
+		runID    = "merge-review-fail"
+		headSHA  = "failed-head"
+		baseSHA  = "failed-base"
+	)
+
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(prNumber, "Failed PR")
+	server.addOpenPR(
+		prNumber,
+		"goobers/implementation/failed",
+		"main",
+		headSHA,
+		baseSHA,
+		false,
+		[]string{needsRemediationLabel},
+		[]fakePRFile{{path: "cmd/goobers/applyverdict.go", status: "modified", additions: 3}},
+	)
+	server.mu.Lock()
+	server.issues[prNumber].labels = []string{needsRemediationLabel}
+	server.mu.Unlock()
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "2760")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", headSHA)
+	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", baseSHA)
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Summary:   "human intervention required",
+		Rationale: "the approach cannot be remediated automatically",
+		HeadSHA:   headSHA,
+		BaseSHA:   baseSHA,
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Class:    apiv1.FindingSubstantive,
+			Message:  "requires a human decision",
+		}},
+	})
+
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "apply-verdict", root); code != 0 {
+		t.Fatalf("apply-verdict: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !issueHasLabel(server, prNumber, remediationEscalatedLabel) {
+		t.Fatalf("labels do not contain %s", remediationEscalatedLabel)
+	}
+	if issueHasLabel(server, prNumber, needsRemediationLabel) {
+		t.Fatalf("labels still contain %s after fail escalation", needsRemediationLabel)
+	}
+}
+
 func TestApplyVerdictRepeatFailRefreshesEscalationBaseSnapshot(t *testing.T) {
 	const (
 		prNumber   = 2378

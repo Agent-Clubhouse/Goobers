@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 // TestNewDoesNotMutateGlobalOTelState guards against #1557: New used to call
@@ -35,7 +36,7 @@ func TestNewDoesNotMutateGlobalOTelState(t *testing.T) {
 	ctx := context.Background()
 	client, err := New(ctx, Config{
 		ServiceName:  "telemetry-test",
-		SpanExporter: NewMemoryExporter(),
+		SpanExporter: telemetrytest.NewMemoryExporter(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,9 +51,83 @@ func TestNewDoesNotMutateGlobalOTelState(t *testing.T) {
 	}
 }
 
+func TestResourceIncludesEnvironmentAndBuildIdentity(t *testing.T) {
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+	t.Setenv("OTEL_SERVICE_NAME", "environment-service")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "operator.attr=from-env,service.instance.id=operator-instance,operator.secret="+secret)
+
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	exporter := telemetrytest.NewMemoryExporter()
+	client, err := New(context.Background(), Config{
+		ServiceName:    "configured-service",
+		ServiceVersion: "v1.2.3",
+		BuildCommit:    "abc1234",
+		Environment:    "production",
+		SpanExporter:   exporter,
+		Scrubber:       scrubber,
+		ResourceAttributes: []attribute.KeyValue{
+			attribute.String("configured.attr", "from-config"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+
+	_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+		Gaggle: "acme-web", WorkflowID: "implement", Action: "claim",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+
+	attrs := resourceAttrMap(exporter.Spans()[0])
+	assertAttr(t, attrs, "service.name", "environment-service")
+	assertAttr(t, attrs, "service.version", "v1.2.3")
+	assertAttr(t, attrs, "service.instance.id", "operator-instance")
+	assertAttr(t, attrs, "deployment.environment", "production")
+	assertAttr(t, attrs, "goobers.build.commit", "abc1234")
+	assertAttr(t, attrs, "operator.attr", "from-env")
+	assertAttr(t, attrs, "configured.attr", "from-config")
+	assertAttr(t, attrs, "operator.secret", RedactedPlaceholder)
+}
+
+func TestResourceGeneratesUniqueServiceInstanceID(t *testing.T) {
+	t.Setenv("OTEL_SERVICE_NAME", "")
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+
+	instanceIDs := make([]string, 0, 2)
+	for range 2 {
+		exporter := telemetrytest.NewMemoryExporter()
+		client, err := New(context.Background(), Config{SpanExporter: exporter})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+		_, span, err := client.StartSchedulerSpan(context.Background(), SchedulerAttributes{
+			Gaggle: "acme-web", WorkflowID: "implement", Action: "claim",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		span.End()
+		attrs := resourceAttrMap(exporter.Spans()[0])
+		assertAttr(t, attrs, "service.name", "goobers")
+		if attrs["service.instance.id"] == "" {
+			t.Fatal("service.instance.id is empty")
+		}
+		instanceIDs = append(instanceIDs, attrs["service.instance.id"])
+	}
+	if instanceIDs[0] == instanceIDs[1] {
+		t.Fatalf("service.instance.id repeated across clients: %q", instanceIDs[0])
+	}
+}
+
 func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: exporter,
@@ -193,7 +268,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 }
 
 func TestSpanEventLimitBoundsAttemptAccumulation(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "telemetry-limit-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +304,7 @@ func TestSpanEventLimitBoundsAttemptAccumulation(t *testing.T) {
 
 func TestSchedulerSpanAttributes(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -259,7 +334,7 @@ func TestSchedulerSpanAttributes(t *testing.T) {
 
 func TestSchedulerSpanCanUseRunTraceIDWithoutParentContext(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -367,7 +442,7 @@ func TestOTLPExporterPushesAlongsideJournalExporter(t *testing.T) {
 		_ = listener.Close()
 	})
 
-	journalExporter := NewMemoryExporter()
+	journalExporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: journalExporter,
@@ -566,7 +641,7 @@ func TestOTLPExporterSecureModeOverridesInsecureEnvironment(t *testing.T) {
 }
 
 func TestMemoryExporterReset(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -596,7 +671,7 @@ func TestMemoryExporterReset(t *testing.T) {
 
 func TestInvalidRunIDIsRejected(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -618,7 +693,7 @@ func TestInvalidRunIDIsRejected(t *testing.T) {
 
 func TestMismatchedParentTraceIsRejected(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -651,7 +726,7 @@ func TestMismatchedParentTraceIsRejected(t *testing.T) {
 
 func TestValidationErrorsAreReturned(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -713,7 +788,7 @@ func TestUnsupportedExporterIsRejected(t *testing.T) {
 
 func TestSpanFailRecordsErrorStatus(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -752,7 +827,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	const secret = "opaque-encoded-ado-credential"
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte(secret))
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: exporter,
@@ -801,7 +876,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 // OTel's own coarser two-value axis.
 func TestSpanCompleteRecordsOutcome(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -971,6 +1046,14 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 func attrMap(span sdktrace.ReadOnlySpan) map[string]string {
 	attrs := map[string]string{}
 	for _, attr := range span.Attributes() {
+		attrs[string(attr.Key)] = attr.Value.String()
+	}
+	return attrs
+}
+
+func resourceAttrMap(span sdktrace.ReadOnlySpan) map[string]string {
+	attrs := map[string]string{}
+	for _, attr := range span.Resource().Attributes() {
 		attrs[string(attr.Key)] = attr.Value.String()
 	}
 	return attrs

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -340,6 +341,7 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
 	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
 	t.Setenv("GOOBERS_INPUT_COMMENT", "Should this implementation proceed despite the rejected approach?")
+	t.Setenv("GOOBERS_INPUT_REASON", "The parent changed after decomposition.")
 	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
@@ -355,6 +357,9 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	}
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
+	}
+	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
+		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
 	}
 }
 
@@ -715,5 +720,23 @@ func TestIssueCloseOutMissingRunIDFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+// TestCloseOutClaimMarkerIsPlainOnEveryProvider pins the cross-provider claim
+// contract: ClaimWorkItem defaults the marker to the plain LabelClaimed on
+// GitHub, Gitea, AND ADO, so close-out must remove that same constant — a
+// provider-conditional translation here is how the ADO stale-marker leak
+// happened (removal targeted a status-form tag the claim never writes).
+func TestCloseOutClaimMarkerIsPlainOnEveryProvider(t *testing.T) {
+	if providers.LabelClaimed != "goobers:claimed" {
+		t.Fatalf("LabelClaimed = %q, want goobers:claimed", providers.LabelClaimed)
+	}
+	src, err := os.ReadFile("issuecloseout.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "StatusLabelFor(providers.WorkItemStatusClaimed)") {
+		t.Fatal("issuecloseout.go reintroduced a status-form claim-marker translation; the claim path writes the plain LabelClaimed on every provider")
 	}
 }

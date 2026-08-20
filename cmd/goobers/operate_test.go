@@ -26,7 +26,10 @@ func initDemo(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
-	createDeclaredSkillPackages(t, root, "implement", "run-tests")
+	// The starter scaffold ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix) — no shared-level stand-ins needed, and
+	// adding them here would collide with the scoped ones (SKILL001) instead
+	// of being a harmless no-op.
 	return root
 }
 

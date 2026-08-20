@@ -13,6 +13,24 @@ import (
 )
 
 func runServiceSupervise(args []string, stdout, stderr io.Writer) int {
+	return runServiceSuperviseWith(args, stdout, stderr, serviceSuperviseDeps{
+		runSupervisor:    selfupdate.RunSupervisor,
+		isWindowsService: winsvc.IsWindowsService,
+		runWindowsService: func(name string, run func(context.Context) int) (int, error) {
+			return winsvc.Run(name, run)
+		},
+		setupSignalContext: signals.SetupSignalContext,
+	})
+}
+
+type serviceSuperviseDeps struct {
+	runSupervisor      func(context.Context, selfupdate.SupervisorOptions) error
+	isWindowsService   func() (bool, error)
+	runWindowsService  func(string, func(context.Context) int) (int, error)
+	setupSignalContext func() (context.Context, func())
+}
+
+func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps serviceSuperviseDeps) int {
 	if len(args) > 1 {
 		pf(stderr, "Usage: goobers __service-supervise [path]\n")
 		return 2
@@ -26,7 +44,7 @@ func runServiceSupervise(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	run := func(ctx context.Context) int {
-		err := selfupdate.RunSupervisor(ctx, selfupdate.SupervisorOptions{
+		err := deps.runSupervisor(ctx, selfupdate.SupervisorOptions{
 			Root:      root,
 			Escalator: selfUpdateEscalator{root: root},
 			Stdout:    stdout,
@@ -38,20 +56,20 @@ func runServiceSupervise(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	isService, err := winsvc.IsWindowsService()
+	isService, err := deps.isWindowsService()
 	if err != nil {
 		pf(stderr, "error: detect Windows service context: %v\n", err)
 		return 1
 	}
 	if isService {
-		code, err := winsvc.Run(service.Name, run)
+		code, err := deps.runWindowsService(service.Name, run)
 		if err != nil {
 			pf(stderr, "error: run Windows service: %v\n", err)
 			return 1
 		}
 		return code
 	}
-	ctx, stop := signals.SetupSignalContext()
+	ctx, stop := deps.setupSignalContext()
 	defer stop()
 	return run(ctx)
 }

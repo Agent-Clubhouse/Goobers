@@ -5,11 +5,40 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// IsAuthenticationError reports whether err is a permanent provider
+// authentication or authorization failure. Rate-limited 403 responses are
+// excluded because retry guidance makes them transient.
+func IsAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rl *RateLimitError
+	if errors.As(err, &rl) {
+		return false
+	}
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) {
+		return (responseErr.statusCode == http.StatusUnauthorized ||
+			responseErr.statusCode == http.StatusForbidden) &&
+			!responseErr.hasRetryGuidance()
+	}
+	message := strings.ToLower(err.Error())
+	match := statusCodePattern.FindStringSubmatch(message)
+	if match == nil {
+		return false
+	}
+	code, convErr := strconv.Atoi(match[1])
+	return convErr == nil &&
+		(code == http.StatusUnauthorized || code == http.StatusForbidden) &&
+		!hasRateLimitRetryGuidance(message)
+}
 
 // IsTransientError reports whether err looks like a transient/retryable
 // provider failure — a network hiccup, a 5xx server error, or an exhausted

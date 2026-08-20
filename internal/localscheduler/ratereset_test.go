@@ -1,6 +1,7 @@
 package localscheduler
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,5 +74,62 @@ func TestRateResetOverwrites(t *testing.T) {
 	}
 	if !got.Equal(later) {
 		t.Fatalf("read %s, want the later reset %s", got, later)
+	}
+}
+
+func TestWriteRateResetPublishesAtomically(t *testing.T) {
+	oldTime := time.Date(2026, time.August, 15, 10, 11, 12, 13, time.UTC)
+	newTime := oldTime.Add(time.Hour)
+	oldContent := []byte(oldTime.Format(time.RFC3339Nano) + "\n")
+	newContent := []byte(newTime.Format(time.RFC3339Nano) + "\n")
+
+	for _, tc := range []struct {
+		name    string
+		initial []byte
+	}{
+		{name: "absent"},
+		{name: "old", initial: oldContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, rateResetFileName)
+			if tc.initial != nil {
+				if err := os.WriteFile(path, tc.initial, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := WriteRateReset(dir, newTime); err == nil {
+				t.Fatal("WriteRateReset succeeded with an unusable atomic temp path")
+			}
+			got, err := os.ReadFile(path)
+			if tc.initial == nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("marker after failed write: data=%q err=%v, want absent", got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(tc.initial) {
+				t.Fatalf("marker after failed write = %q, want complete old content %q", got, tc.initial)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	if err := WriteRateReset(dir, newTime); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, rateResetFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(newContent) {
+		t.Fatalf("marker after successful write = %q, want complete new content %q", got, newContent)
 	}
 }

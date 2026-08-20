@@ -9,10 +9,93 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
 )
+
+type guidedInitCallbackWriter struct {
+	bytes.Buffer
+	onWrite func(string)
+}
+
+func (w *guidedInitCallbackWriter) Write(p []byte) (int, error) {
+	if w.onWrite != nil {
+		w.onWrite(string(p))
+	}
+	return w.Buffer.Write(p)
+}
+
+type guidedPromptTranscriptWriter struct {
+	bytes.Buffer
+	transcript strings.Builder
+}
+
+func (w *guidedPromptTranscriptWriter) Write(p []byte) (int, error) {
+	if bytes.HasSuffix(p, []byte(": ")) {
+		w.transcript.Write(p)
+		w.transcript.WriteByte('\n')
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestGuidedInitReleasePromptTranscript(t *testing.T) {
+	goldenPath, err := filepath.Abs(filepath.Join("testdata", "guided-init-release.prompts.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := os.ReadFile(filepath.Join("testdata", "guided-init-release.answers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := bytes.NewReader(answers)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "Makefile"), []byte("ci:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+
+	var stdout guidedPromptTranscriptWriter
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--guided", filepath.Join("smoke", "quickstart-instance")},
+		input,
+		&stdout,
+		&stderr,
+	)
+	got := strings.ReplaceAll(stdout.transcript.String(), workspace, "<workspace>")
+	got = strings.ReplaceAll(got, string(filepath.Separator), "/")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		diff, diffErr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A:        difflib.SplitLines(string(want)),
+			B:        difflib.SplitLines(got),
+			FromFile: goldenPath,
+			ToFile:   "actual guided-init prompts",
+			Context:  3,
+		})
+		if diffErr != nil {
+			t.Fatalf("diff guided-init prompt transcript: %v", diffErr)
+		}
+		t.Fatalf("guided-init prompt transcript changed:\n%s", diff)
+	}
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != 0 {
+		t.Fatalf("guided init left %d scripted answer bytes unread", input.Len())
+	}
+}
 
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "widget-instance")
@@ -24,6 +107,8 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"",
 		"make ci", // #2071: no build manifest in this test's cwd, so no default is offered
+		"make",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -79,6 +164,9 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		cfg.Repos[0].Name != "Widget.Service" ||
 		cfg.Repos[0].Token.Env != "GOOBERS_GITHUB_REPO_TOKEN" {
 		t.Fatalf("unexpected guided instance config: %+v", cfg)
+	}
+	if !slices.Equal(cfg.Runner.Capabilities, []string{"make"}) {
+		t.Fatalf("guided runner capabilities = %v, want [make]", cfg.Runner.Capabilities)
 	}
 	sourceAbs, err := filepath.Abs(sourceRoot)
 	if err != nil {
@@ -151,6 +239,7 @@ func TestGuidedInitDefaultPathCreatesSiblingConfigSource(t *testing.T) {
 		"acme/widget",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -195,6 +284,40 @@ func TestDocumentationURLPinsStableReleaseBuilds(t *testing.T) {
 	}
 }
 
+// TestPromptGuidedOptionsSelectsClaudeCodeHarness pins #2777: claude-code
+// must be choosable in the guided prompt flow (not just discoverable via
+// --harness), and choosing it must route the optional model-auth token
+// through ClaudeTokenEnv instead of CopilotTokenEnv.
+func TestPromptGuidedOptionsSelectsClaudeCodeHarness(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"work-nomination",
+		"claude-code",
+		"",
+		"",
+		"WIDGET_CLAUDE_TOKEN",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if opts.Harness != "claude-code" {
+		t.Fatalf("opts.Harness = %q, want claude-code", opts.Harness)
+	}
+	if opts.ClaudeTokenEnv != "WIDGET_CLAUDE_TOKEN" || opts.CopilotTokenEnv != "" {
+		t.Fatalf("unexpected model-auth token refs: claude=%q copilot=%q", opts.ClaudeTokenEnv, opts.CopilotTokenEnv)
+	}
+	if !strings.Contains(stdout.String(), "Claude Code model auth") {
+		t.Errorf("stdout lacks the Claude Code model-auth prompt:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "Copilot model auth") {
+		t.Errorf("stdout unexpectedly shows the Copilot model-auth prompt:\n%s", stdout.String())
+	}
+}
+
 func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) {
 	input := strings.NewReader(strings.Join([]string{
 		"acme/widget",
@@ -226,10 +349,10 @@ func TestPromptGuidedOptionsOnlyRequestsSelectedCredentialClasses(t *testing.T) 
 }
 
 // TestPromptGuidedOptionsDetectsCICommandDefault is #2071: the ciCommand
-// prompt's default is seeded from the invoking directory's build manifest
+// prompt's defaults are seeded from the invoking directory's build manifest
 // instead of unconditionally offering the Go-specific `make ci`. Accepting
-// the detected default (empty input) must produce the stack-appropriate
-// command, and the detection message must appear before the prompt.
+// them must produce the stack-appropriate command and capability, and the
+// detection message must identify the current directory as a guess.
 func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644); err != nil {
@@ -242,6 +365,7 @@ func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 		"",
 		"implementation",
 		"", // accept the detected default
+		"", // accept the detected capability
 		"",
 		"",
 		"",
@@ -257,7 +381,11 @@ func TestPromptGuidedOptionsDetectsCICommandDefault(t *testing.T) {
 	if !slices.Equal(opts.CICommand, []string{"npm", "run", "ci"}) {
 		t.Fatalf("opts.CICommand = %v, want [npm run ci]", opts.CICommand)
 	}
-	if !strings.Contains(stdout.String(), "Detected Node.js build manifest") {
+	if !slices.Equal(opts.RequiredCapabilities, []string{"node@20"}) {
+		t.Fatalf("opts.RequiredCapabilities = %v, want [node@20]", opts.RequiredCapabilities)
+	}
+	if !strings.Contains(stdout.String(), "Guessed Node.js") ||
+		!strings.Contains(stdout.String(), "current directory") {
 		t.Errorf("stdout lacks the detection message:\n%s", stdout.String())
 	}
 }
@@ -347,6 +475,9 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	if _, err := instance.Init(root); err != nil {
 		t.Fatalf("plain Init: %v", err)
 	}
+	if err := ensureInitCompleted(root); err != nil {
+		t.Fatalf("record init completion: %v", err)
+	}
 	layout := instance.NewLayout(root)
 	configBefore, err := os.ReadFile(layout.ConfigFile())
 	if err != nil {
@@ -367,9 +498,11 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	if input.Len() != len("acme/replacement\n") {
 		t.Fatalf("guided rerun consumed prompt input before rejecting existing config")
 	}
-	if !strings.Contains(stderr.String(), "guided setup requires an unconfigured target") ||
-		!strings.Contains(stderr.String(), instance.ConfigFileName) {
-		t.Fatalf("guided rerun stderr = %q", stderr.String())
+	wantStderr := "error: guided setup requires an unconfigured target: " + instance.ConfigFileName +
+		" already exists in " + root +
+		"; choose an empty path, e.g. `goobers init --guided ./my-instance`\n"
+	if stderr.String() != wantStderr {
+		t.Fatalf("guided rerun stderr = %q, want %q", stderr.String(), wantStderr)
 	}
 	if strings.Contains(stdout.String(), "Guided first-run setup") ||
 		strings.Contains(stdout.String(), "Ready to run") {
@@ -385,6 +518,74 @@ func TestGuidedInitRejectsExistingInstanceBeforePrompt(t *testing.T) {
 	}
 	if !bytes.Equal(configAfter, configBefore) || !bytes.Equal(manifestAfter, manifestBefore) {
 		t.Fatal("guided rerun modified existing configuration")
+	}
+}
+
+func TestGuidedInitRerunAfterInterruptedMaterializationGivesRecovery(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "interrupted-instance")
+	sourceRoot := root + "-config"
+	opts := instance.GuidedOptions{
+		GaggleName:           "widget",
+		RepoOwner:            "acme",
+		RepoName:             "widget",
+		RepoTokenEnv:         "REPO_TOKEN",
+		WorkTrackingTokenEnv: "ISSUES_TOKEN",
+		CopilotTokenEnv:      "MODEL_TOKEN",
+		Workflows:            []string{instance.GuidedWorkflowWorkNomination},
+	}
+	if _, err := instance.SeedGuidedConfigSource(sourceRoot, opts); err != nil {
+		t.Fatalf("seed guided source: %v", err)
+	}
+	var mutationErr error
+	mutated := false
+	firstStdout := &guidedInitCallbackWriter{onWrite: func(output string) {
+		if mutated || !strings.Contains(output, "initialized instance at") {
+			return
+		}
+		mutated = true
+		mutationErr = os.WriteFile(
+			filepath.Join(root, instance.ConfigDirName, "manifest.yaml"),
+			[]byte("not: valid: yaml\n"),
+			0o644,
+		)
+	}}
+	firstInput := strings.NewReader(strings.Join([]string{
+		guidedSourceExistingLocal,
+		sourceRoot,
+		"",
+		"yes",
+	}, "\n") + "\n")
+	var firstStderr bytes.Buffer
+	code := runInitWithInput([]string{"--guided", root}, firstInput, firstStdout, &firstStderr)
+	if mutationErr != nil {
+		t.Fatalf("invalidate materialized config: %v", mutationErr)
+	}
+	if !mutated {
+		t.Fatalf("guided init did not reach materialization: stdout = %q, stderr = %q", firstStdout.String(), firstStderr.String())
+	}
+	if code == 0 || !strings.Contains(firstStderr.String(), "guided setup did not produce a valid instance") {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, firstStdout.String(), firstStderr.String())
+	}
+
+	input := strings.NewReader("acme/replacement\n")
+	var stdout, stderr bytes.Buffer
+	code = runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("guided rerun code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != len("acme/replacement\n") {
+		t.Fatal("guided rerun prompted before reporting interrupted setup recovery")
+	}
+	for _, want := range []string{
+		"no init.completed marker",
+		"delete " + strconv.Quote(root),
+		"goobers init --guided " + strconv.Quote(root),
+		"goobers validate " + strconv.Quote(root),
+		"goobers config materialize " + strconv.Quote(root),
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("guided rerun stderr = %q, missing %q", stderr.String(), want)
+		}
 	}
 }
 

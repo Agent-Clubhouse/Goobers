@@ -171,6 +171,12 @@ type ProcessResult struct {
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past
 	// the cap (0 if TranscriptTruncated is false).
 	TranscriptDroppedBytes int64
+	// Stderr is a separate, bounded copy of the process's stderr.
+	Stderr []byte
+	// StderrTruncated reports whether Stderr was capped.
+	StderrTruncated bool
+	// StderrDroppedBytes is how many stderr bytes were discarded past the cap.
+	StderrDroppedBytes int64
 }
 
 // ProcessRunner runs the concrete harness subprocess — the seam that lets
@@ -233,8 +239,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 
 	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
 	buf.progress = func() { invoke.ReportProgress(runCtx) }
+	stderr := newTranscriptBuffer(req.MaxTranscriptBytes)
 	cmd.Stdout = stdoutCaptureWriter{transcript: buf, capture: req.StdoutCapture}
-	cmd.Stderr = buf
+	cmd.Stderr = stdoutCaptureWriter{transcript: buf, capture: stderr}
 
 	// proc.Start puts the command in its own session (Setsid) so the tree can
 	// be killed as a unit on timeout/cancel below — see internal/platform/proc.
@@ -278,6 +285,9 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		ExitCode:               -1,
 		TranscriptTruncated:    buf.Truncated(),
 		TranscriptDroppedBytes: buf.Dropped(),
+		Stderr:                 stderr.Bytes(),
+		StderrTruncated:        stderr.Truncated(),
+		StderrDroppedBytes:     stderr.Dropped(),
 	}
 	var exitErr *exec.ExitError
 	switch {

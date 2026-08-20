@@ -47,6 +47,9 @@ func (s *Store) RemoveRun(ctx context.Context, runID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_stage WHERE run_id = ?`, runID); err != nil {
 		return fmt.Errorf("readmodel: delete stages for %s: %w", runID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, runID); err != nil {
+		return fmt.Errorf("readmodel: delete nodes for %s: %w", runID, err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run WHERE run_id = ?`, runID); err != nil {
 		return fmt.Errorf("readmodel: delete run %s: %w", runID, err)
 	}

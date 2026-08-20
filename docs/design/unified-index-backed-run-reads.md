@@ -1,6 +1,6 @@
 # Unified index-backed run reads
 
-> **Status: superseded by
+> **Status: superseded — replaced by
 > [`portal-read-architecture.md`](portal-read-architecture.md).** Its
 > read-projection conclusion is carried forward; the parts it left open
 > (ordering, the writer set, request budgeting, in-process isolation, topology,

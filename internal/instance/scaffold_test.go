@@ -1,13 +1,16 @@
 package instance
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 func TestInitFresh(t *testing.T) {
@@ -55,6 +58,7 @@ func TestInitFresh(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(l.ConfigDir(), "manifest.yaml")); err != nil {
 		t.Fatalf("expected seeded config/manifest.yaml: %v", err)
 	}
+	assertPreviewFeaturesDefaultOff(t, l.ConfigDir())
 
 	set, report, err := LoadConfigDir(l.ConfigDir())
 	if err != nil {
@@ -76,6 +80,7 @@ func TestInitDemoFresh(t *testing.T) {
 	}
 
 	l := NewLayout(root)
+	assertPreviewFeaturesDefaultOff(t, l.ConfigDir())
 	cfg, err := LoadConfig(l.ConfigFile())
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -123,25 +128,53 @@ func TestInitQuickstartFresh(t *testing.T) {
 		t.Fatalf("fresh quickstart init skipped entries: %v", res.Skipped)
 	}
 
-	set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+	configDir := NewLayout(root).ConfigDir()
+	assertPreviewFeaturesDefaultOff(t, configDir)
+	set, report, err := LoadConfigDir(configDir)
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
+
 	if len(set.Gaggles) != 1 || len(set.Goobers) != 2 || len(set.Workflows) != 1 {
 		t.Fatalf("unexpected quickstart config shape: %+v", set)
 	}
 	workflow := set.Workflows[0]
-	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 5 || len(workflow.Spec.Gates) != 0 {
+	if workflow.Name != QuickstartTemplate || len(workflow.Spec.Tasks) != 6 || len(workflow.Spec.Gates) != 0 {
 		t.Fatalf("unexpected quickstart workflow: %+v", workflow)
+	}
+	if got, want := set.Gaggles[0].Spec.CICommand, []string{"npm", "run", "ci"}; !slices.Equal(got, want) {
+		t.Fatalf("quickstart ciCommand = %v, want %v", got, want)
 	}
 	if len(workflow.Spec.Triggers) != 1 || workflow.Spec.Triggers[0].Type != apiv1.TriggerManual {
 		t.Fatalf("quickstart trigger = %+v, want manual-only", workflow.Spec.Triggers)
 	}
-	wantTasks := []string{"query-backlog", "implement", "review", "push-branch", "open-pr"}
+	wantTasks := []string{"query-backlog", "implement", "review", "local-ci", "push-branch", "open-pr"}
 	for i, task := range workflow.Spec.Tasks {
 		if task.Name != wantTasks[i] {
 			t.Fatalf("quickstart task %d = %q, want %q", i, task.Name, wantTasks[i])
 		}
+	}
+
+	// Cold-start SKILL002 probe (see
+	// TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings): the
+	// quickstart template's implementer/reviewer goobers declare
+	// implement/run-tests/review skills, which must resolve to scaffolded
+	// packages on a virgin init.
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("virgin quickstart scaffold emitted a missing-skill-package warning: %+v", warning)
+		}
+	}
+}
+
+func assertPreviewFeaturesDefaultOff(t *testing.T, configDir string) {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(configDir, "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifest), "goobers.dev/allow-preview-features") {
+		t.Fatalf("generated manifest enables preview features by default:\n%s", manifest)
 	}
 }
 
@@ -288,5 +321,75 @@ func TestSeedQuickstartConfigSourceRejectsInvalidCompletedTree(t *testing.T) {
 	_, err := SeedQuickstartConfigSource(root)
 	if err == nil || !strings.Contains(err.Error(), "validate seeded config source") {
 		t.Fatalf("SeedQuickstartConfigSource error = %v, want validation failure", err)
+	}
+}
+
+func TestInitRefusesForeignConfigDirWithoutWriting(t *testing.T) {
+	// A source checkout of this repository is the canonical trap (#2513): its
+	// tracked config/ holds CRD manifests, not instance config.
+	root := t.TempDir()
+	crd := filepath.Join(root, ConfigDirName, "crd", "bases", "widgets.yaml")
+	if err := os.MkdirAll(filepath.Dir(crd), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\n"
+	if err := os.WriteFile(crd, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Init(root)
+	if err == nil {
+		t.Fatalf("Init adopted a foreign %s directory", ConfigDirName)
+	}
+	var conflict *TargetConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Init error = %T %v, want *TargetConflictError", err, err)
+	}
+	abs, absErr := filepath.Abs(root)
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	for _, want := range []string{abs, "kind: Manifest", "goobers init ./my-instance"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Init error = %q, missing %q", err, want)
+		}
+	}
+	// Refusal must leave the target untouched.
+	for _, name := range []string{ConfigFileName, GagglesDirName, SchedulerDirName, TelemetryDBName} {
+		if _, statErr := os.Stat(filepath.Join(root, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("refused Init wrote %s, stat error = %v", name, statErr)
+		}
+	}
+}
+
+func TestInitAdoptsConfigFirstLayoutWithManifest(t *testing.T) {
+	// Authoring config/ before running init is a supported layout: a Manifest
+	// document marks the directory as genuine Goobers config.
+	root := t.TempDir()
+	manifest := filepath.Join(root, ConfigDirName, "manifest.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	doc := "apiVersion: goobers.dev/v1alpha1\nkind: Manifest\nmetadata:\n  name: preauthored\n"
+	if err := os.WriteFile(manifest, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Init(root)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	found := false
+	for _, skipped := range res.Skipped {
+		if skipped == ConfigDirName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s to be skipped (adopted), got skipped=%v created=%v", ConfigDirName, res.Skipped, res.Created)
+	}
+	data, err := os.ReadFile(manifest)
+	if err != nil || string(data) != doc {
+		t.Fatalf("pre-authored manifest changed: data=%q err=%v", data, err)
 	}
 }

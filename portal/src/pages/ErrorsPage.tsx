@@ -6,9 +6,11 @@ import type {
   TelemetryErrorsOptions,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { ScopeStrip } from "../components/ScopeStrip";
 import { dataCacheKey, type DataCacheDependency } from "../dataCache";
 import { useLiveData } from "../liveData";
 import { routeHash, type ErrorRouteFilters } from "../routing";
+import { scopeWindowLabel } from "../scope";
 import { formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
@@ -54,14 +56,16 @@ export function ErrorsPage({
         <p>
           Failure events matching <span className="mono">{code}</span> and{" "}
           <span className="mono">{errorClass}</span>
-          {formatWindow(filters)}.
+          {scopeWindowLabel(filters)}.
         </p>
       </header>
 
-      <div aria-label="Failure reason drill-through scope" className="run-scope-strip">
-        <strong>{formatScope(filters)}</strong>
-        <a href={routeHash({ page: "insight" })}>Back to Insight</a>
-      </div>
+      <ScopeStrip
+        ariaLabel="Failure reason drill-through scope"
+        clearHref={routeHash({ page: "insight" })}
+        clearLabel="Back to Insight"
+        filters={filters}
+      />
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-inline-error" role="alert">
@@ -457,25 +461,3 @@ function errorRequest(filters: ErrorRouteFilters): TelemetryErrorsOptions {
   };
 }
 
-function formatScope(filters: ErrorRouteFilters): string {
-  if (filters.stage) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
-  }
-  if (filters.workflow) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
-  }
-  return filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
-}
-
-function formatWindow(filters: ErrorRouteFilters): string {
-  if (filters.since && filters.until) {
-    return ` from ${formatTimestamp(filters.since)} to ${formatTimestamp(filters.until)}`;
-  }
-  if (filters.since) {
-    return ` since ${formatTimestamp(filters.since)}`;
-  }
-  if (filters.until) {
-    return ` through ${formatTimestamp(filters.until)}`;
-  }
-  return "";
-}

@@ -128,7 +128,11 @@ func classifySeamError(err error) error {
 		return nil
 	}
 	if invoke.IsInfrastructureFailure(err) {
-		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
+		options := temporal.ApplicationErrorOptions{}
+		if retryAt, ok := invoke.InfrastructureRetryAt(err); ok {
+			options.Details = []interface{}{retryAt}
+		}
+		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, options)
 	}
 	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
 }
@@ -139,7 +143,7 @@ func classifySeamError(err error) error {
 // is an error — the stage never dispatches with a partial envelope, which is
 // what previously made every capability-scoped credential fail closed the
 // moment a real executor was wired.
-func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool) (Workspace, error) {
+func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (Workspace, error) {
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
 	}
@@ -149,6 +153,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		Gaggle:          env.Gaggle,
 		Workflow:        env.WorkflowID,
 		BranchNamespace: env.BranchNamespace,
+		WorkspaceBranch: workspaceBranch,
 		RepoRef:         env.RepoRef,
 		Mode:            mode,
 		SyncBase:        syncBase,
@@ -177,11 +182,11 @@ func removeWorkspace(ctx context.Context, ws Workspace) {
 }
 
 // InvokeGoober executes an agentic task.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope) (stageActivityResult, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
@@ -196,11 +201,11 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
 // reviewer runs a real goober subprocess and therefore gets a repository
 // workspace (unlike an automated gate).
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (apiv1.Verdict, error) {
 	if a.Goober == nil {
 		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
@@ -214,7 +219,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 
 // RunDeterministic executes a deterministic task in the workspace mode the
 // task's run block declares (repo by default, scratch on request).
-func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (stageActivityResult, error) {
+func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string) (stageActivityResult, error) {
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -223,7 +228,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if len(run.Command) == 0 && run.Script == "" {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command and script; refusing to execute (fail closed)", env.TaskID))
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase)
+	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase, workspaceBranch)
 	if err != nil {
 		var conflict *worktree.BaseSyncConflictError
 		if errors.As(err, &conflict) {

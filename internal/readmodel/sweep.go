@@ -18,19 +18,25 @@ import (
 // memory would restart from the beginning on every daemon restart, and on a
 // frequently-restarted instance the tail of the corpus would never be swept.
 type SweepCursor struct {
-	Root                 string
-	AfterName            string
-	CycleStartedAt       time.Time
-	LastCycleCompletedAt time.Time
-	EntriesThisCycle     int
+	Root                  string
+	AfterName             string
+	CycleStartedAt        time.Time
+	LastCycleCompletedAt  time.Time
+	EntriesThisCycle      int
+	ReverseAfterStartedAt time.Time
+	ReverseAfterRunID     string
+	ReverseCycleBefore    time.Time
+	ForwardNext           bool
 }
 
 // SweepCursor reads the repair walk's position.
 func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	var (
-		cursor    SweepCursor
-		started   sql.NullString
-		completed sql.NullString
+		cursor        SweepCursor
+		started       sql.NullString
+		completed     sql.NullString
+		reverseAfter  sql.NullString
+		reverseBefore sql.NullString
 	)
 	db, release, err := s.readHandle()
 	if err != nil {
@@ -38,9 +44,21 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	}
 	defer release()
 	err = db.QueryRowContext(ctx, `
-		SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle
+		SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle,
+		       reverse_after_started_at, reverse_after_run_id, reverse_cycle_before,
+		       forward_next
 		FROM sweep_cursor WHERE id = 1`).
-		Scan(&cursor.Root, &cursor.AfterName, &started, &completed, &cursor.EntriesThisCycle)
+		Scan(
+			&cursor.Root,
+			&cursor.AfterName,
+			&started,
+			&completed,
+			&cursor.EntriesThisCycle,
+			&reverseAfter,
+			&cursor.ReverseAfterRunID,
+			&reverseBefore,
+			&cursor.ForwardNext,
+		)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SweepCursor{}, nil
 	}
@@ -51,6 +69,12 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 		return SweepCursor{}, err
 	}
 	if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
+		return SweepCursor{}, err
+	}
+	if cursor.ReverseAfterStartedAt, err = optionalTimeValue(reverseAfter); err != nil {
+		return SweepCursor{}, err
+	}
+	if cursor.ReverseCycleBefore, err = optionalTimeValue(reverseBefore); err != nil {
 		return SweepCursor{}, err
 	}
 	return cursor, nil
@@ -67,11 +91,15 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 		UPDATE sweep_cursor SET
 			root = ?, after_name = ?,
 			cycle_started_at = ?, last_cycle_completed_at = ?,
-			entries_this_cycle = ?
+			entries_this_cycle = ?,
+			reverse_after_started_at = ?, reverse_after_run_id = ?,
+			reverse_cycle_before = ?, forward_next = ?
 		WHERE id = 1`,
 		cursor.Root, cursor.AfterName,
 		nullTimeValue(cursor.CycleStartedAt), nullTimeValue(cursor.LastCycleCompletedAt),
-		cursor.EntriesThisCycle)
+		cursor.EntriesThisCycle,
+		nullTimeValue(cursor.ReverseAfterStartedAt), cursor.ReverseAfterRunID,
+		nullTimeValue(cursor.ReverseCycleBefore), cursor.ForwardNext)
 	if err != nil {
 		return fmt.Errorf("readmodel: save sweep cursor: %w", err)
 	}
@@ -244,6 +272,7 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
+
 	db, release, err := s.readHandle()
 	if err != nil {
 		return nil, err
@@ -277,6 +306,62 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("readmodel: projected run rows: %w", err)
+	}
+	return out, nil
+}
+
+// ProjectedRunIDsAfter returns one keyset page for the repair reverse sweep.
+func (s *Store) ProjectedRunIDsAfter(
+	ctx context.Context,
+	afterStartedAt time.Time,
+	afterRunID string,
+	before time.Time,
+	limit int,
+) ([]RunRow, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT run_id, started_at FROM run
+		WHERE started_at <= ?
+		  AND (? = '' OR started_at > ? OR (started_at = ? AND run_id > ?))
+		ORDER BY started_at ASC, run_id ASC
+		LIMIT ?`,
+		formatTime(before),
+		afterRunID,
+		formatTime(afterStartedAt),
+		formatTime(afterStartedAt),
+		afterRunID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: read projected runs after cursor: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RunRow
+	for rows.Next() {
+		var (
+			row       RunRow
+			startedAt string
+		)
+		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+			return nil, fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
+		}
+		parsed, err := time.Parse(timeFormat, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+		}
+		row.StartedAt = parsed
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: projected run rows after cursor: %w", err)
 	}
 	return out, nil
 }

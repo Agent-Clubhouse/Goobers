@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -55,8 +54,20 @@ type implementationFeedbackItem struct {
 	Evidence            []rollup.ImplementationOutcome `json:"evidence"`
 }
 
+type backlogHealthProvider interface {
+	providers.BacklogProvider
+}
+
+type itemLabelTransitionProvider interface {
+	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
+}
+
+type repositoryLabelTransitionProvider interface {
+	ListWorkItemLabelTransitions(context.Context, providers.RepositoryRef, string) ([]providers.WorkItemLabelTransition, error)
+}
+
 func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("backlog-health", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-health", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	feedback := fs.Bool("feedback", false, "route chronically failing ready items back to curation")
 	fs.Usage = helpUsage(stderr, "backlog-health")
@@ -77,13 +88,14 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubIssuesWrite)
+	issueProvider, err := newBacklogHealthProvider(root, repo, !*feedback)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
-	readyLabel := providerInput("readyLabel", "goobers:ready")
+	readyLabel := providerInput("readyLabel", providers.LabelReady)
 	var labels []string
 	if trustLabel != "" {
 		labels = []string{trustLabel}
@@ -97,25 +109,20 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	issueProvider := newCachedGitHubProvider(
-		root,
-		token,
-		providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}),
-	)
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: repo,
+		Repository: backlogRepo,
 		Labels:     labels,
 		State:      "all",
 	})
 	if err != nil {
 		return failProviderStage(stderr, "snapshot ready backlog", err, "backlog-health.json")
 	}
-	transitions, err := issueProvider.ListWorkItemLabelTransitions(ctx, repo, readyLabel)
+	transitions, err := backlogHealthTransitions(ctx, issueProvider, backlogRepo, items, readyLabel)
 	if err != nil {
 		return failProviderStage(stderr, "read ready-label transitions", err, "backlog-health.json")
 	}
 	transitions = transitionsForItems(transitions, items)
-	if err := annotateReadyTimes(items, readyLabel, transitions); err != nil {
+	if err := annotateBacklogReadyTimes(backlogRepo.Provider, items, readyLabel, transitions); err != nil {
 		pf(stderr, "error: snapshot ready backlog: %v\n", err)
 		return 1
 	}
@@ -123,7 +130,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		return applyImplementationFeedback(
 			ctx,
 			root,
-			repo,
+			backlogRepo,
 			issueProvider,
 			items,
 			trustLabel,
@@ -139,7 +146,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(repo.Provider), observedAt)
+	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	data, err := json.Marshal(report)
@@ -156,11 +163,68 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
+	provider, err := newProviderForStage(root, repo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
+	if err != nil {
+		return nil, err
+	}
+	healthProvider, ok := provider.(backlogHealthProvider)
+	if !ok {
+		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
+	}
+	return healthProvider, nil
+}
+
+func backlogHealthTransitions(
+	ctx context.Context,
+	provider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	items []providers.WorkItem,
+	label string,
+) ([]providers.WorkItemLabelTransition, error) {
+	if repositoryProvider, ok := provider.(repositoryLabelTransitionProvider); ok {
+		return repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
+	}
+	if repo.Provider == providers.ProviderADO {
+		return nil, nil
+	}
+	itemProvider, ok := provider.(itemLabelTransitionProvider)
+	if !ok {
+		return nil, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
+	}
+	var transitions []providers.WorkItemLabelTransition
+	for _, item := range items {
+		itemTransitions, err := itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
+		if err != nil {
+			return nil, err
+		}
+		transitions = append(transitions, itemTransitions...)
+	}
+	return transitions, nil
+}
+
+func backlogHealthItemTransitions(
+	ctx context.Context,
+	provider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	label string,
+) ([]providers.WorkItemLabelTransition, error) {
+	if repo.Provider == providers.ProviderADO {
+		return nil, nil
+	}
+	itemProvider, ok := provider.(itemLabelTransitionProvider)
+	if !ok {
+		return nil, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
+	}
+	return itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
+}
+
 func applyImplementationFeedback(
 	ctx context.Context,
 	root string,
 	repo providers.RepositoryRef,
-	issueProvider *providers.GitHubProvider,
+	issueProvider backlogHealthProvider,
 	items []providers.WorkItem,
 	trustLabel string,
 	readyLabel string,
@@ -260,7 +324,7 @@ func reCurateImplementationFeedbackItem(
 	ctx context.Context,
 	layout instance.Layout,
 	repo providers.RepositoryRef,
-	issueProvider *providers.GitHubProvider,
+	issueProvider backlogHealthProvider,
 	outcomes []rollup.ImplementationOutcome,
 	itemID, trustLabel, readyLabel string,
 	threshold int,
@@ -285,12 +349,12 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := issueProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, itemID, readyLabel)
+	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
 	if err != nil {
 		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
 	}
 	live := []providers.WorkItem{current}
-	if err := annotateReadyTimes(live, readyLabel, transitions); err != nil {
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
 		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
 	}
 	current = live[0]
@@ -495,7 +559,8 @@ func annotateReadyTimes(
 		}
 	}
 	for i := range items {
-		if !items[i].HasLabel(readyLabel) {
+		if !items[i].HasLabel(readyLabel) ||
+			(items[i].State != "" && !strings.EqualFold(items[i].State, "open")) {
 			continue
 		}
 		readyAt, ok := active[items[i].ID]
@@ -503,6 +568,29 @@ func annotateReadyTimes(
 			return fmt.Errorf("issue %s has %q but no active label-add event", items[i].ID, readyLabel)
 		}
 		items[i].ReadyAt = &readyAt
+	}
+	return nil
+}
+
+func annotateBacklogReadyTimes(
+	provider providers.ProviderKind,
+	items []providers.WorkItem,
+	readyLabel string,
+	transitions []providers.WorkItemLabelTransition,
+) error {
+	if provider != providers.ProviderADO {
+		return annotateReadyTimes(items, readyLabel, transitions)
+	}
+	for i := range items {
+		if !items[i].HasLabel(readyLabel) {
+			continue
+		}
+		// ADO does not expose tag history. ChangedDate is only a conservative
+		// timestamp for the current ready cohort, not a provider transition.
+		if items[i].UpdatedAt == nil {
+			return fmt.Errorf("ADO work item %s has %q but no ChangedDate", items[i].ID, readyLabel)
+		}
+		items[i].ReadyAt = items[i].UpdatedAt
 	}
 	return nil
 }

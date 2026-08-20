@@ -41,9 +41,10 @@ spec:
 // part that was missing entirely before this fix (InLocation had zero
 // production callers).
 func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
-	if _, err := time.LoadLocation("America/New_York"); err != nil {
-		t.Skipf("tzdata unavailable: %v", err)
-	}
+	// Windows otherwise falls back to setup-go's GOROOT zoneinfo archive,
+	// masking removal of the CLI's embedded time/tzdata import.
+	t.Setenv("GOROOT", t.TempDir())
+	t.Setenv("ZONEINFO", filepath.Join(t.TempDir(), "missing-zoneinfo"))
 
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
@@ -110,6 +111,10 @@ spec:
   triggers:
     - type: schedule
       schedule: "0 8 * * *"
+      idleBackoff:
+        enabled: false
+        floor: 2m
+        ceiling: 20m
     - type: schedule
       schedule: "0 14 * * *"
   start: local-ci
@@ -152,6 +157,17 @@ func TestBuildSchedulerSetupWiresAllScheduleTriggers(t *testing.T) {
 		}
 		if len(e.Schedules) != 2 {
 			t.Fatalf("Schedules = %d entries, want 2 (both configured triggers)", len(e.Schedules))
+		}
+		if len(e.ScheduleBackoffs) != 2 {
+			t.Fatalf("ScheduleBackoffs = %d entries, want one per schedule trigger", len(e.ScheduleBackoffs))
+		}
+		if e.ScheduleBackoffs[0].Enabled || e.ScheduleBackoffs[0].Floor != 2*time.Minute ||
+			e.ScheduleBackoffs[0].Ceiling != 20*time.Minute {
+			t.Fatalf("first ScheduleBackoff = %+v, want configured disabled 2m..20m policy", e.ScheduleBackoffs[0])
+		}
+		if !e.ScheduleBackoffs[1].Enabled || e.ScheduleBackoffs[1].Floor != time.Minute ||
+			e.ScheduleBackoffs[1].Ceiling != 15*time.Minute {
+			t.Fatalf("second ScheduleBackoff = %+v, want default enabled 1m..15m policy", e.ScheduleBackoffs[1])
 		}
 		for _, sched := range e.Schedules {
 			got = append(got, sched.Next(base))

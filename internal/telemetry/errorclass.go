@@ -21,6 +21,26 @@ const (
 	ErrorClassValidation        ErrorClass = "validation"
 	ErrorClassInfra             ErrorClass = "infra"
 	ErrorClassUnknown           ErrorClass = "unknown"
+
+	// The classes below split what used to be the single "unknown" bucket by
+	// WHO OWNS the failure, which is the question an operator actually asks
+	// of a failure count. Before them a gaggle whose token could not clone,
+	// whose credential helper would not exec, and whose DNS was down reported
+	// one indistinguishable number (2026-08-08 reliability audit).
+
+	// ErrorClassProvider is a provider refusing or failing a request for a
+	// reason that is not a rate limit — auth, permission, a malformed call.
+	ErrorClassProvider ErrorClass = "provider"
+	// ErrorClassInfraGit is a git-reported clone/fetch/worktree failure that
+	// is not a transport failure.
+	ErrorClassInfraGit ErrorClass = "infra_git"
+	// ErrorClassInfraNet is a failure to reach the remote at all.
+	ErrorClassInfraNet ErrorClass = "infra_net"
+	// ErrorClassInfraLock is contention on the instance's claims lock.
+	ErrorClassInfraLock ErrorClass = "infra_lock"
+	// ErrorClassExecutor is a genuine runner/executor defect — the residual
+	// left once every recognized external cause has its own class.
+	ErrorClassExecutor ErrorClass = "executor"
 )
 
 // Well-known error codes. These are the exact internal/journal.ErrorDetail.Code
@@ -37,12 +57,44 @@ const (
 	ErrCodeInfraFailure      = "infra.failure"
 )
 
+// Runner- and executor-authored codes. These are emitted today by
+// internal/runner (workspace provisioning), internal/executor (provider
+// stages), and the provider-chain subcommands (claims lock, GitHub adapters).
+// They are listed here rather than left to the heuristics below because each
+// one has an exact, non-negotiable home — and because every one of them
+// classified as "unknown" until this map named it.
+const (
+	ErrCodeInfraGit       = "infra_git_failed"
+	ErrCodeInfraNet       = "infra_net_failed"
+	ErrCodeInfraWorkspace = "infra_workspace_failed"
+	ErrCodeClaimsLock     = "claims_lock_timeout"
+	ErrCodeExecutor       = "executor_error"
+	ErrCodeProviderFailed = "provider_error"
+	ErrCodePollProvider   = "poll_provider_error"
+	ErrCodeGitHubAuth     = "github_auth_failed"
+	// ErrCodeCredentialUnavailable identifies a declared credential whose
+	// configured source cannot currently be materialized.
+	ErrCodeCredentialUnavailable = "credential_unavailable"
+)
+
 var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeProviderRateLimit: ErrorClassProviderRateLimit,
 	ErrCodeTimeout:           ErrorClassTimeout,
 	ErrCodeHarnessFailure:    ErrorClassHarnessFailure,
 	ErrCodeValidationFailed:  ErrorClassValidation,
 	ErrCodeInfraFailure:      ErrorClassInfra,
+	ErrCodeInfraGit:          ErrorClassInfraGit,
+	ErrCodeInfraNet:          ErrorClassInfraNet,
+	ErrCodeInfraWorkspace:    ErrorClassInfra,
+	// Exact, so it beats the "timeout" substring heuristic below: waiting out
+	// another process's claims lock is contention, not a stage running long,
+	// and the two want different remedies.
+	ErrCodeClaimsLock:            ErrorClassInfraLock,
+	ErrCodeExecutor:              ErrorClassExecutor,
+	ErrCodeProviderFailed:        ErrorClassProvider,
+	ErrCodePollProvider:          ErrorClassProvider,
+	ErrCodeGitHubAuth:            ErrorClassProvider,
+	ErrCodeCredentialUnavailable: ErrorClassInfra,
 }
 
 // ClassifyError normalizes a journal error event's Code into an ErrorClass.
@@ -62,14 +114,27 @@ func ClassifyError(code string) ErrorClass {
 	switch {
 	case strings.Contains(lower, "rate_limit"), strings.Contains(lower, "rate-limit"):
 		return ErrorClassProviderRateLimit
+	case strings.HasPrefix(lower, "infra_git"):
+		return ErrorClassInfraGit
+	case strings.HasPrefix(lower, "infra_net"):
+		return ErrorClassInfraNet
+	// Ordered ahead of the "timeout" substring so a lock wait keeps its own
+	// class even under a code this map does not list exactly.
+	case strings.Contains(lower, "lock_timeout"):
+		return ErrorClassInfraLock
 	case strings.Contains(lower, "timeout"):
 		return ErrorClassTimeout
 	case strings.HasPrefix(lower, "harness."):
 		return ErrorClassHarnessFailure
 	case strings.HasPrefix(lower, "validation."), strings.HasPrefix(lower, "schema."):
 		return ErrorClassValidation
-	case strings.HasPrefix(lower, "infra."):
+	case strings.HasPrefix(lower, "infra."), strings.HasPrefix(lower, "infra_"):
 		return ErrorClassInfra
+	// Provider adapters namespace their codes by provider (github_*), so a
+	// code this map has not yet caught up with still classifies to its owner
+	// instead of falling into "unknown".
+	case strings.HasPrefix(lower, "github_"), strings.HasPrefix(lower, "provider_"):
+		return ErrorClassProvider
 	default:
 		return ErrorClassUnknown
 	}

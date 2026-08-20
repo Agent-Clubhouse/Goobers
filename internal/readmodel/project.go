@@ -1,12 +1,14 @@
 package readmodel
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Disposition values for RunRow.Disposition (§5.3).
@@ -102,9 +104,26 @@ type RunRow struct {
 	AnyCostMeasured    bool
 	AnyRetryWaste      bool
 
+	Operator OperatorFacts
+
 	// scratch holds nullable columns between Scan and decode. Unexported and
 	// cleared by finishScan, so it never escapes into a returned row.
 	scratch *nullables
+}
+
+// OperatorFacts are journal-derived facts needed by operator run summaries.
+// They are stored with the run row so bounded list reads never reopen journals.
+type OperatorFacts struct {
+	IssueNumber           string
+	IssueTitle            string
+	LastHeartbeatAt       *time.Time
+	PullRequest           *journal.ExternalRef
+	ProviderClaimRecorded bool
+	LatestError           *journal.ErrorDetail
+	ReviewVerdict         string
+	ReviewRationale       string
+	ReviewProblem         string
+	PROpenerStage         string
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -132,6 +151,23 @@ type StageRow struct {
 	PremiumMeasured bool
 	CostMeasured    bool
 	RetryWaste      bool
+}
+
+// NodeRow is one graph node visited by a run. Unlike StageRow it includes gates.
+// Identity is reserved for a node-specific prompt or tool identity when the
+// journal carries one; the run-wide goober digest must not be used here.
+type NodeRow struct {
+	RunID              string
+	Kind               string
+	Name               string
+	Identity           string
+	Attempts           int
+	RetryWasteAttempts int
+
+	branchAttempts map[int]int
+	gateOpen       map[int]bool
+	humanVisit     map[int]bool
+	humanRequested map[int]bool
 }
 
 // StageMeasurement is what the telemetry rollup knows about one stage that the
@@ -216,6 +252,7 @@ func (p *Projection) rollUpMeasurement() {
 type Projection struct {
 	Run    RunRow
 	Stages []StageRow
+	Nodes  []NodeRow
 }
 
 // ProjectRun folds a run's identity and events into a projection.
@@ -243,6 +280,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	row.TriggerKind = string(identity.Trigger.Kind)
 	row.TriggerRef = identity.Trigger.Ref
 	row.StartedAt = identity.StartedAt
+	if identity.Trigger.Kind == journal.TriggerItem && row.Operator.IssueTitle == "" {
+		row.Operator.IssueNumber = identity.Trigger.Ref
+	}
 
 	// A run with no terminal event is running. Seeding here rather than only on
 	// an event means a first projection of an in-flight run is correct, and a
@@ -253,6 +293,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 
 	seenStages := stageSet(prev.Run.Stages)
 	stages := carryStages(prev.Stages)
+	nodes := carryNodes(prev.Nodes)
 
 	for _, event := range events {
 		if event.Seq > row.LastSeq {
@@ -271,8 +312,17 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
+		if event.Error != nil {
+			detail := *event.Error
+			row.Operator.LatestError = &detail
+		}
 
 		switch event.Type {
+		case journal.EventStageHeartbeat:
+			if row.Operator.LastHeartbeatAt == nil || event.Time.After(*row.Operator.LastHeartbeatAt) {
+				at := event.Time
+				row.Operator.LastHeartbeatAt = &at
+			}
 		case journal.EventRunnerAnnotation:
 			if queue, ok := RunnerQueueStatus(event); ok {
 				row.CurrentStage = queue
@@ -280,13 +330,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if suggestion, ok := RunnerResetSuggestion(event); ok {
 				row.CurrentStage = suggestion
 			}
-		case journal.EventRunResumed, journal.EventGateOverridden:
+		case journal.EventRunResumed:
 			// A resume reopens a terminal run. Clearing finished_at matters:
 			// leaving it would make a live run look finished to every list.
 			row.Phase = journal.PhaseRunning
 			row.FinishedAt = nil
 			row.CurrentStage = event.Target
 			row.OutcomeVerdict, row.OutcomeTarget = "", ""
+		case journal.EventGateOverridden:
+			row.Phase = journal.PhaseRunning
+			row.FinishedAt = nil
+			row.CurrentStage = event.Target
+			row.OutcomeVerdict = event.Verdict
+			row.OutcomeTarget = event.Target
 		case journal.EventStageStarted:
 			row.CurrentStage = event.Stage
 			s := stageRow(stages, row.RunID, event.Stage)
@@ -296,6 +352,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				at := event.Time
 				s.StartedAt = &at
 			}
+			nodeRow(nodes, row.RunID, "stage", event.Stage, "").
+				recordAttempt(event.Branch, event.AttemptClass)
 
 		case journal.EventError:
 			if event.Stage == "" || event.Error == nil || event.Error.Code != "executor_error" {
@@ -311,6 +369,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				// The journal reference synthesizes an attempt when dispatch
 				// fails before stage.started can be recorded.
 				s.Attempts++
+				nodeRow(nodes, row.RunID, "stage", event.Stage, "").
+					recordAttempt(event.Branch, event.AttemptClass)
 			}
 			s.LastStatus = "failure"
 			s.LastAttemptClass = string(event.AttemptClass)
@@ -337,12 +397,51 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
+			if row.Operator.IssueTitle == "" {
+				id, idOK := event.Outputs["id"].(string)
+				title, titleOK := event.Outputs["title"].(string)
+				if idOK && titleOK && id != "" && title != "" {
+					row.Operator.IssueNumber = id
+					row.Operator.IssueTitle = title
+				}
+			}
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
 			row.CurrentStage = event.Gate
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, "")
+			node.recordAttempt(event.Branch, "")
+			node.gateOpen[event.Branch] = true
 		case journal.EventGateEvaluated:
 			if row.CurrentStage == event.Gate {
 				row.CurrentStage = ""
+			}
+			node := nodeRow(nodes, row.RunID, "gate", event.Gate, "")
+			if !node.gateOpen[event.Branch] {
+				node.recordAttempt(event.Branch, "")
+			}
+			node.gateOpen[event.Branch] = false
+			row.OutcomeVerdict = event.Verdict
+			row.OutcomeTarget = event.Target
+			if event.Gate == "review" {
+				row.Operator.ReviewVerdict = event.Verdict
+				row.Operator.ReviewRationale = ""
+				row.Operator.ReviewProblem = ""
+			}
+		case journal.EventRefTouched:
+			if event.ExternalRef == nil {
+				continue
+			}
+			switch event.ExternalRef.Kind {
+			case "issue":
+				if row.Operator.IssueTitle == "" {
+					row.Operator.IssueNumber = event.ExternalRef.ID
+				}
+				operation, _ := event.Runner["operation"].(string)
+				row.Operator.ProviderClaimRecorded =
+					row.Operator.ProviderClaimRecorded || operation == "claim"
+			case "pr":
+				ref := *event.ExternalRef
+				row.Operator.PullRequest = &ref
 			}
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
@@ -350,6 +449,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			row.FinishedAt = nil
 			row.CurrentStage = event.Stage
 			row.RepassCount++
+			nodeRow(nodes, row.RunID, "stage", event.Stage, "").
+				humanRequested[event.Branch] = true
 		case journal.EventRunFinished:
 			// The journal-derived reference closes attempts still open at run
 			// termination as failures. Mirror that before projecting the run's
@@ -388,6 +489,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Sorted so a rebuild produces byte-identical rows in a stable order
 	// (§14.9); map iteration order would defeat that.
 	sort.Slice(out, func(i, j int) bool { return out[i].Stage < out[j].Stage })
+	outNodes := make([]NodeRow, 0, len(nodes))
+	for _, node := range nodes {
+		outNodes = append(outNodes, *node)
+	}
+	sort.Slice(outNodes, func(i, j int) bool {
+		if outNodes[i].Kind != outNodes[j].Kind {
+			return outNodes[i].Kind < outNodes[j].Kind
+		}
+		if outNodes[i].Name != outNodes[j].Name {
+			return outNodes[i].Name < outNodes[j].Name
+		}
+		return outNodes[i].Identity < outNodes[j].Identity
+	})
 
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
@@ -397,7 +511,96 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		row.Disposition = DispositionNoWork
 	}
 
-	return Projection{Run: row, Stages: out}
+	return Projection{Run: row, Stages: out, Nodes: outNodes}
+}
+
+// ProjectRunFromJournal adds facts that require resolving immutable journal
+// blobs to the otherwise pure event projection.
+func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
+	projection := ProjectRun(identity, Projection{}, events)
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated ||
+			event.Gate != "review" {
+			continue
+		}
+		if event.Ref == nil {
+			break
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
+			break
+		}
+		var verdict struct {
+			Rationale string `json:"rationale"`
+			Summary   string `json:"summary"`
+		}
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
+			break
+		}
+		projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Rationale)
+		if projection.Run.Operator.ReviewRationale == "" {
+			projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Summary)
+		}
+		break
+	}
+
+	for _, input := range identity.Inputs {
+		if input.Name != journal.PinnedWorkflowGraphInputName {
+			continue
+		}
+		data, err := reader.ArtifactBytes(input.Ref)
+		if err != nil {
+			return Projection{}, fmt.Errorf("readmodel: read pinned graph: %w", err)
+		}
+		var graph workflow.Graph
+		if err := json.Unmarshal(data, &graph); err != nil {
+			return Projection{}, fmt.Errorf("readmodel: parse pinned graph: %w", err)
+		}
+		if graph.Name != identity.Workflow || graph.Version != identity.WorkflowVersion ||
+			graph.Digest != identity.WorkflowDigest {
+			return Projection{}, fmt.Errorf("readmodel: pinned graph identity does not match run")
+		}
+		for _, node := range graph.Nodes {
+			if OperatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+				projection.Run.Operator.PROpenerStage = node.ID
+				break
+			}
+		}
+		break
+	}
+	if projection.Run.Operator.PullRequest != nil {
+		projection.Run.Operator.PROpenerStage = ""
+	}
+	return projection, nil
+}
+
+// OperatorTrajectory classifies a run's current stage for operator-facing status.
+func OperatorTrajectory(stage string, phase journal.RunPhase) string {
+	if phase != journal.PhaseRunning {
+		return "parked"
+	}
+	stage = strings.ToLower(stage)
+	switch {
+	case strings.Contains(stage, "review"):
+		return "review"
+	case strings.Contains(stage, "local-ci"), strings.Contains(stage, "local_ci"):
+		return "local CI"
+	case strings.Contains(stage, "push"):
+		return "push"
+	case strings.Contains(stage, "open-pr"), strings.Contains(stage, "open_pr"):
+		return "open PR"
+	case strings.Contains(stage, "poll"), strings.Contains(stage, "ci-status"):
+		return "CI poll"
+	case strings.Contains(stage, "close-out"), strings.Contains(stage, "close_out"):
+		return "close-out"
+	case strings.Contains(stage, "implement"):
+		return "implementing"
+	default:
+		return "implementing"
+	}
 }
 
 const workspaceResetSuggestionPrefix = "Workspace reset suggested:"
@@ -462,6 +665,84 @@ func carryStages(prev []StageRow) map[string]*StageRow {
 	for i := range prev {
 		row := prev[i]
 		out[row.Stage] = &row
+	}
+	return out
+}
+
+func carryNodes(prev []NodeRow) map[string]*NodeRow {
+	out := make(map[string]*NodeRow, len(prev))
+	for i := range prev {
+		row := prev[i]
+		row.branchAttempts = cloneIntMap(row.branchAttempts)
+		row.gateOpen = cloneBoolMap(row.gateOpen)
+		row.humanVisit = cloneBoolMap(row.humanVisit)
+		row.humanRequested = cloneBoolMap(row.humanRequested)
+		out[nodeKey(row.Kind, row.Name, row.Identity)] = &row
+	}
+	return out
+}
+
+func nodeRow(nodes map[string]*NodeRow, runID, kind, name, identity string) *NodeRow {
+	key := nodeKey(kind, name, identity)
+	if node, ok := nodes[key]; ok {
+		return node
+	}
+	node := &NodeRow{
+		RunID: runID, Kind: kind, Name: name, Identity: identity,
+		branchAttempts: make(map[int]int), gateOpen: make(map[int]bool),
+		humanVisit: make(map[int]bool), humanRequested: make(map[int]bool),
+	}
+	nodes[key] = node
+	return node
+}
+
+func (n *NodeRow) recordAttempt(branch int, class journal.AttemptClass) {
+	if n.branchAttempts == nil {
+		n.branchAttempts = make(map[int]int)
+	}
+	if n.gateOpen == nil {
+		n.gateOpen = make(map[int]bool)
+	}
+	if n.humanVisit == nil {
+		n.humanVisit = make(map[int]bool)
+	}
+	if n.humanRequested == nil {
+		n.humanRequested = make(map[int]bool)
+	}
+	newTraversal := class == ""
+	switch class {
+	case journal.AttemptHuman:
+		newTraversal = n.humanRequested[branch] || !n.humanVisit[branch]
+		n.humanVisit[branch] = true
+		n.humanRequested[branch] = false
+	case "":
+		n.humanVisit[branch] = false
+		n.humanRequested[branch] = false
+	}
+	if newTraversal && n.branchAttempts[branch] > 0 {
+		n.RetryWasteAttempts += n.branchAttempts[branch]
+		n.branchAttempts[branch] = 0
+	}
+	n.Attempts++
+	n.branchAttempts[branch]++
+}
+
+func nodeKey(kind, name, identity string) string {
+	return kind + "\x00" + name + "\x00" + identity
+}
+
+func cloneIntMap(in map[int]int) map[int]int {
+	out := make(map[int]int, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneBoolMap(in map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(in))
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }

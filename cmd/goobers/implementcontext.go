@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 const (
@@ -72,7 +73,7 @@ const gatherImplementContextHelp = "Usage: goobers gather-implement-context [pat
 	"error.\n"
 
 func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-implement-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-implement-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-implement-context")
 	if err := fs.Parse(args); err != nil {
@@ -93,7 +94,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := implementationContextProvider(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -106,7 +107,6 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	provider := newGitHubProvider(token)
 	base := providerInput("base", providerBaseBranch())
 	openTouches, err := openPRTouches(ctx, provider, repo, base)
 	if err != nil {
@@ -148,6 +148,21 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 		truncation,
 	)
 	return 0
+}
+
+func implementationContextProvider(root string, repo providers.RepositoryRef) (openPRTouchesProvider, error) {
+	provider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	contextProvider, ok := provider.(openPRTouchesProvider)
+	if !ok {
+		return nil, fmt.Errorf("gather-implement-context does not support repository provider %q", repo.Provider)
+	}
+	return contextProvider, nil
 }
 
 func implementationHotFileLimit(raw string) (int, error) {

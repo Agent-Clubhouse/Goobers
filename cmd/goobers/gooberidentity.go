@@ -148,8 +148,10 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
 	envPassthrough []string,
+	harnessCommand map[string][]string,
+	deferModelDiscovery bool,
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough)
+	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough, harnessCommand, deferModelDiscovery)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

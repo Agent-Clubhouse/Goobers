@@ -733,6 +733,7 @@ export function WorkflowTopologyGraph({
                   style={{ left: layoutNode.x, top: layoutNode.y }}
                   type="button"
                 >
+                  {node.kind === "gate" && <GateShape />}
                   <span className="graph-node-kind">{nodeKindLabel(node)}</span>
                   <strong>{node.id}</strong>
                   <span className="workflow-node-actor">{actor}</span>
@@ -752,6 +753,27 @@ export function WorkflowTopologyGraph({
         <WorkflowGraphLegend />
       </div>
     </div>
+  );
+}
+
+// GateShape draws the decision-point silhouette a gate node wears instead of
+// the shared rounded rectangle (#2693). It is a layer inside the button rather
+// than a clip-path on the button so the focus ring, the selection ring, and
+// the escalation-cause outline — all painted outside the border box — survive.
+// The left and right points sit at the node's vertical midline, exactly where
+// layoutWorkflowGraph anchors forward edges, and the flat top and bottom keep
+// the four stacked labels legible at the node's 172x86 footprint, which a
+// full-width rhombus would pinch away.
+function GateShape() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="workflow-node-shape"
+      preserveAspectRatio="none"
+      viewBox="0 0 100 100"
+    >
+      <polygon points="0,50 14,0 86,0 100,50 86,100 14,100" />
+    </svg>
   );
 }
 

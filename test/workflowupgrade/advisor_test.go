@@ -326,7 +326,19 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
+	wantCompiled := []string{
+		"start: query",
+		"query[deterministic] -> analyze",
+		"security[deterministic] -> implement",
+		"performance[deterministic] -> implement",
+		"implement[agentic] -> review",
+		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
+		"analyze[parallel](branch security -> security, branch performance -> performance, branch-failed -> abort)",
+	}
+	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, wantCompiled) {
+		t.Errorf("compiled graph = %v, want %v", got, wantCompiled)
+	}
+	wantDocument := []string{
 		"start: query",
 		"query[deterministic] -> analyze",
 		"security[deterministic] -> @join",
@@ -335,11 +347,8 @@ func TestFixtureGraphsCoverStartKindsAndParallelTopology(t *testing.T) {
 		"review[gate](pass -> done, fail -> abort, timeout -> escalate)",
 		"analyze[parallel](branch security -> security, branch performance -> performance, join -> implement, branch-failed -> abort)",
 	}
-	if got := graphLines(machine.Graph()); !reflect.DeepEqual(got, want) {
-		t.Errorf("compiled graph = %v, want %v", got, want)
-	}
-	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, want) {
-		t.Errorf("document graph = %v, want %v", got, want)
+	if got := graphLinesFromDocument(document); !reflect.DeepEqual(got, wantDocument) {
+		t.Errorf("document graph = %v, want %v", got, wantDocument)
 	}
 }
 
@@ -702,9 +711,21 @@ func loadFixtureConfig(
 	if allowInvalid && loadErr != nil && !scenarioAllowsInvalidCurrent(scenario) {
 		t.Fatalf("current fixture config is unexpectedly invalid: %v (report: %+v)", loadErr, report)
 	}
-	if report != nil && len(report.Warnings()) != 0 &&
+	// DVL020 (deprecated dslVersion) is expected on fixtures that deliberately
+	// sit on a historical DSL version (#2700 deprecated 1.4): the advisor's
+	// whole subject is configs on old versions, so the deprecation warning is
+	// evidence the lifecycle works, not fixture rot. Every other warning still
+	// fails the load.
+	var unexpected []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningDeprecatedDSLVersion {
+			continue
+		}
+		unexpected = append(unexpected, warning)
+	}
+	if len(unexpected) != 0 &&
 		(!allowInvalid || !scenarioAllowsInvalidCurrent(scenario)) {
-		t.Fatalf("target validation is not clean: %v", report.Warnings())
+		t.Fatalf("target validation is not clean: %v", unexpected)
 	}
 
 	loaded := make(map[string]loadedFixtureWorkflow, len(set.Workflows))

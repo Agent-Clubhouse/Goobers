@@ -1126,6 +1126,22 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 				result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0},
 				act: func(req ProcessRequest) error {
 					calls = append(calls, req)
+					if len(calls) == 1 {
+						// The adapter derives the recovery turn's timeout from
+						// time.Since(started) measured around this call (see
+						// CopilotAdapter.Run's "remaining := totalTimeout -
+						// time.Since(started)"). A fake runner that returns
+						// instantly can complete within a single tick of a
+						// coarse OS clock, making the elapsed duration read
+						// back as exactly zero — which would hand the
+						// recovery turn the *entire* original timeout rather
+						// than a genuine remainder, and is exactly what was
+						// observed on Windows CI. Sleep briefly so the first
+						// turn measurably consumes wall-clock time on every
+						// platform, the same way a real subprocess turn
+						// always would.
+						time.Sleep(5 * time.Millisecond)
+					}
 					if len(calls) == 2 {
 						return WriteCompletion(req.Dir, tc.completionPath, tc.completion)
 					}
@@ -1940,6 +1956,42 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightReportsScrubbedBoundedProbeOutput(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 36)
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+	}
+	runner.act = func(req ProcessRequest) error {
+		if slices.Contains(req.Command, "auth") {
+			runner.result = ProcessResult{
+				ExitCode:   1,
+				Transcript: []byte("Access denied by policy settings bearer " + secret + "\n" + strings.Repeat("detail ", 1000)),
+			}
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	_, err := adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected auth probe failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "exited 1: Access denied by policy settings") {
+		t.Fatalf("error omitted probe output: %v", err)
+	}
+	if strings.Contains(message, secret) || !strings.Contains(message, journal.Redacted) {
+		t.Fatalf("error did not scrub probe output: %v", err)
+	}
+	if !strings.Contains(message, "truncated") || len(message) > maxPreflightDiagnosticBytes+512 {
+		t.Fatalf("error was not bounded: len=%d error=%v", len(message), err)
+	}
+	if !strings.Contains(message, "if this is an authentication failure") {
+		t.Fatalf("error asserted an authentication failure: %v", err)
+	}
+}
+
 // TestCopilotAdapterPreflightSignedInPasses confirms preflight passes when both
 // --version and the configured auth probe succeed.
 func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
@@ -2071,6 +2123,82 @@ func TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable(t *testing.T) 
 	// ValidateConfig is the config-admission entry point and must agree.
 	if err := adapter.ValidateConfig("gpt-5.4", nil); err != nil {
 		t.Fatalf("ValidateConfig with unreachable harness = %v, want nil", err)
+	}
+}
+
+// TestCopilotResolveConfigDeferredDiscoveryNeverSpawns (#3336): with
+// DeferDiscovery set — the daemon's startup admission mode — a cold-cache
+// resolve must not invoke the lister at all (in production that invocation
+// spawns the Copilot CLI, and in a memory-capped pod the spawned children can
+// OOM the daemon before any timeout fires). Models are accepted unverified; a
+// cache warmed before deferral was enabled is still served.
+func TestCopilotResolveConfigDeferredDiscoveryNeverSpawns(t *testing.T) {
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:        []string{"copilot"},
+		ModelLister:    lister,
+		DeferDiscovery: true,
+	}
+
+	for _, model := range []string{"claude-fable-5", "gpt-5.4"} {
+		resolution, err := adapter.ResolveConfig(model, nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig(%q) deferred = %v, want nil", model, err)
+		}
+		if resolution.Model != model {
+			t.Fatalf("Model = %q, want %q preserved", resolution.Model, model)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings = %+v, want one %s warning", resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 0 {
+		t.Fatalf("lister.calls = %d, want 0 — deferred admission must never spawn the CLI", lister.calls)
+	}
+
+	// A warm cache is still authoritative under deferral: warm it with
+	// deferral off, flip deferral on, and an unknown model must still be
+	// REJECTED from the cache rather than accepted unverified.
+	warm := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: lister}
+	if _, err := warm.ResolveConfig("claude-fable-5", nil); err != nil {
+		t.Fatalf("warm-up ResolveConfig = %v, want nil", err)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls after warm-up = %d, want 1", lister.calls)
+	}
+	warm.DeferDiscovery = true
+	if _, err := warm.ResolveConfig("no-such-model", nil); err == nil {
+		t.Fatal("ResolveConfig(no-such-model) with a warm cache = nil, want unknown-model error")
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want 1 — the warm cache must serve without a new spawn", lister.calls)
+	}
+}
+
+// TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober (#3336): one
+// adapter resolves every goober in an admission pass, and a failing discovery
+// used to be re-attempted for each — measured in-cluster as a fresh ~295MB CLI
+// process per goober, OOMing the pod. A failed discovery is negative-cached
+// for the adapter's lifetime: exactly one lister call no matter how many
+// goobers resolve through it.
+func TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober(t *testing.T) {
+	lister := &fakeCopilotModelLister{err: errors.New("protocol handshake never completed")}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+	}
+
+	for i := 0; i < 14; i++ {
+		resolution, err := adapter.ResolveConfig("claude-fable-5", nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig #%d = %v, want nil (unverified acceptance)", i, err)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings #%d = %+v, want one %s warning", i, resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want exactly 1 — a failed discovery must not be retried per goober", lister.calls)
 	}
 }
 

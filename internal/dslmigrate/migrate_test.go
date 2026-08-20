@@ -118,9 +118,106 @@ func TestMigrateBumpsVersionEvenWithoutCIPollTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
+	if !result.Changed {
+		t.Fatal("Changed = false, want true for the dslVersion pin")
+	}
 	after := decodeWorkflow(t, result.After)
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
+	}
+}
+
+func TestMigratePinOnlyPreservesOriginalBytes(t *testing.T) {
+	source := `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4" # keep this comment
+
+metadata:
+  name: wrapped
+spec:
+  gaggle: golden
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: >-
+        Keep this hand-wrapped text
+        on multiple source lines.
+`
+	want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+
+	result, err := Migrate([]byte(source), "2.0")
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.Before != source {
+		t.Fatalf("Before changed original bytes:\n%s", result.Before)
+	}
+	if result.After != want {
+		t.Fatalf("pin-only migration changed bytes beyond dslVersion\nwant:\n%s\ngot:\n%s", want, result.After)
+	}
+	if !result.Changed {
+		t.Fatal("Changed = false, want true")
+	}
+	if len(result.Notes) != 0 {
+		t.Fatalf("Notes = %v, want none", result.Notes)
+	}
+}
+
+func TestMigratePinOnlyPreservesFlowMappingDelimiters(t *testing.T) {
+	for _, source := range []string{
+		`{dslVersion: 1.4, kind: Workflow, metadata: {name: flow}, spec: {gaggle: golden}}`,
+		`{kind: Workflow, metadata: {name: flow}, spec: {gaggle: golden}, dslVersion: 1.4}`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			want := strings.Replace(source, "dslVersion: 1.4", "dslVersion: 2.0", 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("After = %q, want %q", result.After, want)
+			}
+			if got := decodeWorkflow(t, result.After).DSLVersion; got != "2.0" {
+				t.Fatalf("after dslVersion = %q, want 2.0", got)
+			}
+		})
+	}
+}
+
+func TestMigratePinOnlyRejectsBlockStyleVersion(t *testing.T) {
+	for _, style := range []string{"|-", ">-"} {
+		t.Run(style, func(t *testing.T) {
+			source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, "dslVersion: "+style+"\n  1.4", 1)
+
+			_, err := Migrate([]byte(source), "2.0")
+			if err == nil || !strings.Contains(err.Error(), "block-style dslVersion is not supported") {
+				t.Fatalf("err = %v, want unsupported block-style error", err)
+			}
+		})
+	}
+}
+
+func TestMigratePinOnlyRejectsDecoratedVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		wantErr string
+	}{
+		{name: "tagged", version: "!!str 1.4", wantErr: "tagged dslVersion is not supported"},
+		{name: "anchored", version: "&version 1.4", wantErr: "anchored dslVersion is not supported"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := strings.Replace(workflowWithNoCIPoll, `dslVersion: "1.4"`, "dslVersion: "+test.version, 1)
+
+			_, err := Migrate([]byte(source), "2.0")
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("err = %v, want %q", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -155,6 +252,10 @@ func TestMigrateDefaultsMissingDSLVersionToCurrent(t *testing.T) {
 	after := decodeWorkflow(t, result.After)
 	if after.DSLVersion != "2.0" {
 		t.Fatalf("after dslVersion = %q, want 2.0", after.DSLVersion)
+	}
+	want := strings.Replace(source, "kind: Workflow\n", "kind: Workflow\ndslVersion: \"2.0\"\n", 1)
+	if result.After != want {
+		t.Fatalf("migration without a version pin changed unrelated bytes\nwant:\n%s\ngot:\n%s", want, result.After)
 	}
 }
 

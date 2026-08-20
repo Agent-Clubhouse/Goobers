@@ -47,6 +47,11 @@ const fallbackToDefaultOption = "fallback-to-default"
 
 const copilotModelDiscoveryTimeout = 30 * time.Second
 
+// errModelDiscoveryDeferred reports that DeferDiscovery skipped a cold-cache
+// model discovery. It flows into resolveConfig's existing discovery-error
+// branch, so the model is accepted unverified with a warning (#3336).
+var errModelDiscoveryDeferred = errors.New("model discovery deferred at daemon startup (#3336); the harness verifies the model at run time")
+
 const copilotModelPolicyDisabled = "disabled"
 
 // Shipped goobers declare harness-neutral tool groups. Copilot filters the
@@ -182,9 +187,29 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+	// DeferDiscovery makes a cold-cache ResolveConfig skip model discovery
+	// entirely instead of spawning the Copilot CLI and waiting on its JSON-RPC
+	// handshake. The daemon sets this for startup admission (#3336): in an
+	// environment where the CLI cannot complete its handshake, the spawned
+	// child can exhaust the pod's memory cgroup before the discovery timeout
+	// fires, and the OOM killer takes the daemon down with it — a boot loop no
+	// in-process deadline can prevent. Deferred resolution takes the existing
+	// accept-unverified path (a warning, not an error); a warm cache is still
+	// served. Interactive callers (validate, status) keep discovery on, where
+	// verifying model names against the live CLI is the point.
+	DeferDiscovery bool
 
 	modelsMu        sync.Mutex
 	availableModels map[string]copilotModelCapabilities
+	// modelsErr negative-caches a failed discovery for this adapter's lifetime.
+	// Admission resolves every goober through one adapter, and without this a
+	// single unreachable CLI is re-spawned once PER GOOBER: measured in #3336
+	// as a fresh ~295MB CLI process every ~2.5s (the SDK's ForceStop kills the
+	// node wrapper but not the copilot binary it spawned, so each attempt's
+	// grandchild survives) — 14 goobers were enough to OOM a 4Gi pod before
+	// the single-attempt timeout ever fired. One spawn per adapter instance;
+	// registries are rebuilt per admission pass, so a reload retries cleanly.
+	modelsErr error
 }
 
 // Name returns the adapter's registry name.
@@ -282,6 +307,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.availableModels != nil {
 		return c.availableModels, nil
 	}
+	if c.DeferDiscovery {
+		return nil, errModelDiscoveryDeferred
+	}
+	if c.modelsErr != nil {
+		return nil, c.modelsErr
+	}
 	command := resolveStdioHarnessCommand(c.Command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
@@ -294,10 +325,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	defer cancel()
 	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
 	if err != nil {
+		c.modelsErr = err
 		return nil, err
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+		c.modelsErr = fmt.Errorf("authenticated Copilot runtime returned no available models")
+		return nil, c.modelsErr
 	}
 	available := make(map[string]copilotModelCapabilities, len(models)+1)
 	autoDisabled := false
@@ -426,12 +459,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	res, err := c.runner().Run(ctx, ProcessRequest{Command: append([]string{bin}, args...), Env: baseEnv(c.ExtraEnvAllowlist)})
-	if err != nil {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q did not respond to %v: %w — check it is installed and signed in", bin, args, err)
-	}
-	if res.ExitCode != 0 {
-		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v exited %d — check it is installed and signed in", bin, args, res.ExitCode)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q %v", bin, args)
+	res, err := c.runner().Run(ctx, ProcessRequest{
+		Command:            append([]string{bin}, args...),
+		Env:                baseEnv(c.ExtraEnvAllowlist),
+		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+	})
+	if err != nil || res.ExitCode != 0 {
+		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
 	version := firstOutputLine(res.Transcript)
 	if version == "" {
@@ -453,12 +488,14 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		if tok := ambientCopilotToken(); tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
-		res, err := c.runner().Run(ctx, ProcessRequest{Command: append(command, c.AuthCheckArgs...), Env: authEnv})
-		if err != nil {
-			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) failed: %w — run the Copilot CLI and sign in", bin, c.AuthCheckArgs, err)
-		}
-		if res.ExitCode != 0 {
-			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v (sign-in check) exited %d — the CLI appears signed out; run the Copilot CLI and sign in", bin, c.AuthCheckArgs, res.ExitCode)
+		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
+		res, err := c.runner().Run(ctx, ProcessRequest{
+			Command:            append(command, c.AuthCheckArgs...),
+			Env:                authEnv,
+			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		})
+		if err != nil || res.ExitCode != 0 {
+			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
 		}
 	}
 	return PreflightInfo{Version: version}, nil
@@ -501,11 +538,7 @@ func copilotAvailableTools(req RunRequest) []string {
 		for _, server := range req.MCPServers {
 			appendTool(server.Name + "-" + declaredTool)
 		}
-		expanded := []string{declaredTool}
-		if group, ok := copilotToolGroups[strings.ToLower(declaredTool)]; ok {
-			expanded = group
-		}
-		for _, tool := range expanded {
+		for _, tool := range expandToolGroup(declaredTool, copilotToolGroups) {
 			appendTool(tool)
 		}
 	}
@@ -513,12 +546,7 @@ func copilotAvailableTools(req RunRequest) []string {
 }
 
 func validateCopilotTools(tools []string) error {
-	for i, tool := range tools {
-		if strings.Contains(tool, ",") {
-			return fmt.Errorf("harness: copilot-cli: tool allowlist entry %d %q must not contain a comma", i, tool)
-		}
-	}
-	return nil
+	return validateToolAllowlist("copilot-cli", tools)
 }
 
 func copilotDeclaresTool(declared []string, target string) bool {
@@ -562,6 +590,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
+	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
+	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
+	// credential/prep block all need to see the goobers-io server and tools
+	// as already present, not added after the fact. Every valid invocation
+	// receives run identity access, even without artifact or context inputs.
+	req = withAutoGoobersIO(req, c.SelfBin)
 	resolution := ConfigResolution{
 		Model:          req.Model,
 		HarnessOptions: cloneHarnessOptions(req.HarnessOptions),
@@ -639,6 +673,19 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			"--output-format=text",
 		)
 	}
+	// goobers-io (#2406) is delivered independently of req.MCPServers/
+	// prepareCopilotMCP below — see copilot_mcp_io.go's goobersIORuntimeSubdir
+	// doc comment for why: it's a harness-owned server with no credentials of
+	// its own, and routing it through the same pipeline as genuinely external
+	// servers broke documented stored-CLI-login auth and rejected otherwise-
+	// valid credentialed-MCP stages (both confirmed live).
+	mcpArg, err := goobersIOAdditionalMCPConfigArg(req, c.SelfBin)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
+	}
+	if mcpArg != "" {
+		argv = append(argv, "--additional-mcp-config", "@"+mcpArg)
+	}
 
 	env, err := c.credentialEnv(ctx, req)
 	if err != nil {
@@ -653,10 +700,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	var confinement *copilotConfinement
 	if req.Sandbox != nil {
 		confinement, err = prepareCopilotConfinement(req.Workspace)
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
-		}
-		env, confinement.privateRoots, err = isolateSandboxProfile(env, confinement.profileDir)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
@@ -691,12 +734,23 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		// Wrap last, once argv is final (session id included), so the whole
 		// invocation runs inside the sandbox. promptArg shifts by the wrapper
 		// prefix so the contract-recovery turn below still swaps the prompt.
-		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots, confinement.privateRoots)
+		wrapped, shift, err := confineArgv(req.Sandbox, argv, req.Workspace, confinement.writableRoots)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
 		argv = wrapped
 		promptArg += shift
+	}
+
+	// #2962: record the CLI version and the effective tool/permission
+	// arguments before the session starts. When a run later reports a tool
+	// refusal, this is what distinguishes "the goober was never granted the
+	// tool" from "the CLI changed how it grants tools" — previously
+	// unanswerable after the fact, because the invocation was never kept.
+	// Only permission-relevant flags are recorded; the prompt and environment
+	// are deliberately excluded (they carry task content and credentials).
+	if err := writeCopilotInvocationDiagnostics(req, argv); err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
 	runner := c.runner()
@@ -764,6 +818,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+		Stderr:                 result.Stderr,
+	}
+	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
+	out.InputInspectionReceipts = receipts
+	out.InputInspectionReceiptsCollected = receiptsCollected
+	if receiptsErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
@@ -949,6 +1010,11 @@ func validateCopilotCompletion(mode Mode, payload []byte) error {
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
 	firstTranscript, secondTranscript, dropped := retainedProcessTranscripts(first, second, limit)
+	firstStderr, secondStderr, stderrDropped := retainedProcessOutput(
+		processOutput{data: first.Stderr, dropped: first.StderrDroppedBytes},
+		processOutput{data: second.Stderr, dropped: second.StderrDroppedBytes},
+		limit,
+	)
 
 	transcript := append([]byte(nil), firstTranscript...)
 	if len(firstTranscript) > 0 && len(secondTranscript) > 0 {
@@ -958,45 +1024,73 @@ func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult
 	if dropped > 0 {
 		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
 	}
+	stderr := append([]byte(nil), firstStderr...)
+	if len(firstStderr) > 0 && len(secondStderr) > 0 {
+		stderr = append(stderr, '\n')
+	}
+	stderr = append(stderr, secondStderr...)
+	if stderrDropped > 0 {
+		stderr = append(stderr, transcriptTruncationMarker(stderrDropped)...)
+	}
 	return ProcessResult{
 		Transcript:             transcript,
 		ExitCode:               second.ExitCode,
 		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
 		TranscriptDroppedBytes: dropped,
+		Stderr:                 stderr,
+		StderrTruncated:        first.StderrTruncated || second.StderrTruncated || stderrDropped > 0,
+		StderrDroppedBytes:     stderrDropped,
 	}
 }
 
 func retainedProcessTranscripts(first, second ProcessResult, limit int64) ([]byte, []byte, int64) {
+	return retainedProcessOutput(
+		processOutput{data: first.Transcript, dropped: first.TranscriptDroppedBytes},
+		processOutput{data: second.Transcript, dropped: second.TranscriptDroppedBytes},
+		limit,
+	)
+}
+
+type processOutput struct {
+	data    []byte
+	dropped int64
+}
+
+func retainedProcessOutput(first, second processOutput, limit int64) ([]byte, []byte, int64) {
 	if limit <= 0 {
 		limit = DefaultMaxTranscriptBytes
 	}
 
-	firstTranscript := processTranscriptBytes(first)
-	secondTranscript := processTranscriptBytes(second)
+	firstBytes := processOutputBytes(first)
+	secondBytes := processOutputBytes(second)
 
 	// The recovery turn is the most useful diagnostic when the first turn
 	// omitted its contract, so retain it first and use the remaining allowance
 	// for the initial turn.
-	secondRetained := min(int64(len(secondTranscript)), limit)
+	secondRetained := min(int64(len(secondBytes)), limit)
 	remaining := limit - secondRetained
 	var firstRetained int64
 	if secondRetained == 0 {
-		firstRetained = min(int64(len(firstTranscript)), remaining)
-	} else if len(firstTranscript) > 0 && remaining > 1 {
-		firstRetained = min(int64(len(firstTranscript)), remaining-1)
+		firstRetained = min(int64(len(firstBytes)), remaining)
+	} else if len(firstBytes) > 0 && remaining > 1 {
+		firstRetained = min(int64(len(firstBytes)), remaining-1)
 	}
-	dropped := first.TranscriptDroppedBytes + second.TranscriptDroppedBytes +
-		int64(len(firstTranscript)) - firstRetained +
-		int64(len(secondTranscript)) - secondRetained
+	dropped := first.dropped + second.dropped +
+		int64(len(firstBytes)) - firstRetained +
+		int64(len(secondBytes)) - secondRetained
 
-	return firstTranscript[:firstRetained], secondTranscript[:secondRetained], dropped
+	return firstBytes[:firstRetained], secondBytes[:secondRetained], dropped
+}
+
+func processOutputBytes(output processOutput) []byte {
+	if output.dropped <= 0 {
+		return output.data
+	}
+	return bytes.TrimSuffix(output.data, transcriptTruncationMarker(output.dropped))
 }
 
 func processTranscriptBytes(result ProcessResult) []byte {
-	if result.TranscriptDroppedBytes <= 0 {
-		return result.Transcript
-	}
-	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
+	return processOutputBytes(processOutput{data: result.Transcript, dropped: result.TranscriptDroppedBytes})
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/

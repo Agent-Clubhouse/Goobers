@@ -40,13 +40,16 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
 	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
-	"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n" +
+	"--no-wait is set (default path \".\"). Use --gaggle or the qualified\n" +
+	"<gaggle>/<workflow> form when multiple gaggles share a workflow name.\n" +
+	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
 	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
 	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
@@ -65,9 +68,10 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
+	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -76,7 +80,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	name := fs.Arg(0)
+	target, err := parseRunTarget(fs.Arg(0), *gaggle)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
@@ -104,19 +112,50 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, name, root, *noWait, stdout, stderr)
+		return runDelegatedTrigger(ctx, l, target, root, *noWait, stdout, stderr)
 	}
 	if *noWait && runProcessExits {
 		release()
-		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
+		return runDetachedTrigger(ctx, l, target.String(), root, stdout, stderr)
 	}
-	return runStandaloneTrigger(ctx, l, name, root, *noWait, false, release, stdout, stderr)
+	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
+}
+
+type runTarget struct {
+	Gaggle   string
+	Workflow string
+}
+
+func (t runTarget) String() string {
+	if t.Gaggle == "" {
+		return t.Workflow
+	}
+	return t.Gaggle + "/" + t.Workflow
+}
+
+func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
+	target := runTarget{Gaggle: gaggleFlag, Workflow: selector}
+	if strings.Contains(selector, "/") {
+		if strings.Count(selector, "/") != 1 {
+			return runTarget{}, fmt.Errorf("invalid qualified workflow %q; expected <gaggle>/<workflow>", selector)
+		}
+		gaggle, workflow, _ := strings.Cut(selector, "/")
+		if gaggle == "" || workflow == "" {
+			return runTarget{}, fmt.Errorf("invalid qualified workflow %q; expected <gaggle>/<workflow>", selector)
+		}
+		if gaggleFlag != "" && gaggleFlag != gaggle {
+			return runTarget{}, fmt.Errorf("--gaggle %q conflicts with qualified workflow %q", gaggleFlag, selector)
+		}
+		target.Gaggle = gaggle
+		target.Workflow = workflow
+	}
+	return target, nil
 }
 
 // runStandaloneTrigger owns the one-shot scheduler and instance lock. A real
 // detached worker stays alive until Starter.Start returns so paused runs
 // release those resources; in-process callers hand that cleanup to a goroutine.
-func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
+func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
 	releaseOnReturn := true
 	defer func() {
 		if releaseOnReturn {
@@ -140,17 +179,20 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 		}
 	}()
 
-	found := false
-	var gaggle string
+	matches := 0
+	gaggle := target.Gaggle
 	for _, e := range setup.Entries {
-		if e.Workflow == name {
-			found = true
+		if e.Workflow == target.Workflow && (target.Gaggle == "" || e.Gaggle == target.Gaggle) {
+			matches++
 			gaggle = e.Gaggle
-			break
 		}
 	}
-	if !found {
-		pf(stderr, "error: no workflow named %q in %s\n", name, l.ConfigDir())
+	if matches == 0 {
+		if target.Gaggle != "" {
+			pf(stderr, "error: no workflow named %q in gaggle %q\n", target.Workflow, target.Gaggle)
+		} else {
+			pf(stderr, "error: no workflow named %q in %s\n", target.Workflow, l.ConfigDir())
+		}
 		return 1
 	}
 
@@ -170,12 +212,19 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 	if noWait && !worker {
 		triggerCtx = context.WithoutCancel(ctx)
 	}
-	runID, err := sched.Trigger(triggerCtx, name, time.Now())
+	var runID string
+	if target.Gaggle != "" {
+		runID, err = sched.TriggerExact(triggerCtx, localscheduler.WorkflowIdentity{
+			Gaggle: target.Gaggle, Workflow: target.Workflow,
+		}, time.Now())
+	} else {
+		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, name, gaggle)
+	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, target.Workflow, gaggle)
 	if noWait {
 		shutdownOnReturn = false
 		releaseOnReturn = false
@@ -222,8 +271,8 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 // dispatched run's terminal state unless noWait is set. From the caller's
 // perspective the two paths are otherwise indistinguishable except for which
 // process actually held the scheduler.
-func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root string, noWait bool, stdout, stderr io.Writer) int {
-	requestID, err := writeTriggerRequest(l.SchedulerDir(), name)
+func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait bool, stdout, stderr io.Writer) int {
+	requestID, err := writeTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -234,7 +283,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, name)
+	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, target.Workflow)
 	if noWait {
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 		return 0
@@ -255,9 +304,22 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 func runFlagArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, len(args))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if arg == "--gaggle" || arg == "-gaggle" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
 			flags = append(flags, arg)
 			continue
 		}
@@ -281,7 +343,7 @@ const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"2 = usage/IO error (unknown run).\n"
 
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run abort", flag.ContinueOnError)
+	fs := newCLIFlagSet("run abort", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run abort")
 	if err := fs.Parse(args); err != nil {
@@ -491,7 +553,7 @@ const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
 	"no daemon to cancel it), 2 = usage/IO error (unknown run).\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run cancel", flag.ContinueOnError)
+	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run cancel")
 	if err := fs.Parse(args); err != nil {
@@ -647,8 +709,10 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
 				return phase, nil
 			}
-		} else {
+		} else if errors.Is(err, journal.ErrNotRunDirectory) {
 			progress.heartbeat(time.Now())
+		} else {
+			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
 		select {
@@ -666,6 +730,8 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
 				}
 				return phase, nil
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):

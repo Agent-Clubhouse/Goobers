@@ -124,11 +124,12 @@ act (for example, a clearly owned item may not need prompting). If you act:
 
 ### 3. Tagging
 
-Apply labels so downstream routing (`WF-040`) works. This repo's areas follow
-its package layout, e.g. `area:journal`, `area:scheduler`, `area:runner`,
-`area:workflow`, `area:providers`, `area:portal` — use the `area:*` label
-matching the package(s) the issue actually touches; add more than one only when
-the issue genuinely spans packages. Also apply exactly one of:
+Apply labels so downstream routing (`WF-040`) works. This repo's `area:*`
+labels are exactly: `area:contracts`, `area:hygiene`, `area:portal`,
+`area:providers`, `area:runner`, `area:telemetry`, `area:workflows` — use the
+one matching the subsystem(s) the issue actually touches; never invent a new
+`area:*` label; add more than one only when the issue genuinely spans
+subsystems. Also apply exactly one of:
 
 | Label | Meaning |
 |---|---|

@@ -39,6 +39,8 @@ describe("portal foundation", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
+    // The walkthrough nav entry belongs to `goobers getting-started` only.
+    expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
   it("labels standalone read-only mode in the portal chrome", async () => {
@@ -59,14 +61,45 @@ describe("portal foundation", () => {
     );
     expect(screen.queryByText("Daemon ready")).not.toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Workflows" }));
     expect(
       await screen.findByText(
-        "The instance is ready. Provision a gaggle to make its workflows and goobers visible here.",
+        "No configuration is available to the Portal yet. Initialize the instance to begin.",
       ),
     ).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
+  });
+
+  it("defaults an empty hash to the guide in getting-started mode", async () => {
+    const mode = document.createElement("meta");
+    mode.name = "goobers-dashboard-mode";
+    mode.content = "getting-started";
+    document.head.append(mode);
+    window.location.hash = "";
+
+    render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Getting Started" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Getting Started" }),
+    ).toHaveAttribute("aria-current", "page");
+  });
+
+  it("keeps #/getting-started deep-linkable in daemon mode without a nav entry", async () => {
+    window.location.hash = "#/getting-started";
+    renderLiveApp();
+
+    // The page renders (deep link stays valid), but with no guided server it
+    // shows the instructional state pointing at the launch command.
+    expect(await screen.findByRole("heading", { name: "Getting Started" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "The guided experience is not running here" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
   it("keeps run loading copy local-read aware in standalone mode", async () => {

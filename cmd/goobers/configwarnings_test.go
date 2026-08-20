@@ -311,6 +311,13 @@ func TestValidationWarningsDoNotChangeErrorOutcomes(t *testing.T) {
 
 func TestCompileErrorsStillSurfaceIdenticalWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
+	replaceInFile(t, filepath.Join(root, "instance.yaml"), "your-org", "acme")
+	replaceInFile(t, filepath.Join(root, "instance.yaml"), "your-repo", "widgets")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := strings.Replace(
 		deterministicWorkflowYAML,

@@ -8,6 +8,7 @@ import type {
 } from "../api/types";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
+import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import type { Navigate } from "../routing";
@@ -125,13 +126,20 @@ function WorkflowDetailWorkspace({
         >
           {workflow.identity.gaggle}
         </button>
+        <ScopePivot label={workflow.identity.gaggle} scope={{ gaggle: workflow.identity.gaggle }} />
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
       <header className="detail-heading">
         <div>
           <span className="definition-label">Workflow definition</span>
-          <h1>{workflow.displayName}</h1>
+          <div className="detail-heading-line">
+            <h1>{workflow.displayName}</h1>
+            <ScopePivot
+              label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
+              scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+            />
+          </div>
           <p>{workflow.purpose}</p>
         </div>
         <dl className="detail-meta workflow-detail-meta">

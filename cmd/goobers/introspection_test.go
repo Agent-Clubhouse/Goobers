@@ -12,6 +12,7 @@ import (
 	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestDiagnosticsJSONGolden(t *testing.T) {
@@ -276,8 +277,8 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		path := defaultWorkflowPath(root)
 		replaceInFile(t, path,
-			"      expectedOutputs:\n        - pull-request",
-			"      expectedOutputs:\n        - pull-request\n      next: verify\n  gates:\n    - name: verify\n      evaluator: automated\n      automated:\n        check: missing-check\n      branches:\n        pass: \"\"\n        fail: \"@abort\"\n        escalate: \"@abort\"")
+			"      expectedOutputs:\n        - pull-request-url\n        - prNumber\n        - opened",
+			"      expectedOutputs:\n        - pull-request-url\n        - prNumber\n        - opened\n      next: verify\n  gates:\n    - name: verify\n      evaluator: automated\n      automated:\n        check: missing-check\n      branches:\n        pass: \"\"\n        fail: \"@abort\"\n        escalate: \"@abort\"")
 
 		code, stdout, stderr := runArgs(t, "validate", "--json", root)
 		if code != 1 || stderr != "" {
@@ -290,6 +291,10 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 	t.Run("docs root", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
 		runGitT(t, root, "init", "-q")
+		// #3285: the existence ERROR only fires when the validated tree is a
+		// checkout of the gaggle's target repository (starter spec.project =
+		// your-org/your-repo); without this remote it is an advisory warning.
+		runGitT(t, root, "remote", "add", "origin", "https://github.com/your-org/your-repo.git")
 		replaceInFile(t, defaultWorkflowPath(root), "  start: query-backlog",
 			"  start: query-backlog\n  docsRoots:\n    - missing-docs")
 
@@ -303,8 +308,16 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 	})
 
 	t.Run("stage command", func(t *testing.T) {
+		// A bare `goobers` with no verb: the one unknown-command shape the
+		// DSL compilers' admission check (WF010, C+D2/#2861 wave) does not
+		// cover, so it still reaches the late #650 CLI-surface pass whose
+		// definition-source attribution this test pins. (An unknown VERB is
+		// now rejected earlier, during api/validate — see the
+		// "stage command verb" case below.)
 		root := initIntrospectionInstance(t)
-		replaceInFile(t, defaultWorkflowPath(root), `"backlog-query"`, `"missing-command"`)
+		replaceInFile(t, defaultWorkflowPath(root),
+			`command: ["goobers", "backlog-query", "--claim"]`,
+			`command: ["goobers"]`)
 
 		code, stdout, stderr := runArgs(t, "validate", "--json", root)
 		if code != 1 || stderr != "" {
@@ -313,6 +326,19 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "COMMAND001",
 			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml")),
 			"/spec/tasks/0/run/command")
+	})
+
+	t.Run("stage command verb", func(t *testing.T) {
+		root := initIntrospectionInstance(t)
+		replaceInFile(t, defaultWorkflowPath(root), `"backlog-query"`, `"missing-command"`)
+
+		code, stdout, stderr := runArgs(t, "validate", "--json", root)
+		if code != 1 || stderr != "" {
+			t.Fatalf("validate stage-command-verb diagnostic: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertFindingSource(t, decodeDiagnosticsEnvelope(t, stdout), "WF010",
+			filepath.ToSlash(filepath.Join("config", "gaggles", "example", "workflows", "default-implement.yaml")),
+			"/spec/tasks")
 	})
 
 	t.Run("mcp config", func(t *testing.T) {
@@ -344,8 +370,8 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 
 	t.Run("harness", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
-		withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
-			return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+		withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
+			return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 		})
 
 		code, stdout, stderr := runArgs(t, "validate", "--json", "--check-harness", root)
@@ -377,7 +403,10 @@ func initIntrospectionInstance(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code=%d stderr=%q", code, stderr)
 	}
-	createDeclaredSkillPackages(t, root, "implement", "run-tests")
+	// The starter scaffold now ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix); declaring shared-level stand-ins here as
+	// well would collide with them (SKILL001) instead of being a harmless
+	// no-op.
 	replaceInFile(t, defaultWorkflowPath(root),
 		"    - type: manual",
 		"    - type: schedule\n      schedule: \"@hourly\"")
@@ -397,7 +426,7 @@ func decodeDiagnosticsEnvelope(t *testing.T, raw string) diagnosticsEnvelope {
 	if envelope.SchemaVersion != diagnosticsSchemaVersion || envelope.Version == "" || envelope.Commit == "" {
 		t.Fatalf("diagnostics identity is incomplete: %+v", envelope)
 	}
-	if envelope.Counts.Errors+envelope.Counts.Warnings != len(envelope.Findings) {
+	if envelope.Counts.Errors+envelope.Counts.Warnings+envelope.Counts.Infos != len(envelope.Findings) {
 		t.Fatalf("counts %+v do not match %d findings", envelope.Counts, len(envelope.Findings))
 	}
 	return envelope

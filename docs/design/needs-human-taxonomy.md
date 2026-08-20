@@ -1,6 +1,6 @@
 # Design: needs-human label taxonomy — decision vs. status
 
-> Status: **Implemented** (2026-08-03)
+> Status: **implemented** (2026-08-03)
 > Area prefix: none (hygiene)
 > Related: #2028, #1696, #1974, #2064's state-of-repo review
 > Touches: `providers/model.go`, `cmd/goobers/runnerwiring.go`,
@@ -76,6 +76,7 @@ should happen next, and only a human can answer that," it's decision.**
 | `implementation.yaml`'s `park-escalated` task | `review`/`local-gate`/`ci-gate`'s `escalate` branches, `local-gate`'s `infra` branch, `ci-gate`'s `timeout` branch — repass budget exhausted, infra failure, or a CI poll that never concluded | `goobers:needs-human` | **`goobers:needs-remediation`** |
 | `runnerwiring.go`'s `buildBlockedHandler`, named-blocker case (`len(o.Blockers) > 0`, no cycle) | a stage reports `status: blocked` and names a specific blocker via `outputs.blockedBy` | `goobers:needs-human` | **`goobers:blocked-on-sibling`** |
 | `buildBlockedHandler`, unattributed case (`len(o.Blockers) == 0`) | `status: blocked` with no named blocker | `goobers:needs-human` | unchanged — nothing to reason about but a human |
+| `buildBlockedHandler`, self-referential case (#2961) | `status: blocked` naming only the driving issue in `outputs.blockedBy` | `goobers:needs-human` (via a spurious one-node cycle) | `goobers:needs-human` — the self-reference is dropped before persistence, so it parks as the unattributed case above with no cycle comment and no `blocked.json` record |
 | `buildBlockedHandler`, circular-dependency case | a new block closes a cycle in `blocked.json` | `goobers:needs-human` (all cycle members) | unchanged — structural, can't self-heal |
 | `backlog-curation.yaml`'s curator goober | curator's own prose judgment during initial triage | `goobers:needs-human` (curator's choice) | **unchanged in this PR** — #1696's scope |
 

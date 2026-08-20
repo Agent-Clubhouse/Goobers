@@ -44,14 +44,19 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", set.Namespace, DefaultNamespace)
 	}
 
-	// config-examples ships four Gaggles (acme-web plus the .NET, Java, and
-	// Python polyglot references), twelve Goobers (acme-web: coder, curator,
-	// docs, implementer, nominator, reviewer; dotnet-service:
+	// config-examples ships five Gaggles (acme-web, its #2777 additive
+	// acme-web-claude parallel, plus the .NET, Java, and Python polyglot
+	// references), eighteen Goobers (acme-web: coder, curator, docs,
+	// implementer, nominator, reviewer; acme-web-claude: the same six roles
+	// claude-prefixed to stay globally unique; dotnet-service:
 	// dotnet-implementer, dotnet-reviewer; java-service: java-implementer,
 	// java-reviewer; python-service: python-implementer, python-reviewer),
-	// and twelve Workflows (acme-web's nine plus all three polyglot
-	// implementations).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 4, "Goober": 12, "Workflow": 12}
+	// and twenty-one Workflows (acme-web's nine, acme-web-claude's own nine
+	// claude-prefixed to stay globally unique — config-sync's Kubernetes
+	// representation requires unique Workflow names across gaggles, unlike
+	// Goobers which the flat loader already required unique — plus all three
+	// polyglot implementations).
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 5, "Goober": 18, "Workflow": 21}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {
@@ -193,7 +198,7 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 18 {
 		t.Fatalf("asset definition leaked into render set: got %d goobers", got)
 	}
 }
@@ -223,7 +228,7 @@ func TestLoad_IgnoresSkillPackageDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v (report: %+v)", err, report)
 	}
-	if got := len(objectsByKind(set.Objects)["Goober"]); got != 12 {
+	if got := len(objectsByKind(set.Objects)["Goober"]); got != 18 {
 		t.Fatalf("skill package definition leaked into render set: got %d goobers", got)
 	}
 }

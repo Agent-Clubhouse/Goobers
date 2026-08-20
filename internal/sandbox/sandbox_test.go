@@ -86,7 +86,6 @@ func TestNativeSandboxAllowsDeclaredWritableRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
-
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("sandboxed command: %v\n%s", err, output)
 	}
@@ -96,51 +95,6 @@ func TestNativeSandboxAllowsDeclaredWritableRoot(t *testing.T) {
 	}
 	if string(content) != "state" {
 		t.Fatalf("runtime state = %q, want %q", content, "state")
-	}
-}
-
-func TestNativeSandboxHidesUnrelatedHomeFile(t *testing.T) {
-	s := requiredNativeSandbox(t)
-	workspace := t.TempDir()
-	home := t.TempDir()
-	secret := filepath.Join(home, "unrelated-secret")
-	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	command := exec.Command("sh", "-c", `if cat "$1" >/dev/null 2>&1; then exit 91; fi`, "sandbox-private-root", secret)
-	command.Dir = workspace
-	if err := s.Wrap(command, Policy{Workspace: workspace, PrivateRoots: []string{home}}); err != nil {
-		t.Fatalf("Wrap: %v", err)
-	}
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("sandboxed command: %v\n%s", err, output)
-	}
-}
-
-func TestNativeSandboxRunsExecutableFromPrivateRoot(t *testing.T) {
-	s := requiredNativeSandbox(t)
-	workspace := t.TempDir()
-	private := t.TempDir()
-	executable := filepath.Join(private, "true")
-	source, err := exec.LookPath("true")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(executable, data, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(executable)
-	command.Dir = workspace
-	if err := s.Wrap(command, Policy{Workspace: workspace, PrivateRoots: []string{private}}); err != nil {
-		t.Fatalf("Wrap: %v", err)
-	}
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("sandboxed private executable: %v\n%s", err, output)
 	}
 }
 

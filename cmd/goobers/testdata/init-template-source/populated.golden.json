@@ -9,6 +9,9 @@
     "gaggles/example/goobers/implementer/instructions.md",
     "gaggles/example/goobers/reviewer/goober.yaml",
     "gaggles/example/goobers/reviewer/instructions.md",
+    "gaggles/example/skills/implement/SKILL.md",
+    "gaggles/example/skills/review/SKILL.md",
+    "gaggles/example/skills/run-tests/SKILL.md",
     "gaggles/example/workflows/quickstart.yaml",
     "manifest.yaml"
   ],

@@ -18,15 +18,18 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/version"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
-	"(seeded with a starter example), runs/, scheduler/, workcopies/, and a\n" +
-	"telemetry.db placeholder. Re-running without --guided is safe — existing\n" +
+	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
+	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
+	"gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing\n" +
 	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
 	"with instance.yaml or a populated config/ before prompting. It separately\n" +
 	"selects a checked-in config source and target GitHub application repository,\n" +
@@ -67,7 +70,7 @@ func runInitWithInputForOSAndGitHub(
 	goos string,
 	github guidedGitHubOperations,
 ) int {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs := newCLIFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
@@ -138,6 +141,7 @@ func runInitWithInputForOSAndGitHub(
 	if *guided {
 		if err := instance.CheckGuidedInitTarget(root); err != nil {
 			pf(stderr, "error: %v\n", err)
+			printDefaultedTargetNote(stderr, err, fs.NArg())
 			return 2
 		}
 	}
@@ -157,6 +161,7 @@ func runInitWithInputForOSAndGitHub(
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		printDefaultedTargetNote(stderr, err, fs.NArg())
 		return errCode
 	}
 
@@ -173,6 +178,8 @@ func runInitWithInputForOSAndGitHub(
 			if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
 				return code
 			}
+		} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+			return code
 		}
 		if err := ensureInitCompleted(root); err != nil {
 			pf(stderr, "error: record successful init completion: %v\n", err)
@@ -205,12 +212,54 @@ func runInitWithInputForOSAndGitHub(
 		if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
 			return code
 		}
+	} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+		return code
 	}
 	if err := ensureInitCompleted(root); err != nil {
 		pf(stderr, "error: record successful init completion: %v\n", err)
 		return 2
 	}
 	return 0
+}
+
+func finishInitValidation(root string, stdout, stderr io.Writer) int {
+	pln(stdout, "\nPost-init validation:")
+	if code := runValidate([]string{root}, stdout, stderr); code != 0 {
+		pf(stderr, "error: initialized instance did not pass validation\n")
+		return code
+	}
+
+	layout := instance.NewLayout(root)
+	findings, err := findTemplatePlaceholders(root, layout.ConfigFile(), layout.ConfigDir())
+	if err != nil {
+		pf(stderr, "error: inspect initialized configuration placeholders: %v\n", err)
+		return 2
+	}
+	if len(findings) == 0 {
+		pln(stdout, "\nNext: no placeholder edits are required.")
+		return 0
+	}
+	pln(stdout, "\nNext: edit these files before running a live workflow:")
+	seen := make(map[string]bool, len(findings))
+	for _, finding := range findings {
+		if seen[finding.file] {
+			continue
+		}
+		seen[finding.file] = true
+		pf(stdout, "  %s\n", finding.file)
+	}
+	return 0
+}
+
+// printDefaultedTargetNote explains, after an init target-conflict refusal,
+// that the conflicting target was never chosen explicitly — init with no
+// [path] defaults to the current directory, the exact trap of running it from
+// inside a source checkout (#2513).
+func printDefaultedTargetNote(stderr io.Writer, err error, narg int) {
+	var conflict *instance.TargetConflictError
+	if narg == 0 && errors.As(err, &conflict) {
+		pf(stderr, "note: no [path] argument was given, so the target defaulted to the current directory\n")
+	}
 }
 
 func ensureInitCompleted(root string) error {
@@ -371,17 +420,21 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		return instance.GuidedOptions{}, err
 	}
 	var ciCommand []string
+	var requiredCapabilities []string
 	for _, workflow := range workflows {
 		if workflow != instance.GuidedWorkflowImplementation {
 			continue
 		}
-		cwd, _ := os.Getwd()
-		stack, detected := detectCICommandDefault(cwd)
+		cwd, getwdErr := os.Getwd()
+		if getwdErr != nil {
+			return instance.GuidedOptions{}, fmt.Errorf("resolve current directory for CI detection: %w", getwdErr)
+		}
+		stack, detected, detectedCapability := detectCICommandDefault(cwd)
 		defaultCI := strings.Join(detected, " ")
 		if stack != "" {
-			pf(stdout, "Detected %s build manifest in %s — defaulting the local CI command to `%s`.\n", stack, cwd, defaultCI)
+			pf(stdout, "Guessed %s from a build manifest in the current directory %s; confirm the target repository's local CI command and toolchain capability below.\n", stack, cwd)
 		} else {
-			pln(stdout, "No recognized build manifest (Makefile, go.mod, *.csproj/*.sln, package.json, pom.xml, build.gradle(.kts), Package.swift, pyproject.toml/setup.py/requirements.txt) found; enter the local CI command explicitly.")
+			pln(stdout, "No recognized build manifest (Makefile, go.mod, *.csproj/*.sln, package.json, pom.xml, build.gradle(.kts), Cargo.toml, Package.swift, pyproject.toml/setup.py/requirements.txt) found in the current directory; enter the target repository's local CI command and toolchain capability explicitly.")
 		}
 		ciText, promptErr := p.ask("Local CI command (space-separated argv or JSON array)", defaultCI, validCommand)
 		if promptErr != nil {
@@ -391,7 +444,25 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		if err != nil {
 			return instance.GuidedOptions{}, err
 		}
+		capabilityText, promptErr := p.ask("Required toolchain capability", detectedCapability, runnercap.ValidToken)
+		if promptErr != nil {
+			return instance.GuidedOptions{}, promptErr
+		}
+		requiredCapabilities = []string{capabilityText}
 		break
+	}
+
+	pln(stdout, "")
+	pln(stdout, "Agent harness: every generated agentic goober uses the same one.")
+	pln(stdout, "  1) copilot      GitHub Copilot CLI")
+	pln(stdout, "  2) claude-code  Anthropic Claude Code CLI")
+	harnessText, err := p.ask("Select harness (name or number)", "copilot", validHarnessSelection)
+	if err != nil {
+		return instance.GuidedOptions{}, err
+	}
+	harness, err := parseHarnessSelection(harnessText)
+	if err != nil {
+		return instance.GuidedOptions{}, err
 	}
 
 	pln(stdout, "")
@@ -435,13 +506,26 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		}
 	}
 
-	pln(stdout, "Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.")
-	pln(stdout, "For a headless service/CI account, enter an environment variable holding a Copilot Requests: Read-only PAT.")
-	copilotTokenEnv, err := p.ask("Optional Copilot Requests PAT environment variable", "", func(value string) bool {
-		return value == "" || instance.ValidGuidedTokenEnvName(value)
-	})
-	if err != nil {
-		return instance.GuidedOptions{}, err
+	var copilotTokenEnv, claudeTokenEnv string
+	switch apiv1.Harness(harness) {
+	case apiv1.HarnessClaudeCode:
+		pln(stdout, "Claude Code model auth: press Enter to use the current user's stored `claude auth login` sign-in.")
+		pln(stdout, "For a headless service/CI account, enter an environment variable holding an Anthropic API key or OAuth token.")
+		claudeTokenEnv, err = p.ask("Optional Claude Code token environment variable", "", func(value string) bool {
+			return value == "" || instance.ValidGuidedTokenEnvName(value)
+		})
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
+	default:
+		pln(stdout, "Copilot model auth: press Enter to use the current user's stored Copilot CLI sign-in.")
+		pln(stdout, "For a headless service/CI account, enter an environment variable holding a Copilot Requests: Read-only PAT.")
+		copilotTokenEnv, err = p.ask("Optional Copilot Requests PAT environment variable", "", func(value string) bool {
+			return value == "" || instance.ValidGuidedTokenEnvName(value)
+		})
+		if err != nil {
+			return instance.GuidedOptions{}, err
+		}
 	}
 
 	return instance.GuidedOptions{
@@ -454,9 +538,12 @@ func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, 
 		WorkTrackingTokenEnv: workTrackingTokenEnv,
 		PullRequestTokenEnv:  pullRequestTokenEnv,
 		RepoPushTokenEnv:     repoPushTokenEnv,
+		Harness:              harness,
 		CopilotTokenEnv:      copilotTokenEnv,
+		ClaudeTokenEnv:       claudeTokenEnv,
 		Workflows:            workflows,
 		CICommand:            ciCommand,
+		RequiredCapabilities: requiredCapabilities,
 	}, nil
 }
 
@@ -528,6 +615,22 @@ func validBranch(value string) bool {
 		}
 	}
 	return true
+}
+
+func validHarnessSelection(value string) bool {
+	_, err := parseHarnessSelection(value)
+	return err == nil
+}
+
+func parseHarnessSelection(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "copilot":
+		return string(apiv1.HarnessCopilot), nil
+	case "2", "claude-code", "claude":
+		return string(apiv1.HarnessClaudeCode), nil
+	default:
+		return "", fmt.Errorf("invalid harness selection %q", value)
+	}
 }
 
 func validWorkflowSelection(value string) bool {

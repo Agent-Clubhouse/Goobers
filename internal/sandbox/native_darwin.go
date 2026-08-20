@@ -42,20 +42,9 @@ func (nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	var profile strings.Builder
 	profile.WriteString(seatbeltBase)
 	args := []string{"sandbox-exec", "-D", "WORKSPACE=" + validated.workspace}
-	for i, root := range validated.privateRoots {
-		parameter := "PRIVATE_" + strconv.Itoa(i)
-		fmt.Fprintf(&profile, "\n(deny file-read* (subpath (param %q)))", parameter)
-		args = append(args, "-D", parameter+"="+root)
-	}
-	for i, path := range privateCommandPaths(targetPath, validated.privateRoots) {
-		parameter := "COMMAND_" + strconv.Itoa(i)
-		fmt.Fprintf(&profile, "\n(allow file-read* (literal (param %q)))", parameter)
-		args = append(args, "-D", parameter+"="+path)
-	}
-	fmt.Fprint(&profile, "\n(allow file-read* (subpath (param \"WORKSPACE\")))")
 	for i, root := range validated.writableRoots {
 		parameter := "WRITABLE_" + strconv.Itoa(i)
-		fmt.Fprintf(&profile, "\n(allow file-read* file-write* (subpath (param %q)))", parameter)
+		fmt.Fprintf(&profile, "\n(allow file-write* (subpath (param %q)))", parameter)
 		args = append(args, "-D", parameter+"="+root)
 	}
 	args = append(args, "-p", profile.String(), targetPath)

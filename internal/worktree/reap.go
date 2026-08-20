@@ -65,9 +65,9 @@ type ReapWarning struct {
 // start, before resuming any interrupted run, so a restart converges disk
 // state after a crash without operator intervention.
 //
-// A live run in progress is never touched: its marker's PID is the current
-// process (Manager.Create stamps os.Getpid()), which is always alive from
-// its own perspective.
+// PID liveness is valid only inside the manager's local ownership domain.
+// Tier-3 workers enforce a pod-private root before creating a Manager, so a
+// reaper never interprets a PID written in another pod's process namespace.
 //
 // One unreadable marker is skipped (collected in the returned warnings), not
 // fatal to the whole pass — a single corrupt marker must never prevent every

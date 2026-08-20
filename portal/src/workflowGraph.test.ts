@@ -127,6 +127,38 @@ describe("canonical workflow graph layout", () => {
     expect(Math.abs(branches[0].labelY - branches[1].labelY)).toBeGreaterThanOrEqual(28);
   });
 
+  it("places a parallel join after the deepest branch without false repass edges", () => {
+    const graph: WorkflowGraph = {
+      name: "parallel",
+      version: 1,
+      digest: "sha256:parallel",
+      start: "fan",
+      nodes: [
+        { id: "fan", kind: "parallel" },
+        { id: "short", kind: "deterministic" },
+        { id: "long-first", kind: "deterministic" },
+        { id: "long-last", kind: "deterministic" },
+        { id: "join", kind: "deterministic" },
+      ],
+      edges: [
+        { source: "fan", target: "short", branch: "short" },
+        { source: "fan", target: "long-first", branch: "long" },
+        { source: "short", target: "join" },
+        { source: "long-first", target: "long-last" },
+        { source: "long-last", target: "join" },
+        { source: "join", target: "", terminal: "complete" },
+      ],
+    };
+
+    const layout = layoutWorkflowGraph(graph);
+    const depths = new Map(layout.nodes.map((node) => [node.id, node.depth]));
+
+    expect(depths.get("short")).toBe(1);
+    expect(depths.get("long-last")).toBe(2);
+    expect(depths.get("join")).toBe(3);
+    expect(layout.edges.filter((edge) => edge.repass)).toHaveLength(0);
+  });
+
   it("fits large graphs below 75% and keeps manual zoom within readable boundaries", () => {
     expect(fitGraphZoom(400, 200, 800, 400)).toBe(1);
     const largeGraphZoom = fitGraphZoom(2_400, 900, 800, 400);

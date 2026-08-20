@@ -108,6 +108,164 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 	}
 }
 
+func TestValidateGaggleRepositoriesMatchInstanceRepos(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceTree bool
+		noRepos    bool
+		mutate     func(t *testing.T, path string)
+		want       string
+	}{
+		{
+			name: "instance project",
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "    name: your-repo", "    name: your-rep")
+			},
+			want: `spec.project repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+		{
+			name:       "source tree additional repo",
+			sourceTree: true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: your-org
+      name: your-rep
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository your-org/your-rep matches no instance repos[] entry; did you mean "your-org/your-repo"?`,
+		},
+		{
+			name:    "instance project without configured repos",
+			noRepos: true,
+			mutate:  func(t *testing.T, path string) {},
+			want:    `spec.project repository your-org/your-repo matches no instance repos[] entry`,
+		},
+		{
+			name:       "source tree additional repo without configured repos",
+			sourceTree: true,
+			noRepos:    true,
+			mutate: func(t *testing.T, path string) {
+				replaceInFile(t, path, "  backlog:", `  additionalRepos:
+    - provider: github
+      owner: extra-org
+      name: extra-repo
+      connectionRef: repo-token
+  backlog:`)
+			},
+			want: `spec.additionalRepos[0] repository extra-org/extra-repo matches no instance repos[] entry`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			instancePath := filepath.Join(root, "instance.yaml")
+			if tc.sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+				instancePath = filepath.Join(root, instance.GuidedSourceInstanceFile)
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			if tc.noRepos {
+				replaceInFile(t, instancePath, `repos:
+- name: your-repo
+  owner: your-org
+  provider: github
+  token:
+    env: GOOBERS_GITHUB_TOKEN`, "repos: []")
+			}
+			tc.mutate(t, gagglePath)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("validate stdout missing %q:\n%s", tc.want, stdout)
+			}
+		})
+	}
+}
+
+func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
+	for _, sourceTree := range []bool{false, true} {
+		name := "instance"
+		if sourceTree {
+			name = "source tree"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "config")
+			args := []string{"validate", root}
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			if sourceTree {
+				if _, err := instance.SeedQuickstartConfigSource(root); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"validate", "--source-tree", root}
+				gagglePath = filepath.Join(root, "gaggles", "example", "gaggle.yaml")
+			} else if code, _, stderr := runArgs(t, "init", root); code != 0 {
+				t.Fatalf("init: code=%d stderr=%q", code, stderr)
+			}
+			replaceInFile(t, gagglePath, "    owner: your-org", `    owner: ""`)
+			replaceInFile(t, gagglePath, "    name: your-repo", `    name: ""`)
+
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			want := "INFO Gaggle/example: empty spec.project binds to instance repos[0] your-org/your-repo"
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+			}
+
+			jsonArgs := append([]string{"validate", "--json"}, args[1:]...)
+			code, stdout, stderr = runArgs(t, jsonArgs...)
+			if code != 1 || stderr != "" {
+				t.Fatalf("validate --json code=%d, want 1 for the existing required-field errors; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			envelope := decodeDiagnosticsEnvelope(t, stdout)
+			assertDiagnosticsSchema(t, stdout)
+			if envelope.Counts.Infos != 1 {
+				t.Fatalf("validate --json info count=%d, want 1; findings=%+v", envelope.Counts.Infos, envelope.Findings)
+			}
+			var fallback *diagnosticFinding
+			for i := range envelope.Findings {
+				if envelope.Findings[i].Code == "REPO003" {
+					fallback = &envelope.Findings[i]
+					break
+				}
+			}
+			if fallback == nil {
+				t.Fatalf("validate --json missing REPO003 fallback finding: %+v", envelope.Findings)
+			}
+			if fallback.Severity != diagnosticSeverityInfo || fallback.Path != "/spec/project" ||
+				fallback.Message != "empty spec.project binds to instance repos[0] your-org/your-repo" {
+				t.Fatalf("validate --json fallback finding = %+v", *fallback)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "demo")
+	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
+		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 // TestValidateGitHubAnnotations is #687's config-repo PR gate: each finding
 // becomes a GitHub Actions ::error/::warning workflow command anchored to its
 // file, written to stderr so it composes cleanly with --json (stdout stays a
@@ -174,6 +332,7 @@ func TestValidateCheckRepos(t *testing.T) {
 	t.Cleanup(func() { targetRepositoryReachable = original })
 	originalSize := targetRepositorySize
 	t.Cleanup(func() { targetRepositorySize = originalSize })
+	stubRepositoryRealityChecks(t, []string{"goobers", "goobers:claimed"}, 1, 1)
 
 	called := 0
 	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
@@ -225,8 +384,45 @@ func TestValidateCheckRepos(t *testing.T) {
 	}
 }
 
+// TestValidateStrictExemptsDeprecationNotices pins the #2700 ruling: a
+// deprecated-but-supported dslVersion must nudge, never break — DVL020
+// prints under --strict and does not promote to an error.
+func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("strict validate code=%d, want 0 (deprecation notices are strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	const want = "WARNING DVL020 gaggles/example/workflows/default-implement.yaml Gaggle/example Workflow/default-implement:"
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("strict validate did not render the DVL020 notice with full provenance:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "--strict treats warnings as errors") {
+		t.Fatalf("strict validate promoted a deprecation notice:\n%s", stdout)
+	}
+}
+
 func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, `        command: ["true"]`, "        command: [\"true\"]\n      expectedOutputs:\n        - artifact")
 
@@ -244,7 +440,7 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 	for _, want := range []string{
 		"expectedOutputs is declared but the stage has no inputs.resultFile",
-		"config directory has 1 warning(s); --strict treats warnings as errors",
+		"configuration has 1 warning(s); --strict treats warnings as errors",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("strict validate output missing %q:\n%s", want, stdout)
@@ -252,9 +448,99 @@ func TestValidateStrictFailsOnWarnings(t *testing.T) {
 	}
 }
 
+func TestValidateTemplatePlaceholders(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"WARNING PLACEHOLDER001 instance.yaml: contains unedited template marker(s) your-org, your-repo",
+		"WARNING PLACEHOLDER001 config/gaggles/example/gaggle.yaml: contains unedited template marker(s) your-org, your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 1 {
+		t.Fatalf("validate --strict code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Count(stdout, "ERROR PLACEHOLDER001") != 2 {
+		t.Fatalf("strict validate did not promote both placeholder findings:\n%s", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--json", "--strict", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate --json --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var envelope diagnosticsEnvelope
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Counts.Errors != 2 {
+		t.Fatalf("strict diagnostics counts = %+v, want two errors", envelope.Counts)
+	}
+}
+
+func TestValidateTemplatePlaceholdersClearAfterEditing(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, placeholderFindingCode) {
+		t.Fatalf("edited quickstart still has placeholder findings:\n%s", stdout)
+	}
+}
+
+func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitDemo(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, `repos:
+  - provider: github
+    owner: your-organization
+    name: your-repository
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, placeholderFindingCode) {
+		t.Fatalf("edited repository coordinates produced placeholder findings:\n%s", stdout)
+	}
+}
+
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
-	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+	// The starter scaffold now ships its scoped packages under
+	// config/gaggles/example/skills (SKILL002 fix) rather than the
+	// instance-level fallback; remove those to reproduce the missing-package
+	// probe.
+	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "skills")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -329,7 +615,7 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 1.4 (supported)") {
+	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 2.0 (supported)") {
 		t.Fatalf("validate output missing the DSL version summary line:\n%s", stdout)
 	}
 }
@@ -337,16 +623,20 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	replaceInFile(t, workflowPath, "dslVersion: \"1.4\"\n", "")
+	replaceInFile(t, workflowPath, "dslVersion: \"2.0\"\n", "")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	// An unpinned workflow still defaults to 1.4 (the #2699 unpinned-default
+	// decision is pending), so post-#2700 the defaulted version additionally
+	// carries the DVL020 deprecation warning and a deprecated summary line.
 	for _, want := range []string{
 		"DVL001",
 		`spec has no dslVersion pin; defaulting to "1.4"`,
-		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (supported)",
+		"DVL020",
+		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (deprecated, replacement 2.0, unsupported after v0.5.0)",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
@@ -406,6 +696,38 @@ func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
 		"SIB001",
 		`overlaps declared sibling "Billing team"`,
 		"area:frontend",
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidateWarnsOnUnpartitionedGaggleWithSibling(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		`  isolation:
+    namespace: gaggle-example
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		"spec.requireLabels is empty",
+		`no label partition from declared sibling "Billing team"`,
 		"your-org/your-repo",
 	} {
 		if !strings.Contains(stdout, want) {

@@ -196,7 +196,7 @@ func (s *Store) PruneChangeFeed(ctx context.Context, keep int) (int64, error) {
 	if latest <= uint64(keep) {
 		return 0, nil
 	}
-	return s.PruneChanges(ctx, latest-uint64(keep))
+	return s.PruneChanges(ctx, latest-uint64(keep)+1)
 }
 
 // defaultChangeRetention is how many change rows are kept.

@@ -73,7 +73,10 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	}}))
 	mux.HandleFunc("/repos/acme/app/check-runs/103/annotations", jsonHandler([]annotation{
 		{Path: "internal/queue/queue_test.go", Title: "TestQueue", Message: "deadline exceeded waiting for worker"},
-		{Path: "internal/queue/queue_test.go", Title: "TestCompile", Message: "unexpected compile output"},
+		{
+			Path: "cmd/goobers/worktreelifecycle_test.go", Title: "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees",
+			Message: `worktreelifecycle_test.go:105: state = "active", want "finalized"`,
+		},
 	}))
 	mux.HandleFunc("/repos/acme/app/check-runs/104/annotations", jsonHandler([]annotation{{
 		Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE",
@@ -114,8 +117,19 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 	if result.KnownDispatched != 1 {
 		t.Fatalf("known dispatched = %d, want 1", result.KnownDispatched)
 	}
-	if len(result.Novel) != 1 || result.Novel[0].Test != "TestQueue" {
-		t.Fatalf("novel = %+v, want only default-branch TestQueue", result.Novel)
+	if len(result.Novel) != 2 ||
+		result.Novel[0].Test != "TestQueue" ||
+		result.Novel[1].Test != "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees" {
+		t.Fatalf("novel = %+v, want timeout and deterministic-assert failures from default branch", result.Novel)
+	}
+	assertionText := `worktreelifecycle_test.go:105: state = "active", want "finalized"`
+	assertionFingerprint := flake.Fingerprint(
+		"./cmd/goobers",
+		"TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees",
+		flake.NormalizeSignature(assertionText),
+	)
+	if result.Novel[1].Fingerprint != assertionFingerprint {
+		t.Fatalf("deterministic-assert fingerprint = %q, want %q", result.Novel[1].Fingerprint, assertionFingerprint)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -205,12 +219,13 @@ func TestFailuresUsesRunJobsAndIgnoresCheckSummaryForFingerprint(t *testing.T) {
 	defer server.Close()
 	client := &githubClient{base: server.URL, repository: "acme/app", token: "test", http: server.Client()}
 
-	got, err := client.failures(context.Background(), source{
+	scanned, err := client.failures(context.Background(), source{
 		SHA: "shared-sha", RunID: 99, URL: "https://github.test/actions/runs/99",
 	}, time.Now())
 	if err != nil {
 		t.Fatalf("failures: %v", err)
 	}
+	got := scanned.Failures
 	if len(got) != 1 {
 		t.Fatalf("failures = %+v, want one run-specific failure", got)
 	}
@@ -244,12 +259,13 @@ func TestFailuresParsesGoTestJobLogWithoutAnnotations(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	got, err := (&githubClient{
+	scanned, err := (&githubClient{
 		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
 	}).failures(context.Background(), source{SHA: "sha", RunID: 99, URL: "run-99"}, now)
 	if err != nil {
 		t.Fatalf("failures: %v", err)
 	}
+	got := scanned.Failures
 	if len(got) != 1 {
 		t.Fatalf("failures = %+v, want one log failure", got)
 	}
@@ -500,16 +516,105 @@ func TestCheckSummaryDoesNotChangeAnnotationFingerprint(t *testing.T) {
 	defer server.Close()
 	client := &githubClient{base: server.URL, repository: "acme/app", token: "test", http: server.Client()}
 
-	first, err := client.failures(context.Background(), source{SHA: "first"}, time.Now())
+	firstScan, err := client.failures(context.Background(), source{SHA: "first"}, time.Now())
 	if err != nil {
 		t.Fatalf("first failures: %v", err)
 	}
-	second, err := client.failures(context.Background(), source{SHA: "second"}, time.Now())
+	secondScan, err := client.failures(context.Background(), source{SHA: "second"}, time.Now())
 	if err != nil {
 		t.Fatalf("second failures: %v", err)
 	}
+	first := firstScan.Failures
+	second := secondScan.Failures
 	if len(first) != 1 || len(second) != 1 || first[0].Fingerprint != second[0].Fingerprint {
 		t.Fatalf("fingerprints changed with check summary: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestFailuresSkipsLoglessConclusionsAndRecordsMissingFailureLog(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{
+			{
+				ID: 201, Name: "cancelled", Conclusion: "cancelled",
+				CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/301",
+			},
+			{
+				ID: 204, Name: "stale", Conclusion: "stale",
+				CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/304",
+			},
+			{
+				ID: 205, Name: "action required", Conclusion: "action_required",
+				CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/305",
+			},
+			{
+				ID: 202, Name: "failed without log", Conclusion: "failure", HTMLURL: "job-202",
+				CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/302",
+			},
+			{
+				ID: 203, Name: "timed out", Conclusion: "timed_out",
+				CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/303",
+			},
+		},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/302/annotations", jsonHandler([]annotation{{
+		Path: "internal/runner/run_test.go", Title: "TestResume", Message: "WARNING: DATA RACE",
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/202/logs", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "BlobNotFound", http.StatusNotFound)
+	})
+	mux.HandleFunc("/repos/acme/app/check-runs/303/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/203/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `=== RUN   TestBlocked
+panic: test timed out after 10m0s
+--- FAIL: TestBlocked (10m0s)
+FAIL	github.com/goobers/goobers/internal/runner	600.0s
+`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	scanned, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99, URL: "run-99"}, now)
+	if err != nil {
+		t.Fatalf("failures: %v", err)
+	}
+	if len(scanned.Failures) != 3 {
+		t.Fatalf("failures = %+v, want annotation, timed-out test, and package timeout", scanned.Failures)
+	}
+	if len(scanned.LogOmissions) != 1 {
+		t.Fatalf("log omissions = %+v, want failed job's missing log", scanned.LogOmissions)
+	}
+	omission := scanned.LogOmissions[0]
+	if omission.JobID != 202 || omission.JobName != "failed without log" || omission.JobURL != "job-202" {
+		t.Fatalf("log omission = %+v, want visible job diagnostics", omission)
+	}
+}
+
+func TestFailuresDoesNotSuppressUnexpectedLogErrors(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{
+			ID: 201, Conclusion: "failure",
+			CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/301",
+		}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/301/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream failure", http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99}, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("failures error = %v, want unexpected log error", err)
 	}
 }
 

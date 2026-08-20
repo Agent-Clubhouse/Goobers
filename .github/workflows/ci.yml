@@ -10,12 +10,13 @@ name: CI
 #   checks   fmt · tidy · no-phone-home · vet · command builds · config validation · portal
 #   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
-#   shipped  shipped-workflow contract suite
+#   shipped  shipped-workflow contract suite on Linux, macOS, and Windows
 #
-# plus deadcode, and the dedicated conformance, windows-smoke, integration,
-# vulnerability-scan, sandbox, and linux-validation jobs. Coverage of the merge
-# tier is unchanged: the four groups are a disjoint, exhaustive partition of the
-# checks the monolith used to run serially (asserted by test/ci's group tests).
+# plus deadcode, and the dedicated deploy-reference, conformance, windows-smoke,
+# integration, vulnerability-scan, sandbox, and linux-validation jobs. Coverage
+# of the merge tier is unchanged: the four groups are a disjoint, exhaustive
+# partition of the checks the monolith used to run serially (asserted by
+# test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
 # full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
@@ -23,16 +24,17 @@ name: CI
 # behaviour while dropping the ~3-5x race instrumentation cost — there is no
 # darwin-tagged concurrent code for a second -race platform to cover.
 #
-# Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633). The
-# platform slices, the Windows gate, the vulnerability scan, and the journal
+# Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
+# shipped-workflow contract suite. The broad Windows behavioural tier is NOT
+# here: enabling it surfaced 670 failures across 19 packages, tracked separately.
+# The platform slices, the Windows gates, the vulnerability scan, and the journal
 # conformance job must all be green for the required `make ci` check (the
 # required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
 #
-# Pull requests and merge groups run that complete matrix. A push to main has
-# already passed the merge-group gate, so it runs only `checks` against the
-# exact landed SHA and `unit-macos`, which publishes the canonical main-branch
-# timing and coverage artifacts used for trend comparisons. Keeping this
-# post-merge lane small avoids paying for the full matrix twice.
+# Pull requests and merge groups run that complete matrix. A push to main also
+# validates the exact landed SHA with checks, lint, the Linux race shards, the
+# macOS behavioral suite, shipped-workflow contracts, and the Windows gate.
+# Failures on the landed tree are automatically escalated as critical issues.
 
 on:
   push:
@@ -57,6 +59,81 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
 
 jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run end-to-end gate
+        run: make test-e2e
+
+  envtest:
+    name: envtest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Provision envtest and run the integration gate
+        run: make test-envtest
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 12
+        # Explicit bash: the Windows runner defaults to PowerShell, which
+        # cannot parse this loop.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Enforce the repository coverage threshold
+        run: make cover-check
+
+      - name: Upload coverage profile
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
+
   # Platform-independent unreachable-production-code report. Ran once (it was a
   # per-OS step of the old monolith; nothing about it is OS-specific).
   deadcode:
@@ -74,6 +151,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -117,6 +195,7 @@ jobs:
           cache-dependency-path: portal/package-lock.json
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -129,8 +208,51 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      - name: Install Portal dependencies and pinned Chromium
+        # Retried because these are the repo's dominant CI flake (#3139): npm
+        # and the Chromium download stall on registry/CDN hiccups and eat the
+        # whole timeout, unlike go mod download and golangci-lint which
+        # already retry. Six timeouts in one night on the v0.2.0 wave.
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          retry_network_command() {
+            local label="$1"
+            shift
+            for attempt in 1 2 3; do
+              if timeout --signal=TERM --kill-after=15s 180s "$@"; then
+                return 0
+              fi
+              echo "::warning::${label} attempt ${attempt}/3 failed or hung; retrying"
+              sleep $((attempt * 10))
+            done
+            echo "::error::${label} failed after 3 bounded attempts"
+            return 1
+          }
+
+          retry_network_command "portal npm install" \
+            npm --prefix portal ci --no-audit --no-fund
+          retry_network_command "Playwright Chromium install" \
+            npm --prefix portal exec -- playwright install --with-deps chromium
+
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
+
+  deploy-reference:
+    name: deploy reference manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Render and schema-check reference manifests
+        run: make deploy-validate
 
   # golangci-lint (staticcheck/govet/revive/...) per target GOOS, all on cheap
   # Linux runners. golangci-lint honours GOOS, so it sees each platform's
@@ -144,7 +266,6 @@ jobs:
   # branches).
   lint:
     name: lint (${{ matrix.goos }})
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +282,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -174,6 +296,7 @@ jobs:
           exit 1
 
       - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        timeout-minutes: 8
         # Explicit bash for pipefail: without it the pipeline reports only sh's
         # status, so a failed curl would feed an empty script to a shell that
         # exits 0 and the step would "succeed" with no linter installed.
@@ -220,6 +343,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -251,7 +375,6 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
@@ -270,6 +393,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -281,23 +405,6 @@ jobs:
           done
           echo "::error::go mod download failed after 3 attempts"
           exit 1
-
-      - name: Install bubblewrap
-        # Sandboxing agentic stages is enforced by default (TBH-3/SEC-044):
-        # cmd/goobers' acceptance/behavioral tests drive `goobers run` through
-        # the real runner with a fake harness under the default (enforced)
-        # posture, which resolves a real platform sandbox even though the
-        # harness itself is stubbed. macOS runners already carry sandbox-exec
-        # out of the box; Linux needs bubblewrap installed explicitly, same as
-        # the dedicated "sandbox confinement" job below.
-        run: |
-          sudo apt-get update && sudo apt-get install --yes bubblewrap
-          # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
-          # namespaces via AppArmor, which bubblewrap needs to set up its uid
-          # map. Relax it so the acceptance tests can create the sandbox
-          # namespace on the hosted runner. Tolerate the knob being absent
-          # (future runner images / kernels).
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
@@ -323,6 +430,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -402,20 +510,23 @@ jobs:
           path: coverage.out
           if-no-files-found: ignore
 
-  # Shipped-workflow contract suite. Linux runs it with -race; macOS runs the
-  # same behavioural suite without -race. Replaces both the old in-gate
-  # shipped-workflows step and the separate non-race shipped-workflows job.
+  # Shipped-workflow contract suite. Linux runs it with -race; macOS and Windows
+  # run the same behavioural suite without -race.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
-    if: ${{ github.event_name != 'push' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             race: "1"
+            timeout: "20m"
           - os: macos-latest
             race: "0"
+            timeout: "20m"
+          - os: windows-latest
+            race: "0"
+            timeout: "40m"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -430,6 +541,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -445,6 +557,7 @@ jobs:
       - name: Shipped-workflow contracts
         env:
           GOOBERS_CI_RACE: ${{ matrix.race }}
+          GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}
         run: go run ./test/ci group shipped
 
   integration:
@@ -462,13 +575,14 @@ jobs:
           cache: true
 
       - name: Set up Java
-        uses: actions/setup-java@v5.6.0
+        uses: actions/setup-java@v5.7.0
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -484,9 +598,32 @@ jobs:
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
       - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
+        timeout-minutes: 12
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bash bubblewrap coreutils dash maven
+          # Hosted runners occasionally leave the Azure mirror connected but
+          # unable to serve package indexes. Use the canonical mirror and bound
+          # every attempt so this setup cannot hold the workflow indefinitely.
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install \
+                 bash bubblewrap coreutils dash maven; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::declared dependency provisioning failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::declared dependency provisioning attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
@@ -510,6 +647,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -547,9 +685,30 @@ jobs:
   # than quarantined — #664's quarantine machinery doesn't exist in this repo
   # yet, and per its own scope note explicitly excludes required-gate jobs
   # like this one regardless. The contract stands restored, not weakened.
+  #
+  # COVERAGE BOUNDARY (#2031) — this job runs a curated selection, NOT
+  # `go test ./...`, and that is a deliberate, measured choice rather than an
+  # accident of history. #2031 offered two ways to close the "what isn't
+  # tested on Windows?" gap: widen to the full default-tag suite accepting the
+  # runtime cost, or enumerate the excluded set as a reviewed artifact. The
+  # widening was built and measured first (PR #2364) and rejected on cost:
+  # the full suite could not finish inside 30min-per-package, with
+  # ./cmd/goobers and ./internal/runner both dying on `panic: test timed out
+  # after 30m0s` and the job still red at 43min — against a historic median of
+  # ~10min for this gate. Cost is concentrated in four packages (cmd/goobers
+  # >30min, internal/runner >30min, test/shippedworkflows ~22min, test/scale
+  # ~22min); nearly everything else is seconds. Sharding does not rescue it,
+  # because the critical path is a single package that alone exceeds the
+  # budget. So: packages that are cheap on Windows run WHOLE, and the four
+  # expensive ones are entered by named test only, each name justified inline
+  # below by the platform seam it covers. The widening run was not wasted —
+  # every Windows fault it surfaced is fixed, and the tests covering those
+  # fixes are what the selection below was extended to include. The remaining
+  # obligation from #2031 — a build-tag-policed inventory of what Windows
+  # still does not run, so the gap stays a reviewed artifact instead of an
+  # accident — is tracked separately in #2791.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
-    if: ${{ github.event_name != 'push' }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -564,6 +723,7 @@ jobs:
           cache: true
 
       - name: Download modules
+        timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
         # cannot parse this loop.
         shell: bash
@@ -600,6 +760,7 @@ jobs:
       # on the Makefile's own cross-platform shell portability rather than a
       # portal build smoke test — that's covered elsewhere.
       - name: Install make (windows)
+        timeout-minutes: 8
         run: choco install make --no-progress -y
 
       - name: make build (windows)
@@ -608,14 +769,54 @@ jobs:
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
+      - name: Windows service transitions
+        run: go test ./internal/winsvc
+
+      # Both packages run whole rather than by named test: each costs well
+      # under a second on Windows, so a name allowlist here buys no runtime
+      # and only creates a way for a new test to silently miss the platform.
+      # #2031 widened these from single -run selections after the executor's
+      # cmd.exe batch-file routing (script_windows.go) turned out to be
+      # exercised by no gated test at all.
       - name: Windows inline script runtime
-        run: go test ./internal/executor -run '^TestShellExecutor_RunScript$'
+        run: go test ./internal/executor
 
       - name: Windows credential files
-        run: go test ./internal/credentials -run 'TestResolverResolvesFromOwnerOnlyFile'
+        run: go test ./internal/credentials
+
+      - name: Windows self-update
+        run: go test ./internal/selfupdate
+
+      # Both are real Windows faults fixed under #2031 whose only coverage
+      # lives in an existing test that no gated selection ran:
+      # harness/claude.go let an ambient USERPROFILE override an explicitly
+      # set HOME; agentkit/bundle.go trusted the OS's reported executable bit,
+      # which neither embed.FS nor NTFS can express, so the embedded and
+      # from-disk toolkit builders diverged. Both are cheap, so they run whole.
+      - name: Windows harness and toolkit
+        run: go test ./internal/harness ./internal/agentkit
 
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+
+      # The whole package, not one named test. #3064 added this step scoped to
+      # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the
+      # four migration tests that actually exercise alias *resolution* stayed
+      # unrun on Windows — the same "green because it never executes" gap #3064
+      # set out to close (#2862, and the junction-resolution fix in this change).
+      - name: Windows instance runtime
+        run: go test ./internal/instance
+
+      # Named, not the whole package: internal/telemetry/rollup's suite runs
+      # ~15s on Linux and isn't otherwise Windows-sensitive, so only the two
+      # tests that actually exercise canonicalRunsRoot's dependency on
+      # instance.ResolveRuntimeAlias run here. Without this step they only ran
+      # under the Linux unit shards, where ResolveRuntimeAlias takes the
+      # plain-symlink branch and the Windows reparse-point junction parser in
+      # runtime_alias_windows.go — the one this PR's alias-dedup fix depends
+      # on — stayed unexercised on the only platform where it runs (#3280).
+      - name: Windows rollup migration alias dedup
+        run: go test ./internal/telemetry/rollup -run 'TestBackfillCICheckFailuresDedupesSymlinkedRunsRoot|TestCanonicalRunsRootDedupesSymlinkAlias'
 
       # The read model and its sibling stores open SQLite files BY PATH, which
       # is the single operation whose behaviour differs most between Windows and
@@ -642,10 +843,39 @@ jobs:
           GIT_CONFIG_VALUE_0: "false"
           GIT_CONFIG_KEY_1: core.safecrlf
           GIT_CONFIG_VALUE_1: "false"
-        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit'
+        # The pinned path-length tests are named rather than running
+        # ./internal/worktree whole: the full package is ~4.5min on Windows,
+        # nearly half this job's historic budget, and these four are the ones
+        # that cover the platform seam. `git clone` does not inherit the
+        # source repo's config, so a fresh pin started without core.longpaths
+        # and the very next ref-rewriting operation could fail with
+        # ERROR_FILENAME_EXCED_RANGE (#2031). The preflight tests alongside
+        # them guard the budget arithmetic that is supposed to catch it first.
+        run: go test ./internal/worktree ./internal/httpapi -run 'TestManager_Create_ExcludesHarnessScratch|TestDefinitionInvalidationFollowsExplicitReadModelCommit|TestAcquirePinnedAppliesPathLengthPreflightBeforeCheckout|TestManagerCreatePathLengthPreflightRefusesBeforeCheckout|TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef|TestPinnedWorkspaceIsOutsideRetentionInventory'
 
+      # Named, not the whole package: ./release is ~2.75min on Windows. These
+      # cover agent_toolkit.go's half of the SourceMode parity fix above (the
+      # from-disk builder, whose manifest has to match the embedded one byte
+      # for byte) and the install-script writer's file-mode fixture.
+      - name: Windows release packaging
+        run: go test ./release -run 'TestAgentToolkit|TestWriteInstallScript'
+
+      # ./cmd/goobers whole exceeds 30min on Windows, so this stays named.
+      # TestBuildSchedulerSetupRejectsConfigChangedDuringStartup is the only
+      # test that drives buildSchedulerSetup's failure path, where the read
+      # model and intake store handles used to leak: harmless on POSIX, but
+      # on Windows the open handles keep the temp dir's *.db files locked and
+      # the test's own cleanup then fails (#2031).
+      # TestBuildSchedulerSetupWiresConfiguredTimezone loads America/New_York
+      # with GOROOT and ZONEINFO isolated from setup-go's timezone archive, so
+      # Windows must use the CLI's embedded time/tzdata import (#2863).
+      # TestValidatePlanDetectsLiveParentConflict guards the API read cache's
+      # bounded CreateFile fallback, which is only observable on Windows.
+      # TestRunDashboardContextAcceptsNonLoopbackListenWithAuth exercises the
+      # non-loopback contract through the loopback-only test listener, guarding
+      # against firewall prompts for the temporary test executable (#3114).
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
@@ -681,18 +911,29 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
+    # e2e, envtest, and coverage joined in #3206 (#3152 added them as jobs
+    # without wiring them here). unit-gate — the pre-parallelization `make ci`
+    # monolith — was retired once every check it ran had a dedicated job; it
+    # duplicated the checks/lint/unit/shipped/deadcode slices wholesale and
+    # doubled the CI-setup network exposure (#3139/#3322) for zero coverage.
+    # four jobs intending to make them required, but never added them here — and
+    # this aggregate is the only context the branch ruleset requires, so all four
+    # could go red while `make ci` reported success and the merge proceeded. That
+    # is the same "runs on every PR, enforces nothing" gap #2019 closed below.
+    #
     # integration, sandbox, and linux-validation joined this list in #2019:
     # all three ran on every PR already (full runner cost) but a red result
     # never blocked merge (zero enforcement) until now — the worst of both
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, e2e, envtest, coverage]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
+          DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
@@ -705,6 +946,9 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
           LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          ENVTEST_RESULT: ${{ needs.envtest.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
         run: |
           fail=0
           check() {
@@ -714,6 +958,7 @@ jobs:
             fi
           }
           check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
+          check "deploy reference manifests"          "$DEPLOY_REFERENCE_RESULT"
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
@@ -726,11 +971,15 @@ jobs:
           check "declared-dependency integration"    "$INTEGRATION_RESULT"
           check "sandbox confinement"                "$SANDBOX_RESULT"
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
+          check "end-to-end gate"                    "$E2E_RESULT"
+          check "envtest integration gate"           "$ENVTEST_RESULT"
+          check "coverage threshold"                 "$COVERAGE_RESULT"
           exit "$fail"
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
     if: ${{ github.event_name != 'push' }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -748,8 +997,28 @@ jobs:
 
       - name: Install bubblewrap
         if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install bubblewrap; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::bubblewrap installation failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::bubblewrap installation attempt ${attempt}/3 failed or hung; retrying"
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 10))
+          done
           # Ubuntu 24.04 (ubuntu-latest) restricts unprivileged user
           # namespaces via AppArmor, which bubblewrap needs to set up its
           # uid map. Relax it so the confinement probe can create the
@@ -793,3 +1062,64 @@ jobs:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
           if-no-files-found: warn
+
+  escalate-main-failure:
+    name: escalate failed main validation
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'push' &&
+        (
+          needs.checks.result == 'failure' ||
+          needs.lint.result == 'failure' ||
+          needs.unit.result == 'failure' ||
+          needs.unit-macos.result == 'failure' ||
+          needs.shipped.result == 'failure' ||
+          needs.windows-smoke.result == 'failure'
+        )
+      }}
+    needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update critical main failure
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = "CI: main branch validation failed";
+            const runURL = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `Validation of the tree landed on \`${context.sha}\` failed.`,
+              "",
+              `Run: ${runURL}`,
+              "",
+              "This issue was filed automatically by the main-push CI escalation.",
+            ].join("\n");
+            const {data: issues} = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: "goobers:critical",
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find(
+              issue => !issue.pull_request && issue.title === title,
+            );
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["goobers:critical", "type:bug", "area:workflows"],
+            });

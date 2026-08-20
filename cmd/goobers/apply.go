@@ -37,7 +37,7 @@ const applyHelp = "Usage: goobers apply [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runApply(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs := newCLIFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "apply")
 	if err := fs.Parse(args); err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,6 +267,37 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 	}
 	if retentionBranchExists(repoDir, eligibleBranch) {
 		t.Fatalf("retention left unrelated eligible branch %q", eligibleBranch)
+	}
+}
+
+func TestRetentionProtectedBranchesRejectsFutureJournalSchema(t *testing.T) {
+	runsDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(runsDir, "00-unrelated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(runsDir, "01-future")
+	if err := os.Mkdir(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = retentionProtectedBranches(map[string]string{"worktrees": runsDir}, &schedulerSetup{})
+	if err == nil {
+		t.Fatal("retention accepted a future journal schema")
+	}
+	for _, want := range []string{"01-future", "version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("retention error %q does not contain %q", err, want)
+		}
 	}
 }
 

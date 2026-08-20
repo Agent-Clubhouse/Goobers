@@ -18,12 +18,6 @@ instead of weakening `network: none` or agentic-stage confinement. Goobers
 provides an explicit readiness check and handoff for that route; see
 [Full isolation through WSL 2](#full-isolation-through-wsl-2).
 
-Agentic sandboxing is enforced by default. Native Windows currently has no
-agentic sandbox backend, so an agentic stage fails closed there. Use the WSL 2
-route for confinement, or set `sandbox.agentic: disabled` in operator-owned
-`instance.yaml` only for trusted-local use. Every such opt-out is recorded in
-the run journal before the harness starts.
-
 ## Validated environment and evidence
 
 The `windows gate (build · vet · runtime smoke)` job in
@@ -90,7 +84,8 @@ CRLF policy, and the full path-length calculation.
 
 Download `goobers_<version>_windows_amd64.zip` and `SHA256SUMS` from the same
 tagged release. Only `windows/amd64` is published; Windows ARM64 is deferred.
-Release artifacts are initially unsigned, so checksum verification is required:
+`goobers.exe` is Authenticode-signed, but verify the checksum too — it's
+recomputed after signing, so it always covers the exact published bytes:
 
 ```powershell
 $archive = Get-ChildItem .\goobers_*_windows_amd64.zip
@@ -122,10 +117,8 @@ goobers --version
 ```
 
 For a machine-wide install, extract to `C:\Program Files\goobers` from an
-elevated prompt and update the machine `PATH`. Because the binary is unsigned,
-SmartScreen may warn on first launch. After verifying the checksum, choose
-**More info → Run anyway**. See [Releases & packaging](releases.md) for the
-artifact and signing posture.
+elevated prompt and update the machine `PATH`. See
+[Releases & packaging](releases.md) for the artifact and signing posture.
 
 ## 4. Build from source instead
 
@@ -148,7 +141,7 @@ instance-local, an in-repo subtree, or a separate config repository using the
 [instance and config placement guide](instance-placement.md).
 
 Follow the initialization and configuration steps in the
-[canonical quickstart](quickstart.md#3-init--scaffold-a-regular-instance-root),
+[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance),
 using a short root such as `C:\goobers\my-instance`. Never inline a provider
 secret. For an interactive run, reference an environment variable in the
 config and set it before starting Goobers:
@@ -179,13 +172,26 @@ goobers validate C:\goobers\my-instance
 GNU Make is not installed by default on Windows, and Goobers does not require
 or auto-install it (bring-your-own runner). A gaggle's `ciCommand`
 (`GaggleSpec.CICommand`) overrides the `local-ci` stage's default `["make",
-"ci"]`, so point it at a make-free command your project actually has —
+"ci"]`, so point it at a make-free command your project actually has.
+
+`ciCommand` is a field on the Gaggle resource, not a standalone file — edit
+the `spec:` block of the gaggle you generated during guided init, at
+`config\gaggles\<your-gaggle>\gaggle.yaml` under your instance root (e.g.
+`C:\goobers\my-instance\config\gaggles\my-app\gaggle.yaml`). Add `ciCommand`
+as a sibling of the gaggle's other `spec` fields (`project`, `backlog`,
+`isolation`, ...), indented two spaces under `spec:` like the rest of them —
 e.g. for a Go project:
 
 ```yaml
-gaggles:
-  - name: my-app
-    ciCommand: ["go", "test", "./..."]
+spec:
+  # ...project, backlog, isolation, and any other fields already here stay as generated...
+  ciCommand: ["go", "test", "./..."]
+```
+
+Then re-validate:
+
+```powershell
+goobers validate C:\goobers\my-instance
 ```
 
 Before any run executes, Goobers resolves `ciCommand`'s first token through
@@ -294,7 +300,7 @@ Service installation is a separate deployment concern.
 | Token files | Owner-only NTFS DACL checked with Windows APIs; do not use `chmod` |
 | Foreground shutdown | Ctrl+C/Ctrl+Break; Windows has no SIGTERM |
 | `network: none` | Fails closed because Windows has no native isolation backend; trusted-local operators may explicitly set `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1` |
-| Agentic stages | Sandboxing defaults to enforced; native Windows fails closed without a backend. Use WSL 2, or the journaled `sandbox.agentic: disabled` trusted-local opt-out. Live Copilot CLI support remains #647 Tier 2 |
+| Agentic stages | Live Copilot CLI support remains #647 Tier 2; deterministic-only support does not depend on it |
 | Service supervision | SCM setup is documented separately and is not part of the foreground validation |
 
 All other CLI and journal semantics are shared across platforms.

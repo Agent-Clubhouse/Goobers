@@ -184,6 +184,54 @@ func (d *liveStalledDeterministic) Run(ctx context.Context, _ apiv1.InvocationEn
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }
 
+func TestDaemonRunnerRegistryRetainsOverlappingLeases(t *testing.T) {
+	first := &runner.Runner{}
+	second := &runner.Runner{}
+	registry := newDaemonRunnerRegistry()
+
+	original := registry.Track("run-overlap", "", first)
+	overlapping := registry.Track("run-overlap", "", first)
+	original()
+	original()
+	if owner, live := registry.Resolve("run-overlap", "", nil); !live || owner != first {
+		t.Fatalf("owner after first release = (%p, %t), want first owner live", owner, live)
+	}
+	overlapping()
+	if owner, live := registry.Resolve("run-overlap", "", nil); live || owner != nil {
+		t.Fatalf("owner after final release = (%p, %t), want no live owner", owner, live)
+	}
+
+	oldGeneration := registry.Track("run-replaced", "", first)
+	newGeneration := registry.Track("run-replaced", "", second)
+	oldGeneration()
+	if owner, live := registry.Resolve("run-replaced", "", nil); !live || owner != second {
+		t.Fatalf("owner after stale release = (%p, %t), want replacement owner live", owner, live)
+	}
+	newGeneration()
+}
+
+func TestDaemonRunnerRegistryRefusesIncompatibleInterventionOwner(t *testing.T) {
+	first := &runner.Runner{}
+	reloaded := &runner.Runner{}
+	registry := newDaemonRunnerRegistry()
+	release := registry.Track("run-live", "", first)
+	defer release()
+	registry.Replace(map[string]*runner.Runner{"example": reloaded})
+
+	if owner, live := registry.Resolve("run-live", "example", reloaded); !live || owner != first {
+		t.Fatalf("resolved owner = (%p, %t), want retained live owner", owner, live)
+	}
+	if untrack, ok := registry.TrackCompatible("run-live", reloaded); ok {
+		untrack()
+		t.Fatal("incompatible intervention replaced the live owner")
+	}
+	compatible, ok := registry.TrackCompatible("run-live", first)
+	if !ok {
+		t.Fatal("compatible intervention owner was refused")
+	}
+	compatible()
+}
+
 func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())

@@ -129,6 +129,17 @@ see.
 8. Every finding in holistic mode MUST carry a `class` (see "Done" below)
    — this is what routes the finding to the right remediation action.
    Single-diff mode findings never carry one.
+9. **Structured findings are the complete blocker ledger.** Before returning
+   the verdict, audit `rationale` and `summary`: every distinct condition you
+   describe as blocking readiness MUST have a corresponding entry in
+   `findings`, including external blockers such as sibling ordering or a stale
+   base. Never leave a blocker only in prose. Use `cross-pr-blocked` for
+   sibling ordering and `rebase-needed` for base drift. Required-CI failures
+   are the exception described in (5): they travel through separate evidence,
+   so do not add a proxy finding or describe failing CI as a verdict blocker.
+   The remediation responder addresses findings by their 1-based array
+   position and requires exactly one response per entry, so an incomplete
+   findings list makes the verdict impossible to remediate.
 
 ## Repasses
 
