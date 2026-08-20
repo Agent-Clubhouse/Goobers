@@ -232,6 +232,23 @@ credentials:
 	if len(entries) != 0 {
 		t.Fatalf("scheduled runs started with missing credential: %v", entries)
 	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runUpContext(context.Background(), []string{"--quiet", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("up code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `startup: initializing gaggle "example" runtime`) {
+		t.Fatalf("up stdout does not identify the active startup step: %q", stdout.String())
+	}
+	for _, want := range []string{
+		`error: initialize daemon scheduler:`,
+		`workflow "default-implement" cannot be scheduled`,
+		`environment variable "` + tokenEnv + `"`,
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("up stderr missing %q: %q", want, stderr.String())
+		}
+	}
 }
 
 func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(t *testing.T) {

@@ -296,6 +296,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 
 	l := instance.NewLayout(root)
+	pf(stdout, "startup: validating instance configuration\n")
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
@@ -303,6 +304,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	pf(stdout, "startup: instance configuration valid\n")
 	startupConfig, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
@@ -354,16 +356,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	setupOptions := []schedulerSetupOption{
+		withDesktopNotifications(notifications, stderr),
+		withStartupProgress(func(message string) {
+			pf(stdout, "startup: %s\n", message)
+		}),
+	}
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
 	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: scheduler initialized\n")
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)

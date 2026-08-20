@@ -1891,6 +1891,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		localscheduler.NewProviderQuotaState(),
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
