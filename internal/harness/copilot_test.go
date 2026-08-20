@@ -80,12 +80,11 @@ func (f *fakeCopilotModelLister) ListModels(context.Context, []string, []string)
 func testCopilotModelList() []CopilotModelInfo {
 	maxEffort := []string{"none", "low", "medium", "high", "xhigh", "max"}
 	return []CopilotModelInfo{
-		{ID: "claude-fable-5", SupportedReasoningEfforts: maxEffort},
-		{ID: "claude-sonnet-5", SupportedReasoningEfforts: maxEffort},
-		{ID: "claude-sonnet-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
-		{ID: "claude-sonnet-4.5"},
-		{ID: "claude-opus-4.8-fast", SupportedReasoningEfforts: maxEffort},
-		{ID: "claude-opus-4.5"},
+		{ID: "gpt-5.6-sol", SupportedReasoningEfforts: maxEffort},
+		{ID: "gpt-5.6-terra", SupportedReasoningEfforts: maxEffort},
+		{ID: "gpt-5.5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
+		{ID: "gpt-5.4"},
+		{ID: "gpt-5.6-luna", SupportedReasoningEfforts: maxEffort},
 		{ID: "future-model"},
 		{ID: "kimi-k2.7-code"},
 		{ID: "mai-code-1-flash-picker"},
@@ -625,12 +624,12 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 		},
 		{
 			name:           "model configuration survives tool constraints",
-			model:          "claude-sonnet-5",
+			model:          "gpt-5.6-sol",
 			harnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
 			tools:          []string{"view"},
 			wantAvailable:  []string{"view"},
 			wantCommandParts: []string{
-				"--model claude-sonnet-5",
+				"--model gpt-5.6-sol",
 				"--context long_context",
 				"--reasoning-effort xhigh",
 			},
@@ -1273,12 +1272,11 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		options map[string]apiextensionsv1.JSON
 		wantErr string
 	}{
-		{name: "valid", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
-		{name: "available model ignores fallback", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true})},
-		{name: "default context supported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
-		{name: "fable model supported", model: "claude-fable-5"},
-		{name: "fast opus model supported", model: "claude-opus-4.8-fast"},
-		{name: "opus 4.5 model supported", model: "claude-opus-4.5"},
+		{name: "valid", model: "gpt-5.6-sol", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"})},
+		{name: "available model ignores fallback", model: "gpt-5.6-sol", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true})},
+		{name: "default context supported", model: "gpt-5.4", options: testHarnessOptions(t, map[string]interface{}{"context": "default"})},
+		{name: "sol model supported", model: "gpt-5.6-sol"},
+		{name: "luna model supported", model: "gpt-5.6-luna"},
 		{name: "kimi model supported", model: "kimi-k2.7-code"},
 		{name: "discovered MAI model supported", model: "mai-code-1-flash-picker"},
 		{name: "newly discovered model supported", model: "future-model"},
@@ -1286,13 +1284,13 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 		{name: "unknown model", model: "not-a-model", wantErr: "unknown model"},
 		{name: "unknown option", options: testHarnessOptions(t, map[string]interface{}{"temperature": "0.2"}), wantErr: "unknown harness option"},
 		{name: "fallback must be boolean", model: "not-a-model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: "yes"}), wantErr: "must be a boolean"},
-		{name: "fallback must not be null", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: nil}), wantErr: "must be a boolean"},
+		{name: "fallback must not be null", model: "gpt-5.6-sol", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: nil}), wantErr: "must be a boolean"},
 		{name: "fallback requires model", options: testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}), wantErr: "requires an explicit model"},
-		{name: "invalid option type", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
-		{name: "unknown context value", model: "claude-sonnet-5", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
-		{name: "long context unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
-		{name: "reasoning unsupported", model: "claude-sonnet-4.5", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "high"}), wantErr: "not supported"},
-		{name: "reasoning level unsupported", model: "claude-sonnet-4.6", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "xhigh"}), wantErr: "not supported"},
+		{name: "invalid option type", model: "gpt-5.6-sol", options: testHarnessOptions(t, map[string]interface{}{"context": true}), wantErr: "must be a string"},
+		{name: "unknown context value", model: "gpt-5.6-sol", options: testHarnessOptions(t, map[string]interface{}{"context": "extended"}), wantErr: "invalid context"},
+		{name: "long context unsupported", model: "kimi-k2.7-code", options: testHarnessOptions(t, map[string]interface{}{"context": "long_context"}), wantErr: "not supported"},
+		{name: "reasoning unsupported", model: "kimi-k2.7-code", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "high"}), wantErr: "not supported"},
+		{name: "reasoning level unsupported", model: "gpt-5.5", options: testHarnessOptions(t, map[string]interface{}{"reasoningEffort": "xhigh"}), wantErr: "not supported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := adapter.ValidateConfig(tc.model, tc.options)
@@ -1326,7 +1324,7 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	}
 	req := RunRequest{
 		Envelope:       testEnvelope(workspace),
-		Model:          "claude-sonnet-5",
+		Model:          "gpt-5.6-sol",
 		HarnessOptions: testHarnessOptions(t, map[string]interface{}{"context": "long_context", "reasoningEffort": "xhigh"}),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
@@ -1336,7 +1334,7 @@ func TestCopilotAdapterValidatesConfigAndBuildsArguments(t *testing.T) {
 	}
 	command := strings.Join(runner.lastReq.Command, " ")
 	for _, want := range []string{
-		"--model claude-sonnet-5",
+		"--model gpt-5.6-sol",
 		"--context long_context",
 		"--reasoning-effort xhigh",
 	} {
@@ -1353,7 +1351,7 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	})
 	modelLister := &fakeCopilotModelLister{models: []CopilotModelInfo{{ID: "gpt-5.4"}}}
 	adapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
-	resolution, err := adapter.ResolveConfig("claude-sonnet-5", options)
+	resolution, err := adapter.ResolveConfig("gpt-5.6-sol", options)
 	if err != nil {
 		t.Fatalf("ResolveConfig: %v", err)
 	}
@@ -1368,11 +1366,11 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	}
 	if len(resolution.Warnings) != 1 ||
 		resolution.Warnings[0].Kind != ConfigWarningModelFallback ||
-		!strings.Contains(resolution.Warnings[0].Message, `"claude-sonnet-5"`) {
+		!strings.Contains(resolution.Warnings[0].Message, `"gpt-5.6-sol"`) {
 		t.Fatalf("warnings = %+v, want one model fallback warning", resolution.Warnings)
 	}
 
-	if _, err := adapter.ResolveConfig("claude-sonnet-5", nil); err == nil ||
+	if _, err := adapter.ResolveConfig("gpt-5.6-sol", nil); err == nil ||
 		!strings.Contains(err.Error(), "valid models: auto, gpt-5.4") {
 		t.Fatalf("unknown model error = %v, want sorted valid-model list", err)
 	}
@@ -1392,7 +1390,7 @@ func TestCopilotAdapterFallbackToDefaultWarnsAndOmitsModel(t *testing.T) {
 	}
 	if _, err := adapter.Run(context.Background(), RunRequest{
 		Envelope:       testEnvelope(workspace),
-		Model:          "claude-sonnet-5",
+		Model:          "gpt-5.6-sol",
 		HarnessOptions: options,
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
@@ -1473,11 +1471,11 @@ func TestCopilotSDKModelMappingPreservesPolicyState(t *testing.T) {
 func TestCopilotAdapterRunsAdmittedResolutionWithoutRediscovery(t *testing.T) {
 	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
 		{{ID: "gpt-5.4"}},
-		{{ID: "claude-sonnet-5"}},
+		{{ID: "gpt-5.6-sol"}},
 	}}
 	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
 	resolution, err := admissionAdapter.ResolveConfig(
-		"claude-sonnet-5",
+		"gpt-5.6-sol",
 		testHarnessOptions(t, map[string]interface{}{fallbackToDefaultOption: true}),
 	)
 	if err != nil {
@@ -1518,7 +1516,7 @@ func TestCopilotAdapterRunsAdmittedResolutionWithoutRediscovery(t *testing.T) {
 func TestCopilotAdapterRunsAdmittedExplicitModelWithoutRediscovery(t *testing.T) {
 	modelLister := &fakeCopilotModelLister{responses: [][]CopilotModelInfo{
 		{{ID: "gpt-5.4"}},
-		{{ID: "claude-sonnet-5"}},
+		{{ID: "gpt-5.6-sol"}},
 	}}
 	admissionAdapter := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: modelLister}
 	resolution, err := admissionAdapter.ResolveConfig("gpt-5.4", nil)
@@ -2140,7 +2138,7 @@ func TestCopilotResolveConfigDeferredDiscoveryNeverSpawns(t *testing.T) {
 		DeferDiscovery: true,
 	}
 
-	for _, model := range []string{"claude-fable-5", "gpt-5.4"} {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.4"} {
 		resolution, err := adapter.ResolveConfig(model, nil)
 		if err != nil {
 			t.Fatalf("ResolveConfig(%q) deferred = %v, want nil", model, err)
@@ -2160,7 +2158,7 @@ func TestCopilotResolveConfigDeferredDiscoveryNeverSpawns(t *testing.T) {
 	// deferral off, flip deferral on, and an unknown model must still be
 	// REJECTED from the cache rather than accepted unverified.
 	warm := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: lister}
-	if _, err := warm.ResolveConfig("claude-fable-5", nil); err != nil {
+	if _, err := warm.ResolveConfig("gpt-5.6-sol", nil); err != nil {
 		t.Fatalf("warm-up ResolveConfig = %v, want nil", err)
 	}
 	if lister.calls != 1 {
@@ -2189,7 +2187,7 @@ func TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober(t *testing.T) 
 	}
 
 	for i := 0; i < 14; i++ {
-		resolution, err := adapter.ResolveConfig("claude-fable-5", nil)
+		resolution, err := adapter.ResolveConfig("gpt-5.6-sol", nil)
 		if err != nil {
 			t.Fatalf("ResolveConfig #%d = %v, want nil (unverified acceptance)", i, err)
 		}

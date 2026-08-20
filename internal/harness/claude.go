@@ -86,7 +86,6 @@ func claudeExtraArgs(tools []string) []string {
 // run`) that intentionally bypasses admission.
 var claudeKnownModels = map[string]bool{
 	"claude-fable-5":            true,
-	"claude-opus-5":             true,
 	"claude-sonnet-5":           true,
 	"claude-haiku-4-5-20251001": true,
 }

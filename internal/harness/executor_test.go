@@ -709,7 +709,7 @@ func TestExecutorPassesHarnessConfig(t *testing.T) {
 	rec := &fakeRecorder{}
 	adapter := &FakeAdapter{
 		Act: func(ctx context.Context, req RunRequest) error {
-			if req.Model != "claude-sonnet-4.5" {
+			if req.Model != "gpt-5.6-sol" {
 				return fmt.Errorf("model = %q", req.Model)
 			}
 			if got := string(req.HarnessOptions["reasoningEffort"].Raw); got != `"high"` {
@@ -726,7 +726,7 @@ func TestExecutorPassesHarnessConfig(t *testing.T) {
 		rec,
 		journal.NewPatternScrubber(),
 		"",
-		WithHarnessConfig("claude-sonnet-4.5", map[string]apiextensionsv1.JSON{
+		WithHarnessConfig("gpt-5.6-sol", map[string]apiextensionsv1.JSON{
 			"reasoningEffort": {Raw: []byte(`"high"`)},
 		}),
 	)

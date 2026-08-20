@@ -639,12 +639,12 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 			name: "unsupported model option",
 			spec: apiv1.GooberSpec{
 				Harness: apiv1.HarnessCopilot,
-				Model:   "claude-sonnet-4.5",
+				Model:   "kimi-k2.7-code",
 				HarnessOptions: map[string]apiextensionsv1.JSON{
 					"reasoningEffort": {Raw: []byte(`"high"`)},
 				},
 			},
-			want: `reasoningEffort value "high" is not supported by model "claude-sonnet-4.5"`,
+			want: `reasoningEffort value "high" is not supported by model "kimi-k2.7-code"`,
 		},
 		{
 			name: "undeclared MCP credential",

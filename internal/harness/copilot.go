@@ -105,13 +105,6 @@ type CopilotModelLister interface {
 // models.list does not expose context-tier support. This table is used only to
 // validate that optional flag; model availability always comes from ModelLister.
 var copilotLongContextModels = map[string]bool{
-	"claude-fable-5":         true,
-	"claude-sonnet-5":        true,
-	"claude-sonnet-4.6":      true,
-	"claude-opus-4.8-fast":   true,
-	"claude-opus-4.8":        true,
-	"claude-opus-4.7":        true,
-	"claude-opus-4.6":        true,
 	"gpt-5.6-sol":            true,
 	"gpt-5.6-terra":          true,
 	"gpt-5.6-luna":           true,

@@ -33,16 +33,6 @@ type testCopilotModelLister struct{}
 
 func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([]harness.CopilotModelInfo, error) {
 	return []harness.CopilotModelInfo{
-		{ID: "claude-fable-5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{ID: "claude-sonnet-5", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{ID: "claude-sonnet-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
-		{ID: "claude-sonnet-4.5"},
-		{ID: "claude-haiku-4.5"},
-		{ID: "claude-opus-4.8-fast", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{ID: "claude-opus-4.8", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{ID: "claude-opus-4.7", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
-		{ID: "claude-opus-4.6", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "max"}},
-		{ID: "claude-opus-4.5"},
 		{ID: "gpt-5.6-sol", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{ID: "gpt-5.6-terra", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},
 		{ID: "gpt-5.6-luna", SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"}},

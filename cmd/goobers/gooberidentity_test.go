@@ -31,7 +31,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 			Gaggle:       "alpha",
 			Instructions: "instructions.md",
 			Harness:      apiv1.HarnessCopilot,
-			Model:        "claude-sonnet-4.5",
+			Model:        "gpt-5.6-sol",
 			Capabilities: []string{"agent:model"},
 		},
 	}
@@ -107,7 +107,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {
 			Gaggle: "alpha", Instructions: "instructions.md", Skills: []string{"testing"},
-			Harness: apiv1.HarnessCopilot, Model: "claude-sonnet-4.5", Capabilities: []string{"agent:model"},
+			Harness: apiv1.HarnessCopilot, Model: "gpt-5.6-sol", Capabilities: []string{"agent:model"},
 		},
 	}
 	set := &instance.ConfigSet{Workflows: []apiv1.Workflow{{
