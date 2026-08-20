@@ -553,7 +553,7 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
-func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *testing.T) {
+func TestReferenceWorkflowsImplementationCheckpointsBeforeStrictIntegration(t *testing.T) {
 	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -591,10 +591,23 @@ func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *test
 	if localCI.Next != "local-gate" {
 		t.Fatalf("local-ci next = %q, want local-gate", localCI.Next)
 	}
+	var pushBranch *apiv1.Task
+	for i := range w.Spec.Tasks {
+		if w.Spec.Tasks[i].Name == "push-branch" {
+			pushBranch = &w.Spec.Tasks[i]
+			break
+		}
+	}
+	if pushBranch == nil || pushBranch.Next != "local-ci" {
+		t.Fatalf("push-branch = %+v, want next local-ci", pushBranch)
+	}
 	for _, workflowGate := range w.Spec.Gates {
 		if workflowGate.Name == localCI.Next {
-			if got := workflowGate.Branches["pass"]; got != "push-branch" {
-				t.Fatalf("local-gate pass branch = %q, want push-branch", got)
+			if got := workflowGate.Branches["pass"]; got != "open-pr" {
+				t.Fatalf("local-gate pass branch = %q, want open-pr", got)
+			}
+			if got := workflowGate.Branches["infra"]; got != "local-ci" {
+				t.Fatalf("local-gate infra branch = %q, want local-ci", got)
 			}
 			return
 		}

@@ -18,6 +18,10 @@ import (
 // override the inherited value for one automated or agentic gate.
 const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 
+// DefaultMaxInfrastructureRepasses bounds gate-driven retries for retryable
+// infrastructure outcomes without consuming the policy repass budget.
+const DefaultMaxInfrastructureRepasses = 2
+
 // Result is the outcome of one gate evaluation.
 type Result struct {
 	// Gate is the evaluated gate's name.
@@ -173,10 +177,17 @@ type Evaluator struct {
 
 	// RepassAttempts holds cumulative repasses keyed by configured branch
 	// target. Unlike Attempts, the verdict does not affect this count: every
-	// branch back to an already-completed stage consumes its shared budget. A
-	// resuming caller reconstructs it from repassTarget and repassAttempt
-	// annotations.
+	// non-infrastructure branch back to an already-completed stage consumes its
+	// shared policy budget. A resuming caller reconstructs it from repassTarget
+	// and repassAttempt annotations.
 	RepassAttempts map[string]int
+
+	// InfrastructureAttempts and InfrastructureRepassAttempts track retryable
+	// infrastructure outcomes separately from policy repasses. This preserves
+	// the policy budget for code-review and validation failures while keeping
+	// infrastructure retries bounded and crash-resumable.
+	InfrastructureAttempts       map[string]int
+	InfrastructureRepassAttempts map[string]int
 
 	// IsReentry reports whether a configured branch target is a stage that has
 	// already completed in this run. Nil preserves the historical assumption
@@ -495,16 +506,30 @@ func escalationTarget(g apiv1.Gate) string {
 }
 
 // trackRepass charges branches that re-enter an already-completed target stage.
-// The per-gate counter remains for interrupted-evaluation recovery, but budget
-// enforcement uses the target counter so distinct gates and outcomes cannot
-// grant each other fresh repass budgets.
+// Retryable infrastructure outcomes use their own bounded counters so they do
+// not consume policy repasses.
 func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, gateAttempt int, repassTarget string, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
-	if outcome == OutcomePass {
+	if e.InfrastructureAttempts == nil {
+		e.InfrastructureAttempts = make(map[string]int)
+	}
+	if outcome != OutcomeInfra && e.InfrastructureRepassAttempts != nil {
+		if infrastructureTarget, ok := wf.BranchTarget(g, OutcomeInfra); ok {
+			e.InfrastructureRepassAttempts[infrastructureTarget] = 0
+		}
+	}
+	switch outcome {
+	case OutcomePass:
 		e.Attempts[g.Name] = 0
-	} else {
+		e.InfrastructureAttempts[g.Name] = 0
+	case OutcomeInfra:
+		e.Attempts[g.Name] = 0
+		e.InfrastructureAttempts[g.Name]++
+		gateAttempt = e.InfrastructureAttempts[g.Name]
+	default:
+		e.InfrastructureAttempts[g.Name] = 0
 		e.Attempts[g.Name]++
 		gateAttempt = e.Attempts[g.Name]
 	}
@@ -514,6 +539,14 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, 
 	}
 	if !reentry {
 		return 0, gateAttempt, "", false
+	}
+	if outcome == OutcomeInfra {
+		if e.InfrastructureRepassAttempts == nil {
+			e.InfrastructureRepassAttempts = make(map[string]int)
+		}
+		e.InfrastructureRepassAttempts[target]++
+		attempt = e.InfrastructureRepassAttempts[target]
+		return attempt, gateAttempt, target, attempt > DefaultMaxInfrastructureRepasses
 	}
 	if e.RepassAttempts == nil {
 		e.RepassAttempts = make(map[string]int)

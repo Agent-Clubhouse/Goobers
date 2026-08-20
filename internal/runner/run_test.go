@@ -5283,6 +5283,34 @@ func TestTargetRepassSeedRestoresCrossGateBudget(t *testing.T) {
 	}
 }
 
+func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultFailure)},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeInfra, Target: "local-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "local-ci"}},
+		{Type: journal.EventStageFinished, Stage: "local-ci", Status: string(apiv1.ResultFailure)},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeInfra, Target: "local-ci",
+			Runner: map[string]any{"repassAttempt": 2.0, "gateAttempt": 2.0, "repassTarget": "local-ci"}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "implement"}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeInfra, Target: "local-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "local-ci"}},
+	}
+
+	if got := targetRepassSeed(events)["local-ci"]; got != 0 {
+		t.Fatalf("policy repass seed for local-ci = %d, want 0", got)
+	}
+	if got := infrastructureTargetRepassSeed(events)["local-ci"]; got != 1 {
+		t.Fatalf("infrastructure repass seed for local-ci = %d, want 1 after policy reset", got)
+	}
+	if got := gateRepassSeed(events)["local-gate"]; got != 0 {
+		t.Fatalf("policy gate seed for local-gate = %d, want 0", got)
+	}
+	if got := gateInfrastructureSeed(events)["local-gate"]; got != 1 {
+		t.Fatalf("infrastructure gate seed for local-gate = %d, want 1 after policy reset", got)
+	}
+}
+
 // TestGateDiffSeedNilForNoGateEvents proves the nil-safe zero value a fresh
 // run needs: a journal with no gate.evaluated events at all (or none
 // carrying a diffDigest) yields a nil map, matching Evaluator.LastDiffDigest's
@@ -8117,8 +8145,8 @@ func TestRunnerEnvironmentalFailureUnchangedRepassStopsBeforeReview(t *testing.T
 	if !environmentalFailure || !infrastructureAnnotation {
 		t.Fatalf("environmental failure evidence missing: failure=%v infrastructure=%v", environmentalFailure, infrastructureAnnotation)
 	}
-	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 3 {
-		t.Fatalf("review escalation repassAttempt = %v, want 3 (unchanged result must not consume another implementation repass)", escalation.Runner["repassAttempt"])
+	if attempt, _ := escalation.Runner["repassAttempt"].(float64); attempt != 2 {
+		t.Fatalf("review escalation repassAttempt = %v, want 2 (infrastructure retries must not consume implementation repasses)", escalation.Runner["repassAttempt"])
 	}
 }
 

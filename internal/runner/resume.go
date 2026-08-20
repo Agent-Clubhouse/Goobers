@@ -725,6 +725,8 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
 	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
+	ws.infraGateAttempts = gateInfrastructureSeed(segment)
+	ws.infraRepassAttempts = infrastructureTargetRepassSeed(segment)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -1542,6 +1544,13 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeInfra {
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[e.Gate] = 0
+			continue
+		}
 		n, ok := e.Runner["gateAttempt"].(float64)
 		if !ok {
 			n, ok = e.Runner["repassAttempt"].(float64)
@@ -1557,13 +1566,37 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 	return seed
 }
 
+func gateInfrastructureSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			seed[e.Gate] = 0
+			continue
+		}
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
+		if ok {
+			seed[e.Gate] = int(n)
+		}
+	}
+	return seed
+}
+
 // targetRepassSeed reconstructs the cumulative repass count for each target
 // stage. repassTarget preserves the configured branch when an exhausted
 // evaluation was instead routed to escalation.
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
-		if e.Type != journal.EventGateEvaluated {
+		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra {
 			continue
 		}
 		target, _ := e.Runner["repassTarget"].(string)
@@ -1577,6 +1610,38 @@ func targetRepassSeed(events []journal.Event) map[string]int {
 		if seed == nil {
 			seed = make(map[string]int)
 		}
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	gateTargets := make(map[string]string)
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			if target := gateTargets[e.Gate]; target != "" && seed != nil {
+				seed[target] = 0
+			}
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		gateTargets[e.Gate] = target
 		if int(n) > seed[target] {
 			seed[target] = int(n)
 		}

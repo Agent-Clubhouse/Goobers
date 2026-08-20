@@ -1004,6 +1004,8 @@ type walkState struct {
 	humanDecision        *HumanGateDecision
 	gateAttempts         map[string]int
 	repassAttempts       map[string]int
+	infraGateAttempts    map[string]int
+	infraRepassAttempts  map[string]int
 	gateDiffDigests      map[string]string
 	visitedStages        map[string]bool
 }
@@ -1152,11 +1154,13 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
 	ws.gateEval = &gate.Evaluator{
-		Automated:      r.cfg.Automated,
-		Journal:        ws.jr,
-		MaxRepasses:    int(ws.in.RunControls.MaxRepasses),
-		Attempts:       ws.gateAttempts,
-		RepassAttempts: ws.repassAttempts,
+		Automated:                    r.cfg.Automated,
+		Journal:                      ws.jr,
+		MaxRepasses:                  int(ws.in.RunControls.MaxRepasses),
+		Attempts:                     ws.gateAttempts,
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
 		IsReentry: func(target string) bool {
 			return ws.visitedStages[target]
 		},

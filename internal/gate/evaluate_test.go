@@ -376,6 +376,66 @@ func TestEvaluatorUsesPerGateRepassBudget(t *testing.T) {
 	}
 }
 
+func TestEvaluatorSeparatesInfrastructureAndPolicyRepassBudgets(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "local-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+		Branches: map[string]string{
+			OutcomePass:       "open-pr",
+			OutcomeFail:       "implement",
+			OutcomeInfra:      "local-ci",
+			wf.BranchEscalate: "park-escalated",
+		},
+	}
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeInfra, OutcomeInfra, OutcomeInfra, OutcomeFail, OutcomeInfra}},
+		MaxRepasses: 1,
+		IsReentry:   func(target string) bool { return target == "local-ci" || target == "implement" },
+	}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "timeout", Retryable: true},
+	}
+
+	for attempt := 1; attempt <= DefaultMaxInfrastructureRepasses; attempt++ {
+		result, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+		if err != nil {
+			t.Fatalf("infrastructure evaluation %d: %v", attempt, err)
+		}
+		if result.Target != "local-ci" || result.Attempt != attempt || result.Escalated {
+			t.Fatalf("infrastructure evaluation %d = %+v, want bounded retry to local-ci", attempt, result)
+		}
+	}
+	exhausted, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exhausted.Escalated || exhausted.Target != "park-escalated" ||
+		exhausted.Attempt != DefaultMaxInfrastructureRepasses+1 {
+		t.Fatalf("exhausted infrastructure evaluation = %+v", exhausted)
+	}
+	if got := ev.RepassAttempts["local-ci"]; got != 0 {
+		t.Fatalf("policy repasses for local-ci = %d, want 0", got)
+	}
+
+	policy, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Escalated || policy.Target != "implement" || policy.Attempt != 1 {
+		t.Fatalf("first policy repass after infrastructure retries = %+v", policy)
+	}
+	restarted, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Escalated || restarted.Target != "local-ci" || restarted.Attempt != 1 {
+		t.Fatalf("infrastructure budget after policy remediation = %+v, want fresh retry budget", restarted)
+	}
+}
+
 func TestEvaluatorRoutesRepassEscalationThroughControlBranch(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "review",
