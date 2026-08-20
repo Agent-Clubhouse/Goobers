@@ -125,6 +125,11 @@ type RepassCause struct {
 // ordinary repass-budget exhaustion or a genuine reviewer/CI fail verdict.
 const ReasonUnchangedRepass = "UNCHANGED_REPASS"
 
+// ReasonFindingDisproven marks a reviewer needs-changes verdict that was
+// converted to pass because deterministic source evidence disproved every
+// finding.
+const ReasonFindingDisproven = "REVIEW_FINDING_DISPROVEN"
+
 func (c RepassCause) String() string {
 	switch c.Kind {
 	case "stage-failure":
@@ -368,7 +373,17 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit)
+	outcomeReason := ""
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
+		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
+		verdict = &normalized
+		outcome = string(normalized.Decision)
+		if allDisproven {
+			outcomeReason = ReasonFindingDisproven
+		}
+	}
+
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -431,10 +446,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false, false)
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "")
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool, outcomeReason string) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -454,7 +469,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	var repassCause *RepassCause
-	var reason string
+	reason := outcomeReason
 	if duplicateDiff {
 		repassCause = e.RepassCause
 		reason = ReasonUnchangedRepass
