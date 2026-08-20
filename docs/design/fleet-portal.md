@@ -2,7 +2,8 @@
 
 > Status: **draft**
 > Scope: fleet-level human and API entry point, instance registration, request routing,
-> authentication, authorization, and multi-instance observability
+> authentication, authorization, multi-instance observability, and target-scoped
+> interactive diagnostics
 > Related requirements: [`portal.md`](../requirements/portal.md),
 > [`instance.md`](../requirements/instance.md),
 > [`security.md`](../requirements/security.md), and
@@ -57,6 +58,7 @@ That origin hosts:
 - the fleet registry and health API;
 - group and instance discovery for authorized users;
 - the versioned proxy surface for instance read and runtime-operation APIs;
+- target-scoped interactive Copilot diagnostic sessions for authorized operators;
 - enrollment, credential rotation, and instance revocation APIs; and
 - the event or connection endpoint used by enrolled instances.
 
@@ -193,6 +195,10 @@ GET  /api/v1/groups/{group}
 GET  /api/v1/groups/{group}/instances
 GET  /api/v1/groups/{group}/instances/{instance}
 ANY  /api/v1/groups/{group}/instances/{instance}/proxy/{instance-api-path}
+POST /api/v1/groups/{group}/instances/{instance}/diagnostic-sessions
+GET  /api/v1/groups/{group}/instances/{instance}/diagnostic-sessions/{session}
+GET  /api/v1/groups/{group}/instances/{instance}/diagnostic-sessions/{session}/stream
+POST /api/v1/groups/{group}/instances/{instance}/diagnostic-sessions/{session}:close
 POST /api/v1/enrollments
 POST /api/v1/instances/{instance}/credentials:rotate
 POST /api/v1/instances/{instance}:revoke
@@ -361,6 +367,11 @@ Fleet administration does not automatically grant permission to read every insta
 run data. Fleet infrastructure administration and fleet-data access SHOULD be
 separable roles in production.
 
+Starting or attaching to an interactive diagnostic session requires a distinct
+`diagnose` capability in addition to ordinary `view`. The capability MAY be included
+in an `operate` or `admin` role by policy, but it is independently auditable and
+revocable. Read-only diagnosis and mutation-capable diagnosis are separate grants.
+
 ### 7.3 Effective authorization
 
 For each request, the fleet portal:
@@ -452,8 +463,11 @@ grant repository, model, secret-store, or sandbox access.
 - No direct public instance API, NodePort, or per-instance ingress requirement.
 - Request and response size limits, deadlines, rate limits, and backpressure.
 - Strict target/path normalization to prevent SSRF and confused-deputy routing.
+- Per-session resource, duration, concurrency, tool, namespace, and egress limits for
+  interactive diagnostics.
 - Append-only audit events for enrollment, policy changes, access decisions,
-  mutations, movement, rotation, leave, and revocation.
+  mutations, diagnostic session lifecycle and tool actions, movement, rotation, leave,
+  and revocation.
 - Secret redaction in fleet logs, traces, and error responses.
 - Explicit retention and deletion policy for centrally projected data.
 
@@ -498,9 +512,189 @@ permitted runtime operations.
 The UI always shows the active fleet, group, and instance scope. Mutation confirmation
 includes the target instance to reduce cross-instance operator mistakes.
 
-## 11. Deployment profiles
+### 10.4 Diagnose
 
-### 11.1 Central production fleet
+An authorized operator can open **Diagnose** from an instance view. The surface is an
+interactive conversation with a Copilot CLI session running in the target instance's
+environment or Kubernetes cluster. It is intended to answer the same operational
+questions an owner would investigate from a local terminal: why a workload is
+unhealthy, which configuration is active, what recent events show, and which safe
+remediation is appropriate.
+
+The page always displays:
+
+- target fleet, group, instance, cluster, and namespace;
+- diagnostic profile and effective capabilities;
+- whether the session is read-only or mutation-capable;
+- session owner, start time, expiry, and connection state;
+- commands and tool calls proposed or executed by the session; and
+- transcript retention and audit posture.
+
+The diagnostic surface is not a fleet-wide chatbot. Every session is explicitly bound
+to one target instance and one diagnostic capability grant.
+
+## 11. Interactive Copilot diagnostic sessions
+
+### 11.1 Goal and local parity
+
+An operator SHOULD be able to diagnose an instance through the fleet portal with the
+same Copilot-assisted workflow available when working locally. The Copilot process
+runs at the target, where it can use explicitly granted diagnostic tools and observe
+the target's current state. The fleet portal carries the authenticated conversation
+and tool-event stream; it does not copy cluster credentials into the browser or run
+cluster commands itself.
+
+The target session uses the release-matched Copilot CLI and Goobers agent toolkit so
+local and remote diagnosis share instructions, command semantics, redaction, and
+versioning. A session reports its Copilot CLI, toolkit, Goobers, and Kubernetes
+versions before accepting work.
+
+This capability is a deliberate, narrow amendment to the current portal design's
+"not a chat client" boundary. The portal does not become a general assistant,
+configuration author, or workflow chat surface. Conversation exists only inside an
+explicit, target-scoped operational diagnostic session.
+
+### 11.2 Session lifecycle
+
+The initial lifecycle is:
+
+1. An operator selects an instance and a fleet-approved diagnostic profile.
+2. The fleet authenticates the operator, resolves the `diagnose` capability, and sends
+   a signed start request over the instance channel.
+3. The instance validates the delegation and local policy.
+4. The instance creates an ephemeral diagnostic runtime in the target environment.
+5. The runtime starts Copilot CLI with the approved toolkit, tools, limits, and
+   target-scoped context.
+6. The fleet proxies the bidirectional conversation and structured tool events to the
+   browser.
+7. The session ends on explicit close, idle timeout, maximum lifetime, revocation,
+   operator disconnect policy, or runtime failure.
+8. The target destroys ephemeral credentials, files, and compute; the fleet finalizes
+   the audit record according to retention policy.
+
+Starting a session is never an implicit side effect of viewing an instance. Reopening
+an instance page does not silently resume or create a diagnostic runtime.
+
+### 11.3 Target runtime
+
+For Kubernetes instances, the preferred runtime is an ephemeral pod or Job in a
+dedicated diagnostic namespace or the instance's control namespace. It MUST have:
+
+- a dedicated service account;
+- a read-only root filesystem and non-root user where supported;
+- explicit CPU, memory, ephemeral-storage, duration, and concurrency limits;
+- no host PID, host network, host path, privileged mode, or Docker socket;
+- a default-deny network policy with only required model, fleet, and Kubernetes API
+  egress;
+- no inherited stage, repository, model, or secret-store credentials;
+- a pod and session identity unique to that diagnostic session; and
+- automatic cleanup independent of a clean browser disconnect.
+
+For local or VM instances, the equivalent runtime is a constrained child process or
+sandbox owned by the instance. It uses the same diagnostic profile and session
+protocol rather than a separate remote-administration design.
+
+### 11.4 Diagnostic profiles
+
+A diagnostic profile is fleet-approved policy, not free-form browser input. It defines:
+
+- target scope, such as one namespace, instance control resources, or cluster-wide
+  metadata;
+- Kubernetes RBAC and Goobers API capabilities;
+- allowed executable tools and subcommands;
+- filesystem roots that may be read;
+- allowed network destinations;
+- resource and time limits;
+- whether proposed mutations require confirmation or are forbidden;
+- transcript and tool-output retention; and
+- redaction rules.
+
+The default profile is read-only and namespace-scoped. It can inspect workload status,
+events, logs, Goobers health and version information, effective non-secret
+configuration, rollout state, resource pressure, and recent instance journal
+summaries.
+
+Cluster-wide reads, secret metadata, pod exec, filesystem collection, packet capture,
+and every mutation are excluded unless a stricter profile explicitly grants them.
+Secret values are never a diagnostic capability.
+
+### 11.5 Tool execution and approval
+
+Copilot output is untrusted until an allowed tool action passes deterministic policy.
+The runtime:
+
+- parses tool invocations into structured requests;
+- rejects tools and arguments outside the active profile;
+- records the exact normalized command or API operation;
+- applies output size limits and redaction before streaming;
+- treats logs, events, repository content, and workload output as untrusted prompt
+  input; and
+- never interprets model text itself as authorization.
+
+Read-only actions allowed by the profile MAY execute immediately. Mutations require:
+
+1. a mutation-capable diagnostic grant;
+2. deterministic instance-side policy approval;
+3. an explicit operator confirmation showing the exact target and action; and
+4. a short-lived, single-action delegation bound to the action digest.
+
+High-risk actions such as changing cluster RBAC, reading secret values, disabling
+policy, creating privileged workloads, or broadening the session's own permissions
+remain forbidden even with ordinary `admin`. A separately designed break-glass process
+is required for exceptional access.
+
+### 11.6 Copilot identity and credentials
+
+The session requires a supported Copilot entitlement and authentication mechanism.
+The design MUST NOT copy a developer's long-lived local Copilot credential into the
+cluster or reuse a shared fleet-wide personal token.
+
+Supported production mechanisms must provide a short-lived, session-scoped identity or
+an organization-managed workload entitlement. Until such a mechanism is available,
+remote Copilot sessions remain an explicitly experimental capability and must use a
+credential flow that is visible to and initiated by the operator.
+
+Copilot credentials are:
+
+- scoped to one session;
+- held only in the target runtime;
+- mounted or delivered through the platform secret mechanism;
+- excluded from transcripts, logs, crash dumps, and fleet projections; and
+- revoked or destroyed when the session ends.
+
+The fleet portal never receives repository, model, cluster, or instance credentials.
+
+### 11.7 Streaming and reconnect
+
+Conversation, incremental model output, tool proposals, approvals, stdout/stderr, and
+session state use a structured multiplexed stream over the existing outbound instance
+channel. The protocol distinguishes model text from tool events and audit events;
+clients never infer executed actions by scraping terminal text.
+
+A browser reconnect MAY reattach to a still-live session after reauthorization. It
+does not extend the session lifetime or bypass a revoked capability. If the instance
+or fleet channel is lost, mutation approval and execution stop fail-closed.
+
+### 11.8 Audit and retention
+
+At minimum, the audit record contains:
+
+- fleet, group, instance, runtime, user, and session IDs;
+- effective diagnostic profile and capability digest;
+- start, attach, detach, expiry, close, and cleanup events;
+- model and toolkit versions;
+- normalized tool proposals, authorization decisions, confirmations, and outcomes;
+- mutation request and response digests; and
+- redaction and truncation indicators.
+
+Conversation retention is configurable and distinct from the mandatory security audit.
+Organizations MAY retain no model conversation after session close while retaining
+structured tool and authorization events. Retention policy is shown before the
+operator starts the session.
+
+## 12. Deployment profiles
+
+### 12.1 Central production fleet
 
 A production fleet SHOULD have:
 
@@ -517,14 +711,19 @@ A production fleet SHOULD have:
 Instances require outbound HTTPS connectivity to the fleet URI but no inbound route
 from the fleet.
 
-### 11.2 Team or co-located fleet
+Diagnostic sessions additionally require target-side runtime capacity, approved
+diagnostic images, model endpoint egress, and a credential mechanism that meets
+section 11.6.
+
+### 12.2 Team or co-located fleet
 
 A team fleet MAY run one replica and one durable volume or small database. It still
 uses normal OIDC, enrollment, delegation, and audit contracts. Co-locating the fleet
 portal with instances in one Kubernetes cluster does not permit bypassing those
-contracts.
+contracts. A co-located diagnostic runtime still receives a distinct service account,
+network policy, and capability grant.
 
-### 11.3 Local development fleet
+### 12.3 Local development fleet
 
 A local fleet MAY:
 
@@ -537,14 +736,19 @@ A local fleet MAY:
 Publishing or tunneling that listener changes the trust boundary and requires TLS and
 OIDC. There is no insecure remote-listener override.
 
-## 12. Compatibility and versioning
+Local diagnosis MAY launch the same Copilot/toolkit session as a constrained child
+process and attach through the fleet UI. Fleetless local diagnosis remains available
+through Copilot CLI directly.
+
+## 13. Compatibility and versioning
 
 Fleet and instance APIs version independently. Registration exchanges:
 
 - fleet protocol versions;
 - instance product API versions;
 - event projection versions;
-- supported runtime-operation capabilities; and
+- supported runtime-operation capabilities;
+- supported diagnostic-session, toolkit, and tool-event protocol versions; and
 - minimum/maximum compatible versions.
 
 The fleet portal MUST degrade by capability. An older instance can remain visible even
@@ -554,7 +758,7 @@ literal explanation rather than attempting them.
 Protocol incompatibility does not stop the instance runtime. It marks fleet access as
 degraded and preserves local CLI operation.
 
-## 13. Relationship to the current architecture
+## 14. Relationship to the current architecture
 
 This design preserves these existing decisions:
 
@@ -572,14 +776,16 @@ It changes or extends these decisions:
 - the portal service gains registry, group authorization, routing, and aggregate-read
   responsibilities;
 - the fleet portal is a control-plane gateway, although not the configuration or
-  workflow-execution source of truth; and
-- instances gain an optional outbound enrollment and connection client.
+  workflow-execution source of truth;
+- instances gain an optional outbound enrollment and connection client; and
+- the portal gains a narrowly scoped diagnostic conversation surface, revising the
+  existing blanket "not a chat client" position without adding general-purpose chat.
 
 Approval requires corresponding amendments to `ARCHITECTURE.md` and the Portal,
 Instance, Security, and Deployment requirements. Until then, those sources remain
 normative and this document remains a proposal.
 
-## 14. Delivery slices
+## 15. Delivery slices
 
 Implementation issues SHOULD be filed only after the design and owning requirements
 are approved.
@@ -594,14 +800,16 @@ are approved.
    retention.
 5. **Fleet dashboard:** fleet, group, and instance navigation over the existing portal
    workbench.
-6. **Local/team packaging:** loopback process, co-located Kubernetes deployment, and
+6. **Diagnostic sessions:** target-side Copilot runtime, diagnostic profiles, secure
+   streaming, tool policy, operator approval, redaction, audit, and cleanup.
+7. **Local/team packaging:** loopback process, co-located Kubernetes deployment, and
    join/leave operator commands.
-7. **Production hardening:** HA, database, key management, backup/restore, WAF/private
+8. **Production hardening:** HA, database, key management, backup/restore, WAF/private
    ingress, observability, scale, and disaster recovery.
-8. **Migration:** preserve direct local CLI/portal behavior and provide an opt-in path
+9. **Migration:** preserve direct local CLI/portal behavior and provide an opt-in path
    for existing instances.
 
-## 15. Open questions
+## 16. Open questions
 
 1. Is **fleet group** the final product term, or should the permission boundary be
    called a project, organization, namespace, or team?
@@ -617,13 +825,29 @@ are approved.
 9. Should public anonymous viewing be a sanitized publication surface separate from
    the authenticated fleet portal?
 10. Which existing portal API paths can remain byte-compatible behind the fleet proxy?
+11. Which Copilot authentication mechanism can issue short-lived, session-scoped
+    credentials to a target runtime without copying a developer's local credential?
+12. What is the first supported read-only diagnostic profile and Kubernetes RBAC
+    contract?
+13. Which diagnostic tool events and conversation content must be retained, and for how
+    long?
+14. Is mutation-capable diagnosis in the initial scope or a later, separately approved
+    hardening phase?
+15. How should a local Copilot session and a fleet-proxied session share toolkit
+    instructions and capability declarations without drifting?
 
-## 16. Non-goals
+## 17. Non-goals
 
 - Replacing config-as-code with portal configuration.
 - Moving workflow execution into the fleet portal.
+- Providing a general fleet chatbot, configuration-authoring assistant, or unscoped
+  remote shell.
 - Sharing repository, model, backlog, sandbox, or secret-store credentials with the
   fleet.
+- Giving the fleet portal cluster credentials or executing diagnostic tools in the
+  fleet service itself.
+- Allowing a diagnostic session to read secret values, escape its target scope, or
+  broaden its own permissions.
 - Allowing instances to enumerate other instances or fleet users.
 - Requiring fleet availability for configured work to continue.
 - Supporting one instance enrolled in multiple fleets in the first version.
