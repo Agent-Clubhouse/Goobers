@@ -22,21 +22,15 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 
 // ResumeInput identifies an interrupted run to pick back up. Everything
 // recoverable from the journal is read from it (Gaggle, Trigger, the
-// snapshotted Item); RepoRef and Machine are NOT journaled — RunIdentity
-// pins the workflow's name/version/digest for verification, but not the
-// target repo or the compiled Machine object itself — so the caller (the
-// daemon, which already holds this per-gaggle/workflow config) supplies them
-// again, exactly as it did for the original Start.
+// snapshotted Item and workflow Definition); RepoRef is not journaled, so the
+// caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
-	// Machine is the compiled workflow (#9) this run was walking. Its digest
-	// MUST match the run's pinned WorkflowDigest (WF-016) — resuming a run
-	// under a changed definition is refused, not silently reinterpreted. A
-	// refusal is itself terminal (#520): the run is journaled PhaseFailed
-	// (with the WF-016 refusal text as the run.finished event's own error
-	// detail) and finalized like any other terminal run, releasing its
-	// claims — see refuseResume.
+	// Machine is the compiled workflow (#9) this run was walking. When nil,
+	// Resume reconstructs it from the immutable workflow-definition input.
+	// When supplied, its digest MUST match the run's pinned WorkflowDigest
+	// (WF-016).
 	Machine *workflow.Machine
 	// GooberDigest is the current resolved execution identity.
 	GooberDigest string
@@ -128,9 +122,6 @@ type ResumeFromTerminalInput struct {
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
-	}
-	if in.Machine == nil {
-		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 	if in.HumanDecision != nil {
 		decision := *in.HumanDecision
@@ -355,10 +346,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_missing_digest",
 			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
 	}
+	if in.Machine == nil {
+		in.Machine, err = pinnedWorkflowMachine(rd, id)
+		if err != nil {
+			return r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
+				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
+		}
+	}
 	if id.WorkflowDigest != in.Machine.Digest() {
 		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
+
 	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
@@ -930,17 +929,62 @@ func gateRepassAttempt(e journal.Event) int {
 	return int(n)
 }
 
+// pinnedWorkflowMachine reconstructs the historical machine from the trusted,
+// content-addressed Definition snapshot and verifies every identity boundary.
+func pinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+	var definitionRef *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
+			definitionRef = &id.Inputs[i]
+			break
+		}
+	}
+	if definitionRef == nil {
+		return nil, fmt.Errorf("immutable input %q is missing", journal.PinnedWorkflowDefinitionInputName)
+	}
+	if definitionRef.Integrity != apiv1.IntegrityTrusted {
+		return nil, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedWorkflowDefinitionInputName, definitionRef.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(definitionRef.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("read immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	var def workflow.Definition
+	if err := json.Unmarshal(data, &def); err != nil {
+		return nil, fmt.Errorf("parse immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if def.Name != id.Workflow || def.Version != id.WorkflowVersion {
+		return nil, fmt.Errorf(
+			"immutable input %q identifies workflow %q version %d, want %q version %d",
+			journal.PinnedWorkflowDefinitionInputName, def.Name, def.Version, id.Workflow, id.WorkflowVersion,
+		)
+	}
+	digest, err := workflow.ComputeDigest(def)
+	if err != nil {
+		return nil, fmt.Errorf("digest immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if digest != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, digest, id.WorkflowDigest,
+		)
+	}
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		return nil, fmt.Errorf("compile immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if machine.Digest() != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"compiled immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, machine.Digest(), id.WorkflowDigest,
+		)
+	}
+	return machine, nil
+}
+
 // refuseResume ends a run whose WF-016 resume verification failed at the
-// canonical PhaseFailed terminal (maintainer ruling on #520, issue comment
-// 2026-07-16T08:45:22Z): the run cannot proceed through no operator's or
-// scheduler's live decision, so the aborted/cancelled family — which implies
-// someone CHOSE to stop it — is the wrong phase; this is a failure of the
-// run, even though the refusal itself is correct behavior WF-016 must keep.
-// Landing on PhaseFailed also gets this path #498/#526's claim-release
-// coverage with zero special-casing, instead of leaving the journal's phase
-// "running" forever the way the pre-#520 bare-error return did — the live
-// failure mode was a config-only daemon restart leaking one held claim per
-// in-flight run.
+// canonical PhaseFailed terminal and releases its claim.
 //
 // Per the ruling, the WF-016 text must survive durably in two places: the
 // run.finished event's own Error field (never a separate preceding error

@@ -37,10 +37,37 @@ func newDaemonFixtureRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	runFixtureGit(t, work, "add", "README.md")
 	runFixtureGit(t, work, "commit", "-m", "initial")
 	runFixtureGit(t, "", "clone", "--bare", work, bare)
 	return bare
+}
+
+func TestInterruptedRunMachineSelectsPinnedHistoricalDigest(t *testing.T) {
+	current, err := workflow.Compile(workflow.Definition{
+		Name: "implementation", Version: 2,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "current",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, source := interruptedRunMachine(journal.RunIdentity{
+		WorkflowDigest: current.Digest(),
+	}, current); got != current || source != "current-config" {
+		t.Fatalf("matching digest selected machine=%p source=%q, want current-config", got, source)
+	}
+	if got, source := interruptedRunMachine(journal.RunIdentity{
+		WorkflowDigest: "sha256:historical",
+	}, current); got != nil || source != "pinned-snapshot" {
+		t.Fatalf("historical digest selected machine=%p source=%q, want nil pinned-snapshot", got, source)
+	}
 }
 
 func runFixtureGit(t *testing.T, dir string, args ...string) {
