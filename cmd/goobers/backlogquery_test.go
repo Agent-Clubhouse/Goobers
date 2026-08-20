@@ -246,6 +246,75 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	}
 }
 
+// TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick locks in the #233
+// gate for list/scan pumps: a plain backlog-query (no --claim) that declares a
+// resultFile and finds nothing must emit ResultNoWork (noWork:true in the
+// declared file) so the runner short-circuits to a clean PhaseCompleted before
+// any downstream agentic stage runs. Without this, a scan-then-act workflow
+// invoked its model-backed stage every empty tick only to rediscover there was
+// nothing to act on — burning tokens on each poll.
+func TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	// No approved issues seeded -> empty eligible set on this tick.
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scan-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "scan.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("empty pump scan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "scan.json"))
+	if err != nil {
+		t.Fatalf("read scan.json: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal scan.json: %v", err)
+	}
+	if got["noWork"] != true {
+		t.Fatalf("scan.json = %v, want noWork:true so the runner short-circuits before the agentic router", got)
+	}
+}
+
+// TestBacklogQueryPlainScanWithWorkDoesNotGate guards the other side of the
+// gate: a plain scan that finds eligible items must NOT report ResultNoWork, so
+// the run proceeds to its downstream stage and actually does the work.
+// Over-gating here would silently stall any scan-then-act workflow whenever the
+// backlog was non-empty.
+func TestBacklogQueryPlainScanWithWorkDoesNotGate(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(9, "Unlaned work", "goobers:approved")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scan-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "scan.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("scan with work: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "no work:") {
+		t.Fatalf("scan with an eligible item must not gate as no-work: stdout = %q", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "scan.json"))
+	if err != nil {
+		t.Fatalf("read scan.json: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal scan.json: %v", err)
+	}
+	if got["noWork"] == true {
+		t.Fatalf("scan.json = %v, want no noWork gate so the downstream router runs", got)
+	}
+}
+
 func TestBacklogQueryRequiresParentPublishedRecordForDecompositionChild(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
