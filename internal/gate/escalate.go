@@ -116,11 +116,20 @@ func CountFailureStreak(ctx context.Context, poster Commenter, repository provid
 	if err != nil {
 		return 0, "", fmt.Errorf("list comments for failure streak: %w", err)
 	}
+	var latestCount int
+	var latestID string
+	foundMarker := false
 	for _, c := range comments {
 		if strings.Contains(c.Body, failureStreakMarker) {
-			count := parseStreakCount(c.Body)
-			return count, c.ID, nil
+			// Providers without comment editing may retain older marker
+			// comments after each update. The newest marker is authoritative.
+			latestCount = parseStreakCount(c.Body)
+			latestID = c.ID
+			foundMarker = true
 		}
+	}
+	if foundMarker {
+		return latestCount, latestID, nil
 	}
 	return 0, "", nil
 }
@@ -168,7 +177,12 @@ func UpsertFailureComment(ctx context.Context, poster Commenter, repository prov
 	}
 	for _, c := range comments {
 		if strings.Contains(c.Body, failureStreakMarker) {
-			return poster.UpdateComment(ctx, repository, c.ID, body)
+			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
+				return nil
+			}
+			// ADO cannot edit work-item comments. Posting a new marker keeps
+			// the latest count durable; CountFailureStreak uses that marker.
+			break
 		}
 	}
 	if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
@@ -177,6 +191,41 @@ func UpsertFailureComment(ctx context.Context, poster Commenter, repository prov
 		Comment:    body,
 	}); err != nil {
 		return fmt.Errorf("post failure streak comment: %w", err)
+	}
+	return nil
+}
+
+// ResetFailureComment records a successful terminal run without creating a
+// marker comment for items that have never failed.
+func ResetFailureComment(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID, runID, runURL string) error {
+	comments, err := poster.ListComments(ctx, repository, itemID)
+	if err != nil {
+		return fmt.Errorf("list comments for failure reset: %w", err)
+	}
+	body := fmt.Sprintf(
+		"Goobers: failure streak reset after successful terminal run [`%s`](%s).\n\n"+
+			"<!-- goobers:failure-streak data-count=\"0\" -->",
+		runID, runURL,
+	)
+	foundMarker := false
+	for _, c := range comments {
+		if strings.Contains(c.Body, failureStreakMarker) {
+			foundMarker = true
+			if err := poster.UpdateComment(ctx, repository, c.ID, body); err == nil {
+				return nil
+			}
+			break
+		}
+	}
+	if !foundMarker {
+		return nil
+	}
+	if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repository,
+		ID:         itemID,
+		Comment:    body,
+	}); err != nil {
+		return fmt.Errorf("post failure streak reset: %w", err)
 	}
 	return nil
 }
