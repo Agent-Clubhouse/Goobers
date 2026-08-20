@@ -544,6 +544,11 @@ the target's current state. The fleet portal carries the authenticated conversat
 and tool-event stream; it does not copy cluster credentials into the browser or run
 cluster commands itself.
 
+Every remotely initiated Copilot process runs inside a mandatory sandbox. Model and
+harness tool controls are defense in depth, not the confinement boundary. If the
+instance cannot establish and verify the required sandbox, the session fails closed
+before Copilot starts; there is no remote "trusted environment" bypass.
+
 The target session uses the release-matched Copilot CLI and Goobers agent toolkit so
 local and remote diagnosis share instructions, command semantics, redaction, and
 versioning. A session reports its Copilot CLI, toolkit, Goobers, and Kubernetes
@@ -593,6 +598,53 @@ dedicated diagnostic namespace or the instance's control namespace. It MUST have
 For local or VM instances, the equivalent runtime is a constrained child process or
 sandbox owned by the instance. It uses the same diagnostic profile and session
 protocol rather than a separate remote-administration design.
+
+#### The sandbox is a mandatory security boundary
+
+Copilot, its model output, invoked tools, and all target-derived content are untrusted.
+Tool allowlists and confirmation prompts do not replace an independently enforced
+sandbox: a compromised harness, prompt-injected model, vulnerable tool, or malformed
+target response must still be contained.
+
+Each diagnostic session receives a fresh sandbox and MUST NOT reuse another session's
+process, writable home, Copilot state, temporary files, service-account token, or
+credential material. The sandbox enforces all of these dimensions:
+
+- **Identity:** a unique session identity with only the diagnostic profile's
+  permissions. Kubernetes service-account tokens are projected, short-lived,
+  audience-bound, and omitted entirely when Kubernetes API access is unnecessary.
+- **Filesystem:** a fresh writable scratch root; target configuration, journals, logs,
+  and artifacts mounted read-only when access is granted; no host filesystem, other
+  instance volume, container runtime socket, SSH agent, user home, or secret-store
+  mount.
+- **Process:** private process namespace; no host PID/IPC; no privilege escalation,
+  setuid binaries, added Linux capabilities, device access, or ability to signal
+  processes outside the sandbox.
+- **Network:** default-deny ingress and egress. Permit only the exact fleet stream,
+  Copilot/model endpoint, DNS path, and target APIs required by the selected profile.
+  Access to cloud metadata endpoints and unrelated cluster or internet destinations
+  is denied.
+- **Kubernetes:** a restricted Pod Security posture plus explicit seccomp and, where
+  available, AppArmor or equivalent mandatory access control. Namespace and RBAC
+  constrain API reads independently from network reachability.
+- **Resources:** hard CPU, memory, process-count, file-size, ephemeral-storage,
+  bandwidth, session-duration, idle, and concurrency limits.
+- **Lifecycle:** deletion on close, expiry, revocation, fleet disconnect, or instance
+  restart, with a controller-side deadline so cleanup does not depend on the Copilot
+  process cooperating.
+
+The instance performs a bounded sandbox preflight before admitting a session and
+records the mechanism and policy digest in the audit event. Admission fails if the
+mechanism is absent, degraded, or cannot prove the required controls. Production
+validation MUST include adversarial confinement probes that attempt filesystem writes,
+cross-session access, credential reads, process escape, forbidden network egress, and
+out-of-scope Kubernetes API operations.
+
+Local and VM diagnostic sessions follow the existing platform-neutral sandbox seam and
+[ADR 0001](../adr/0001-agentic-sandbox-mechanism.md): Seatbelt on supported macOS hosts,
+bubblewrap on supported Linux hosts, or a stronger approved mechanism. Unlike a
+locally initiated stage where an owner may knowingly choose a documented trusted-local
+posture, a session initiated through the fleet portal has no unsandboxed fallback.
 
 ### 11.4 Diagnostic profiles
 
@@ -846,6 +898,8 @@ are approved.
   fleet.
 - Giving the fleet portal cluster credentials or executing diagnostic tools in the
   fleet service itself.
+- Falling back to an unsandboxed Copilot process when diagnostic-session confinement
+  is unavailable or fails preflight.
 - Allowing a diagnostic session to read secret values, escape its target scope, or
   broaden its own permissions.
 - Allowing instances to enumerate other instances or fleet users.
