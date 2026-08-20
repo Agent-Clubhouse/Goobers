@@ -188,6 +188,9 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 // AuthenticatedLogin returns the GitHub login represented by the provider's
 // credential.
 func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
+	if p.configuredLogin != "" {
+		return p.configuredLogin, nil
+	}
 	endpoint, err := joinURL(p.BaseURL, "user")
 	if err != nil {
 		return "", err

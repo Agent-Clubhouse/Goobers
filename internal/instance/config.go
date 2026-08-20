@@ -715,12 +715,31 @@ type RepoAuthConfig struct {
 	// inline value (CFG-009). The key only ever signs short-lived App JWTs
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
+	// Slug is the App's URL-safe handle (the part before "[bot]" in its
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind github-app.
+	// Installation tokens cannot call GET /user, so the provider identity's
+	// login — which every trusted-comment check (claim markers, verdicts,
+	// handoffs) compares against — must be declared here (#3343). Without it
+	// those checks fail with "Resource not accessible by integration" the
+	// first time they run under App auth.
+	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
+}
+
+// BotLogin returns the GitHub login this auth block authenticates as, when
+// declarable: the App slug plus "[bot]" for kind github-app with Slug set,
+// otherwise empty (a PAT's login is discoverable via GET /user at runtime and
+// needs no declaration).
+func (a *RepoAuthConfig) BotLogin() string {
+	if a == nil || a.Kind != GitHubAuthApp || strings.TrimSpace(a.Slug) == "" {
+		return ""
+	}
+	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
-	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil
+	return a.AppID != "" || a.InstallationID != "" || a.PrivateKey != nil || a.Slug != ""
 }
 
 // GitHubID is a GitHub identifier config field YAML authors may write as a
