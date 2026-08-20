@@ -1247,6 +1247,42 @@ func (p *GiteaProvider) BranchTipSHA(ctx context.Context, repo RepositoryRef, br
 	return b.Commit.ID, nil
 }
 
+// RepositoryFileContent returns one file's contents at ref. Gitea serves raw
+// bytes from repos/{owner}/{repo}/raw/{path}?ref={ref} rather than GitHub's
+// base64-in-JSON contents payload, so this reads the body directly instead of
+// going through do/readJSONResponse. A read, so it emits no mutation event.
+func (p *GiteaProvider) RepositoryFileContent(ctx context.Context, repo RepositoryRef, path, ref string) ([]byte, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "raw", path)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"ref": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	content, _, err := readPage(resp, http.MethodGet, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
 // PullRequestFiles lists the files a pull request touches. Gitea returns no
 // patch text, so ChangedFile.Patch stays empty (permitted by the field's
 // contract). A read, so it emits no mutation event.

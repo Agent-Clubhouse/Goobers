@@ -436,6 +436,26 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 
 // reconstructPhase derives the run phase from the event log — the source of
 // truth — rather than trusting the derived state.json checkpoint.
+//
+// A gate the runner EXECUTED that resolves to a reserved TERMINAL target
+// ("@abort"/"@escalate") ends the run, and does not always get a trailing
+// run.finished event: terminalization can die between the gate and the
+// run.finished append because the terminal preparer performs external forge
+// cleanup. Left unhandled, the run reports PhaseRunning forever and its claim
+// remains unavailable to both selection and remediation until the lease ends.
+//
+// A HUMAN gate's decision is deliberately NOT terminal here. A human decision
+// is recorded out-of-band (gate.Evaluator.EvaluateHuman appends gate.evaluated
+// directly onto a paused run) BEFORE the runner has resumed and executed it, so
+// the event means "a decision is pending", not "the run ended". Terminalizing on
+// it would make Resume refuse to replay the very decision it was handed. The
+// runner's own execution is what distinguishes the two: an executed gate is
+// always preceded by gate.started, whereas a pending human decision follows
+// gate.paused with no gate.started — see terminalGateExecuted.
+//
+// The scan still runs newest-first, so an explicit run.finished, a resume, or a
+// gate override recorded AFTER the terminal gate wins — a re-entered run is
+// running again regardless of how a previous attempt ended.
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
@@ -443,9 +463,75 @@ func reconstructPhase(events []Event) RunPhase {
 			return PhaseRunning
 		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
+		case EventGateEvaluated:
+			if phase, terminal := phaseFromTerminalTarget(events[i].Target); terminal {
+				if !terminalGateExecuted(events, i) {
+					return PhaseRunning
+				}
+				return phase
+			}
 		}
 	}
 	return PhaseRunning
+}
+
+// terminalGateExecuted reports whether the gate.evaluated at index i was
+// produced by the RUNNER executing the gate, rather than by an out-of-band
+// human decision recorded onto a still-paused run.
+//
+// The runner announces execution with gate.started; a human decision written by
+// EvaluateHuman appends gate.evaluated straight after the gate.paused that is
+// still awaiting it. So: scanning back over this gate's own records, a
+// gate.started means executed, and reaching gate.paused first means the run is
+// still paused with a decision pending.
+//
+// A gate.evaluated with neither marker (the common automated in-line path, and
+// every synthetic/older log) counts as executed — the conservative choice that
+// preserves the stranded-claim fix.
+func terminalGateExecuted(events []Event, i int) bool {
+	gateName := events[i].Gate
+	branch := events[i].Branch
+	for j := i - 1; j >= 0; j-- {
+		ev := events[j]
+		// Parallel branches share one append-only journal. Only records from
+		// this evaluation's branch can establish whether its gate was paused or
+		// started; another branch may interleave arbitrary events between them.
+		if ev.Branch != branch {
+			continue
+		}
+		if ev.Gate != gateName {
+			// Reached records belonging to a different gate or stage: no
+			// pending-decision pause for this one.
+			if ev.Type == EventGatePaused || ev.Type == EventGateStarted {
+				continue
+			}
+			return true
+		}
+		switch ev.Type {
+		case EventGateStarted:
+			return true
+		case EventGatePaused:
+			return false
+		case EventGateEvaluated:
+			// An earlier evaluation of the same gate (a repass); this one was
+			// reached by the runner running the gate again.
+			return true
+		}
+	}
+	return true
+}
+
+// phaseFromTerminalTarget maps a gate's reserved terminal target to the run
+// phase it produces. "@join" is deliberately NOT terminal: it ends a BRANCH and
+// the run continues at the join state.
+func phaseFromTerminalTarget(target string) (RunPhase, bool) {
+	switch target {
+	case TargetAbort:
+		return PhaseAborted, true
+	case TargetEscalate:
+		return PhaseEscalated, true
+	}
+	return PhaseRunning, false
 }
 
 // reconstructReason derives the terminal run's durable reason from the event

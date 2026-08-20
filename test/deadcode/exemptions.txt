@@ -60,7 +60,6 @@ github.com/goobers/goobers/internal/workflow/v_next.CheckGaggleFeatureSupport # 
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
-github.com/goobers/goobers/providers.WithGiteaTokenSource # Public Gitea per-request token-source option retained for the credentialed construction path and external provider consumers; mirrors the ADO credential-source option and is exercised by provider tests.
 github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
@@ -235,3 +234,19 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+
+# FakeAdapter is the shared harness test double, promoted to a non-test file so
+# tests in other packages (cmd/goobers) can import it (#2886). Only *_test.go
+# reference it and its helpers, which this gate does not count.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Name # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Run # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.WriteCompletion # shared harness completion-file test helper (#2886); only _test.go callers.
+
+# testdep is a cross-package test-dependency guard (skips a test when a required
+# CLI/env is absent); it must be an importable package rather than a _test.go
+# helper so other packages' tests can call it (#2886). Only *_test.go reference it.
+github.com/goobers/goobers/internal/testdep.Dependencies # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.Require # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.RequireEnv # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.require # cross-package test-dep guard (#2886); only _test.go callers.

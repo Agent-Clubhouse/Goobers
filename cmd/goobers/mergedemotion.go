@@ -131,7 +131,7 @@ func demotionStillHolds(ctx context.Context, provider remediationProvider, repo 
 // to do with an error: the election read-sites treat a resolution failure as an
 // empty demoted set (today's behavior) rather than failing the pipeline, so a
 // provider hiccup can never turn the demotion signal into a merge outage.
-func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
+func demotedSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
 	for _, pr := range prs {
 		if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {

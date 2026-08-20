@@ -626,6 +626,56 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 }
 
+func TestListStatusRunsTreatsExecutedTerminalGateAsTerminal(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"terminal-gate-run",
+		"implementation",
+		"goobers",
+		startedAt,
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	clock.now = startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventGateStarted, Gate: "merge-gate"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "merge-gate", Verdict: "fail", Target: journal.TargetAbort,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(3 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("ListStatusRuns returned %d runs, want 1", len(runs))
+	}
+	got := runs[0]
+	if got.Phase != journal.PhaseAborted || !got.Terminal || got.FinishedAt == nil {
+		t.Fatalf("summary = phase %q terminal %v finished %v, want aborted terminal",
+			got.Phase, got.Terminal, got.FinishedAt)
+	}
+	wantFinished := startedAt.Add(2 * time.Minute)
+	if !got.FinishedAt.Equal(wantFinished) {
+		t.Fatalf("finished_at = %v, want gate time %v", got.FinishedAt, wantFinished)
+	}
+}
+
 func writeInitCompleted(t *testing.T, layout instance.Layout, at time.Time) {
 	t.Helper()
 	instanceLog, _, err := journal.OpenInstanceLog(

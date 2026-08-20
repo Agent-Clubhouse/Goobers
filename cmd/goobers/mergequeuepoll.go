@@ -79,6 +79,10 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runMergeQueuePollADO(root, repo, stdout, stderr)
 	}
+	if repo.Provider != providers.ProviderGitHub {
+		pf(stderr, "error: merge-queue-poll does not support repository provider %q (native merge-queue polling is unavailable)\n", repo.Provider)
+		return 1
+	}
 	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
 		withStageProviderCapability(capability.GitHubPRMerge),
 		withStageProviderMutations("pr"),
@@ -172,7 +176,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			if optedOut {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return mergeQueuePollMerged(ctx, root, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
 					entrySeen = true
 					absentStreak = 0
@@ -195,7 +199,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			} else {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return mergeQueuePollMerged(ctx, root, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryEvicted:
 					return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
@@ -271,13 +275,13 @@ func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writ
 // same branch cleanup merge-pr's direct-merge path already does — a
 // separate PollPullRequest call resolves the head branch/repository
 // PollMergeQueueEntryResult does not itself carry.
-func mergeQueuePollMerged(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+func mergeQueuePollMerged(ctx context.Context, root string, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
 	var cleanup *mergeBranchCleanup
 	poll, pollErr := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 	if pollErr != nil {
 		pf(stderr, "warning: merge queue merged pr #%s but branch cleanup lookup failed: %v\n", pullNumber, pollErr)
 	} else {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merge queue merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)

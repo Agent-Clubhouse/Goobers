@@ -122,25 +122,27 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubPRWrite),
-		withStageProviderMutations("pr"),
-	)
+	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubIssuesWrite),
-		withStageProviderMutations("issue"),
-	)
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := newProviderForStage(root, repo, false,
-		withStageProviderCapability(capability.GitHubBranchDelete),
-	); err != nil {
+	if _, err := providerToken(capability.GitHubBranchDelete); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider, err := mergeStageProviderWithRecorder(root, repo, prToken, sidecarMutationRecorder{kind: "pr"})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProviderWithRecorder(root, repo, issuesToken, false, sidecarMutationRecorder{kind: "issue"})
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -167,7 +169,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 func reconcileOpenPullRequestParks(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	base string,
@@ -238,7 +240,8 @@ func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix s
 
 func reconcilePostMerges(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	limit int,
@@ -341,7 +344,8 @@ func reconcilePostMerges(
 
 func reconcilePostMergeActions(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	root string,
 	poll providers.PullRequestPollResult,
 	key string,
@@ -376,7 +380,7 @@ func reconcilePostMergeActions(
 	}
 
 	if err := run("branch cleanup", &entry.Actions.BranchCleanup, func() []error {
-		cleanup := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		cleanup := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		if cleanup.Error != "" {
 			return []error{errors.New(cleanup.Error)}
 		}
