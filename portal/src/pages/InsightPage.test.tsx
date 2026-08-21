@@ -308,8 +308,22 @@ describe("Insight page", () => {
     getTelemetryStats.mockResolvedValue({
       creditAssignment: [],
       gaggles: [
-        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
-        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+        {
+          gaggle: "core",
+          totalRuns: 4,
+          completedRuns: 1,
+          failedRuns: 1,
+          infraFailedRuns: 0,
+          otherRuns: 2,
+        },
+        {
+          gaggle: "tools",
+          totalRuns: 1,
+          completedRuns: 0,
+          failedRuns: 0,
+          infraFailedRuns: 0,
+          otherRuns: 1,
+        },
       ],
       runs: [],
       stages: [],

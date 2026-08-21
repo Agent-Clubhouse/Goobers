@@ -1060,6 +1060,12 @@ type EngineConfig struct {
 // RunConditions are instance-level run conditions (§7): max parallel runs and
 // per-workflow run budgets.
 type RunConditions struct {
+	// MaxParallelRuns caps total concurrent runs across every workflow in the
+	// instance (internal/localscheduler.Conditions.instanceMaxParallel).
+	// Zero or omitted means UNLIMITED — bounded only by each workflow's own
+	// MaxConcurrentRuns/MaxRunsPerHour. This is the opposite convention from
+	// a workflow's own spec.readiness.maxRunsPerHour, where zero/omitted
+	// falls back to a default of 10 rather than meaning unlimited (#3360).
 	MaxParallelRuns int            `json:"maxParallelRuns,omitempty" yaml:"maxParallelRuns,omitempty"`
 	WorkflowBudgets map[string]int `json:"workflowBudgets,omitempty" yaml:"workflowBudgets,omitempty"`
 	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
@@ -2020,7 +2026,8 @@ func validateOTLPEndpoint(endpoint string, insecure bool) error {
 		return fmt.Errorf("https conflicts with insecure: true")
 	}
 	if insecure && !isLoopbackHost(host) {
-		return fmt.Errorf("insecure mode is allowed only for localhost or a loopback IP")
+		return fmt.Errorf("insecure mode is allowed only for localhost or a loopback IP " +
+			"(run a loopback sidecar collector, or point endpoint at a TLS collector and drop insecure: true)")
 	}
 	return nil
 }

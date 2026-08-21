@@ -1059,7 +1059,7 @@ spec:
 		Code:        WarningMissingSkillPackage,
 		Severity:    Warning,
 		Scope:       "config.yaml Goober/coder",
-		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 	}
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
@@ -1132,7 +1132,7 @@ spec:
 		}
 	}
 	for _, want := range []string{
-		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
 		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
 	} {
@@ -1280,6 +1280,84 @@ func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
 	}
 	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
 		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestSubprocessTimeoutCodeStable(t *testing.T) {
+	if got, want := WarningSubprocessTimeout, WarningCode("WF021"); got != want {
+		t.Fatalf("WarningSubprocessTimeout = %q, want stable code %q", got, want)
+	}
+	for _, other := range []WarningCode{errorCapabilityRuntimeSupport, WarningGateCompletionHidesFailure} {
+		if WarningSubprocessTimeout == other {
+			t.Fatalf("WarningSubprocessTimeout duplicates %q", other)
+		}
+	}
+}
+
+func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		task        apiv1.Task
+		wantWarning bool
+	}{
+		{
+			name: "make target with GO_TEST_TIMEOUT override at or above stage timeout warns (#3377)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 1500,
+			},
+			wantWarning: true,
+		},
+		{
+			name: "stage budget clearing the declared subprocess ceiling is clean",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 2400,
+			},
+		},
+		{
+			name: "bare make target with no declared override is clean (deliberately narrow detection)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}},
+				TimeoutSeconds: 1500,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningSubprocessTimeout {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantWarning {
+				if len(got) != 1 {
+					t.Fatalf("subprocess-timeout warnings = %v, want one; report: %s", got, joinIssues(report))
+				}
+				if got[0].Severity != Warning {
+					t.Fatalf("severity = %q, want warning", got[0].Severity)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("subprocess-timeout warnings = %v, want none", got)
+			}
+		})
 	}
 }
 
@@ -1488,6 +1566,109 @@ func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
 	if !strings.Contains(warnings[0].Explanation, want) {
 		t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
+	}
+}
+
+// TestExplicitZeroMaxRunsPerHourWarns reproduces #3360: a workflow that
+// writes readiness.maxRunsPerHour: 0 expecting "unlimited" (by analogy to
+// instance.yaml's runConditions.maxParallelRuns, where 0 does mean
+// unlimited) instead gets silently throttled to the scheduler's default of
+// 10/hour. `goobers validate` must surface this as a non-fatal warning
+// naming both the actual behavior and the asymmetric field, and must NOT
+// warn when the field is simply omitted or set to a positive value — the
+// overwhelming majority of real workflows never set it at all.
+func TestExplicitZeroMaxRunsPerHourWarns(t *testing.T) {
+	const configTemplate = `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: example
+spec:
+  instance:
+    name: example
+    environment: dev
+  gaggles:
+    - acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: build
+spec:
+  gaggle: acme
+  triggers:
+    - type: manual
+  start: build
+%s  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`
+
+	tests := []struct {
+		name      string
+		readiness string
+		wantWarn  bool
+	}{
+		{name: "explicit zero warns", readiness: "  readiness:\n    maxRunsPerHour: 0\n", wantWarn: true},
+		{name: "omitted does not warn", readiness: "", wantWarn: false},
+		{name: "explicit positive does not warn", readiness: "  readiness:\n    maxRunsPerHour: 5\n", wantWarn: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(configTemplate, tc.readiness)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if report.HasErrors() {
+				t.Fatalf("warning must not fail validation:\n%s", joinIssues(report))
+			}
+
+			var got []CodedWarning
+			for _, warning := range report.Warnings() {
+				if warning.Code == WarningZeroMaxRunsPerHour {
+					got = append(got, warning)
+				}
+			}
+			if !tc.wantWarn {
+				if len(got) != 0 {
+					t.Fatalf("WF020 warnings = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("WF020 warnings = %+v, want exactly one", got)
+			}
+			for _, want := range []string{"maxRunsPerHour", "unlimited", "10", "maxParallelRuns"} {
+				if !strings.Contains(got[0].Explanation, want) {
+					t.Errorf("warning explanation = %q, want it to contain %q", got[0].Explanation, want)
+				}
+			}
+		})
 	}
 }
 

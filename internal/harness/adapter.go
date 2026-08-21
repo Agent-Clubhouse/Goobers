@@ -165,6 +165,30 @@ type Outcome struct {
 	// InputInspectionReceiptsCollected reports that goobers-io receipt
 	// collection was configured, including when no inspection call occurred.
 	InputInspectionReceiptsCollected bool
+	// MCPServerFailures lists MCP servers this adapter registered for the
+	// session that the harness CLI then reported as not connected at
+	// invocation time — either an explicit non-"connected" status or the
+	// server missing from the CLI's own connection report entirely. A
+	// populated list means every tool those servers provide was silently
+	// absent from the agent's session even though the resolved config
+	// declared them (#3356): the Executor journals it loudly so a downstream
+	// MISSING_REQUIRED_TOOLS-shaped block stops wearing an unrelated
+	// costume. Only adapters whose harness reports per-server connection
+	// state populate this (claude-code's stream-json system/init event);
+	// nil elsewhere, and nil never asserts that servers WERE available.
+	MCPServerFailures []MCPServerFailure
+}
+
+// MCPServerFailure identifies one MCP server that was registered for a
+// harness session but reported unusable by the harness CLI at invocation
+// time (#3356).
+type MCPServerFailure struct {
+	// Server is the registered MCP server name (e.g. "goobers-io").
+	Server string
+	// Status is the harness-reported connection status (e.g. "failed"), or
+	// "absent" when the harness's connection report did not mention the
+	// registered server at all.
+	Status string
 }
 
 // PreflightInfo describes the installed harness verified before agentic work

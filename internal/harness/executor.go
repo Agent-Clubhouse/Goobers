@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -340,7 +341,19 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
-		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize credentials: %w", err)
+		// A credential-materialization failure is an infrastructure fault at
+		// stage-environment build time, not evidence about the work (#3361):
+		// typed with its own code (executor.StageFailure, so telemetry rows
+		// carry credential_unavailable/infra instead of executor_error/
+		// unknown) AND marked via the invoke.InfrastructureFailure seam, so
+		// the runner retries on the bounded infrastructure budget (journal
+		// AttemptClass "infra") instead of consuming the stage's policy
+		// attempts — at attempt budgets of 1, the old classification turned a
+		// transient provider 403 into a terminal work failure.
+		return Outcome{}, nil, nil, invoke.InfrastructureFailure(executor.StageFailure(
+			telemetry.ErrCodeCredentialUnavailable,
+			fmt.Errorf("harness: materialize credentials: %w", err),
+		))
 	}
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {
@@ -420,6 +433,42 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 				env.TaskID,
 				err,
 			))
+		}
+	}
+	if len(out.MCPServerFailures) > 0 {
+		// A registered MCP server the harness reported as not connected
+		// (#3356): every tool it provides was absent from the agent's
+		// session even though the resolved config declared it. Journal it
+		// loudly next to whatever the stage goes on to report, so a
+		// tool-shaped failure (e.g. an agent-authored MISSING_REQUIRED_TOOLS
+		// block) names its actual cause instead of surfacing two layers away
+		// wearing an unrelated costume. Annotation only — the run's own
+		// outcome is untouched, so nothing that worked before changes.
+		servers := make([]map[string]string, 0, len(out.MCPServerFailures))
+		for _, failure := range out.MCPServerFailures {
+			servers = append(servers, map[string]string{
+				"server": failure.Server,
+				"status": failure.Status,
+			})
+		}
+		if appender, ok := e.recorder.(EventAppender); ok {
+			if err := appender.Append(journal.Event{
+				Type:  journal.EventRunnerAnnotation,
+				Stage: env.TaskID,
+				Runner: map[string]any{
+					"kind":    "mcp-server-unavailable",
+					"servers": servers,
+					"detail": "registered MCP servers were not connected at invocation; " +
+						"their tools were unavailable to the agent for this whole session — " +
+						"any missing-tool failure this stage reports is caused here",
+				},
+			}); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf(
+					"harness: journal MCP server availability for %q: %w",
+					env.TaskID,
+					err,
+				))
+			}
 		}
 	}
 	if out.TranscriptSchema == "" {

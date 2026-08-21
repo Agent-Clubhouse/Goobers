@@ -35,6 +35,19 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
+// maxRemediationEvidenceRejections bounds how many times one gate evaluation
+// may bounce an unchanged remediation back to its subject stage for failing the
+// failure-evidence check (issue #3375).
+//
+// This rejection returns from stepGate BEFORE the gate resolves an outcome, so
+// gate.Evaluator's repass, infrastructure, and evaluator-retry budgets never
+// see it and DefaultMaxSteps was the only thing bounding the loop — thousands
+// of agentic invocations, each one charged to nothing. Three is deliberately
+// small: the addendum tells the agent exactly which pointers to read with which
+// tools, so an agent that has not complied by its third try is not converging,
+// and the escalation is strictly cheaper than another invocation.
+const maxRemediationEvidenceRejections = 3
+
 // toolchainPreflightState is the synthetic failing-state name recorded when a
 // run fails the #735 toolchain preflight before any real stage executes, so a
 // `failed` run's FailureStage reads as the preflight rather than mis-attributing
@@ -332,6 +345,13 @@ type FailedOutcome struct {
 	// external work items because nested execution errors can contain sensitive
 	// prompts, argv, credentials, environment values, or context.
 	Cause string
+	// Code is the stable machine-readable failure code the run terminated
+	// with — the same value Result.FailureCode carries (a stage's own typed
+	// code where one exists, else "run_failed"). Handlers use it to classify
+	// the terminal's disposition (telemetry.ClassifyError): an infra-fault
+	// terminal (#3361) must not feed work-quality signals like the
+	// failure-streak circuit breaker (#3364).
+	Code string
 }
 
 // FailedHandler is Config.Failed's shape. Implementations are instance-level
@@ -1008,6 +1028,40 @@ type walkState struct {
 	infraRepassAttempts  map[string]int
 	gateDiffDigests      map[string]string
 	visitedStages        map[string]bool
+	// evidenceRejections is the per-gate budget for the runner's own
+	// corrective re-dispatch of a remediation stage that failed the
+	// failure-evidence check (#3375). Seeded on resume from the journaled
+	// rejection annotations, so a crash mid-loop does not hand the loop a
+	// fresh budget.
+	evidenceRejections map[string]evidenceRejectionBudget
+}
+
+// evidenceRejectionBudget is one gate's consecutive
+// REMEDIATION_EVIDENCE_NOT_INSPECTED rejection count, pinned to the diff digest
+// it was accumulated against. A changed digest means the subject stage actually
+// committed something different — a genuinely new attempt, which earns a fresh
+// budget rather than inheriting the exhaustion of the attempt before it.
+type evidenceRejectionBudget struct {
+	digest string
+	count  int
+}
+
+// chargeEvidenceRejection records one evidence rejection against gateName's
+// budget, returning the resulting count and whether the budget is now spent.
+// It does not clear the count on exhaustion: a gate that somehow re-reaches
+// this state for the same digest must escalate again rather than restart the
+// loop.
+func (ws *walkState) chargeEvidenceRejection(gateName, digest string) (int, bool) {
+	if ws.evidenceRejections == nil {
+		ws.evidenceRejections = map[string]evidenceRejectionBudget{}
+	}
+	budget := ws.evidenceRejections[gateName]
+	if budget.digest != digest {
+		budget = evidenceRejectionBudget{digest: digest}
+	}
+	budget.count++
+	ws.evidenceRejections[gateName] = budget
+	return budget.count, budget.count >= maxRemediationEvidenceRejections
 }
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
@@ -1753,9 +1807,25 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	if err != nil {
 		var evidenceErr *remediationEvidenceInspectionError
 		if errors.As(err, &evidenceErr) {
-			ws.retryInstructionAddendum = "Your unchanged remediation result was rejected by the runner: " +
-				evidenceErr.info.Message +
-				". Inspect every required failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the failure is non-actionable if no source change is needed."
+			// #3375: this re-dispatch is the runner's own, taken before the
+			// gate resolves any outcome, so nothing downstream charges it —
+			// count it here or the loop is bounded only by DefaultMaxSteps.
+			rejections, exhausted := ws.chargeEvidenceRejection(g.Name, evidenceErr.digest)
+			if exhausted {
+				escalation, escErr := ws.gateEval.EscalateUninspectedRemediation(
+					g, evidenceErr.info, rejections, evidenceErr.digest)
+				if escErr != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, escErr)
+					return gr, false, terminal, true, failErr
+				}
+				return escalation, false, Result{}, false, nil
+			}
+			ws.retryInstructionAddendum = fmt.Sprintf(
+				"Your unchanged remediation result was rejected by the runner: %s. Inspect every required "+
+					"failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the "+
+					"failure is non-actionable if no source change is needed. This was rejection %d of %d — after "+
+					"the last one this gate escalates the run instead of dispatching you again.",
+				evidenceErr.info.Message, rejections, maxRemediationEvidenceRejections)
 			ws.state = ws.lastStage
 			return gr, true, Result{}, false, nil
 		}
@@ -1900,6 +1970,20 @@ func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (
 			}
 			return reason + ": repass produced a diff identical to the immediately prior attempt", true
 		}
+		// #3375: an evidence-rejection escalation is not budget exhaustion —
+		// no repass was ever charged. Report what actually stopped the run,
+		// carrying the synthesized rationale's rejection count and cause.
+		if gr.Reason == gate.ReasonRemediationEvidenceNotInspected {
+			detail := "the remediation stage never inspected the required failure evidence"
+			if gr.Verdict != nil {
+				if rationale := strings.TrimSpace(gr.Verdict.Rationale); rationale != "" {
+					// The synthesized rationale is already runner-attributed;
+					// the reason code carries that, so don't say it twice.
+					detail = strings.TrimPrefix(rationale, "runner: ")
+				}
+			}
+			return gr.Reason + ": " + detail, true
+		}
 		return "repass budget exhausted", true
 	}
 
@@ -2012,6 +2096,17 @@ func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOu
 // notifier used by terminal gates. Provider and claim-resolution failures are
 // journaled and swallowed so notification cannot prevent terminal cleanup.
 func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, o BlockedOutcome) error {
+	return r.notifyStageEscalation(ctx, jr, runID, item, o.RepoRef, o.Stage, o.Reason)
+}
+
+// notifyStageEscalation posts a stage-attributed escalation comment on the
+// run's driving item(s). Shared by the blocked terminal (#544) and the
+// non-retryable disposition terminal (#415/#3363) — for the latter, the
+// stage's own stated reason IS the deliverable (a verified refusal's
+// citation), so it must reach the issue rather than live only in the run
+// journal on a pod disk. Provider and claim-resolution failures are journaled
+// and swallowed so notification cannot prevent terminal cleanup.
+func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, repoRef apiv1.RepoRef, stage, reason string) error {
 	if r.cfg.Escalation == nil {
 		return nil
 	}
@@ -2019,28 +2114,28 @@ func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, r
 	if err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type:  journal.EventError,
-			Stage: o.Stage,
+			Stage: stage,
 			Error: &journal.ErrorDetail{
 				Code:    "stage_terminal_item_resolution_failed",
 				Message: err.Error(),
 			},
 		}); aerr != nil {
-			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", o.Stage, aerr)
+			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", stage, aerr)
 		}
 		return nil
 	}
 	seq := jr.Seq()
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(o.RepoRef), itemID, runID, seq, o.Stage, o.Reason); err != nil {
+		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, stage, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type:  journal.EventError,
-				Stage: o.Stage,
+				Stage: stage,
 				Error: &journal.ErrorDetail{
 					Code:    "stage_terminal_notification_failed",
 					Message: err.Error(),
 				},
 			}); aerr != nil {
-				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", o.Stage, aerr)
+				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", stage, aerr)
 			}
 		}
 	}
@@ -2267,9 +2362,30 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// fails (#110), and a journal write failure of either is reported
 	// alongside origErr, never swallowing it.
 	message := boundFailureMessage(origErr.Error())
+	// The typed failure code is resolved BEFORE journaling/notifying so both
+	// the run_failed cause event and the Failed handler carry it: finalState
+	// is the failing stage/gate name where available (a gate-eval error,
+	// e.g.), empty for a genuinely state-less failure (max-steps, unknown
+	// state).
+	failureCode := "run_failed"
+	var terminalRunner map[string]any
+	var coded stageCodedError
+	if errors.As(origErr, &coded) && coded.StageErrorCode() != "" {
+		failureCode = coded.StageErrorCode()
+		// A typed cause carries its classification into the runner namespace
+		// (conformance-excluded, same seam as runTask's executor_error
+		// refinement) so the rollup's run_errors row for this terminal
+		// classifies by disposition — an infra-fault terminal (#3361) must be
+		// distinguishable from a work failure in every downstream metric
+		// (#3364) without re-parsing message text.
+		terminalRunner = map[string]any{
+			stageErrorClassKey: string(telemetry.ClassifyError(failureCode)),
+		}
+	}
 	appendErr := jr.Append(journal.Event{
-		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Type:   journal.EventError,
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Runner: terminalRunner,
 	})
 	// #1054: leave a human-visible trace on the driving item before finish()'s
 	// FinalizeTerminal releases the run's claims — this walk-level path is the
@@ -2277,7 +2393,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// walk), the exact case that was silently returning the issue to ready.
 	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
 	// a hung provider call. The full origErr is what the item's comment records.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2285,14 +2401,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
 	// diagnostic-append failure must not silently drop the cause the caller
-	// (the scheduler/daemon echo) needs; finalState is the failing stage/gate
-	// name where available (a gate-eval error, e.g.), empty for a genuinely
-	// state-less failure (max-steps, unknown state).
-	failureCode := "run_failed"
-	var coded stageCodedError
-	if errors.As(origErr, &coded) && coded.StageErrorCode() != "" {
-		failureCode = coded.StageErrorCode()
-	}
+	// (the scheduler/daemon echo) needs.
 	res.FailureStage, res.FailureCode, res.FailureMessage = finalState, failureCode, message
 	if ferr != nil {
 		return res, fmt.Errorf("%w (additionally failed to finalize terminal failure: %w)", origErr, ferr)
@@ -2317,6 +2426,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
 	code, message := failureCauseFrom(cause)
 	journaledMessage := message
+	var terminalRunner map[string]any
 	if code != "" {
 		// Code-prefixed for the on-disk cause event only (matching #545's
 		// blockedReason convention — a code alongside the code-named
@@ -2324,10 +2434,17 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 		// run_failed messages); Result.FailureCode carries the code on its own
 		// for the echo sites, so FailureMessage below stays bare.
 		journaledMessage = code + ": " + message
+		// Runner-namespace classification (conformance-excluded), mirroring
+		// failTerminal: the terminal cause row classifies by disposition so
+		// infra-fault terminals stay out of work-quality rollups (#3361/#3364).
+		terminalRunner = map[string]any{
+			stageErrorClassKey: string(telemetry.ClassifyError(code)),
+		}
 	}
 	if aerr := jr.Append(journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Runner: terminalRunner,
 	}); aerr != nil {
 		// This degenerate journal-write failure routes through failTerminal,
 		// which fires notifyFailed itself — so the trace is left exactly once,
@@ -2337,7 +2454,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	// #1054: leave a human-visible trace on the driving item for a stage-reported
 	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
 	// The code-prefixed journaledMessage is the run's terminal cause.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: stage, Cause: journaledMessage, Code: code})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2361,6 +2478,10 @@ type transcriptEvent struct {
 
 type remediationEvidenceInspectionError struct {
 	info *apiv1.ErrorInfo
+	// digest is the rejected attempt's diff digest — the identity the
+	// rejection budget is pinned to (#3375), so a later attempt that actually
+	// changes the branch starts counting again from zero.
+	digest string
 }
 
 func (e *remediationEvidenceInspectionError) Error() string {
@@ -2668,7 +2789,7 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet, actionable)
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+			Code: gate.ReasonRemediationEvidenceNotInspected,
 			Message: dependencyValidationMessage(
 				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
 				result,
@@ -2684,14 +2805,14 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 	if sawListInputs && len(missing) == 0 {
 		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
 			return &apiv1.ErrorInfo{
-				Code:    "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+				Code:    gate.ReasonRemediationEvidenceNotInspected,
 				Message: dependencyValidationMessage(classificationErr, result),
 			}
 		}
 		return nil
 	}
 	return &apiv1.ErrorInfo{
-		Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+		Code: gate.ReasonRemediationEvidenceNotInspected,
 		Message: dependencyValidationMessage(
 			strings.Replace(
 				pointerValidationErrorMessage(missing, sawListInputs),
@@ -2918,6 +3039,27 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// conclusion until the budget exhausts.
 		if result.Status == apiv1.ResultFailure && isNonRetryableEscalation(result.Error) {
 			target := taskEscalationTarget(machine, t)
+			// #3363: the stage's stated reason is a deliverable — a verified
+			// refusal's citation (ISSUE_NOT_APPLICABLE), an over-scope
+			// analysis — so it posts to the driving issue instead of living
+			// only in the run journal. Skipped when the escalation control
+			// branch routes to a task that owns the human-facing disposition
+			// itself (issue-close-out), mirroring the terminal-gate
+			// notification's own ownership rule.
+			notifies := true
+			if task, ok := machine.Task(target); ok && taskOwnsEscalationNotification(task) {
+				notifies = false
+			}
+			if notifies {
+				nerr := r.notifyStageEscalation(stalledAttemptContext(ctx), jr, runID, item, repoRef, t.Name, dispositionReason(result))
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+					return "", stalledResult, false, stalledErr
+				}
+				if nerr != nil {
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
+					return "", res, false, err
+				}
+			}
 			switch target {
 			case workflow.TargetAbort:
 				res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
@@ -3904,6 +4046,13 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
 			}
 		}
+		// #3366: persist the run branch's committed-but-not-yet-published diff
+		// as a run artifact the moment the attempt ends — BEFORE any fallible
+		// post-validation step (gate execution, local-ci, push) runs. An
+		// environmental fault downstream (an egress 403 during a gate, a
+		// daemon restart mid-run, a rejected push) then strands recoverable
+		// work in the journal instead of destroying it with the worktree.
+		r.recordUnpushedDiff(ctx, jr, ex, in, t, workspace, attempt, class)
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -3985,6 +4134,154 @@ func (r *Runner) salvageTimeout(ctx context.Context, jr executionJournal, in Sta
 		Summary: "salvaged committed diff after agentic session timeout (#724); local-ci verifies it authoritatively",
 		Outputs: map[string]interface{}{"salvagedOnTimeout": true},
 	}, true
+}
+
+// Unpushed-diff artifact names (#3366): the well-known per-stage artifact pair
+// under which the runner persists a run branch's committed-but-not-yet-
+// published work. The names are a discovery contract: cmd/goobers's
+// gather-implement-context scans run journals for "*/unpushed-diff.json" to
+// offer a stranded prior diff to the next run on the same backlog item.
+const (
+	unpushedDiffPatchName     = "unpushed-diff.patch"
+	unpushedDiffMetaName      = "unpushed-diff.json"
+	unpushedDiffSchemaVersion = "goobers.dev/unpushed-diff/v1"
+)
+
+// unpushedDiffMetadata is the machine-readable sidecar recorded alongside the
+// diff artifact (#3366) so the stranded work is discoverable later: a
+// subsequent run on the same backlog item matches itemIds against its own
+// claim, and a human reading the journal learns what was authored, from which
+// base, and where the diff bytes live — without replaying the run.
+//
+// Every field must be a deterministic function of the run's inputs. An
+// artifact's content digest is a conformance-normative field of the
+// artifact.recorded event that names it (ARCHITECTURE §3.3,
+// journal.ConformanceView), so a wall-clock or otherwise run-varying byte in
+// here would make two identical runs journal different digests and break the
+// local↔Temporal conformance comparison. Deliberately absent for that reason:
+// a recordedAt timestamp — the artifact.recorded event carries its own Time,
+// which conformance excludes, and that is what discovery orders candidates by.
+type unpushedDiffMetadata struct {
+	Schema    string                `json:"schema"`
+	RunID     string                `json:"runId"`
+	Workflow  string                `json:"workflow,omitempty"`
+	Stage     string                `json:"stage"`
+	Attempt   int                   `json:"attempt"`
+	ItemIDs   []string              `json:"itemIds,omitempty"`
+	ItemURL   string                `json:"itemUrl,omitempty"`
+	Branch    string                `json:"branch,omitempty"`
+	BaseRef   string                `json:"baseRef"`
+	DiffBytes int                   `json:"diffBytes"`
+	Diff      apiv1.ArtifactPointer `json:"diff"`
+}
+
+// recordUnpushedDiff persists the run branch's cumulative committed diff vs.
+// base as a stage artifact plus a discovery sidecar (#3366). Called after
+// every agentic attempt, success or failure: the run branch is shared across
+// a run's stages, so the newest recording always reflects the full work
+// product so far, and the content-addressed store deduplicates unchanged
+// re-recordings to one blob. Best-effort by design — the work this protects
+// already exists on the branch, so a recording failure must never fail the
+// attempt; it is journaled as a non-fatal error event instead (#2029:
+// observable, not silent).
+func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, t apiv1.Task, workspace *stageWorkspace, attempt int, class journal.AttemptClass) {
+	if workspace == nil || workspace.worktree == nil || workspace.worktree.Branch == "" {
+		return // detached (read-only) checkout: no run branch, nothing publishable to lose
+	}
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	// Deliberately cancellation-immune: a stalled-run watchdog cancelling the
+	// attempt mid-dispatch is itself one of #3366's trigger classes (infra
+	// restart mid-run), and that is precisely when the diff most needs
+	// capturing. The git reads here are local and bounded.
+	ctx = context.WithoutCancel(ctx)
+	journalFailure := func(cause error) {
+		_ = jr.Append(journal.Event{
+			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
+			Error: &journal.ErrorDetail{Code: "unpushed_diff_record_failed", Message: cause.Error()},
+		})
+	}
+	// Cheap local guard before Diff: on a blobless mirror Diff is a remote
+	// operation, so skip it entirely when the branch carries no commits.
+	committed, err := workspace.worktree.HasCommitsAheadOf(ctx, baseRef)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if !committed {
+		return
+	}
+	diff, err := workspace.worktree.Diff(ctx, baseRef)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if len(diff) == 0 {
+		return
+	}
+	// Same defense-in-depth as recordReviewerDiff: scrub any registered secret
+	// a stage's commit might have captured before the diff lands in the
+	// journal.
+	if s, ok := ex.reg.(journal.Scrubber); ok {
+		diff = s.Scrub(diff)
+	}
+	ref, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffPatchName, diff)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	meta := unpushedDiffMetadata{
+		Schema:    unpushedDiffSchemaVersion,
+		RunID:     in.RunID,
+		Stage:     t.Name,
+		Attempt:   attempt,
+		ItemIDs:   r.unpushedDiffItemIDs(in),
+		Branch:    workspace.worktree.Branch,
+		BaseRef:   baseRef,
+		DiffBytes: len(diff),
+		Diff: apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "text/x-diff", Integrity: ref.Integrity,
+		},
+	}
+	if in.Machine != nil {
+		meta.Workflow = in.Machine.Def.Name
+	}
+	if in.Item != nil {
+		meta.ItemURL = in.Item.URL
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if _, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffMetaName, data); err != nil {
+		journalFailure(err)
+	}
+}
+
+// unpushedDiffItemIDs resolves the backlog item id(s) the run is working on,
+// for the unpushed-diff discovery sidecar: the Item snapshot when the run was
+// started with one, the claim ledger otherwise (scheduled/fan-out
+// implementation runs claim their item mid-run, so in.Item is nil — #796's
+// ClaimedItems fallback, called while the ledger still holds this run's
+// claims), then the trigger ref. Empty when none resolves — the artifact is
+// still recorded for humans; only cross-run discovery loses its key.
+func (r *Runner) unpushedDiffItemIDs(in StartInput) []string {
+	if in.Item != nil && in.Item.ID != "" {
+		return []string{in.Item.ID}
+	}
+	if r.cfg.ClaimedItems != nil {
+		if ids, err := r.cfg.ClaimedItems(in.RunID); err == nil && len(ids) > 0 {
+			return ids
+		}
+	}
+	if in.Trigger.Kind == journal.TriggerItem && in.Trigger.Ref != "" {
+		return []string{in.Trigger.Ref}
+	}
+	return nil
 }
 
 type contextManifest struct {
@@ -4093,6 +4390,22 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 	return &journal.ErrorDetail{Code: result.Error.Code, Message: message}
 }
 
+// dispositionReason is the human-facing explanation posted to the driving item
+// for a non-retryable disposition terminal (#3363). It applies the same rule
+// errorDetailFrom applies to the journal: the stage's SUMMARY is the reasoning
+// (a refusal's verified citation, an over-scope analysis) while error.Message
+// is usually a terse restatement of the code. Falls back to the coded error
+// detail when the stage supplied no summary, so the comment is never empty.
+func dispositionReason(result apiv1.ResultEnvelope) string {
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		if result.Error != nil && result.Error.Code != "" {
+			return result.Error.Code + ": " + summary
+		}
+		return summary
+	}
+	return blockedReason(result)
+}
+
 // escalateErrorCodes are the recognized non-retryable business dispositions an
 // agentic stage can emit to bypass the Next gate's repass loop (#415). Each
 // names a conclusion that re-running the stage can only re-derive — the item
@@ -4100,9 +4413,17 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 // attempt. Kept as a runner-owned policy set (the runner owns status→transition
 // routing), not a schema enum, so recognizing a new code never reopens the
 // closed envelope contract.
+//
+// ISSUE_NOT_APPLICABLE (#3363) is an item judgment, not a work failure: the
+// implementer verified the issue's premise no longer holds (targets deleted
+// files, work already done). Before it was recognized here, that refusal
+// routed into the Next gate, review-failed its empty diff, burned the repass
+// budget re-deriving the identical conclusion, and escalated with the
+// reasoning left only in the run journal.
 var escalateErrorCodes = map[string]bool{
-	"ISSUE_OVER_SCOPE":    true,
-	"NEEDS_DECOMPOSITION": true,
+	"ISSUE_OVER_SCOPE":                  true,
+	"NEEDS_DECOMPOSITION":               true,
+	telemetry.ErrCodeIssueNotApplicable: true,
 }
 
 // isNonRetryableEscalation reports whether a stage failure is a non-retryable
@@ -4322,13 +4643,17 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 							"triggeringStage":                 gateEval.RepassCause.Stage,
 							"requiredFailureEvidencePointers": required,
 							"message":                         validationErr.Message,
+							// The digest the rejection budget is pinned to
+							// (#3375), so resume can rebuild the streak
+							// instead of handing a crashed loop a fresh one.
+							"diffDigest": diffDigest,
 						},
 					}); appendErr != nil {
 						err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
 						span.Fail(err)
 						return gate.Result{}, err, nil
 					}
-					err = &remediationEvidenceInspectionError{info: validationErr}
+					err = &remediationEvidenceInspectionError{info: validationErr, digest: diffDigest}
 					span.Fail(err)
 					return gate.Result{}, err, nil
 				}

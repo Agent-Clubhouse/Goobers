@@ -5,7 +5,6 @@ package proc
 import (
 	"os"
 	"strconv"
-	"strings"
 )
 
 func descendantPIDs(root int) []int {
@@ -19,22 +18,11 @@ func descendantPIDs(root int) []int {
 		if err != nil {
 			continue
 		}
-		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err != nil {
+		stat, ok := readProcStat(pid)
+		if !ok {
 			continue
 		}
-		closeParen := strings.LastIndexByte(string(data), ')')
-		if closeParen < 0 {
-			continue
-		}
-		fields := strings.Fields(string(data)[closeParen+1:])
-		if len(fields) < 2 {
-			continue
-		}
-		ppid, err := strconv.Atoi(fields[1])
-		if err == nil {
-			parents[ppid] = append(parents[ppid], pid)
-		}
+		parents[stat.ppid] = append(parents[stat.ppid], pid)
 	}
 	return collectDescendants(root, parents)
 }

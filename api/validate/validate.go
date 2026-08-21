@@ -121,6 +121,28 @@ const (
 	// declared completion is therefore unreachable dead config (2026-08-08
 	// cold-start audit, swift #3's verified shape).
 	WarningGateCompletionHidesFailure WarningCode = "WF018"
+	// WarningZeroMaxRunsPerHour identifies a workflow whose
+	// spec.readiness.maxRunsPerHour is explicitly written as 0 (or a
+	// negative value). Unlike instance.yaml's runConditions.maxParallelRuns
+	// — where zero means unlimited — a workflow's own maxRunsPerHour treats
+	// zero exactly the same as leaving the field unset: the scheduler
+	// substitutes its spec default of 10 (internal/localscheduler's
+	// Conditions.AdmitProviderWorkflow, #339). An operator who writes
+	// maxRunsPerHour: 0 expecting "unlimited" by analogy to maxParallelRuns
+	// instead gets silently throttled to 10/hour, with no error and no
+	// runtime signal (#3360). Informational: the config is still valid and
+	// behaves exactly as it would if the field were omitted.
+	WarningZeroMaxRunsPerHour WarningCode = "WF020"
+	// WarningSubprocessTimeout identifies a deterministic stage whose command
+	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
+	// stage's own budget — a literal `go test -timeout` flag, an explicit
+	// GO_TEST_TIMEOUT override on a `make` invocation, or the
+	// expectedSubprocessTimeoutSeconds escape hatch for a tool this cannot
+	// parse. The executor kills the stage before the subprocess's own timeout
+	// can expire whenever the workload approaches it, discarding genuine
+	// in-progress work; the stage is unwinnable by construction regardless of
+	// typical-case duration (#3377).
+	WarningSubprocessTimeout WarningCode = "WF021"
 )
 
 const (
@@ -835,7 +857,32 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			return ok
 		})
 		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file}
+		if explicitZeroMaxRunsPerHour(doc.json) {
+			r.addWarning(WarningZeroMaxRunsPerHour, doc.file, w.Spec.Gaggle, "Workflow", w.Name,
+				"spec.readiness.maxRunsPerHour is explicitly 0, which does NOT mean unlimited — the scheduler treats it the same as omitted and substitutes its default of 10 (internal/localscheduler's Conditions.Admit, #339). This is the opposite of instance.yaml's runConditions.maxParallelRuns, where 0 means unlimited. Set an explicit large value if you want a high hourly ceiling.")
+		}
 	}
+}
+
+// explicitZeroMaxRunsPerHour reports whether a Workflow document's
+// spec.readiness.maxRunsPerHour key is present in the source with a value
+// of zero (or negative) — distinct from the field being entirely absent.
+// apiv1.Workflow's MaxRunsPerHour is a plain int32: after yaml.Unmarshal an
+// explicit `maxRunsPerHour: 0` and an omitted field are indistinguishable,
+// so this probes the raw JSON (already parsed once for schema validation)
+// with a pointer field, where nil means "key not present" (#3360).
+func explicitZeroMaxRunsPerHour(raw []byte) bool {
+	var probe struct {
+		Spec struct {
+			Readiness struct {
+				MaxRunsPerHour *int32 `json:"maxRunsPerHour"`
+			} `json:"readiness"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.Spec.Readiness.MaxRunsPerHour != nil && *probe.Spec.Readiness.MaxRunsPerHour <= 0
 }
 
 func (ix *index) dupCheck(r *Report, doc loadedDoc, kind, name string, exists func() bool) {
@@ -1030,7 +1077,7 @@ func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
 			if scopedMissing && sharedMissing {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
-					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					"spec.skills declares %q, but no skill package directory was found at %q or %q; the dangling declaration contributes nothing at runtime — remove it or add the package",
 					skill,
 					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
 					filepath.ToSlash(filepath.Join("skills", skill)))
@@ -1835,6 +1882,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// A stage's own subprocess can carry a longer wall-clock ceiling than the
+	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
+	// under a 25-minute stage timeout. Warning, not error: detection only
+	// trusts evidence visible in the stage's own declaration, so it is
+	// intentionally incomplete (#3377).
+	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
+		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's

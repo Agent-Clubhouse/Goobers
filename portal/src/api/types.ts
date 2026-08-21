@@ -401,7 +401,10 @@ export interface OperatorRunSummary {
   latestError?: { code: string; message?: string };
   review?: { verdict: string; rationale?: string };
   nextTransition?: string;
+  /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
+  diagnosticsLimitations?: string[];
 }
 
 export interface RunDetail extends RunSummary {
@@ -699,6 +702,10 @@ export interface TelemetryGaggleStats {
   totalRuns: number;
   completedRuns: number;
   failedRuns: number;
+  // How many of failedRuns terminated on an infrastructure fault rather than a
+  // verdict about the work, and are therefore excluded from successRate's
+  // denominator (#3361/#3364).
+  infraFailedRuns: number;
   otherRuns: number;
   successRate?: number;
   avgDurationMs?: number;
@@ -717,6 +724,11 @@ export interface TelemetryRunStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  // How many of failedRuns terminated on an infrastructure fault (credential
+  // materialization, git, network, lock contention) rather than a verdict
+  // about the work, and are therefore excluded from successRate's denominator
+  // (#3361/#3364).
+  infraFailedRuns: number;
   // How many of totalRuns hung and were later aborted (the watchdog's
   // max-duration expiry), excluded from avg/min/maxDurationMs — disclosed
   // rather than silently dropped (#2534, #1439).

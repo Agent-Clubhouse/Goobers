@@ -46,7 +46,7 @@ var synopsisByID = map[string]string{
 	"workflow show":          "  goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG\n",
 	"runs list":              "  goobers runs list [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [path]\n                                alias for the status run table (same flags, no --watch)\n",
 	"runs du":                "  goobers runs du [--json] [path]       report per-run journal and artifact bytes\n",
-	"status":                 "  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]\n                                validate config, show warnings, list runs newest first, or report daemon health with --daemon\n",
+	"status":                 "  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]\n                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents\n",
 	"stats":                  "  goobers stats [--since <duration>] [--json] [path]\n                                show the instance lifetime summary card\n",
 	"features":               "  goobers features [--json] [--dsl-version <version>] [--used] [path]\n                                list the workflow-DSL features this build supports\n",
 	"schema":                 "  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build\n",

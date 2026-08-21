@@ -339,12 +339,16 @@ function sumGaggles(
     (sum, item) => ({
       completed: sum.completed + item.completedRuns,
       failed: sum.failed + item.failedRuns,
+      infraFailed: sum.infraFailed + item.infraFailedRuns,
       other: sum.other + item.otherRuns,
       runs: sum.runs + item.totalRuns,
     }),
-    { completed: 0, failed: 0, other: 0, runs: 0 },
+    { completed: 0, failed: 0, infraFailed: 0, other: 0, runs: 0 },
   );
-  const terminal = total.completed + total.failed;
+  // This rollup recomputes the rate client-side rather than reading the
+  // server's, so it must apply the same denominator rule (#3364): an
+  // infra-fault terminal is not a verdict about the work and is excluded.
+  const terminal = total.completed + total.failed - total.infraFailed;
   return {
     failed: total.failed,
     filters: insightRunFilters(filters),

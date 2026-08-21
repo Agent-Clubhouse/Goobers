@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -209,9 +210,15 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	if injector == nil || len(declared) == 0 {
 		return env, nil
 	}
+	// A credential that cannot be materialized is an infrastructure fault, not
+	// evidence about the work (#3361): typed with its own code AND marked via
+	// the invoke.InfrastructureFailure seam, so the runner retries it on the
+	// bounded infrastructure budget (journal AttemptClass "infra") instead of
+	// consuming the stage's policy attempts — at attempt budgets of 1, the old
+	// classification converted a transient 403 into a terminal work failure.
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, StageFailure(telemetry.ErrCodeCredentialUnavailable, err)
+		return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 	}
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)
@@ -219,7 +226,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) {
 				continue // declared but uncredentialed capability (e.g. telemetry:read)
 			}
-			return nil, err
+			// Same seam as Materialize above: a granted capability whose token
+			// resolution fails at env-build time is credential infrastructure.
+			return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)

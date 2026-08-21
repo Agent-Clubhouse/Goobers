@@ -456,6 +456,15 @@ func TestOpenPRDiscardsPreparedTutorHoldoutWhenProviderFails(t *testing.T) {
 	writeTutorFindingFixture(t, root, gaggle, runID)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
+	// The server is closed below so every call fails at the transport; the
+	// assertion is on the discarded holdout, not on retry timing. Spend the
+	// transient-retry budget so open-pr fails fast instead of burning
+	// 1+2+4+8 = 15s of real backoff sleep. providerCmdEnv's own t.Cleanup
+	// still restores the original factory.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 	t.Setenv("GOOBERS_GAGGLE", gaggle)
 	t.Setenv(executor.InputEnvVar("recordLiveVerification"), "true")

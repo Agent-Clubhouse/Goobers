@@ -63,15 +63,19 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 			if priority == 0 || priority < best.priority {
 				continue
 			}
-			candidate := diagnosticRange{
+			if priority == best.priority && stream.name == "stderr" && best.stream == "stdout" {
+				// An equal-priority stderr line (a make trailer, a wrapper's exit-status
+				// echo) must not displace a diagnostic already found in stdout: stderr is
+				// scanned after stdout, so without this guard trailing noise silently
+				// steals the recorded failure window from the real error.
+				continue
+			}
+			best = diagnosticRange{
 				text:     failureSection(lines, i),
 				stream:   stream.name,
 				start:    line.start,
 				end:      failureSectionEnd(lines, i),
 				priority: priority,
-			}
-			if priority >= best.priority {
-				best = candidate
 			}
 		}
 	}

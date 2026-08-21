@@ -126,6 +126,20 @@ type RepassCause struct {
 // ordinary repass-budget exhaustion or a genuine reviewer/CI fail verdict.
 const ReasonUnchangedRepass = "UNCHANGED_REPASS"
 
+// ReasonFindingDisproven marks a reviewer needs-changes verdict that was
+// converted to pass because deterministic source evidence disproved every
+// finding.
+const ReasonFindingDisproven = "REVIEW_FINDING_DISPROVEN"
+
+// ReasonRemediationEvidenceNotInspected is both the ErrorInfo code the runner
+// rejects an unchanged remediation under, and Result.Reason's value when
+// EscalateUninspectedRemediation finally stops that rejection loop (issue
+// #3375). One token, declared once, because the two live at opposite ends of
+// the same story: the runner-annotation stream records every rejection under
+// this code, and the terminal gate.evaluated event records why the run gave
+// up under the same one.
+const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
+
 func (c RepassCause) String() string {
 	switch c.Kind {
 	case "stage-failure":
@@ -336,7 +350,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
 			if e.invalidNeedsHumanVerdict(g, *verdict) {
-				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit)
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
 			}
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
@@ -371,13 +385,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			verdict = &v
 			outcome = string(v.Decision)
 			if invalidNeedsHuman {
-				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit)
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
 			}
 		}
 
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit)
+	outcomeReason := ""
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
+		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
+		verdict = &normalized
+		outcome = string(normalized.Decision)
+		if allDisproven {
+			outcomeReason = ReasonFindingDisproven
+		}
+	}
+
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -440,10 +464,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false, false)
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "")
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool, outcomeReason string) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -463,7 +487,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	var repassCause *RepassCause
-	var reason string
+	reason := outcomeReason
 	if duplicateDiff {
 		repassCause = e.RepassCause
 		reason = ReasonUnchangedRepass
@@ -505,6 +529,54 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 	}
 	r.VerdictArtifact = artifact
 	return r, true, nil
+}
+
+// EscalateUninspectedRemediation synthesizes and journals the escalation that
+// ends a remediation-evidence rejection loop (issue #3375).
+//
+// The runner rejects an unchanged remediation whose stage never inspected the
+// required failure evidence, and re-dispatches the stage with a corrective
+// addendum — BEFORE this gate ever resolves an outcome, so no repass,
+// infrastructure, or evaluator-retry budget is charged. An agent that never
+// inspects therefore cycles stage-dispatch → rejection → addendum forever,
+// bounded only by the walk's step ceiling. The runner counts those rejections
+// itself and calls this on exhaustion.
+//
+// The shape deliberately mirrors the identical-diff guard (Evaluate's
+// duplicateDiff branch): a synthesized needs-changes verdict, Escalated set so
+// Target is the gate's escalate control branch, and the cause carried in the
+// rationale — the reviewer is never invoked for an attempt it was already
+// determined cannot be evaluated. cause is the last rejection's validation
+// ErrorInfo; rejections is how many were charged.
+func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.ErrorInfo, rejections int, diffDigest string) (Result, error) {
+	rationale := fmt.Sprintf(
+		"runner: %d consecutive unchanged remediation attempts were rejected without inspecting the required failure evidence",
+		rejections,
+	)
+	if cause != nil && cause.Message != "" {
+		rationale += "; last rejection: " + cause.Message
+	}
+	attempt := e.Attempts[g.Name]
+	r := Result{
+		Gate:        g.Name,
+		Outcome:     string(apiv1.VerdictNeedsChanges),
+		Target:      escalationTarget(g),
+		Attempt:     attempt,
+		GateAttempt: attempt,
+		Escalated:   true,
+		RepassCause: e.RepassCause,
+		Reason:      ReasonRemediationEvidenceNotInspected,
+		Verdict: &apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: rationale,
+		},
+	}
+	artifact, err := recordVerdict(e.Journal, r, diffDigest)
+	if err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal uninspected remediation escalation: %w", g.Name, err)
+	}
+	r.VerdictArtifact = artifact
+	return r, nil
 }
 
 func escalationTarget(g apiv1.Gate) string {
