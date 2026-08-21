@@ -422,6 +422,42 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			))
 		}
 	}
+	if len(out.MCPServerFailures) > 0 {
+		// A registered MCP server the harness reported as not connected
+		// (#3356): every tool it provides was absent from the agent's
+		// session even though the resolved config declared it. Journal it
+		// loudly next to whatever the stage goes on to report, so a
+		// tool-shaped failure (e.g. an agent-authored MISSING_REQUIRED_TOOLS
+		// block) names its actual cause instead of surfacing two layers away
+		// wearing an unrelated costume. Annotation only — the run's own
+		// outcome is untouched, so nothing that worked before changes.
+		servers := make([]map[string]string, 0, len(out.MCPServerFailures))
+		for _, failure := range out.MCPServerFailures {
+			servers = append(servers, map[string]string{
+				"server": failure.Server,
+				"status": failure.Status,
+			})
+		}
+		if appender, ok := e.recorder.(EventAppender); ok {
+			if err := appender.Append(journal.Event{
+				Type:  journal.EventRunnerAnnotation,
+				Stage: env.TaskID,
+				Runner: map[string]any{
+					"kind":    "mcp-server-unavailable",
+					"servers": servers,
+					"detail": "registered MCP servers were not connected at invocation; " +
+						"their tools were unavailable to the agent for this whole session — " +
+						"any missing-tool failure this stage reports is caused here",
+				},
+			}); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf(
+					"harness: journal MCP server availability for %q: %w",
+					env.TaskID,
+					err,
+				))
+			}
+		}
+	}
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {
