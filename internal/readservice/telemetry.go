@@ -133,9 +133,9 @@ type TelemetryGaggleStats struct {
 	InfraFailedRuns int      `json:"infraFailedRuns"`
 	OtherRuns       int      `json:"otherRuns"`
 	SuccessRate     *float64 `json:"successRate,omitempty"`
-	AvgDurationMs *float64 `json:"avgDurationMs,omitempty"`
-	MinDurationMs *int64   `json:"minDurationMs,omitempty"`
-	MaxDurationMs *int64   `json:"maxDurationMs,omitempty"`
+	AvgDurationMs   *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs   *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs   *int64   `json:"maxDurationMs,omitempty"`
 }
 
 // TelemetryRunStats is the run aggregate for one workflow. Optional metrics
