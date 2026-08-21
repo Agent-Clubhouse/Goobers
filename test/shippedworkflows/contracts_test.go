@@ -1888,9 +1888,13 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		default:
 			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
+		rationale := "scripted fake-harness verdict"
+		if decision == apiv1.VerdictFail {
+			rationale = "scripted fake-harness verdict. What human decision is required?"
+		}
 		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
-			Rationale: "scripted fake-harness verdict",
+			Rationale: rationale,
 		})
 	default:
 		return fmt.Errorf("unsupported harness mode %q", request.Mode)
