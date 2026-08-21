@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // finalizeTerminalRun performs every instance-level terminal cleanup action.
@@ -19,6 +20,33 @@ func finalizeTerminalRun(l instance.Layout, log *journal.InstanceLog, wtMgr *wor
 
 func finalizeTerminalRunForRecovery(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string) error {
 	return finalizeTerminalRunWithClaimRelease(l, log, wtMgr, runID, releaseClaimsForRunWithDefaultTimeout)
+}
+
+// finalizeTerminalRunWithClaimMarkers is finalizeTerminalRun plus the
+// provider-side claim-epoch release (#3347): the goobers:claimed mirror is
+// retired in the same terminal cleanup step that releases the ledger lease, so
+// claims.json and the provider cannot disagree for a full backlog-curation
+// interval after a run that terminates without reaching issue-close-out — the
+// `no-work` outcome being the case that makes that a certainty rather than an
+// edge case. A nil release (repo-less instance, non-GitHub provider) is exactly
+// finalizeTerminalRun.
+func finalizeTerminalRunWithClaimMarkers(
+	l instance.Layout,
+	log *journal.InstanceLog,
+	wtMgr *worktree.Manager,
+	runID string,
+	repo providers.RepositoryRef,
+	releaseMarker claimMarkerReleaseFunc,
+) error {
+	return finalizeTerminalRunWithClaimRelease(l, log, wtMgr, runID,
+		func(l instance.Layout, log *journal.InstanceLog, runID string) error {
+			// Provider marker first, ledger second — the order
+			// issue-close-out and backlog-query --release already use, and the
+			// order that keeps this run's ownership of the epoch it is closing
+			// provable (releaseTerminalClaimMarkers' doc).
+			releaseTerminalClaimMarkers(l, log, runID, repo, releaseMarker)
+			return releaseClaimsForRun(l, log, runID)
+		})
 }
 
 func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string, release func(instance.Layout, *journal.InstanceLog, string) error) error {

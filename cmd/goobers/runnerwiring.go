@@ -252,6 +252,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		}
 	}
 
+	// Shared with the ShellExecutor's built-in error file (#3342): the same
+	// already-writable scratch directory under the instance's workcopies root
+	// that scratch-mode deterministic commands use below, so the built-in
+	// error file never falls back to the OS default temp directory — which a
+	// read-only-root deployment may not have mounted anything writable at.
+	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
+
 	rc := runner.Config{
 		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
@@ -260,6 +267,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
+				ScratchDir: deterministicScratchDir,
 			})
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
@@ -279,7 +287,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
 		BranchNamespaces: branchNamespaces,
-		ScratchDir:       filepath.Join(l.WorkcopiesDir(), "scratch"),
+		ScratchDir:       deterministicScratchDir,
 		RunsDir:          l.RunsDir(),
 		RepoCloneURL:     repoCloneURL,
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner

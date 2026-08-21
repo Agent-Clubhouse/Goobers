@@ -136,8 +136,8 @@ func DefaultChecks() map[string]CheckFunc {
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
 		},
 		// "failure-class": pass for success, infra for a retryable failure or
-		// a generic command failure carrying a known host-contention or
-		// dependency-transport signature,
+		// a generic command failure carrying a known host-contention,
+		// filesystem-errno or dependency-transport signature,
 		// and fail for every other status. No params.
 		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
 			status := stringField(inputs, InputKeyStatus)
@@ -330,23 +330,113 @@ func DefaultChecks() map[string]CheckFunc {
 	}
 }
 
+// infrastructureSignatures recognize a generic non-zero exit as an
+// environment fault rather than evidence about the work. Each entry is an
+// all-of group: the (lowercased) failure message matches when it contains
+// every token in the group, which is how a broad word like "permission
+// denied" is kept pinned to the narrow shape actually observed.
+//
+// These are deliberately narrow. Misclassifying work failure as infra parks
+// the run for an operator; misclassifying infra as work failure spends the
+// whole repass budget asking an agent to fix the weather (#3373).
+var infrastructureSignatures = [][]string{
+	// Host contention and resource exhaustion on a shared runner.
+	{"parallel golangci-lint is running"},
+	{"resource temporarily unavailable"},
+	{"failed to create new os thread"},
+	{"cannot allocate memory"},
+	{"npm error openssl/", "tls alert handshake failure"},
+
+	// Filesystem errno on a tool write (#3373): EROFS from a read-only
+	// mount (observed: playwright's installer taking its directory lock
+	// under a read-only PLAYWRIGHT_BROWSERS_PATH, #3372), EACCES from a
+	// non-writable install target. "permission denied" on its own is far
+	// too broad — an API authorization denial reads the same — so it only
+	// counts alongside the errno label or a filesystem write syscall.
+	{"read-only file system"},
+	{"eacces:", "permission denied"},
+	{"permission denied", "mkdir"},
+}
+
+// dependencyFetchMarkers say the failing command was a dependency or
+// artifact fetch: a module-proxy/package-registry host, or a toolchain's own
+// download diagnostic.
+var dependencyFetchMarkers = []string{
+	"go: downloading",
+	"go: module ",
+	"go mod download",
+	"verifying module",
+	"reading https://",
+	"goproxy",
+	"proxy.golang.org",
+	"sum.golang.org",
+	"storage.googleapis.com",
+	"registry.npmjs.org",
+	"npm error network",
+	"npm err! network",
+	"files.pythonhosted.org",
+	"pypi.org",
+	"index.crates.io",
+}
+
+// transportDenialTokens say the network refused or could not reach that
+// fetch — an egress policy denial or an unreachable proxy, neither of which
+// any diff can fix.
+var transportDenialTokens = []string{
+	"403 forbidden",
+	": forbidden",
+	"connection refused",
+	"econnrefused",
+	"i/o timeout",
+	"etimedout",
+	"tls handshake timeout",
+	"proxyconnect",
+	"network is unreachable",
+}
+
 func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
 		return false
 	}
 	message := strings.ToLower(stringField(inputs, InputKeyErrorMessage))
-	for _, signature := range []string{
-		"parallel golangci-lint is running",
-		"resource temporarily unavailable",
-		"failed to create new os thread",
-		"cannot allocate memory",
-	} {
-		if strings.Contains(message, signature) {
+	for _, group := range infrastructureSignatures {
+		if containsAll(message, group) {
 			return true
 		}
 	}
-	return strings.Contains(message, "npm error openssl/") &&
-		strings.Contains(message, "tls alert handshake failure")
+	return isDependencyTransportDenial(message)
+}
+
+// isDependencyTransportDenial reports whether message is a dependency or
+// artifact fetch that the network refused (#3373: an egress proxy answering
+// Forbidden to a module zip fetch classified as a code failure and cost six
+// implement repasses). Both axes are required: a 403 or a refused connection
+// on its own is ordinary application output, and a package host on its own is
+// ordinary build chatter.
+func isDependencyTransportDenial(message string) bool {
+	return containsAny(message, dependencyFetchMarkers) &&
+		containsAny(message, transportDenialTokens)
+}
+
+func containsAll(message string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, token := range tokens {
+		if !strings.Contains(message, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAny(message string, tokens []string) bool {
+	for _, token := range tokens {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func boolOutcome(pass bool) string {
