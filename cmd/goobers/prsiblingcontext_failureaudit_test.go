@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 var gatherSiblingFailConsumerFields = []string{
@@ -565,6 +566,14 @@ func TestGatherSiblingContextFailedLifecycleRefreshKeepsGenericEnvelope(t *testi
 	server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11", "base",
 		false, nil, []fakePRFile{{path: "sibling.go", status: "modified"}})
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1866-refresh-failure")
+	// The 503 below drives the failure path; nothing here asserts retry
+	// timing. Spend the transient-retry budget (providerCmdEnv's own
+	// t.Cleanup still restores the original factory) so the stage fails fast
+	// instead of burning 1+2+4+8 = 15s of real backoff sleep.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 	t.Setenv(executor.InputEnvVar("selectedNumber"), "10")
 
 	baseHandler := server.server.Config.Handler
