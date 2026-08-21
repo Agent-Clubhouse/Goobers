@@ -18,8 +18,6 @@ spec:
     - telemetry:read
     - journal:read
     - agent:model
-  skills:
-    - tutor-diagnosis
   tools:
     - shell
   scaleFactor: 1

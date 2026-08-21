@@ -375,8 +375,8 @@ func init() {
 		).withHelp("list runs and report per-run disk usage", runsHelp),
 		coreCommand("status", apicontract.ActionReadOnlyNavigation, runStatus).
 			withSynopsis(synopsisByID["status"]).
-			withHelp("validate config, show warnings, list runs, or report daemon health", statusHelp).
-			withExamples("goobers status", "goobers status --daemon", "goobers status --watch"),
+			withHelp("validate config, show warnings, list runs, report daemon health, or list live agentic stages", statusHelp).
+			withExamples("goobers status", "goobers status --daemon", "goobers status --watch", "goobers status --agents", "goobers status --agents --json"),
 		coreCommand("stats", apicontract.ActionReadOnlyNavigation, runStats).
 			withSynopsis(synopsisByID["stats"]).
 			withHelp("show the instance lifetime summary card", statsHelp).

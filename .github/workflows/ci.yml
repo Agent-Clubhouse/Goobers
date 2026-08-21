@@ -58,6 +58,14 @@ env:
   # Pin lint to the version the Makefile/ADO pipeline targeted (schema v2 config).
   GOLANGCI_LINT_VERSION: v2.12.2
 
+  # The declared dependency set the integration tier provisions (#3322). It is
+  # declared and fixed, so its .deb payloads are cached and the mirrors are only
+  # contacted when this string (or the runner image) changes. Defined once here
+  # so the consumer job and the main-branch warm job cannot drift onto different
+  # cache keys. Keep aligned with the inventory printed by `make test-integration`.
+  DECLARED_APT_PACKAGES: bash bubblewrap coreutils dash maven
+  DECLARED_APT_ARCHIVE_DIR: /tmp/goobers-declared-apt-archives
+
 jobs:
   e2e:
     name: e2e
@@ -595,42 +603,224 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      - name: Resolve declared-dependency cache key
+        id: declared-apt-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The key is the declared set plus the runner image it was resolved
+          # against: a .deb built for one Ubuntu release is not interchangeable
+          # with another, and an image bump can move the versions apt would
+          # pick. Changing either is the only thing that reopens the network.
+          digest=$(printf '%s\n%s\n%s\n' \
+            "$DECLARED_APT_PACKAGES" "${ImageOS:-unknown}" "${ImageVersion:-unknown}" \
+            | sha256sum | cut -c1-16)
+          echo "key=declared-apt-v1-${RUNNER_OS}-${RUNNER_ARCH}-${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore declared-dependency apt archives
+        id: declared-apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
+          # No restore-keys on purpose: a prefix match would hand this job the
+          # .deb set for a *different* declared list and install it silently.
+          # Exact key or nothing, then fall back to the mirrors.
+          key: ${{ steps.declared-apt-key.outputs.key }}
+
       # Keep this list aligned with the inventory printed by
       # `make test-integration`. Strict mode makes an absent executable red.
       - name: Provision declared dependencies (bash, bwrap, dirname, head, java, mkdir, mvn, sh, sleep, yes)
         timeout-minutes: 12
         shell: bash
         run: |
-          # Hosted runners occasionally leave the Azure mirror connected but
-          # unable to serve package indexes. Use the canonical mirror and bound
-          # every attempt so this setup cannot hold the workflow indefinitely.
-          sudo sed -i \
-            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list.d/ubuntu.sources || true
-          for attempt in 1 2 3; do
-            if sudo timeout --signal=TERM --kill-after=10s 90s \
-                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
-                 -o Acquire::https::Timeout=20 update \
-              && sudo timeout --signal=TERM --kill-after=10s 90s \
-                 env DEBIAN_FRONTEND=noninteractive apt-get --yes install \
-                 bash bubblewrap coreutils dash maven; then
-              break
+          # #3322: this step provisioned a fixed, declared set from the apt
+          # mirrors on every run, and timed out at 12 minutes at least three
+          # times in one day — each one costing a full rerun cycle on unrelated
+          # PRs during the v0.2.0 release push. On a cache hit the payloads are
+          # already on disk, so dpkg installs them with no network at all. The
+          # mirror path below stays as the cache-miss fallback and reruns
+          # automatically if the cached payloads no longer satisfy their
+          # dependencies (a refreshed runner image, a partial archive).
+          shopt -s nullglob
+          cached=("${DECLARED_APT_ARCHIVE_DIR}"/*.deb)
+          shopt -u nullglob
+          if [ "${#cached[@]}" -gt 0 ] && sudo env DEBIAN_FRONTEND=noninteractive \
+               dpkg --install --force-confold "${cached[@]}"; then
+            echo "declared dependencies installed from ${#cached[@]} cached .deb archives (no network)"
+          else
+            if [ "${#cached[@]}" -gt 0 ]; then
+              echo "::warning::cached declared-dependency archives did not install cleanly; falling back to the apt mirrors"
             fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "::error::declared dependency provisioning failed after 3 bounded attempts"
-              exit 1
-            fi
-            echo "::warning::declared dependency provisioning attempt ${attempt}/3 failed or hung; retrying"
-            sudo dpkg --configure -a || true
-            sleep $((attempt * 10))
-          done
+            # Hosted runners occasionally leave the Azure mirror connected but
+            # unable to serve package indexes. Use the canonical mirror and bound
+            # every attempt so this setup cannot hold the workflow indefinitely.
+            sudo sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/sources.list.d/ubuntu.sources || true
+            sudo rm -rf "$DECLARED_APT_ARCHIVE_DIR"
+            sudo mkdir -p "${DECLARED_APT_ARCHIVE_DIR}/partial"
+            for attempt in 1 2 3; do
+              if sudo timeout --signal=TERM --kill-after=10s 90s \
+                   apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                   -o Acquire::https::Timeout=20 update \
+                && sudo timeout --signal=TERM --kill-after=10s 90s \
+                   env DEBIAN_FRONTEND=noninteractive apt-get --yes \
+                   -o Dir::Cache::archives="$DECLARED_APT_ARCHIVE_DIR" \
+                   -o APT::Sandbox::User=root \
+                   install $DECLARED_APT_PACKAGES; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::declared dependency provisioning failed after 3 bounded attempts"
+                exit 1
+              fi
+              echo "::warning::declared dependency provisioning attempt ${attempt}/3 failed or hung; retrying"
+              sudo dpkg --configure -a || true
+              sleep $((attempt * 10))
+            done
+            # Leave only the .deb payloads behind: apt's lock/partial entries are
+            # root-owned and would make the cache upload unreadable.
+            sudo rm -rf "${DECLARED_APT_ARCHIVE_DIR}/partial" "${DECLARED_APT_ARCHIVE_DIR}/lock"
+            sudo chmod -R a+rX "$DECLARED_APT_ARCHIVE_DIR"
+          fi
           # Ubuntu 24.04 restricts the user namespace needed by bubblewrap.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # Only after a green provision, so a half-downloaded archive set from a
+      # failed attempt can never be published under the key every later run reads.
+      - name: Save declared-dependency apt archives
+        if: ${{ success() && steps.declared-apt-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
+          key: ${{ steps.declared-apt-key.outputs.key }}
 
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
         run: make test-integration-strict
+
+  # Publishes the declared-dependency .deb payloads on main (#3322).
+  #
+  # GitHub scopes a cache entry to the ref that wrote it: an entry written by a
+  # pull-request run is readable only by that pull request, and only entries
+  # written on the default branch are visible to every branch. The `integration`
+  # job that consumes this cache is deliberately PR-only, so with no writer on
+  # main the first run of every PR would still provision from the apt mirrors —
+  # exactly the timeout class the cache exists to remove. This job is that
+  # writer, and it is the reason "network only when the declared set changes"
+  # holds across pull requests rather than only across reruns of one.
+  #
+  # It gates nothing: continue-on-error keeps a mirror outage from reddening
+  # main, it is absent from required-ci and from the main-failure escalation,
+  # and every consumer falls back to the mirrors on a miss.
+  dependency-cache-warm:
+    name: warm declared-dependency apt cache
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve declared-dependency cache key
+        id: declared-apt-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Must stay byte-identical to the consumer's key derivation in the
+          # `integration` job, or this job warms an entry nothing ever reads.
+          digest=$(printf '%s\n%s\n%s\n' \
+            "$DECLARED_APT_PACKAGES" "${ImageOS:-unknown}" "${ImageVersion:-unknown}" \
+            | sha256sum | cut -c1-16)
+          echo "key=declared-apt-v1-${RUNNER_OS}-${RUNNER_ARCH}-${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore declared-dependency apt archives
+        id: declared-apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
+          key: ${{ steps.declared-apt-key.outputs.key }}
+
+      - name: Download declared-dependency .deb payloads
+        if: ${{ steps.declared-apt-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          sudo sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources || true
+          sudo rm -rf "$DECLARED_APT_ARCHIVE_DIR"
+          sudo mkdir -p "${DECLARED_APT_ARCHIVE_DIR}/partial"
+          for attempt in 1 2 3; do
+            if sudo timeout --signal=TERM --kill-after=10s 90s \
+                 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 \
+                 -o Acquire::https::Timeout=20 update \
+              && sudo timeout --signal=TERM --kill-after=10s 90s \
+                 env DEBIAN_FRONTEND=noninteractive apt-get --yes \
+                 -o Dir::Cache::archives="$DECLARED_APT_ARCHIVE_DIR" \
+                 -o APT::Sandbox::User=root \
+                 --download-only install $DECLARED_APT_PACKAGES; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::declared dependency download failed after 3 bounded attempts"
+              exit 1
+            fi
+            echo "::warning::declared dependency download attempt ${attempt}/3 failed or hung; retrying"
+            sleep $((attempt * 10))
+          done
+          sudo rm -rf "${DECLARED_APT_ARCHIVE_DIR}/partial" "${DECLARED_APT_ARCHIVE_DIR}/lock"
+          sudo chmod -R a+rX "$DECLARED_APT_ARCHIVE_DIR"
+
+      - name: Save declared-dependency apt archives
+        if: ${{ success() && steps.declared-apt-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
+          key: ${{ steps.declared-apt-key.outputs.key }}
+
+      # The other half of the provisioned set the integration tier pulls over the
+      # network: the Maven repository `mvn -B -q verify` resolves for the Java
+      # fixture gaggle. setup-java's maven cache is keyed on runner OS/arch plus
+      # the pom hash, so warming it here — same action version, same distribution,
+      # same java-version, same checked-out pom — publishes the entry every PR's
+      # `integration` job already looks for.
+      - name: Set up Java
+        uses: actions/setup-java@v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Warm the Maven repository for the Java fixture gaggle
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -uo pipefail
+          # mvn itself comes from the archives resolved above, so this step adds
+          # no apt traffic of its own.
+          if ! sudo env DEBIAN_FRONTEND=noninteractive \
+               dpkg --install --force-confold "${DECLARED_APT_ARCHIVE_DIR}"/*.deb; then
+            echo "::warning::declared-dependency archives did not install; skipping the Maven warm"
+            exit 0
+          fi
+          # `verify` is exactly what the fixture gaggle's local-ci stage runs, so
+          # it resolves exactly what the integration tier will need; go-offline
+          # adds the plugin dependencies verify alone would not reach.
+          mvn -B -q -f test/e2e/testdata/javaservice/pom.xml \
+            dependency:go-offline verify
+
+      - name: Drop failed-resolution markers before the Maven cache is saved
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          # A *.lastUpdated marker records a download that failed. Cached, it
+          # makes every later run refuse to reattempt that artifact until the
+          # marker ages out — a partially warmed repository that poisons the
+          # consumers instead of helping them.
+          find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
 
   conformance:
     name: journal conformance

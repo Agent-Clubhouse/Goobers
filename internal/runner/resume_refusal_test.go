@@ -271,9 +271,9 @@ func TestPinnedWorkflowMachineReconstructsMultipleHistoricalDigests(t *testing.T
 		if err != nil {
 			t.Fatalf("Identity(%s): %v", goal, err)
 		}
-		reconstructed, err := pinnedWorkflowMachine(rd, id)
+		reconstructed, err := PinnedWorkflowMachine(rd, id)
 		if err != nil {
-			t.Fatalf("pinnedWorkflowMachine(%s): %v", goal, err)
+			t.Fatalf("PinnedWorkflowMachine(%s): %v", goal, err)
 		}
 		if reconstructed.Digest() != machine.Digest() {
 			t.Fatalf("reconstructed digest = %q, want %q", reconstructed.Digest(), machine.Digest())

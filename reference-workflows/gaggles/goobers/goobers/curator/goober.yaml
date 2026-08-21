@@ -27,8 +27,6 @@ spec:
     - create-issue
     - edit-issue
     - label-issue
-  skills:
-    - triage
   tools:
     - github
     - shell

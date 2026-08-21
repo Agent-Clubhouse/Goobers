@@ -369,6 +369,20 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			fmt.Sprintf("workflow %q for run %q is no longer available", identity.Workflow, runID),
 		)
 	}
+	// Never reinterpret a historical run under the current workflow merely
+	// because the name still matches (#3376, same rule as the daemon resume
+	// scan's interruptedRunMachine): when the config drifted after this run
+	// started, an intervention must act on the definition the run is pinned
+	// to — otherwise a routine workflow edit turns an operator's approve into
+	// a terminal WF-016 refusal that destroys the paused run. The pinned
+	// snapshot is trusted and content-addressed, so this cannot resurrect a
+	// tampered definition; if it is missing or invalid the current machine is
+	// kept and the runner's WF-016 verification refuses exactly as before.
+	if identity.WorkflowDigest != "" && machine.Digest() != identity.WorkflowDigest {
+		if pinned, pinErr := runner.PinnedWorkflowMachine(reader, identity); pinErr == nil {
+			machine = pinned
+		}
+	}
 	runRunner, _ := s.runnerRegistry.Resolve(runID, identity.Gaggle, found.runner)
 	if runRunner == nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(

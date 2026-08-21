@@ -35,6 +35,19 @@ import (
 // from the Temporal engine core, ARCHITECTURE §3.1).
 const DefaultMaxSteps = 10000
 
+// maxRemediationEvidenceRejections bounds how many times one gate evaluation
+// may bounce an unchanged remediation back to its subject stage for failing the
+// failure-evidence check (issue #3375).
+//
+// This rejection returns from stepGate BEFORE the gate resolves an outcome, so
+// gate.Evaluator's repass, infrastructure, and evaluator-retry budgets never
+// see it and DefaultMaxSteps was the only thing bounding the loop — thousands
+// of agentic invocations, each one charged to nothing. Three is deliberately
+// small: the addendum tells the agent exactly which pointers to read with which
+// tools, so an agent that has not complied by its third try is not converging,
+// and the escalation is strictly cheaper than another invocation.
+const maxRemediationEvidenceRejections = 3
+
 // toolchainPreflightState is the synthetic failing-state name recorded when a
 // run fails the #735 toolchain preflight before any real stage executes, so a
 // `failed` run's FailureStage reads as the preflight rather than mis-attributing
@@ -1008,6 +1021,40 @@ type walkState struct {
 	infraRepassAttempts  map[string]int
 	gateDiffDigests      map[string]string
 	visitedStages        map[string]bool
+	// evidenceRejections is the per-gate budget for the runner's own
+	// corrective re-dispatch of a remediation stage that failed the
+	// failure-evidence check (#3375). Seeded on resume from the journaled
+	// rejection annotations, so a crash mid-loop does not hand the loop a
+	// fresh budget.
+	evidenceRejections map[string]evidenceRejectionBudget
+}
+
+// evidenceRejectionBudget is one gate's consecutive
+// REMEDIATION_EVIDENCE_NOT_INSPECTED rejection count, pinned to the diff digest
+// it was accumulated against. A changed digest means the subject stage actually
+// committed something different — a genuinely new attempt, which earns a fresh
+// budget rather than inheriting the exhaustion of the attempt before it.
+type evidenceRejectionBudget struct {
+	digest string
+	count  int
+}
+
+// chargeEvidenceRejection records one evidence rejection against gateName's
+// budget, returning the resulting count and whether the budget is now spent.
+// It does not clear the count on exhaustion: a gate that somehow re-reaches
+// this state for the same digest must escalate again rather than restart the
+// loop.
+func (ws *walkState) chargeEvidenceRejection(gateName, digest string) (int, bool) {
+	if ws.evidenceRejections == nil {
+		ws.evidenceRejections = map[string]evidenceRejectionBudget{}
+	}
+	budget := ws.evidenceRejections[gateName]
+	if budget.digest != digest {
+		budget = evidenceRejectionBudget{digest: digest}
+	}
+	budget.count++
+	ws.evidenceRejections[gateName] = budget
+	return budget.count, budget.count >= maxRemediationEvidenceRejections
 }
 
 func newWalkState(jr *journal.Run, in StartInput, reg SecretRegistrar, state string) *walkState {
@@ -1749,9 +1796,25 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	if err != nil {
 		var evidenceErr *remediationEvidenceInspectionError
 		if errors.As(err, &evidenceErr) {
-			ws.retryInstructionAddendum = "Your unchanged remediation result was rejected by the runner: " +
-				evidenceErr.info.Message +
-				". Inspect every required failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the failure is non-actionable if no source change is needed."
+			// #3375: this re-dispatch is the runner's own, taken before the
+			// gate resolves any outcome, so nothing downstream charges it —
+			// count it here or the loop is bounded only by DefaultMaxSteps.
+			rejections, exhausted := ws.chargeEvidenceRejection(g.Name, evidenceErr.digest)
+			if exhausted {
+				escalation, escErr := ws.gateEval.EscalateUninspectedRemediation(
+					g, evidenceErr.info, rejections, evidenceErr.digest)
+				if escErr != nil {
+					terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps, escErr)
+					return gr, false, terminal, true, failErr
+				}
+				return escalation, false, Result{}, false, nil
+			}
+			ws.retryInstructionAddendum = fmt.Sprintf(
+				"Your unchanged remediation result was rejected by the runner: %s. Inspect every required "+
+					"failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the "+
+					"failure is non-actionable if no source change is needed. This was rejection %d of %d — after "+
+					"the last one this gate escalates the run instead of dispatching you again.",
+				evidenceErr.info.Message, rejections, maxRemediationEvidenceRejections)
 			ws.state = ws.lastStage
 			return gr, true, Result{}, false, nil
 		}
@@ -1895,6 +1958,20 @@ func terminalGateNotificationReason(machine *workflow.Machine, gr gate.Result) (
 				return reason + ": " + gr.RepassCause.String() + "; the implementer produced no change in response", true
 			}
 			return reason + ": repass produced a diff identical to the immediately prior attempt", true
+		}
+		// #3375: an evidence-rejection escalation is not budget exhaustion —
+		// no repass was ever charged. Report what actually stopped the run,
+		// carrying the synthesized rationale's rejection count and cause.
+		if gr.Reason == gate.ReasonRemediationEvidenceNotInspected {
+			detail := "the remediation stage never inspected the required failure evidence"
+			if gr.Verdict != nil {
+				if rationale := strings.TrimSpace(gr.Verdict.Rationale); rationale != "" {
+					// The synthesized rationale is already runner-attributed;
+					// the reason code carries that, so don't say it twice.
+					detail = strings.TrimPrefix(rationale, "runner: ")
+				}
+			}
+			return gr.Reason + ": " + detail, true
 		}
 		return "repass budget exhausted", true
 	}
@@ -2357,6 +2434,10 @@ type transcriptEvent struct {
 
 type remediationEvidenceInspectionError struct {
 	info *apiv1.ErrorInfo
+	// digest is the rejected attempt's diff digest — the identity the
+	// rejection budget is pinned to (#3375), so a later attempt that actually
+	// changes the branch starts counting again from zero.
+	digest string
 }
 
 func (e *remediationEvidenceInspectionError) Error() string {
@@ -2664,7 +2745,7 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 	sawListInputs, inspected, err := parseReceiptInputInspection(jr, stage, requiredSet, actionable)
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+			Code: gate.ReasonRemediationEvidenceNotInspected,
 			Message: dependencyValidationMessage(
 				fmt.Sprintf("cannot inspect trusted goobers-io receipts: %v", err),
 				result,
@@ -2680,14 +2761,14 @@ func (r *Runner) validateRemediationEvidence(jr executionJournal, stage string, 
 	if sawListInputs && len(missing) == 0 {
 		if classificationErr := validateUnchangedRemediationClassification(result); classificationErr != "" {
 			return &apiv1.ErrorInfo{
-				Code:    "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+				Code:    gate.ReasonRemediationEvidenceNotInspected,
 				Message: dependencyValidationMessage(classificationErr, result),
 			}
 		}
 		return nil
 	}
 	return &apiv1.ErrorInfo{
-		Code: "REMEDIATION_EVIDENCE_NOT_INSPECTED",
+		Code: gate.ReasonRemediationEvidenceNotInspected,
 		Message: dependencyValidationMessage(
 			strings.Replace(
 				pointerValidationErrorMessage(missing, sawListInputs),
@@ -4318,13 +4399,17 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 							"triggeringStage":                 gateEval.RepassCause.Stage,
 							"requiredFailureEvidencePointers": required,
 							"message":                         validationErr.Message,
+							// The digest the rejection budget is pinned to
+							// (#3375), so resume can rebuild the streak
+							// instead of handing a crashed loop a fresh one.
+							"diffDigest": diffDigest,
 						},
 					}); appendErr != nil {
 						err = fmt.Errorf("runner: journal remediation evidence validation for %q: %w", subjectStage, appendErr)
 						span.Fail(err)
 						return gate.Result{}, err, nil
 					}
-					err = &remediationEvidenceInspectionError{info: validationErr}
+					err = &remediationEvidenceInspectionError{info: validationErr, digest: diffDigest}
 					span.Fail(err)
 					return gate.Result{}, err, nil
 				}

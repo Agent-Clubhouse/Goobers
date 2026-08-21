@@ -351,6 +351,21 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+- **A claim's lifetime is the ledger's, and the marker's lifetime is the
+  claim's.** `scheduler/claims.json` is the only source of truth for
+  exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`
+  label and its claim breadcrumb are a projection of it, never an input to
+  eligibility. The projection is retired at the same moment the lease is —
+  a stage does it on the paths that have one (`issue-close-out`,
+  `backlog-query --release`), and the instance's terminal cleanup does it for
+  every run that reaches a terminal phase still holding a lease. The `no-work`
+  outcome is the case that makes the second path necessary rather than
+  defensive: it short-circuits to `completed` from whatever stage reported it,
+  so no close-out stage runs. Backlog curation's reconciliation of markers with
+  no backing lease remains the backstop for a projection that could not be
+  written (a forge outage, a credential-less instance, a non-GitHub provider),
+  not the primary mechanism — so the window in which the ledger and the forge
+  disagree is bounded by one provider call, not by one curation interval.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and

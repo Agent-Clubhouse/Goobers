@@ -387,6 +387,12 @@ spec:
                       Unset falls back to a spec default of 10 (internal/localscheduler's
                       Conditions.Admit), not "unenforced" — every workflow gets some
                       guardrail against a runaway chain out of the box (#339).
+
+                      Zero means the same thing as unset here (falls back to 10) — NOT
+                      "unlimited". That is the opposite convention from instance.yaml's
+                      runConditions.maxParallelRuns, where zero means unlimited. There is
+                      currently no way to express "no hourly budget" for a single workflow;
+                      set an explicit large value instead if you want a high ceiling (#3360).
                     format: int32
                     minimum: 1
                     type: integer

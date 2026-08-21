@@ -128,6 +128,31 @@ AssertionError: expected true
 	}
 }
 
+func TestCommandFailureDiagnosticKeepsStdoutDiagnosticOverEqualPriorityStderrTrailer(t *testing.T) {
+	// Regression for #3374: a late equal-priority stderr line (here, a make trailer
+	// like the one that follows a failed `make ci` recipe) must not steal the
+	// recorded failure window from a real diagnostic that already matched in stdout.
+	stdout := []byte(`Installing browsers...
+Error: EROFS: read-only file system, mkdir '/opt/ms-playwright/__dirlock'
+    at Object.mkdirSync (node:fs:1394:26)
+Continuing pipeline...
+`)
+	stderr := []byte(`some unrelated setup logs
+make: *** [Makefile:42: ci] Error 2
+`)
+
+	got := summarizeCommandFailure(stdout, stderr).failure
+	if got.stream != "stdout" {
+		t.Fatalf("failure = %+v, want window on stdout, not the equal-priority stderr trailer", got)
+	}
+	if !strings.Contains(got.text, "EROFS") {
+		t.Fatalf("failure = %+v, want the real errno diagnostic", got)
+	}
+	if strings.Contains(got.text, "Makefile:42") {
+		t.Fatalf("failure = %+v, must not be stolen by the stderr make trailer", got)
+	}
+}
+
 func TestCommandFailureDiagnosticIgnoresAggregateFailedTestsHeading(t *testing.T) {
 	output := []byte("FAIL src/first.test.ts > reports the assertion\nAssertionError: got false\nFailed Tests 1\n")
 	got := summarizeCommandFailure(output, nil).failure

@@ -22,7 +22,7 @@
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
-| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
+| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, report daemon health, or list live agentic stages |
 | [`goobers trace`](#goobers-trace) | show a run's journal events or review verdicts, follow a live run, or show transcripts |
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
@@ -380,6 +380,11 @@ Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
 persist the paginated ready-transition ledger for telemetry rollups.
+The ledger resumes from a durable per-repo/label event cursor; a full history
+scan runs only on the first cycle or an integrity mismatch, bounded by the
+transitionScanMaxPages input. Below the transitionScanQuotaFloor fraction of
+the provider rate-limit window the scan defers to the next cycle rather than
+spending the shared credential to zero.
 --feedback instead de-readies items whose consecutive failed/escalated
 implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
@@ -2847,16 +2852,25 @@ $ goobers stats --since 24h --json
 
 ## `goobers status`
 
-validate config, show warnings, list runs, or report daemon health
+validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+It lists parked backlog items too — open issues carrying a park disposition without
+goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
+With --agents, list only the agentic stages in flight right now, by role and run id.
+The --agents answer comes from the runner's own journals, never from a process table,
+so it can never match the process asking (no `ps | grep` self-match), and it drops the
+invoking run when it is itself a stage. It needs no credentials and makes no provider
+calls, so it is safe to run from inside a container during a deploy window. Combine it
+with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
+--watch are refused because the probe reports only the live moment.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -2866,6 +2880,8 @@ Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 $ goobers status
 $ goobers status --daemon
 $ goobers status --watch
+$ goobers status --agents
+$ goobers status --agents --json
 ~~~
 
 ## `goobers telemetry`
