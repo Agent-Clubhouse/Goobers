@@ -1208,10 +1208,14 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
 	ws.gateEval = &gate.Evaluator{
-		Automated:                    r.cfg.Automated,
-		Journal:                      ws.jr,
-		MaxRepasses:                  int(ws.in.RunControls.MaxRepasses),
-		Attempts:                     ws.gateAttempts,
+		Automated:   r.cfg.Automated,
+		Journal:     ws.jr,
+		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
+		Attempts:    ws.gateAttempts,
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := ws.in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
 		RepassAttempts:               ws.repassAttempts,
 		InfrastructureAttempts:       ws.infraGateAttempts,
 		InfrastructureRepassAttempts: ws.infraRepassAttempts,

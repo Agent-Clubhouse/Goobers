@@ -6749,6 +6749,36 @@ func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func agenticImplementNeedsHumanGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: "review"},
+			{Name: "park-needs-human", Type: apiv1.TaskDeterministic, Inputs: map[string]string{"status": "needs-human"}, Run: &apiv1.DeterministicRun{Command: []string{"issue-close-out"}}, Next: workflow.TargetAbort},
+			{Name: "park-remediation", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"record-remediation"}}, Next: workflow.TargetEscalate},
+		},
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+			Branches: map[string]string{
+				"pass":                  workflow.TerminalComplete,
+				"needs-changes":         "implement",
+				"fail":                  "park-needs-human",
+				workflow.BranchEscalate: "park-remediation",
+			},
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-needs-human-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile agentic needs-human fixture machine: %v", err)
+	}
+	return m
+}
+
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
 // capability sourcing.
@@ -7359,6 +7389,81 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
 	}
+}
+
+func TestRunnerEmptyDiffDoesNotDispatchNeedsHumanDisposition(t *testing.T) {
+	coder := &capturingReviewer{}
+	reviewer := &capturingReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				"run-empty-needs-human:park-remediation": {status: apiv1.ResultSuccess},
+			}}, nil
+		},
+		NewAgentic: func(gooberName string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if gooberName == "reviewer" {
+				return reviewer, nil
+			}
+			return coder, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-empty-needs-human",
+		Machine: agenticImplementNeedsHumanGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated remediation", res.Phase)
+	}
+	if reviewer.called {
+		t.Fatal("reviewer was invoked — the empty diff must be rejected before a needs-human disposition")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-empty-needs-human"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" {
+			if event.Target != "park-remediation" || event.Name == "" || event.Ref == nil {
+				t.Fatalf("review gate event = %+v, want remediation target with preserved verdict artifact", event)
+			}
+			verdictBytes, err := rd.ArtifactBytes(*event.Ref)
+			if err != nil {
+				t.Fatalf("read preserved verdict artifact: %v", err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(verdictBytes, &verdict); err != nil {
+				t.Fatalf("decode preserved verdict artifact: %v", err)
+			}
+			if verdict.Decision != apiv1.VerdictFail || !strings.Contains(verdict.Rationale, "no committed changes") {
+				t.Fatalf("preserved verdict = %+v, want synthesized fail evidence", verdict)
+			}
+			return
+		}
+	}
+	t.Fatal("review gate evaluation was not journaled")
 }
 
 // TestRunnerDeterministicSubjectEmptyDiffStillReviews is #415's collision guard
