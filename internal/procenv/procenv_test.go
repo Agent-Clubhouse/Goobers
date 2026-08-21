@@ -234,6 +234,21 @@ func TestBaseEnvPassesThroughJavaToolchainFamily(t *testing.T) {
 	}
 }
 
+// TestBaseEnvPassesThroughPlaywrightBrowsersPath is the regression test for
+// #3369: a Playwright-driven stage needs to see a relocated browser binary
+// cache, not silently fall back to a HOME-derived default that doesn't exist
+// in a fresh sandbox HOME (which then attempts a CDN download the egress
+// policy denies, two layers away from the real cause).
+func TestBaseEnvPassesThroughPlaywrightBrowsersPath(t *testing.T) {
+	t.Setenv("PLAYWRIGHT_BROWSERS_PATH", "/custom/playwright-browsers")
+
+	for _, env := range [][]string{BaseEnv(), BaseEnvWith(nil)} {
+		if !contains(env, "PLAYWRIGHT_BROWSERS_PATH=/custom/playwright-browsers") {
+			t.Fatalf("PLAYWRIGHT_BROWSERS_PATH did not pass through, got %v", env)
+		}
+	}
+}
+
 func TestBaseEnvPassesThroughProfileLocationsWithoutAuthTokens(t *testing.T) {
 	profileVars := map[string]string{
 		"USERPROFILE":  `C:\Users\operator`,

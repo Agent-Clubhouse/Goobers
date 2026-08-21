@@ -185,6 +185,52 @@ On Windows the same control is expressed through ACLs rather than mode bits, and
 a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
 inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
 
+### `subPath` ConfigMap mounts never receive updates
+
+A `subPath` volumeMount looks identical to a whole-file or whole-directory mount
+in the manifest — same `configMap` ref, same `mountPath` — but its update
+behavior is not. Kubernetes materializes a `subPath` target as a **copy** made
+once at pod creation, not the symlinked, periodically-resynced view a
+whole-ConfigMap mount gets. Editing the ConfigMap afterwards changes nothing in
+the running container until the pod restarts, and nothing at write time warns
+about it: the manifest is indistinguishable from a hot-reloadable one (#3365).
+
+This bit a live instance running a Squid egress proxy: the allowlist ConfigMap
+was mounted with `subPath` for a single-file target, an allowlist fix (adding an
+entry the proxy needed) landed in the ConfigMap, and Squid kept enforcing the
+stale rule until the pod was restarted — dropping in-flight agentic HTTP. The
+same trap applies to `goobers up --watch-config` or any other config-driven
+sidecar: the daemon's own reloader polls its config directory for a changed
+digest every second (`configReloadInterval`, `cmd/goobers/configreload.go`), but
+a second's cadence buys nothing if the bytes underneath a `subPath` mount never
+change — the loop ticks forever and finds nothing to reload.
+
+Avoid it by mounting the **whole ConfigMap (or a projected volume combining
+several) at its own directory, without `subPath`**, and pointing the app at that
+directory instead of a single carved-out file:
+
+```yaml
+volumeMounts:
+  - name: allowlist
+    mountPath: /etc/squid/allow.d   # whole directory, no subPath
+volumes:
+  - name: allowlist
+    configMap:
+      name: egress-allowlist
+```
+
+The kubelet resyncs a whole-ConfigMap mount by atomically swapping a symlink, so
+`squid -k reconfigure` (or any watcher polling the directory) sees the new
+content without a restart. When the application truly needs one fixed file path
+and can't take a directory, an initContainer that copies the ConfigMap entry into
+an `emptyDir` at startup also works — it adds a moving part, but keeps
+whole-mount update semantics on the source you actually edit.
+
+Either way, verify by execution, not by reading the manifest: edit the
+ConfigMap, wait past the resync/reload interval, and confirm the running process
+(or the mounted file's content — `kubectl exec … -- cat <path>`) actually
+changed. The manifest that broke reload here read exactly like a working one.
+
 ### Images
 
 The default image carries the Copilot CLI agent harness. Its home is mounted from

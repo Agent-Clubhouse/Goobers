@@ -69,9 +69,10 @@ func TestRunReportWritesComparisonAndSoftWarning(t *testing.T) {
 		SchemaVersion: schemaVersion,
 		Jobs: map[string]jobBudget{
 			"unit": {
-				BaselineSeconds: 100,
-				BudgetSeconds:   120,
-				Baseline:        "main at 2026-07-21",
+				BaselineSeconds:     100,
+				BudgetSeconds:       120,
+				Baseline:            "main at 2026-07-21",
+				RegressionTolerance: 0.15,
 			},
 		},
 	})
@@ -99,7 +100,9 @@ func TestRunReportWritesComparisonAndSoftWarning(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run() = %d, stderr = %s", code, &stderr)
 	}
-	if !strings.Contains(stdout.String(), "::warning title=Test timing budget exceeded::") {
+	// +18.2% growth clears the 15% regressionTolerance, so this is a genuine
+	// regression signal, not shared-runner contention noise.
+	if !strings.Contains(stdout.String(), "::warning title=Test timing regression::") {
 		t.Fatalf("stdout missing soft warning:\n%s", &stdout)
 	}
 	if !strings.Contains(stdout.String(), "actual 130.0s / budget 120.0s") || !strings.Contains(stdout.String(), "change +20.0s (+18.2%)") {
@@ -122,7 +125,7 @@ func TestRunReportStaysQuietWithinBudgetAndIgnoresMissingPrevious(t *testing.T) 
 	writeJSONFile(t, budgetPath, budgetFile{
 		SchemaVersion: schemaVersion,
 		Jobs: map[string]jobBudget{
-			"unit": {BaselineSeconds: 100, BudgetSeconds: 150, Baseline: "measured main"},
+			"unit": {BaselineSeconds: 100, BudgetSeconds: 150, Baseline: "measured main", RegressionTolerance: 0.2},
 		},
 	})
 	writeJSONFile(t, currentPath, artifact{
@@ -183,6 +186,199 @@ func TestRunRejectsInvalidArgumentsAndBudgets(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "invalid baselineSeconds") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunRejectsInvalidRegressionTolerance(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	budgetPath := filepath.Join(directory, "budgets.json")
+	currentPath := filepath.Join(directory, "current.json")
+	writeJSONFile(t, budgetPath, budgetFile{
+		SchemaVersion: schemaVersion,
+		Jobs: map[string]jobBudget{
+			// RegressionTolerance omitted (zero value): a job with no
+			// tolerance configured can never produce a meaningful advisory
+			// signal, so it must be rejected the same way a missing budget
+			// or baseline is.
+			"unit": {BaselineSeconds: 100, BudgetSeconds: 150, Baseline: "measured main"},
+		},
+	})
+	writeJSONFile(t, currentPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		ElapsedSeconds: 90,
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{
+		"report",
+		"-budget", budgetPath,
+		"-current", currentPath,
+		"-summary", "",
+	}, &stdout, &stderr, time.Now); code != 1 {
+		t.Fatalf("run(missing regressionTolerance) = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid regressionTolerance") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+// TestRunReportStaysQuietOnSharedRunnerContentionGrowth reproduces the
+// evidence from #3323: a macOS run landed at 566.7s against a 300s budget
+// that every prior green run had already blown, with only a 5.7% increase
+// over the previous successful run. That is shared-runner contention noise,
+// not a regression, and must not produce an advisory -- even though the
+// (informational) fixed-second budget is, and always was, exceeded.
+func TestRunReportStaysQuietOnSharedRunnerContentionGrowth(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	budgetPath := filepath.Join(directory, "budgets.json")
+	currentPath := filepath.Join(directory, "current.json")
+	previousPath := filepath.Join(directory, "previous.json")
+	writeJSONFile(t, budgetPath, budgetFile{
+		SchemaVersion: schemaVersion,
+		Jobs: map[string]jobBudget{
+			"unit": {
+				BaselineSeconds:     120,
+				BudgetSeconds:       300,
+				Baseline:            "main at 2026-07-21",
+				RegressionTolerance: 0.2,
+			},
+		},
+	})
+	writeJSONFile(t, currentPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		Platform:       "macos",
+		Architecture:   "arm64",
+		ElapsedSeconds: 566.7,
+	})
+	writeJSONFile(t, previousPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		ElapsedSeconds: 536.3,
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"report",
+		"-budget", budgetPath,
+		"-current", currentPath,
+		"-previous", previousPath,
+		"-summary", "",
+	}, &stdout, &stderr, time.Now)
+	if code != 0 {
+		t.Fatalf("run() = %d, stderr = %s", code, &stderr)
+	}
+	if strings.Contains(stdout.String(), "::warning") {
+		t.Fatalf("stdout contains advisory warning for contention-noise growth:\n%s", &stdout)
+	}
+	// The ledger still records the (informational) over-budget status --
+	// the trend data stays visible, it just no longer pages anyone.
+	if !strings.Contains(stdout.String(), "OVER BUDGET") {
+		t.Fatalf("stdout missing informational OVER BUDGET status:\n%s", &stdout)
+	}
+}
+
+// TestRunReportWarnsOnGenuineRegressionEvenUnderAGenerousBudget guards the
+// other direction: growth well past RegressionTolerance must still produce
+// an advisory even when the (now generous, per #3323) fixed-second budget
+// alone would not have flagged it.
+func TestRunReportWarnsOnGenuineRegressionEvenUnderAGenerousBudget(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	budgetPath := filepath.Join(directory, "budgets.json")
+	currentPath := filepath.Join(directory, "current.json")
+	previousPath := filepath.Join(directory, "previous.json")
+	writeJSONFile(t, budgetPath, budgetFile{
+		SchemaVersion: schemaVersion,
+		Jobs: map[string]jobBudget{
+			"unit": {
+				BaselineSeconds:     120,
+				BudgetSeconds:       900,
+				Baseline:            "main at 2026-08-20",
+				RegressionTolerance: 0.5,
+			},
+		},
+	})
+	writeJSONFile(t, currentPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		Platform:       "macos",
+		Architecture:   "arm64",
+		ElapsedSeconds: 800,
+	})
+	writeJSONFile(t, previousPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		ElapsedSeconds: 500,
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"report",
+		"-budget", budgetPath,
+		"-current", currentPath,
+		"-previous", previousPath,
+		"-summary", "",
+	}, &stdout, &stderr, time.Now)
+	if code != 0 {
+		t.Fatalf("run() = %d, stderr = %s", code, &stderr)
+	}
+	// 800 is within the 900s budget (informational "within budget"), but
+	// +60% over the previous run clears the 50% regressionTolerance.
+	if !strings.Contains(stdout.String(), "::warning title=Test timing regression::") {
+		t.Fatalf("stdout missing advisory for genuine regression:\n%s", &stdout)
+	}
+}
+
+// TestRunReportNeverFailsOnTimingAloneRegardlessOfSeverity locks in the
+// never-assert-wall-clock principle (#1239, #3323): no combination of
+// over-budget and over-tolerance timing data may turn this step into a hard
+// CI failure. Malformed input (bad JSON, schema mismatch, unknown job) is the
+// only thing report may fail on.
+func TestRunReportNeverFailsOnTimingAloneRegardlessOfSeverity(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	budgetPath := filepath.Join(directory, "budgets.json")
+	currentPath := filepath.Join(directory, "current.json")
+	previousPath := filepath.Join(directory, "previous.json")
+	writeJSONFile(t, budgetPath, budgetFile{
+		SchemaVersion: schemaVersion,
+		Jobs: map[string]jobBudget{
+			"unit": {
+				BaselineSeconds:     120,
+				BudgetSeconds:       300,
+				Baseline:            "main at 2026-07-21",
+				RegressionTolerance: 0.2,
+			},
+		},
+	})
+	writeJSONFile(t, currentPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		ElapsedSeconds: 3000,
+	})
+	writeJSONFile(t, previousPath, artifact{
+		SchemaVersion:  schemaVersion,
+		Job:            "unit",
+		ElapsedSeconds: 100,
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"report",
+		"-budget", budgetPath,
+		"-current", currentPath,
+		"-previous", previousPath,
+		"-summary", "",
+	}, &stdout, &stderr, time.Now)
+	if code != 0 {
+		t.Fatalf("run() = %d, stderr = %s -- timing data must never fail this step", code, &stderr)
+	}
+	if !strings.Contains(stdout.String(), "::warning title=Test timing regression::") {
+		t.Fatalf("stdout missing expected advisory for a genuine 30x regression:\n%s", &stdout)
 	}
 }
 

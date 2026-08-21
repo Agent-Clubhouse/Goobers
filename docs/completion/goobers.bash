@@ -122,7 +122,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --agents --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
