@@ -908,6 +908,41 @@ func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsInsecureNonLoopbackOTLP reproduces #3333's live
+// v0.2.0 Goobernetes cutover incident: an instance.yaml with
+// telemetry.otlp.insecure: true against a non-loopback collector endpoint
+// passed every check available at the time and only killed the daemon (and
+// both workers) at boot with the runtime's "insecure mode is allowed only
+// for localhost or a loopback IP" refusal. `goobers validate` must reach
+// that same refusal — config-load parity — so this dies in CI, not at
+// cutover, and the message must name both escape routes (a loopback sidecar
+// collector, or a TLS endpoint) so the failure teaches the fix.
+func TestValidateRejectsInsecureNonLoopbackOTLP(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, "telemetry:\n"+
+		"  otlp:\n"+
+		"    endpoint: goobers-collector.goobers-system:4317\n"+
+		"    insecure: true\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		`insecure mode is allowed only for localhost or a loopback IP`,
+		`loopback sidecar collector`,
+		`TLS collector`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func replaceInFile(t *testing.T, path, old, replacement string) {
 	t.Helper()
 	raw, err := os.ReadFile(path)

@@ -32,10 +32,11 @@ import (
 // selection) — without which `local-ci`'s `make ci` re-downloads modules or
 // fails outright on any host with a customized Go env; and the common
 // non-Go toolchain families (#736, polyglot) — .NET/NuGet, Python, Node, Rust,
-// and Java/Maven/Gradle — so a stage running `dotnet build && dotnet test`,
-// `pip`, `npm`, `cargo`, `mvn`, or `gradle` against a relocated SDK root,
-// cache, or configured package registry finds it instead of silently falling
-// back to a HOME-derived default that does not exist on the host.
+// Java/Maven/Gradle, and Playwright (#3369) — so a stage running
+// `dotnet build && dotnet test`, `pip`, `npm`, `cargo`, `mvn`, `gradle`, or a
+// Playwright-driven E2E suite against a relocated SDK root, cache, or
+// configured package registry finds it instead of silently falling back to a
+// HOME-derived default that does not exist on the host.
 // None of these carries secret material — the allowlist stays default-deny,
 // and toolchain vars that CAN carry secrets (e.g. npm's per-registry
 // `npm_config_//…/:_authToken`) are deliberately excluded, which is why the
@@ -69,6 +70,12 @@ var Vars = []string{
 	// Java: JDK roots, JVM options, and Maven + Gradle homes/caches.
 	"JAVA_HOME", "JDK_HOME", "MAVEN_OPTS", "MAVEN_CONFIG", "M2_HOME",
 	"GRADLE_OPTS", "GRADLE_USER_HOME",
+	// Playwright: relocated browser binary cache (#3369) — same secret-free
+	// cache-location class as GOCACHE/npm_config_cache/PIP_CACHE_DIR/
+	// NUGET_PACKAGES/CARGO_HOME/GRADLE_USER_HOME; without it a Playwright-driven
+	// stage falls back to a HOME-derived default that doesn't exist in a fresh
+	// sandbox HOME and attempts a CDN download the egress policy denies.
+	"PLAYWRIGHT_BROWSERS_PATH",
 }
 
 // Prefixes are ambient env var name prefixes carried through as a family —

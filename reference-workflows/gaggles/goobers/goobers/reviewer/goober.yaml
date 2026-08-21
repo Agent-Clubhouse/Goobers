@@ -19,8 +19,6 @@ spec:
   # stage-level capabilities, so the runner sources this grant from here.
   capabilities:
     - agent:model
-  skills:
-    - review
   tools:
     - shell
   scaleFactor: 1

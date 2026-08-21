@@ -72,13 +72,6 @@ var checkedInTrees = []checkedInTree{
 		strict:     true,
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
-			`WARNING SKILL002 gaggles/goobers/goobers/analyst/goober.yaml Goober/analyst: spec.skills declares "tutor-diagnosis", but no skill package directory was found at "gaggles/goobers/skills/tutor-diagnosis" or "skills/tutor-diagnosis"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/config-author/goober.yaml Goober/config-author: spec.skills declares "config-authoring", but no skill package directory was found at "gaggles/goobers/skills/config-authoring" or "skills/config-authoring"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/curator/goober.yaml Goober/curator: spec.skills declares "triage", but no skill package directory was found at "gaggles/goobers/skills/triage" or "skills/triage"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "implement", but no skill package directory was found at "gaggles/goobers/skills/implement" or "skills/implement"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/implementer/goober.yaml Goober/implementer: spec.skills declares "run-tests", but no skill package directory was found at "gaggles/goobers/skills/run-tests" or "skills/run-tests"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/nominator/goober.yaml Goober/nominator: spec.skills declares "nomination", but no skill package directory was found at "gaggles/goobers/skills/nomination" or "skills/nomination"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
-			`WARNING SKILL002 gaggles/goobers/goobers/reviewer/goober.yaml Goober/reviewer: spec.skills declares "review", but no skill package directory was found at "gaggles/goobers/skills/review" or "skills/review"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 		},
 	},
 	{path: "config-examples"},

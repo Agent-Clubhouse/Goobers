@@ -179,6 +179,11 @@ const (
 	RunnerAnnotationRunRecovery = "run.recovery"
 	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
 	RunnerAnnotationTriggerRecovery = "trigger.recovery"
+	// RunnerAnnotationWorkflowDigestDrift identifies in-flight runs whose
+	// pinned workflow digest no longer matches the served definition (#3376):
+	// they either resume from their pinned snapshot or, when that snapshot is
+	// unavailable, are refused at the next daemon restart.
+	RunnerAnnotationWorkflowDigestDrift = "workflow.digest.drift"
 	// RecoveryActionResumed records continuation of an interrupted stage.
 	RecoveryActionResumed = "resumed"
 	// RecoveryActionRetried records a new attempt after interruption.

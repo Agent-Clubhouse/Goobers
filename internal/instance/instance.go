@@ -28,6 +28,13 @@ const (
 	// opens a config PR before promotion, so its mandatory live-verification
 	// finding must outlive that authoring run.
 	TutorHoldoutsDirName = "tutor-holdouts"
+	// BacklogHealthDirName is the SchedulerDir subdirectory holding the
+	// backlog-health stage's durable ready-transition ledger and its
+	// provider-event high-water mark (#3392). Like the docs watermark it is
+	// instance-wide rather than per-run precisely because its whole purpose is
+	// to let the next cycle resume instead of re-reading the repo's entire
+	// issue-event history.
+	BacklogHealthDirName = "backlog-health"
 )
 
 // Layout resolves the paths that make up an instance root.
@@ -156,6 +163,21 @@ func (l Layout) TutorHoldoutsDir() string {
 func (l Layout) TutorHoldoutPath(gaggle, runID string) string {
 	name := tutorHoldoutSegment(gaggle) + "__" + tutorHoldoutSegment(runID) + ".json"
 	return filepath.Join(l.TutorHoldoutsDir(), name)
+}
+
+// BacklogHealthCursorPath returns the durable ready-transition cursor file for
+// one (gaggle, provider, repository, label) scan (#3392). repository is the
+// provider-native "owner/name" key; label is the ready label whose transitions
+// the ledger holds. Every segment is name-sanitized (labels carry a ":") so the
+// file name stays a single, safe path component.
+func (l Layout) BacklogHealthCursorPath(gaggle, provider, repository, label string) string {
+	name := strings.Join([]string{
+		tutorHoldoutSegment(gaggle),
+		tutorHoldoutSegment(provider),
+		tutorHoldoutSegment(repository),
+		tutorHoldoutSegment(label),
+	}, "__") + ".json"
+	return filepath.Join(l.SchedulerDir(), BacklogHealthDirName, name)
 }
 
 func tutorHoldoutSegment(s string) string {
