@@ -197,6 +197,35 @@ Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
 pull on a fresh node. If your operator-selected capacity policy scales the Windows
 pool to zero, expect that pull on the first run after it scales up.
 
+### Container init: who reaps orphaned stage descendants
+
+The image is `ENTRYPOINT ["goobers"]` in exec form with no init wrapper, so the
+daemon is **pid 1** of its container. That makes it the kernel's reparent target
+for every stage descendant that outlives its parent — a double-fork, or a
+descendant whose parent `KillTree` reaches first — and a Go program waits for
+nothing but its own `exec.Cmd` children. Nobody else is above it to reap.
+
+The daemon supplies that missing init half itself: at startup it checks
+`os.Getpid() == 1` on Linux and, only then, runs a SIGCHLD-driven loop that
+`wait4`s orphaned descendants (#3398). It logs
+`startup: running as container init (pid 1)` when it does. The loop deliberately
+waits specific pids rather than `wait4(-1)`, so it never consumes a stage's exit
+status out from under the runner. Nothing is needed in the pod spec for the
+reference deployments.
+
+Two arrangements put the daemon somewhere other than pid 1 and switch the loop
+off; give those a reaping init instead:
+
+- Wrapping the entrypoint in a shell (`sh -c "goobers up …"`) — the shell
+  becomes pid 1 and most shells do not reap. Prefer exec form, or `exec goobers`.
+- Sidecar or debug containers sharing a pid namespace
+  (`shareProcessNamespace: true`), where the pause container is pid 1.
+
+The general escape hatch is any minimal init as pid 1 — `tini -g`, the
+`--init` flag for plain `docker run`, or `shareProcessNamespace: true` so the
+pause container reaps. Symptom when nobody does: `Z`-state processes
+accumulating in the pod and worktrees never released.
+
 ### Timezones
 
 Windows containers ship no IANA database. `goobers` embeds Go's copy, so a
