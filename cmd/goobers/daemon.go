@@ -1072,8 +1072,17 @@ func buildRuntimeRunner(
 	if err != nil {
 		return nil, nil, err
 	}
+	// #3347: retire the provider-visible claim marker in the same terminal
+	// cleanup step that releases the ledger lease, so a run that never reaches
+	// issue-close-out (the `no-work` outcome short-circuits straight to
+	// completed) cannot leave claims.json and the provider disagreeing until
+	// the next backlog-curation cycle.
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
+	if err != nil {
+		return nil, nil, err
+	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return finalizeTerminalRun(l, instanceLog, manager, runID)
+		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
 	if terminalNotifier != nil {

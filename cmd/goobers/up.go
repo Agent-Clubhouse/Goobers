@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -293,6 +294,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+
+	// The shipped image runs the daemon as its container's pid 1, which makes
+	// it the kernel's reparent target for every stage descendant that outlives
+	// its parent — and a Go program waits for nothing but its own exec.Cmd
+	// children, so those descendants would stay zombies for the life of the pod
+	// (#3398). Install the missing init half before any stage can start. It is
+	// pid-1-guarded, so a local `goobers up` is untouched and stays silent.
+	if proc.StartOrphanReaper(ctx) {
+		pf(stdout, "startup: running as container init (pid 1); reaping orphaned stage descendants\n")
 	}
 
 	l := instance.NewLayout(root)

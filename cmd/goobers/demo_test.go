@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/test/testsupport/netns"
 )
 
 type demoDaemonWriter struct {
@@ -271,6 +272,12 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("demo requires enforced network isolation")
 	}
+	// Hardened runtimes (seccompProfile: RuntimeDefault + capabilities: drop
+	// [ALL]) can deny the unprivileged user namespace the Linux isolation path
+	// needs, which would otherwise hard-fail this test with an EPERM that
+	// reads like a product regression rather than an environment capability
+	// gap (#3397).
+	netns.RequireIsolation(context.Background(), t)
 	start := time.Now()
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {

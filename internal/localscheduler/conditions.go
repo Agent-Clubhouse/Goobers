@@ -75,7 +75,11 @@ type Conditions struct {
 	// stays O(1) regardless of workflow count.
 	totalActive int
 	// instanceMaxParallel caps totalActive across the whole instance (§7,
-	// SCH-003's "per workflow/instance"); 0 means unlimited (unset).
+	// SCH-003's "per workflow/instance"); 0 means unlimited (unset). NOTE the
+	// asymmetry with maxRunsPerHour just below in AdmitProviderWorkflow: that
+	// field's 0/unset instead falls back to a non-zero default (10), never
+	// "unlimited" (#3360) — two adjacent concurrency knobs in this same
+	// struct where zero means opposite extremes.
 	instanceMaxParallel int
 	// workflowBudgets overrides a specific workflow's runs-per-hour budget
 	// from instance.yaml's runConditions.workflowBudgets, taking precedence
@@ -260,6 +264,14 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 		// guardrail out of the box, generous enough that a single clean run
 		// (completes in well under 10 minutes) doesn't get throttled the way
 		// a hand-authored maxRunsPerHour: 1 did during dogfooding.
+		//
+		// UNLIKE c.instanceMaxParallel above (where 0/unset means unlimited),
+		// 0 here means the same thing as leaving the field unset: there is
+		// no way to express "no hourly budget" through this field. An
+		// operator who writes maxRunsPerHour: 0 expecting to mirror
+		// maxParallelRuns's "0 = unlimited" instead gets silently throttled
+		// to 10/hour (#3360) — `goobers validate` warns on this explicit-0
+		// case (api/validate WF020).
 		maxRunsPerHour = 10
 	}
 	maxRunsPerDay := r.MaxRunsPerDay
