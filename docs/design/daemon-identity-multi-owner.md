@@ -1,6 +1,6 @@
 # Daemon identity on multi-owner instances
 
-**Status:** proposed — design of record for #3341. Design only: this document changes no code.
+**Status:** draft — design of record for #3341. Design only: this document changes no code.
 **Verified against** `origin/main` @ `a1cd66dd`.
 
 `daemonIdentity` is per-instance global and carries exactly one `installationId`. GitHub App
