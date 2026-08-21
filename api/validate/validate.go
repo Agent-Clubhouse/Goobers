@@ -1077,7 +1077,7 @@ func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
 			if scopedMissing && sharedMissing {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
-					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					"spec.skills declares %q, but no skill package directory was found at %q or %q; the dangling declaration contributes nothing at runtime — remove it or add the package",
 					skill,
 					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
 					filepath.ToSlash(filepath.Join("skills", skill)))

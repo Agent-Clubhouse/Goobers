@@ -82,6 +82,75 @@ func (f *receiptFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, 
 	return out, err
 }
 
+type mcpFailureFakeAdapter struct {
+	FakeAdapter
+	failures []MCPServerFailure
+}
+
+func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.MCPServerFailures = append([]MCPServerFailure(nil), f.failures...)
+	return out, err
+}
+
+// TestExecutorJournalsMCPServerUnavailable pins #3356's detection contract:
+// when an adapter reports that a registered MCP server was not connected at
+// invocation, the executor must journal a loud runner.annotation naming the
+// lost servers — next to whatever the stage goes on to report — while leaving
+// the run's own outcome untouched (strictly additive: nothing that worked
+// before changes).
+func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &mcpFailureFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		failures: []MCPServerFailure{{Server: "goobers-io", Status: "failed"}},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("annotation must not change the run outcome, got status %q", result.Status)
+	}
+	var annotation *journal.Event
+	for i := range rec.events {
+		if rec.events[i].Type == journal.EventRunnerAnnotation && rec.events[i].Runner["kind"] == "mcp-server-unavailable" {
+			annotation = &rec.events[i]
+			break
+		}
+	}
+	if annotation == nil {
+		t.Fatalf("events = %+v, want an mcp-server-unavailable annotation", rec.events)
+	}
+	if annotation.Stage != "implement" {
+		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
+	}
+	servers, ok := annotation.Runner["servers"].([]map[string]string)
+	if !ok || len(servers) != 1 || servers[0]["server"] != "goobers-io" || servers[0]["status"] != "failed" {
+		t.Fatalf("annotation servers = %#v", annotation.Runner["servers"])
+	}
+	detail, _ := annotation.Runner["detail"].(string)
+	if !strings.Contains(detail, "unavailable") {
+		t.Fatalf("annotation detail = %q, want it to name the tool loss", detail)
+	}
+}
+
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
 	out, err := f.FakeAdapter.Run(ctx, req)
 	out.Metrics = f.metrics

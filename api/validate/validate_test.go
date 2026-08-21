@@ -1059,7 +1059,7 @@ spec:
 		Code:        WarningMissingSkillPackage,
 		Severity:    Warning,
 		Scope:       "config.yaml Goober/coder",
-		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 	}
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
@@ -1132,7 +1132,7 @@ spec:
 		}
 	}
 	for _, want := range []string{
-		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
 		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
 	} {
