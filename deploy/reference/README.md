@@ -291,6 +291,15 @@ a fresh worktree on the run branch, so what survives between stages is the branc
 in that worker's own git mirror. A stage that hands work to another platform must
 push first (#2861).
 
+The `goobers-system` namespace enforces Pod Security Standards `restricted`.
+PSS evaluates **initContainers** too, so an adopter's per-worker instance-root
+seed must set the same non-root, no-escalation, dropped-capabilities, read-only
+root filesystem, and `RuntimeDefault` seccomp controls as the application
+container. The reference worker includes that restricted-compatible seed.
+These controls are Linux-only: Kubernetes rejects them on Windows pods. Keep
+Linux and Windows workers as separate Deployments, set `spec.os.name: windows`
+for Windows workers, and do not copy the Linux security context into them.
+
 ### Cluster rebuilds
 
 `az aks get-credentials --overwrite-existing` does not reliably repoint `kubectl`
