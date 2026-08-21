@@ -235,3 +235,5 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+github.com/goobers/goobers/internal/temporaltest.StartDevServer # Dev-server acquisition seam used only from engine/bootstrap _test.go files (#3393).
+github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # Offline-vs-download resolution helper for the test-only dev-server seam (#3393).

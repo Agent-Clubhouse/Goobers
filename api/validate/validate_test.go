@@ -1491,6 +1491,109 @@ func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	}
 }
 
+// TestExplicitZeroMaxRunsPerHourWarns reproduces #3360: a workflow that
+// writes readiness.maxRunsPerHour: 0 expecting "unlimited" (by analogy to
+// instance.yaml's runConditions.maxParallelRuns, where 0 does mean
+// unlimited) instead gets silently throttled to the scheduler's default of
+// 10/hour. `goobers validate` must surface this as a non-fatal warning
+// naming both the actual behavior and the asymmetric field, and must NOT
+// warn when the field is simply omitted or set to a positive value — the
+// overwhelming majority of real workflows never set it at all.
+func TestExplicitZeroMaxRunsPerHourWarns(t *testing.T) {
+	const configTemplate = `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: example
+spec:
+  instance:
+    name: example
+    environment: dev
+  gaggles:
+    - acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: build
+spec:
+  gaggle: acme
+  triggers:
+    - type: manual
+  start: build
+%s  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`
+
+	tests := []struct {
+		name      string
+		readiness string
+		wantWarn  bool
+	}{
+		{name: "explicit zero warns", readiness: "  readiness:\n    maxRunsPerHour: 0\n", wantWarn: true},
+		{name: "omitted does not warn", readiness: "", wantWarn: false},
+		{name: "explicit positive does not warn", readiness: "  readiness:\n    maxRunsPerHour: 5\n", wantWarn: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(configTemplate, tc.readiness)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if report.HasErrors() {
+				t.Fatalf("warning must not fail validation:\n%s", joinIssues(report))
+			}
+
+			var got []CodedWarning
+			for _, warning := range report.Warnings() {
+				if warning.Code == WarningZeroMaxRunsPerHour {
+					got = append(got, warning)
+				}
+			}
+			if !tc.wantWarn {
+				if len(got) != 0 {
+					t.Fatalf("WF020 warnings = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("WF020 warnings = %+v, want exactly one", got)
+			}
+			for _, want := range []string{"maxRunsPerHour", "unlimited", "10", "maxParallelRuns"} {
+				if !strings.Contains(got[0].Explanation, want) {
+					t.Errorf("warning explanation = %q, want it to contain %q", got[0].Explanation, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkflowSchemaRejectsRunImageFixture(t *testing.T) {
 	const fixture = "testdata/config-run-image"
 	report, err := newV(t).ValidateDir(fixture)

@@ -841,6 +841,64 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 	}
 }
 
+// TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile is the
+// wiring-level regression test for #3342: a deployment with a read-only root
+// filesystem and nothing writable at the OS default temp directory (no
+// TMPDIR, no /tmp) previously failed every goobers-CLI stage's built-in
+// error file creation with "open /tmp/goobers-builtin-error-…: read-only
+// file system". buildDeterministicExecutor now wires ScratchDir onto the
+// ShellExecutor, which this confirms end-to-end by running a stub "goobers"
+// command that echoes GOOBERS_BUILTIN_ERROR_FILE back and asserting it was
+// created under the configured ScratchDir, not the OS default temp dir.
+func TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchDir := filepath.Join(t.TempDir(), "scratch")
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := runnerWiringArtifactRecorder{}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          stub,
+		ArtifactRecorder: rec,
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+		ScratchDir:       scratchDir,
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+
+	result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Command: []string{"goobers", "some-subcommand"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	if !strings.HasPrefix(builtinErrorFile, scratchDir+string(filepath.Separator)) {
+		t.Fatalf("builtin error file %q was not created under the configured ScratchDir %q — still depends on the OS default temp directory", builtinErrorFile, scratchDir)
+	}
+	if _, err := os.Stat(scratchDir); err != nil {
+		t.Fatalf("ScratchDir was not created: %v", err)
+	}
+}
+
 func TestBuildAgenticExecutorIndependently(t *testing.T) {
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
