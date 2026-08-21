@@ -206,7 +206,11 @@ type statusJSONOutput struct {
 	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
 	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
 	Summary       *statusFleetSummary              `json:"summary,omitempty"`
-	Runs          []statusJSONSummary              `json:"runs"`
+	// ParkedBacklog reports items that left the ready pool on a park
+	// disposition (#3355); omitted when the provider snapshot is unavailable,
+	// the same posture as timeToFirstPR.
+	ParkedBacklog *statusParkedBacklog `json:"parkedBacklog,omitempty"`
+	Runs          []statusJSONSummary  `json:"runs"`
 }
 
 func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -509,6 +513,8 @@ const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
+	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
@@ -692,6 +698,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
+	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR
 	if timeToFirstPROpenErr != nil {
 		loadTimeToFirstPR = func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
@@ -726,9 +733,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
-			return text.String(), nil
+		} else {
+			text.WriteString(prLabelStatusText(counts))
 		}
-		text.WriteString(prLabelStatusText(counts))
+		// Parked backlog items (#3355): a park disposition strips
+		// goobers:ready, so these items are gone from the ready pool with
+		// nothing configured to put them back. An unavailable PR count must
+		// not suppress them — they are the section an unattended instance
+		// needs most.
+		parked, err := parkedBacklog.Load(ctx, cfg)
+		if err != nil {
+			text.WriteString(parkedBacklogStatusUnavailableText(err))
+		} else {
+			text.WriteString(parkedBacklogStatusText(parked))
+		}
 		return text.String(), nil
 	}
 	if supportsWatch && *watch {
@@ -765,6 +783,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
+		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
 			if err == nil {
@@ -773,12 +792,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 			}
+			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
+				parked = &snapshot
+			}
 		}
 		output := statusJSONOutput{
 			Warnings:      warnings,
 			TimeToFirstPR: timeToFirstPR,
 			DaemonRestart: daemonRestart,
 			Summary:       fleetSummary,
+			ParkedBacklog: parked,
 			Runs:          statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {

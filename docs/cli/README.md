@@ -2856,6 +2856,8 @@ Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+It lists parked backlog items too — open issues carrying a park disposition without
+goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
