@@ -2020,7 +2020,8 @@ func validateOTLPEndpoint(endpoint string, insecure bool) error {
 		return fmt.Errorf("https conflicts with insecure: true")
 	}
 	if insecure && !isLoopbackHost(host) {
-		return fmt.Errorf("insecure mode is allowed only for localhost or a loopback IP")
+		return fmt.Errorf("insecure mode is allowed only for localhost or a loopback IP " +
+			"(run a loopback sidecar collector, or point endpoint at a TLS collector and drop insecure: true)")
 	}
 	return nil
 }
