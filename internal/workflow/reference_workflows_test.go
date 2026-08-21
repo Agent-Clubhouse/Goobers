@@ -582,8 +582,11 @@ func TestReferenceWorkflowsImplementationCheckpointsBeforeStrictIntegration(t *t
 	if !localCI.Run.SyncBase {
 		t.Fatal("local-ci syncBase = false, want true")
 	}
-	if localCI.TimeoutSeconds != 1500 {
-		t.Fatalf("local-ci timeoutSeconds = %d, want 1500", localCI.TimeoutSeconds)
+	// #3377: 2400s (40m), not the prior 1500s (25m) — `make ci` shells out to
+	// `go test -race -timeout 30m`, so the stage budget must clear that inner
+	// subprocess ceiling, not just typical-case duration.
+	if localCI.TimeoutSeconds != 2400 {
+		t.Fatalf("local-ci timeoutSeconds = %d, want 2400", localCI.TimeoutSeconds)
 	}
 	if localCI.Retry == nil || localCI.Retry.MaxAttempts != 1 {
 		t.Fatalf("local-ci retry = %+v, want maxAttempts 1", localCI.Retry)

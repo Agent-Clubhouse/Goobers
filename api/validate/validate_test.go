@@ -1059,7 +1059,7 @@ spec:
 		Code:        WarningMissingSkillPackage,
 		Severity:    Warning,
 		Scope:       "config.yaml Goober/coder",
-		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 	}
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
@@ -1132,7 +1132,7 @@ spec:
 		}
 	}
 	for _, want := range []string{
-		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
 		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
 	} {
@@ -1280,6 +1280,84 @@ func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
 	}
 	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
 		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestSubprocessTimeoutCodeStable(t *testing.T) {
+	if got, want := WarningSubprocessTimeout, WarningCode("WF021"); got != want {
+		t.Fatalf("WarningSubprocessTimeout = %q, want stable code %q", got, want)
+	}
+	for _, other := range []WarningCode{errorCapabilityRuntimeSupport, WarningGateCompletionHidesFailure} {
+		if WarningSubprocessTimeout == other {
+			t.Fatalf("WarningSubprocessTimeout duplicates %q", other)
+		}
+	}
+}
+
+func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		task        apiv1.Task
+		wantWarning bool
+	}{
+		{
+			name: "make target with GO_TEST_TIMEOUT override at or above stage timeout warns (#3377)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 1500,
+			},
+			wantWarning: true,
+		},
+		{
+			name: "stage budget clearing the declared subprocess ceiling is clean",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 2400,
+			},
+		},
+		{
+			name: "bare make target with no declared override is clean (deliberately narrow detection)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}},
+				TimeoutSeconds: 1500,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningSubprocessTimeout {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantWarning {
+				if len(got) != 1 {
+					t.Fatalf("subprocess-timeout warnings = %v, want one; report: %s", got, joinIssues(report))
+				}
+				if got[0].Severity != Warning {
+					t.Fatalf("severity = %q, want warning", got[0].Severity)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("subprocess-timeout warnings = %v, want none", got)
+			}
+		})
 	}
 }
 

@@ -4042,6 +4042,13 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
 			}
 		}
+		// #3366: persist the run branch's committed-but-not-yet-published diff
+		// as a run artifact the moment the attempt ends — BEFORE any fallible
+		// post-validation step (gate execution, local-ci, push) runs. An
+		// environmental fault downstream (an egress 403 during a gate, a
+		// daemon restart mid-run, a rejected push) then strands recoverable
+		// work in the journal instead of destroying it with the worktree.
+		r.recordUnpushedDiff(ctx, jr, ex, in, t, workspace, attempt, class)
 		// #724: a stage that opts into OnTimeout=salvage completes with its
 		// already-committed diff instead of discarding a timed-out attempt whose
 		// only remaining work was verification. Only a session timeout
@@ -4123,6 +4130,154 @@ func (r *Runner) salvageTimeout(ctx context.Context, jr executionJournal, in Sta
 		Summary: "salvaged committed diff after agentic session timeout (#724); local-ci verifies it authoritatively",
 		Outputs: map[string]interface{}{"salvagedOnTimeout": true},
 	}, true
+}
+
+// Unpushed-diff artifact names (#3366): the well-known per-stage artifact pair
+// under which the runner persists a run branch's committed-but-not-yet-
+// published work. The names are a discovery contract: cmd/goobers's
+// gather-implement-context scans run journals for "*/unpushed-diff.json" to
+// offer a stranded prior diff to the next run on the same backlog item.
+const (
+	unpushedDiffPatchName     = "unpushed-diff.patch"
+	unpushedDiffMetaName      = "unpushed-diff.json"
+	unpushedDiffSchemaVersion = "goobers.dev/unpushed-diff/v1"
+)
+
+// unpushedDiffMetadata is the machine-readable sidecar recorded alongside the
+// diff artifact (#3366) so the stranded work is discoverable later: a
+// subsequent run on the same backlog item matches itemIds against its own
+// claim, and a human reading the journal learns what was authored, from which
+// base, and where the diff bytes live — without replaying the run.
+//
+// Every field must be a deterministic function of the run's inputs. An
+// artifact's content digest is a conformance-normative field of the
+// artifact.recorded event that names it (ARCHITECTURE §3.3,
+// journal.ConformanceView), so a wall-clock or otherwise run-varying byte in
+// here would make two identical runs journal different digests and break the
+// local↔Temporal conformance comparison. Deliberately absent for that reason:
+// a recordedAt timestamp — the artifact.recorded event carries its own Time,
+// which conformance excludes, and that is what discovery orders candidates by.
+type unpushedDiffMetadata struct {
+	Schema    string                `json:"schema"`
+	RunID     string                `json:"runId"`
+	Workflow  string                `json:"workflow,omitempty"`
+	Stage     string                `json:"stage"`
+	Attempt   int                   `json:"attempt"`
+	ItemIDs   []string              `json:"itemIds,omitempty"`
+	ItemURL   string                `json:"itemUrl,omitempty"`
+	Branch    string                `json:"branch,omitempty"`
+	BaseRef   string                `json:"baseRef"`
+	DiffBytes int                   `json:"diffBytes"`
+	Diff      apiv1.ArtifactPointer `json:"diff"`
+}
+
+// recordUnpushedDiff persists the run branch's cumulative committed diff vs.
+// base as a stage artifact plus a discovery sidecar (#3366). Called after
+// every agentic attempt, success or failure: the run branch is shared across
+// a run's stages, so the newest recording always reflects the full work
+// product so far, and the content-addressed store deduplicates unchanged
+// re-recordings to one blob. Best-effort by design — the work this protects
+// already exists on the branch, so a recording failure must never fail the
+// attempt; it is journaled as a non-fatal error event instead (#2029:
+// observable, not silent).
+func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, t apiv1.Task, workspace *stageWorkspace, attempt int, class journal.AttemptClass) {
+	if workspace == nil || workspace.worktree == nil || workspace.worktree.Branch == "" {
+		return // detached (read-only) checkout: no run branch, nothing publishable to lose
+	}
+	baseRef := in.RepoRef.Branch
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	// Deliberately cancellation-immune: a stalled-run watchdog cancelling the
+	// attempt mid-dispatch is itself one of #3366's trigger classes (infra
+	// restart mid-run), and that is precisely when the diff most needs
+	// capturing. The git reads here are local and bounded.
+	ctx = context.WithoutCancel(ctx)
+	journalFailure := func(cause error) {
+		_ = jr.Append(journal.Event{
+			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
+			Error: &journal.ErrorDetail{Code: "unpushed_diff_record_failed", Message: cause.Error()},
+		})
+	}
+	// Cheap local guard before Diff: on a blobless mirror Diff is a remote
+	// operation, so skip it entirely when the branch carries no commits.
+	committed, err := workspace.worktree.HasCommitsAheadOf(ctx, baseRef)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if !committed {
+		return
+	}
+	diff, err := workspace.worktree.Diff(ctx, baseRef)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if len(diff) == 0 {
+		return
+	}
+	// Same defense-in-depth as recordReviewerDiff: scrub any registered secret
+	// a stage's commit might have captured before the diff lands in the
+	// journal.
+	if s, ok := ex.reg.(journal.Scrubber); ok {
+		diff = s.Scrub(diff)
+	}
+	ref, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffPatchName, diff)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	meta := unpushedDiffMetadata{
+		Schema:    unpushedDiffSchemaVersion,
+		RunID:     in.RunID,
+		Stage:     t.Name,
+		Attempt:   attempt,
+		ItemIDs:   r.unpushedDiffItemIDs(in),
+		Branch:    workspace.worktree.Branch,
+		BaseRef:   baseRef,
+		DiffBytes: len(diff),
+		Diff: apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "text/x-diff", Integrity: ref.Integrity,
+		},
+	}
+	if in.Machine != nil {
+		meta.Workflow = in.Machine.Def.Name
+	}
+	if in.Item != nil {
+		meta.ItemURL = in.Item.URL
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		journalFailure(err)
+		return
+	}
+	if _, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffMetaName, data); err != nil {
+		journalFailure(err)
+	}
+}
+
+// unpushedDiffItemIDs resolves the backlog item id(s) the run is working on,
+// for the unpushed-diff discovery sidecar: the Item snapshot when the run was
+// started with one, the claim ledger otherwise (scheduled/fan-out
+// implementation runs claim their item mid-run, so in.Item is nil — #796's
+// ClaimedItems fallback, called while the ledger still holds this run's
+// claims), then the trigger ref. Empty when none resolves — the artifact is
+// still recorded for humans; only cross-run discovery loses its key.
+func (r *Runner) unpushedDiffItemIDs(in StartInput) []string {
+	if in.Item != nil && in.Item.ID != "" {
+		return []string{in.Item.ID}
+	}
+	if r.cfg.ClaimedItems != nil {
+		if ids, err := r.cfg.ClaimedItems(in.RunID); err == nil && len(ids) > 0 {
+			return ids
+		}
+	}
+	if in.Trigger.Kind == journal.TriggerItem && in.Trigger.Ref != "" {
+		return []string{in.Trigger.Ref}
+	}
+	return nil
 }
 
 type contextManifest struct {
