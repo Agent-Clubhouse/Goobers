@@ -231,23 +231,25 @@ inbound surface.
 
 ## 9. Open questions
 
-Twenty were recorded during drafting. Five change other people's code or this document's shape and are
-kept here; the other fifteen — budget defaults, clamp placement, whether an operator rerun advances the
-epoch, `CallEpoch` naming, duplicate-ref scoping, and the rest — are recorded on the phase-1 issue
-(#2976).
+Twenty were recorded during drafting. **Every one that needs an owner ruling now has its own issue**,
+assigned and labelled `goobers:needs-human`, so none of them lives only in this document.
 
-| # | Question |
-| --- | --- |
-| Q1 | Is tier-3 heartbeating a v1 prerequisite, or does reconcile mode make `START_TO_CLOSE` survivable without it? |
-| Q2 | Is deleting `auth.mode: none` (D19) accepted? It makes authority real, but every target then needs a credential |
-| Q3 | Is the `StageContractVersion` bump accepted, for `ResultEnvelope.ExternalRefs` (D15)? |
-| Q4 | Is demoting existing provider-builtin, `ci-poll` and external-telemetry stage grades from `trusted` accepted? D18 touches shipped behaviour well beyond this feature |
-| Q5 | Does D5 survive the freeze policy? It is the one place this design touches `v_current` |
+| # | Question | Issue |
+| --- | --- | --- |
+| Q1 | Is tier-3 heartbeating a v1 prerequisite, or does reconcile mode make `START_TO_CLOSE` survivable without it? | #3444 |
+| Q2 | Is deleting `auth.mode: none` (D19) accepted? It makes authority real, but every target then needs a credential | #3445 |
+| Q3 | Is the `StageContractVersion` bump accepted, for `ResultEnvelope.ExternalRefs` (D15)? | #3446 |
+| Q4 | Is demoting existing provider-builtin, `ci-poll` and external-telemetry stage grades from `trusted` accepted? D18 touches shipped behaviour well beyond this feature | #2979 |
+| Q5 | Does D5 survive the freeze policy? It is the one place this design touches `v_current` | #3447 |
 
-Three of the fifteen are rulings rather than tuning and are flagged as such on the issue: tier-3's
-per-worker budget ceiling (N workers ⇒ N × `maxCallsPerHour`), whether refusing an in-flight run on
-upgrade needs a drain, and whether completion-time tier-3 observability is acceptable for a bounded-wait
-call-out.
+Three more of the twenty are rulings rather than tuning, and are filed the same way: tier-3's per-worker
+budget ceiling, N workers ⇒ N × `maxCallsPerHour` (#3448); whether refusing an in-flight run on upgrade
+needs a drain (#3449); and whether completion-time tier-3 observability is acceptable for a bounded-wait
+call-out (#3450).
+
+The remaining twelve are genuine tuning — budget defaults, clamp placement, whether an operator rerun
+advances the epoch, `CallEpoch` naming, duplicate-ref scoping and the rest — and stay on the phase-1
+issue (#2976), to be settled by whoever implements it.
 
 ---
 
