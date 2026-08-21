@@ -121,6 +121,16 @@ const (
 	// declared completion is therefore unreachable dead config (2026-08-08
 	// cold-start audit, swift #3's verified shape).
 	WarningGateCompletionHidesFailure WarningCode = "WF018"
+	// WarningSubprocessTimeout identifies a deterministic stage whose command
+	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
+	// stage's own budget — a literal `go test -timeout` flag, an explicit
+	// GO_TEST_TIMEOUT override on a `make` invocation, or the
+	// expectedSubprocessTimeoutSeconds escape hatch for a tool this cannot
+	// parse. The executor kills the stage before the subprocess's own timeout
+	// can expire whenever the workload approaches it, discarding genuine
+	// in-progress work; the stage is unwinnable by construction regardless of
+	// typical-case duration (#3377).
+	WarningSubprocessTimeout WarningCode = "WF020"
 )
 
 const (
@@ -1835,6 +1845,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// A stage's own subprocess can carry a longer wall-clock ceiling than the
+	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
+	// under a 25-minute stage timeout. Warning, not error: detection only
+	// trusts evidence visible in the stage's own declaration, so it is
+	// intentionally incomplete (#3377).
+	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
+		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
