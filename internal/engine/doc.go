@@ -40,9 +40,10 @@
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
 //     closed today), but it must land with that wiring.
-//   - The context-manifest artifact is journaled even when workspace
-//     provisioning failed; the gate-evaluator has no per-attempt deadline; and
-//     InputsFrom failures produce no stage-attributed events.
+//   - Transient worktree provisioning failures are classified as infrastructure
+//     attempts (#2873). The context-manifest artifact is still journaled even
+//     when provisioning failed; the gate-evaluator has no per-attempt deadline;
+//     and InputsFrom failures produce no stage-attributed events.
 //
 // The #629 remnant closed the provider-mutation ref.touched gap and moved result
 // and verdict scrubbing to the activity boundary, before Temporal records the
