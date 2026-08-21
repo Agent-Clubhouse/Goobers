@@ -1354,6 +1354,35 @@ telemetry:
 	}
 }
 
+// TestLoadConfigRejectsInsecureNonLoopbackOTLP reproduces #3333's incident
+// shape verbatim (telemetry.otlp.insecure: true against a non-loopback
+// collector host:port) and pins the refusal message naming both escape
+// routes — a loopback sidecar collector, or a TLS endpoint — so the boot
+// failure teaches the fix instead of just naming the rule.
+func TestLoadConfigRejectsInsecureNonLoopbackOTLP(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: goobers-collector.goobers-system:4317
+    insecure: true
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig: want error for insecure non-loopback OTLP endpoint, got nil")
+	}
+	for _, want := range []string{
+		"insecure mode is allowed only for localhost or a loopback IP",
+		"loopback sidecar collector",
+		"TLS collector",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("LoadConfig error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
 func TestLoadConfigOTLPEnvironmentOverridesFile(t *testing.T) {
 	t.Setenv(OTLPEndpointEnv, "https://collector.example.com:443")
 	t.Setenv(OTLPInsecureEnv, "false")

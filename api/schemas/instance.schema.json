@@ -591,7 +591,7 @@
               "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
               "examples": ["http://127.0.0.1:4317"]
             },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Acceptable for a loopback collector; GOOBERS_OTLP_INSECURE overrides it." },
+            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
             "headers": {
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",
