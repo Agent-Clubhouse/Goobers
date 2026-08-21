@@ -173,9 +173,10 @@ type Outcome struct {
 	// absent from the agent's session even though the resolved config
 	// declared them (#3356): the Executor journals it loudly so a downstream
 	// MISSING_REQUIRED_TOOLS-shaped block stops wearing an unrelated
-	// costume. Only adapters whose harness reports per-server connection
-	// state populate this (claude-code's stream-json system/init event);
-	// nil elsewhere, and nil never asserts that servers WERE available.
+	// costume. Populated by adapters that can observe per-server connection
+	// state: claude-code from its stream-json system/init event, copilot-cli
+	// from its own run log (#3456 — no transcript equivalent exists there).
+	// Nil elsewhere, and nil never asserts that servers WERE available.
 	MCPServerFailures []MCPServerFailure
 }
 
