@@ -323,6 +323,10 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
+		// The release image's Go toolchain is an input to a shipped artifact,
+		// and packaging/docker/Dockerfile is the only leg that can drift from
+		// go.mod (ci.yml defers to it via go-version-file). #3452.
+		{label: "go-toolchain", command: tools.goCommand, args: []string{"run", "./test/gotoolchain"}, group: groupChecks},
 	}
 
 	portalPrepared := false
