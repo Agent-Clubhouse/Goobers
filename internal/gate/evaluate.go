@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -245,6 +246,11 @@ type Evaluator struct {
 	// siblings, or digests, only "a caller-verified verdict is available,
 	// reuse it."
 	CachedVerdict *apiv1.Verdict
+
+	// IsNeedsHumanTarget identifies a disposition branch whose task semantics
+	// require a human decision. The runner supplies this from the compiled task
+	// inputs so the evaluator does not depend on a task or gate name.
+	IsNeedsHumanTarget func(target string) bool
 }
 
 // Evaluate runs gate g's evaluator against env (already built by the caller,
@@ -343,6 +349,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			cacheHit = true
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
+			if e.invalidNeedsHumanVerdict(g, *verdict) {
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
+			}
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
 			// so there is nothing for the reviewer to evaluate or a repass to
@@ -369,15 +378,15 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			}
 		} else {
 			var v apiv1.Verdict
-			if err := e.evaluateWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, func(attemptCtx context.Context) error {
-				var callErr error
-				v, callErr = e.Reviewer.Review(attemptCtx, env, subjectStage, subject)
-				return callErr
-			}); err != nil {
+			invalidNeedsHuman, err := e.evaluateReviewerWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, &env, subjectStage, subject, g, &v)
+			if err != nil {
 				return Result{}, fmt.Errorf("gate %q: reviewer evaluation: %w", g.Name, err)
 			}
 			verdict = &v
 			outcome = string(v.Decision)
+			if invalidNeedsHuman {
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
+			}
 		}
 
 	}
@@ -630,6 +639,70 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, 
 
 func (e *Evaluator) maxRepasses(g apiv1.Gate) int {
 	return runcontrol.MaxRepassesForGate(g, e.MaxRepasses)
+}
+
+const needsHumanRationaleFeedback = "Reviewer verdict rejected: when this verdict selects a needs-human disposition, the trimmed rationale must end with a non-empty human decision question ending in '?'. Return a corrected verdict without changing the disposition."
+
+func validNeedsHumanRationale(rationale string) bool {
+	rationale = strings.TrimSpace(rationale)
+	question := strings.TrimSpace(strings.TrimSuffix(rationale, "?"))
+	return question != "" && strings.HasSuffix(rationale, "?")
+}
+
+func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict) bool {
+	target, hasTarget := wf.BranchTarget(g, string(verdict.Decision))
+	return e.IsNeedsHumanTarget != nil &&
+		hasTarget &&
+		e.IsNeedsHumanTarget(target) &&
+		!validNeedsHumanRationale(verdict.Rationale)
+}
+
+func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
+	maxAttempts, backoff := retryBounds(policy)
+	for attempt := 1; ; attempt++ {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if timeoutSeconds > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		}
+		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
+		if cancel != nil {
+			cancel()
+		}
+		if err != nil {
+			if !invoke.IsInfrastructureFailure(err) {
+				return false, err
+			}
+			if jerr := recordEvaluatorRetry(e.Journal, gateName, attempt, err); jerr != nil {
+				return false, jerr
+			}
+			if attempt >= maxAttempts {
+				return false, err
+			}
+		} else {
+			*verdict = current
+			if !e.invalidNeedsHumanVerdict(g, current) {
+				return false, nil
+			}
+			invalidErr := fmt.Errorf("%s", needsHumanRationaleFeedback)
+			if jerr := recordVerdictValidationRetry(e.Journal, gateName, attempt, invalidErr); jerr != nil {
+				return false, jerr
+			}
+			if attempt >= maxAttempts {
+				return true, nil
+			}
+			env.InstructionAddendum = strings.TrimSpace(env.InstructionAddendum + "\n\n" + needsHumanRationaleFeedback)
+		}
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
 }
 
 // gateRetryPolicy returns the gate's declared evaluator retry policy, read off

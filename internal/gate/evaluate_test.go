@@ -762,6 +762,46 @@ func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
 	})
 }
 
+func TestEvaluatorEscalatesCachedInvalidNeedsHumanVerdict(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Branches: map[string]string{
+			string(apiv1.VerdictPass): wf.TerminalComplete,
+			string(apiv1.VerdictFail): "human",
+			wf.BranchEscalate:         "remediation",
+		},
+	}
+	run := newTestJournal(t)
+	cached := &apiv1.Verdict{
+		Decision:    apiv1.VerdictFail,
+		Rationale:   "The approach needs a policy decision.",
+		SourceRunID: "run-original",
+	}
+	ev := &Evaluator{
+		Journal:       run,
+		CachedVerdict: cached,
+		IsNeedsHumanTarget: func(target string) bool {
+			return target == "human"
+		},
+	}
+
+	result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "review", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Target != "remediation" || !result.Escalated || !result.CacheHit {
+		t.Fatalf("result = %+v, want escalated cached verdict to remediation", result)
+	}
+	if result.Verdict != cached || result.VerdictArtifact == nil {
+		t.Fatalf("result = %+v, want cached verdict and preserved artifact", result)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Target != "remediation" || !events[0].Escalated {
+		t.Fatalf("gate events = %+v, want one escalated remediation event", events)
+	}
+}
+
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
 // when the implement stage commits nothing (an empty diff — e.g. it produced
 // no change on an over-scope probe), the reviewer gate must synthesize `fail`

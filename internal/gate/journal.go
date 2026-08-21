@@ -53,6 +53,21 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 	})
 }
 
+func recordVerdictValidationRetry(j Journal, gateName string, attempt int, err error) error {
+	if j == nil {
+		return nil
+	}
+	return j.Append(journal.Event{
+		Type:  journal.EventError,
+		Gate:  gateName,
+		Error: &journal.ErrorDetail{Code: "verdict_invalid", Message: err.Error()},
+		Runner: map[string]any{
+			"evaluatorAttempt":  attempt,
+			"retryFailureClass": "policy",
+		},
+	})
+}
+
 // recordVerdict journals one gate evaluation as a gate.evaluated event: Gate,
 // Verdict (the outcome string), Target, and Escalated are the flat,
 // conformance-normative fields §4 relies on. The repass attempt count and a
