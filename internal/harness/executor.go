@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -340,7 +341,19 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	creds, err := e.injector.Materialize(ctx, env.Capabilities)
 	if err != nil {
-		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize credentials: %w", err)
+		// A credential-materialization failure is an infrastructure fault at
+		// stage-environment build time, not evidence about the work (#3361):
+		// typed with its own code (executor.StageFailure, so telemetry rows
+		// carry credential_unavailable/infra instead of executor_error/
+		// unknown) AND marked via the invoke.InfrastructureFailure seam, so
+		// the runner retries on the bounded infrastructure budget (journal
+		// AttemptClass "infra") instead of consuming the stage's policy
+		// attempts — at attempt budgets of 1, the old classification turned a
+		// transient provider 403 into a terminal work failure.
+		return Outcome{}, nil, nil, invoke.InfrastructureFailure(executor.StageFailure(
+			telemetry.ErrCodeCredentialUnavailable,
+			fmt.Errorf("harness: materialize credentials: %w", err),
+		))
 	}
 	contextPaths, err := e.materializeContext(env)
 	if err != nil {

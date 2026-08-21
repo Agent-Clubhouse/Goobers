@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -333,6 +334,18 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
+		// #3361/#3364: an infra-fault terminal (credential materialization, git,
+		// network, lock contention) is weather, not evidence about the item —
+		// it must not accumulate failure-streak strikes that eventually park
+		// the item goobers:needs-human. The item returns to the pool untouched
+		// and the scheduler's auth circuit / quota gates own the retry cadence.
+		// Item-judgment terminals (a verified ISSUE_NOT_APPLICABLE refusal,
+		// #3363) are likewise not work failures. Timeout deliberately still
+		// counts: a recurring harness session timeout is this circuit
+		// breaker's motivating case (#1054).
+		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
+			return nil
+		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,

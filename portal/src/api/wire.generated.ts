@@ -736,6 +736,7 @@ export const goWireFixtures = {
         "totalRuns": 4,
         "completedRuns": 3,
         "failedRuns": 1,
+        "infraFailedRuns": 0,
         "otherRuns": 0,
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
@@ -755,6 +756,7 @@ export const goWireFixtures = {
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
         "maxDurationMs": 140001,
+        "infraFailedRuns": 0,
         "stuckAbortedRuns": 1
       }
     ],
