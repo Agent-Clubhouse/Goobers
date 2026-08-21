@@ -9,7 +9,32 @@ import (
 	"strings"
 )
 
+// supportedProtocolVersions lists every MCP revision this server implements,
+// newest first. Order is load-bearing: index 0 is both what negotiation
+// offers a client whose requested revision we don't implement, and what the
+// spec means by "the latest version supported by the server".
+//
+// 2025-11-25 is listed here only after auditing that revision's published
+// delta against 2025-06-18 rather than assuming it (#3457). Every change in
+// it is one of: additive-optional on shapes we already emit (tool `title`,
+// `icons`, `outputSchema`, `annotations`, `execution`, and
+// `Implementation.description` are all optional); opt-in behind a server
+// capability this server does not declare (`tasks`); or scoped to features
+// and transports this server does not implement at all (authorization-server
+// / OAuth discovery, elicitation, sampling, Streamable HTTP and its SSE
+// polling rules). Two items were checked specifically because they could
+// have bitten a tools-only server: `inputSchema` now defaults to JSON Schema
+// 2020-12 when no `$schema` is present, and every schema in toolDefs is
+// plain type/properties/required/additionalProperties, which is valid
+// 2020-12; and SEP-1303 asks that tool *input validation* failures be
+// reported as tool execution errors rather than protocol errors, which is
+// already what callTool does via the isError result. What this server
+// actually puts on the wire — a stdio session declaring only
+// `{"tools":{}}`, tool defs of name/description/inputSchema, and
+// `{"content":[{"type":"text",...}],"isError":...}` results — is a
+// conformant subset of 2025-11-25 as written.
 var supportedProtocolVersions = []string{
+	"2025-11-25",
 	"2025-06-18",
 	"2024-11-05",
 }
@@ -44,6 +69,9 @@ type toolDef struct {
 // more than one message and never talks to anything but Toolset.
 type Server struct {
 	tools *Toolset
+	// loggedNegotiation makes the negotiated-version log line once-per-session
+	// rather than once-per-initialize, since a client is free to retry.
+	loggedNegotiation bool
 }
 
 // NewServer builds a Server over an already-constructed Toolset.
@@ -70,7 +98,7 @@ func (s *Server) Serve(stdin io.Reader, stdout io.Writer, stderr io.Writer) erro
 			_, _ = fmt.Fprintf(stderr, "mcpio: invalid JSON-RPC line: %v\n", err)
 			continue
 		}
-		resp, ok := s.handle(req)
+		resp, ok := s.handle(req, stderr)
 		if !ok {
 			// Notification (no id) — MCP forbids a response.
 			continue
@@ -100,16 +128,17 @@ func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\
 
 // handle dispatches one request. ok is false for notifications, which must
 // never get a response on the wire.
-func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
+func (s *Server) handle(req rpcRequest, stderr io.Writer) (rpcResponse, bool) {
 	isNotification := len(req.ID) == 0
 	switch req.Method {
 	case "initialize":
-		protocolVersion, rpcErr := negotiateProtocolVersion(req.Params)
+		negotiated, rpcErr := negotiateProtocolVersion(req.Params)
 		if rpcErr != nil {
 			return s.reply(req, nil, rpcErr), !isNotification
 		}
+		s.logNegotiation(stderr, negotiated)
 		return s.reply(req, map[string]interface{}{
-			"protocolVersion": protocolVersion,
+			"protocolVersion": negotiated.agreed,
 			"capabilities":    map[string]interface{}{"tools": map[string]interface{}{}},
 			"serverInfo":      map[string]interface{}{"name": "goobers-io", "version": "1"},
 		}, nil), !isNotification
@@ -138,30 +167,87 @@ type initializeParams struct {
 	ProtocolVersion string `json:"protocolVersion"`
 }
 
-func negotiateProtocolVersion(raw json.RawMessage) (string, *rpcError) {
+// negotiationResult is what one initialize handshake settled on. requested
+// and agreed differ exactly when the server had to negotiate down to a
+// revision of its own.
+type negotiationResult struct {
+	requested string
+	agreed    string
+}
+
+// negotiateProtocolVersion implements the MCP lifecycle's version
+// negotiation: if the server supports the requested protocol version it MUST
+// respond with the same version, and otherwise it MUST respond with another
+// protocol version it supports — which SHOULD be the latest one it has. The
+// client, not the server, then decides whether that answer is workable and
+// disconnects if it isn't.
+//
+// Answering an unrecognized-but-well-formed version with a JSON-RPC error
+// breaks that MUST, and the practical consequence is total rather than
+// pedantic: the client is handed no version to fall back to, so it drops the
+// server outright. That was #3457. Copilot CLI 1.0.80 asks for a revision
+// newer than anything this server listed, the -32602 failed the handshake,
+// and every agentic stage on the affected build silently lost the entire
+// goobers-io toolset (list_inputs, read_input, grep_input, publish_output,
+// get_run_info) — 50 of 50 invocations on the live pod. Adding the new
+// revision to supportedProtocolVersions alone would have fixed that day and
+// re-broken on the next CLI bump; negotiating is what makes it durable.
+//
+// So an unfamiliar version string is a negotiation input, not an error. The
+// -32602 is reserved for an initialize that carries no usable
+// protocolVersion at all — absent, empty, or not a JSON string — where there
+// is genuinely nothing to negotiate from and no answer would be honest.
+func negotiateProtocolVersion(raw json.RawMessage) (negotiationResult, *rpcError) {
 	var params initializeParams
 	if len(raw) == 0 {
-		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+		return negotiationResult{}, &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
-		return "", &rpcError{Code: -32602, Message: "invalid initialize params: " + err.Error()}
+		return negotiationResult{}, &rpcError{Code: -32602, Message: "invalid initialize params: " + err.Error()}
 	}
 	if params.ProtocolVersion == "" {
-		return "", &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
+		return negotiationResult{}, &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
 	}
 	for _, supported := range supportedProtocolVersions {
 		if params.ProtocolVersion == supported {
-			return supported, nil
+			return negotiationResult{requested: params.ProtocolVersion, agreed: supported}, nil
 		}
 	}
-	return "", &rpcError{
-		Code: -32602,
-		Message: fmt.Sprintf(
-			"unsupported protocolVersion %q; supported versions: %s",
-			params.ProtocolVersion,
-			strings.Join(supportedProtocolVersions, ", "),
-		),
+	return negotiationResult{
+		requested: params.ProtocolVersion,
+		agreed:    supportedProtocolVersions[0],
+	}, nil
+}
+
+// logNegotiation reports, once per session, what the client asked for and
+// what the server answered with.
+//
+// This exists because of how #3457 was actually found. The handshake had
+// been failing for seven observed occurrences before anyone traced it, and
+// the reason it took that long is that the Goobers side said nothing at all:
+// the rejection was written only to the CLI's own private log under
+// ~/.copilot/logs, outside the run's artifact tree, so every search of
+// events.jsonl and artifacts/ came back empty. stderr is the right sink —
+// it's captured with the rest of the stage's harness output, it needs no new
+// journal event type, and the MCP stdio transport explicitly permits a
+// server to use stderr for logging of any kind, not just errors. A future
+// client asking for something this server has never heard of now leaves a
+// visible trace on our side instead of only on theirs.
+func (s *Server) logNegotiation(stderr io.Writer, result negotiationResult) {
+	if s.loggedNegotiation {
+		return
 	}
+	s.loggedNegotiation = true
+	if result.agreed == result.requested {
+		_, _ = fmt.Fprintf(stderr,
+			"mcpio: MCP protocol version negotiated: requested=%s agreed=%s\n",
+			result.requested, result.agreed)
+		return
+	}
+	_, _ = fmt.Fprintf(stderr,
+		"mcpio: MCP protocol version negotiated: requested=%s agreed=%s"+
+			" (requested version not implemented by this server; offered newest of: %s)\n",
+		result.requested, result.agreed, strings.Join(supportedProtocolVersions, ", "))
 }
 
 func (s *Server) reply(req rpcRequest, result interface{}, rpcErr *rpcError) rpcResponse {
