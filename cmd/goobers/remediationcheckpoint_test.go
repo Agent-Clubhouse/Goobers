@@ -1706,6 +1706,14 @@ func TestRemediationCheckpointKeepsUnclassifiedReadErrorGeneric(t *testing.T) {
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	// The 500 is here to make the PR read fail unclassifiably, not to time
+	// the backoff ladder. Spend the transient-retry budget so the stage
+	// fails fast instead of burning 1+2+4+8 = 15s of real sleep;
+	// remediationCheckpointEnv's t.Cleanup still restores the factory.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 
 	code, _, _ := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 1 {

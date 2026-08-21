@@ -111,15 +111,20 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	wantTestArgs := []string{
 		"run", "./test/hermetic", "--go-command", "custom-go", "--",
-		"-race", "-timeout", "30m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+		"-race", "-timeout", "30m", "-count=1", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
 	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
+	// Plain `go test`, NOT routed through test/hermetic: a linked-in-isolation
+	// git.exe cannot find its libexec helpers on Windows (see the comment at the
+	// construction site, and PR #3461 where every contract failed at `git init`
+	// on windows-latest).
+	wantShippedArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
 	if shippedCheck.label != "shipped-workflows" ||
-		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
-		t.Fatalf("shipped workflow check = %#v", shippedCheck)
+		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
+		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
 	}
 	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
@@ -640,7 +645,7 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 		if current.label != "test" {
 			continue
 		}
-		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -covermode=atomic -coverprofile=coverage.out ./..."
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -count=1 -covermode=atomic -coverprofile=coverage.out ./..."
 		if args := strings.Join(current.args, " "); args != want {
 			t.Fatalf("timed test args = %q, want %q", args, want)
 		}
@@ -975,6 +980,13 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 	if !slices.Contains(args, "./...") {
 		t.Errorf("sharded unit args lost the package spec (hermetic expands ./...): %q", joined)
+	}
+	// -count=1 must SURVIVE sharding even though the coverage flags do not. It
+	// is what makes deleting the dedicated `conformance` job a no-op: that job's
+	// only behavioural difference from the shards was running uncached, and the
+	// 32 TestConformance* functions it selected already execute here, unfiltered.
+	if !slices.Contains(args, "-count=1") {
+		t.Errorf("sharded unit args dropped -count=1; the shards must run uncached now that the conformance job is gone: %q", joined)
 	}
 }
 

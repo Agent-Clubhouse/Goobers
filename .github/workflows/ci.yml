@@ -67,80 +67,28 @@ env:
   DECLARED_APT_ARCHIVE_DIR: /tmp/goobers-declared-apt-archives
 
 jobs:
-  e2e:
-    name: e2e
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run end-to-end gate
-        run: make test-e2e
-
-  envtest:
-    name: envtest
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Provision envtest and run the integration gate
-        run: make test-envtest
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        timeout-minutes: 12
-        # Explicit bash: the Windows runner defaults to PowerShell, which
-        # cannot parse this loop.
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then exit 0; fi
-            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          echo "::error::go mod download failed after 3 attempts"
-          exit 1
-
-      - name: Enforce the repository coverage threshold
-        run: make cover-check
-
-      - name: Upload coverage profile
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage
-          path: coverage.out
-          if-no-files-found: warn
+  # DELETED in #3152's wake — e2e, envtest, and coverage were three separate
+  # UNSHARDED whole-tree runs of the same suite the `unit` shards already run,
+  # and together they were 47.9 of the 142.3 runner-min a PR cost and both ends
+  # of its 21-minute critical path. Each is now covered strictly-better or
+  # equally, in a job that already exists:
+  #
+  #   e2e        `go test ./test/e2e` -> already runs in unit shard 2 WITH -race
+  #              and the hermetic PATH restriction, i.e. strictly stronger.
+  #   envtest    `go test -tags=integration ./...` re-ran all 138 packages to
+  #              reach ONE test. Build tags are additive, not a filter, so the
+  #              tag bought 138 recompiles for 8 seconds of unique assertion.
+  #              TestIntegrationEnvtestReconcile now runs in `integration`,
+  #              which already selects internal/operator and already enforces
+  #              the -run=^TestIntegration contract via a runtime AST scan.
+  #   coverage   `make cover-check` -> `make test` emitted the literal same
+  #              hermetic command as `test/ci group unit` minus --shard. The
+  #              threshold gate now runs as a step on `unit-macos`, which
+  #              already produced the whole-tree profile and uploaded it with
+  #              no consumer.
+  #
+  # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
+  # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
   # Platform-independent unreachable-production-code report. Ran once (it was a
   # per-OS step of the old monolith; nothing about it is OS-specific).
@@ -216,11 +164,40 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      # Chromium is ~130MB from the Playwright CDN and was re-downloaded on every
+      # run — the download half of the repo's #1 flake class (#3139).
+      #
+      # PLAYWRIGHT_BROWSERS_PATH is exported here, as an ABSOLUTE path, so that
+      # it and the cache below name the same directory. It has to be resolved in
+      # a step rather than written as a job-level `env:` value because `~` and
+      # `$HOME` do not expand in that context — pointing the variable at one
+      # directory while caching another yields a cache that is always cold and
+      # never errors, which is worse than no cache at all.
+      #
+      # Exporting it also engages test/ci's own portal-playwright-install skip
+      # (#3372), which checks this directory for the pinned chromium revision
+      # and no-ops when it is already there.
+      - name: Resolve Playwright browsers path
+        shell: bash
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright" >> "$GITHUB_ENV"
+
+      # Keyed on the lock file, because that pins the @playwright/test version
+      # and hence the single chromium revision it can ever mean.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('portal/package-lock.json') }}
+
       - name: Install Portal dependencies and pinned Chromium
         # Retried because these are the repo's dominant CI flake (#3139): npm
         # and the Chromium download stall on registry/CDN hiccups and eat the
         # whole timeout, unlike go mod download and golangci-lint which
         # already retry. Six timeouts in one night on the v0.2.0 wave.
+        #
+        # --with-deps stays: the cache carries the BROWSER, not the apt-level
+        # system libraries it links against. On a cache hit Playwright installs
+        # those and skips the download.
         timeout-minutes: 20
         shell: bash
         run: |
@@ -487,6 +464,21 @@ jobs:
           GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
         run: go run ./test/ci group unit
 
+      # The coverage threshold gate. This job runs the unit suite UNSHARDED, so
+      # `test/ci`'s shard rewrite never strips the coverage flags and the step
+      # above has already written a complete whole-tree coverage.out — which
+      # this job was already uploading as an artifact nobody read. Enforcing the
+      # threshold here costs ~20s instead of the ~21 minutes the deleted
+      # `coverage` job spent re-running the identical suite to regenerate the
+      # identical profile.
+      #
+      # Measured delta to the reported figure when this moved: 79.0695% ->
+      # 79.1586%, +0.089pp, against a threshold of 70. Deliberately NOT
+      # continue-on-error and deliberately not `if: always()`: a failed gate must
+      # red unit-macos, which required-ci already depends on.
+      - name: Enforce the repository coverage threshold
+        run: make cover-gate
+
       - name: Report test timing budget
         if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
         run: >-
@@ -695,10 +687,46 @@ jobs:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
 
+      # Absorbed from the deleted `envtest` job. internal/operator is ALREADY in
+      # this job's package set and TestIntegrationEnvtestReconcile already runs
+      # here — it just reported `--- SKIP` because testdep.RequireEnv found
+      # KUBEBUILDER_ASSETS unset. Exporting the path is the whole fold; the
+      # deleted job's other 137 packages were pure duplication.
+      #
+      # `set -euo pipefail` + the non-empty assertion close a false-green that
+      # existed in the OLD job: it resolved the path by command substitution
+      # inside a make recipe, so when `setup-envtest use` failed the variable
+      # came back EMPTY, make carried on, RequireEnv skipped, and the job whose
+      # entire justification is that one test exited 0 having never run it.
+      - name: Provision envtest control-plane assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$(make --silent envtest-assets)"
+          if [ -z "$assets" ] || [ ! -d "$assets" ]; then
+            echo "::error::setup-envtest did not yield a usable KUBEBUILDER_ASSETS path (got: '${assets}')"
+            exit 1
+          fi
+          echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
+
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
-        run: make test-integration-strict
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test-integration-strict 2>&1 | tee integration-tier.log
+          # Assert the envtest reconcile actually EXECUTED. It is the only test
+          # in CI that stands up a real API server, and the only thing that
+          # caught #3168 (both shipped CRDs rejected: uniqueItems forbidden and
+          # a CEL rule over its cost budget). `deploy-reference`'s kubeconform
+          # pass was GREEN on those same runs — it does not do apiextensions
+          # structural-schema or CEL-cost validation — so nothing else covers
+          # this class. A SKIP here must be a hard red, not a quiet pass.
+          if ! grep -q -- '--- PASS: TestIntegrationEnvtestReconcile' integration-tier.log; then
+            echo "::error::TestIntegrationEnvtestReconcile did not PASS (skipped or absent) — the envtest control plane is not being exercised"
+            exit 1
+          fi
 
   # Publishes the declared-dependency .deb payloads on main (#3322).
   #
@@ -822,36 +850,21 @@ jobs:
           # consumers instead of helping them.
           find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
 
-  conformance:
-    name: journal conformance
-    if: ${{ github.event_name != 'push' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        timeout-minutes: 12
-        # Explicit bash: the Windows runner defaults to PowerShell, which
-        # cannot parse this loop.
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if go mod download; then exit 0; fi
-            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          echo "::error::go mod download failed after 3 attempts"
-          exit 1
-
-      - name: Enforce the journal conformance contract
-        run: make test-conformance
+  # DELETED alongside e2e/envtest/coverage. `make test-conformance` was
+  # `-run '^TestConformance' ./...`, and -run filters EXECUTION, not
+  # COMPILATION: the job spent ~270s building 147 race-instrumented binaries so
+  # that 142 of them could print "[no tests to run]" and 5 could run 32 tests
+  # worth ~13s. Every one of those 32 functions already runs UNFILTERED in the
+  # unit shards (internal/{engine,harness,journal,runner} and test/e2e), and the
+  # shards share this job's fsync posture exactly.
+  #
+  # Deleting is deliberately SAFER than scoping it to those 5 packages: the
+  # `./...` form picks up a new TestConformance* in a NEW package automatically,
+  # whereas a checked-in 5-package list silently stops covering one the day
+  # somebody adds a sixth. Its only genuine differentiator was -count=1, which
+  # the shard invocation now carries (see test/ci/main.go).
+  #
+  # Never the sole failing job in the last 300 failed CI runs.
 
   # Windows joins CI as a REQUIRED, GREEN runtime gate (#633/#752) — deliberately not
   # the old advisory `continue-on-error` `windows-smoke` job (#928) that #960 had
@@ -1101,15 +1114,19 @@ jobs:
   required-ci:
     name: make ci (fmt-check · vet · build · test · lint)
     if: ${{ always() && github.event_name != 'push' }}
-    # e2e, envtest, and coverage joined in #3206 (#3152 added them as jobs
-    # without wiring them here). unit-gate — the pre-parallelization `make ci`
-    # monolith — was retired once every check it ran had a dedicated job; it
-    # duplicated the checks/lint/unit/shipped/deadcode slices wholesale and
-    # doubled the CI-setup network exposure (#3139/#3322) for zero coverage.
-    # four jobs intending to make them required, but never added them here — and
-    # this aggregate is the only context the branch ruleset requires, so all four
-    # could go red while `make ci` reported success and the merge proceeded. That
-    # is the same "runs on every PR, enforces nothing" gap #2019 closed below.
+    # unit-gate — the pre-parallelization `make ci` monolith — was retired once
+    # every check it ran had a dedicated job; it duplicated the
+    # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
+    # CI-setup network exposure (#3139/#3322) for zero coverage.
+    #
+    # e2e, envtest and coverage were wired in here by #3207 (having been added
+    # as jobs the day before by #3152), and conformance long predates both. All
+    # four are now GONE — not un-required, but deleted as jobs, because each was
+    # an unsharded re-run of a suite another required job already runs. Their
+    # distinct value moved rather than lapsed: the coverage threshold onto
+    # unit-macos, the envtest control plane onto integration, and the
+    # conformance and e2e tests were already executing unfiltered in the unit
+    # shards. Nothing that this aggregate used to enforce stopped being enforced.
     #
     # integration, sandbox, and linux-validation joined this list in #2019:
     # all three ran on every PR already (full runner cost) but a red result
@@ -1117,7 +1134,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, conformance, integration, sandbox, linux-validation, e2e, envtest, coverage]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required gates
@@ -1132,13 +1149,13 @@ jobs:
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
           WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
           VULNCHECK_RESULT: ${{ needs.vulnerability-scan.result }}
-          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           SANDBOX_RESULT: ${{ needs.sandbox.result }}
           LINUX_VALIDATION_RESULT: ${{ needs.linux-validation.result }}
-          E2E_RESULT: ${{ needs.e2e.result }}
-          ENVTEST_RESULT: ${{ needs.envtest.result }}
-          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        # This `check()` is fail-closed on EVERY non-success result, `skipped`
+        # included. That property is load-bearing for the whole gate — a job
+        # that silently stops running reds the merge instead of vanishing — so
+        # do not relax the comparison to allow `skipped`.
         run: |
           fail=0
           check() {
@@ -1152,18 +1169,17 @@ jobs:
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
-          check "unit behavioral suite (macos)"      "$UNIT_MACOS_RESULT"
+          # unit-macos also carries the coverage threshold gate (cover-gate).
+          check "unit behavioral suite + coverage (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
-          check "journal conformance"                "$CONFORMANCE_RESULT"
-          check "declared-dependency integration"    "$INTEGRATION_RESULT"
+          # integration also carries the envtest control-plane gate, absorbed
+          # from the deleted `envtest` job.
+          check "declared-dependency + envtest integration" "$INTEGRATION_RESULT"
           check "sandbox confinement"                "$SANDBOX_RESULT"
           check "linux node validation (#636/#639)"  "$LINUX_VALIDATION_RESULT"
-          check "end-to-end gate"                    "$E2E_RESULT"
-          check "envtest integration gate"           "$ENVTEST_RESULT"
-          check "coverage threshold"                 "$COVERAGE_RESULT"
           exit "$fail"
 
   sandbox:
@@ -1253,6 +1269,18 @@ jobs:
           path: bin/linux-validation-evidence/
           if-no-files-found: warn
 
+  # Watches EVERY job that validates a landed main SHA. `deploy-reference` was
+  # the one push-lane job reporting into a void: it could go red on main with no
+  # issue filed. (e2e, envtest and coverage were the other three; deleting them
+  # removed the gap rather than closing it.) The needs list and the condition
+  # below must stay in step with the set of jobs that lack the
+  # `github.event_name != 'push'` guard — test/ci/portability_test.go pins both.
+  #
+  # The predicate stays `== 'failure'` rather than `!= 'success'` on purpose.
+  # `cancel-in-progress` cancels ~64% of push runs because main merges land
+  # faster than a full validation completes, and those jobs report `cancelled`.
+  # Escalating on anything-but-success would file an issue on almost every
+  # merge, burying the real reds this job exists to surface.
   escalate-main-failure:
     name: escalate failed main validation
     if: >-
@@ -1261,6 +1289,7 @@ jobs:
         github.event_name == 'push' &&
         (
           needs.checks.result == 'failure' ||
+          needs.deploy-reference.result == 'failure' ||
           needs.lint.result == 'failure' ||
           needs.unit.result == 'failure' ||
           needs.unit-macos.result == 'failure' ||
@@ -1268,7 +1297,7 @@ jobs:
           needs.windows-smoke.result == 'failure'
         )
       }}
-    needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]
+    needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read
