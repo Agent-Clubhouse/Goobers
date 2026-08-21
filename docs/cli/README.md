@@ -380,6 +380,11 @@ Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
 persist the paginated ready-transition ledger for telemetry rollups.
+The ledger resumes from a durable per-repo/label event cursor; a full history
+scan runs only on the first cycle or an integrity mismatch, bounded by the
+transitionScanMaxPages input. Below the transitionScanQuotaFloor fraction of
+the provider rate-limit window the scan defers to the next cycle rather than
+spending the shared credential to zero.
 --feedback instead de-readies items whose consecutive failed/escalated
 implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
