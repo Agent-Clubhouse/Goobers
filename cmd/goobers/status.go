@@ -508,7 +508,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
@@ -516,6 +516,13 @@ const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
 	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
+	"With --agents, list only the agentic stages in flight right now, by role and run id.\n" +
+	"The --agents answer comes from the runner's own journals, never from a process table,\n" +
+	"so it can never match the process asking (no `ps | grep` self-match), and it drops the\n" +
+	"invoking run when it is itself a stage. It needs no credentials and makes no provider\n" +
+	"calls, so it is safe to run from inside a container during a deploy window. Combine it\n" +
+	"with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and\n" +
+	"--watch are refused because the probe reports only the live moment.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
@@ -539,10 +546,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	var watch *bool
 	var interval *time.Duration
 	var daemon *bool
+	var agents *bool
 	if supportsWatch {
 		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 		daemon = fs.Bool("daemon", false, "report daemon health and identity")
+		agents = fs.Bool("agents", false, "list in-flight agentic stages by role, from the runner's own bookkeeping")
 	}
 	fs.Usage = helpUsage(stderr, command)
 	if err := fs.Parse(args); err != nil {
@@ -566,8 +575,18 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch || *agents) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
+		return 2
+	}
+	// --agents answers one question — which agentic stages are in flight right
+	// now — so the flags that shape the historical run table (--phase, --limit)
+	// and the redraw loop (--watch) are refused rather than silently ignored.
+	// --workflow/--gaggle stay available: scoping the probe to one workflow is
+	// the same question asked of a smaller fleet.
+	agentsMode := supportsWatch && *agents
+	if agentsMode && (*phaseFilter != "" || limitSet || *watch) {
+		pf(stderr, "error: --agents cannot be combined with --phase, --limit, or --watch\n")
 		return 2
 	}
 
@@ -644,11 +663,18 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	warnings := report.CLIWarnings()
 	sources := readservice.LocalSources{
-		Layout:         l,
-		Config:         cfg,
-		Definitions:    set,
-		Validation:     report,
-		WorkItemLookup: statusWorkItemLookup(l.Root, set),
+		Layout:      l,
+		Config:      cfg,
+		Definitions: set,
+		Validation:  report,
+	}
+	// The agents probe answers from local bookkeeping only. Leaving the
+	// provider work-item lookup unset keeps it credential-free and network-free
+	// — the operator running it through `kubectl exec` during a deploy window
+	// gets the same answer as the daemon host, and cannot be told that the
+	// diagnostic's own missing credential is a run blocker (#3346).
+	if !agentsMode {
+		sources.WorkItemLookup = statusWorkItemLookup(l.Root, set)
 	}
 	livenessTimeout, err := cfg.Runner.LivenessTimeoutDuration()
 	if err != nil {
@@ -657,7 +683,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	sources.LivenessTimeout = livenessTimeout
 	var timeToFirstPROpenErr error
-	if supportsWatch {
+	if supportsWatch && !agentsMode {
 		telemetryDB, err := openRollup(l, false)
 		if err != nil {
 			timeToFirstPROpenErr = fmt.Errorf("open telemetry rollup: %w", err)
@@ -672,7 +698,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	var statusLocation *time.Location
-	if supportsWatch {
+	if supportsWatch && !agentsMode {
 		statusLocation, err = cfg.Location()
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -770,6 +796,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	allRuns := runs
 	now := time.Now()
+	if agentsMode {
+		probe := buildAgentProbe(allRuns, set.Workflows, selfProbeRunID(), *workflowFilter, *gaggleFilter)
+		if *jsonOutput {
+			if err := emitAgentProbeJSON(stdout, probe); err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 2
+			}
+			return 0
+		}
+		// Config warnings first, same as the run table: a workflow definition
+		// that failed to load is exactly what turns a known role into
+		// "unknown", so the reader must see the warning next to the answer.
+		printValidationWarnings(stdout, warnings)
+		renderAgentProbe(stdout, probe, now)
+		return 0
+	}
 	var fleetSummary *statusFleetSummary
 	if supportsWatch {
 		summary, err := loadFleetSummary(allRuns, now)

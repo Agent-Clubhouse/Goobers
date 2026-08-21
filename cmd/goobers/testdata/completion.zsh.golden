@@ -26,7 +26,7 @@ _goobers_completion()
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
-            'status:validate config, show warnings, list runs, or report daemon health'
+            'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
             'stats:show the instance lifetime summary card'
             'trace:show a run'\''s journal events or review verdicts, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
@@ -151,7 +151,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=(--daemon --json --phase --workflow --gaggle --limit --watch --interval)
+            flags+=(--agents --daemon --json --phase --workflow --gaggle --limit --watch --interval)
             ;;
         stats)
             flags+=(--since --json)
