@@ -727,6 +727,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
 	ws.infraGateAttempts = gateInfrastructureSeed(segment)
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(segment)
+	ws.evidenceRejections = remediationEvidenceRejectionSeed(segment)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -1685,6 +1686,40 @@ func gateDiffSeed(events []journal.Event) map[string]string {
 			seed = make(map[string]string)
 		}
 		seed[e.Gate] = digest
+	}
+	return seed
+}
+
+// remediationEvidenceRejectionSeed rebuilds each gate's consecutive
+// remediation-evidence rejection count from the journaled rejection
+// annotations (#3375), so a run that crashes mid-loop resumes with the budget
+// it had already spent rather than a fresh one — the same continuity contract
+// gateDiffSeed keeps for #316's non-convergence detection.
+//
+// A gate.evaluated event ends the streak: reaching a resolved outcome means
+// that gate got past the pre-evaluation rejection entirely, so any rejections
+// before it belong to a finished episode. Within a streak the count is pinned
+// to the annotation's diffDigest, matching the live budget's reset rule.
+func remediationEvidenceRejectionSeed(events []journal.Event) map[string]evidenceRejectionBudget {
+	var seed map[string]evidenceRejectionBudget
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			delete(seed, e.Gate)
+			continue
+		}
+		if e.Type != journal.EventRunnerAnnotation || e.Runner["kind"] != "remediation-evidence-validation" {
+			continue
+		}
+		digest, _ := e.Runner["diffDigest"].(string)
+		if seed == nil {
+			seed = make(map[string]evidenceRejectionBudget)
+		}
+		budget := seed[e.Gate]
+		if budget.digest != digest {
+			budget = evidenceRejectionBudget{digest: digest}
+		}
+		budget.count++
+		seed[e.Gate] = budget
 	}
 	return seed
 }
