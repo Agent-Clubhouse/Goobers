@@ -401,7 +401,10 @@ export interface OperatorRunSummary {
   latestError?: { code: string; message?: string };
   review?: { verdict: string; rationale?: string };
   nextTransition?: string;
+  /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
+  diagnosticsLimitations?: string[];
 }
 
 export interface RunDetail extends RunSummary {

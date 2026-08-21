@@ -103,9 +103,14 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			runs[i].Operator.Issue.Number != "" {
 			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
 			if err != nil {
+				// The reader could not verify the marker; the run itself is
+				// unaffected. This belongs to the diagnostics-limitations
+				// channel, never to the run's blockers (#3346) — a
+				// credential-less `goobers status` reported two healthy runs as
+				// blocked and nearly triggered an investigation into them.
 				runs[i].Operator.Claim.ProviderMarker = "unavailable"
-				runs[i].Operator.PotentialBlockers = append(
-					runs[i].Operator.PotentialBlockers,
+				runs[i].Operator.DiagnosticsLimitations = append(
+					runs[i].Operator.DiagnosticsLimitations,
 					"provider claim marker verification unavailable: "+err.Error(),
 				)
 				continue
