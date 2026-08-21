@@ -347,7 +347,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
 	}
 	if in.Machine == nil {
-		in.Machine, err = pinnedWorkflowMachine(rd, id)
+		in.Machine, err = PinnedWorkflowMachine(rd, id)
 		if err != nil {
 			return r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
 				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
@@ -931,9 +931,17 @@ func gateRepassAttempt(e journal.Event) int {
 	return int(n)
 }
 
-// pinnedWorkflowMachine reconstructs the historical machine from the trusted,
-// content-addressed Definition snapshot and verifies every identity boundary.
-func pinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+// PinnedWorkflowMachine reconstructs the historical machine from the trusted,
+// content-addressed Definition snapshot journaled at Start and verifies every
+// identity boundary: the input's trusted integrity, the definition's
+// name/version, and — twice, once over the raw snapshot and once over the
+// compiled machine — the run's pinned WorkflowDigest (WF-016). A caller that
+// resumes or intervenes on a run whose pin no longer matches the current
+// config should prefer this machine over the current one (#3376): the run
+// keeps walking the definition it started under, while any snapshot that is
+// missing, untrusted, corrupt, or mismatched still fails closed here and the
+// WF-016 refusal stands.
+func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
 	var definitionRef *journal.InputRef
 	for i := range id.Inputs {
 		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
