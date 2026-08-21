@@ -536,7 +536,7 @@
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted leaves concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1."
+          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted MEANS UNLIMITED — concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1. Note this is the opposite of a workflow's own readiness.maxRunsPerHour, where zero/omitted falls back to a default of 10 rather than unlimited."
         },
         "workflowBudgets": {
           "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
