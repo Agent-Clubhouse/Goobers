@@ -43,7 +43,7 @@
           "additionalProperties": false,
           "properties": {
             "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
-            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Omitted uses the scheduler default." },
+            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
             "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },
             "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Reserved maximum depth for signal-triggered workflow chains. The scheduler does not currently enforce this field, and configuring it has no effect." },
             "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
