@@ -507,11 +507,22 @@ spec:
       goal: Run the project's local CI-equivalent (build, lint, tests) in the worktree.
       run:
         command: ["make", "ci"]
-      # Same budget and rationale as implementation.yaml's local-ci (#1969): the
-      # 10-minute executor default leaves no headroom over a `make ci` that runs
-      # 8.1m at p50, and a deadline SIGQUIT presents as a CI failure the
-      # remediating agent cannot act on.
-      timeoutSeconds: 1500
+      inputs:
+        # `make ci` shells out to the hermetic tier's `go test -race -timeout
+        # 30m` (test/ci/main.go), the same 30-minute ceiling `GO_TEST_TIMEOUT
+        # ?= 30m` documents in the Makefile — self-documented here so
+        # validate's subprocess-timeout coherence check (#3377) catches a
+        # future regression back below it even though the bare `make ci`
+        # invocation above carries no timeout validate can parse on its own.
+        expectedSubprocessTimeoutSeconds: "1800"
+      # Same rationale as implementation.yaml's local-ci (#1969), corrected by
+      # #3377: the prior 1500s (25m) budget was sized off `make ci`'s own
+      # observed p50/p90 (8.1m/9.5m), not its worst-case shape — under load,
+      # the *inner* `go test -race -timeout 30m` can legitimately still be
+      # running past 25 minutes, so the outer stage timeout must clear the
+      # subprocess's own ceiling, not just typical-case duration. 2400s (40m)
+      # leaves 10 minutes of headroom over that inner 30-minute ceiling.
+      timeoutSeconds: 2400
       retry:
         maxAttempts: 1
       next: local-gate

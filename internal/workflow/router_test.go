@@ -106,17 +106,18 @@ func TestCompileRejectsUnknownDSLVersion(t *testing.T) {
 func TestDefinitionFacadesRejectUnknownDSLVersion(t *testing.T) {
 	def := Definition{Name: "unknown", Version: 1, DSLVersion: "9.9", Spec: linearSpec()}
 	checks := map[string]func(Definition) []string{
-		"warnings":                CheckWarnings,
-		"reachability":            CheckReachability,
-		"schedules":               CheckSchedules,
-		"trigger fields":          CheckTriggerFields,
-		"admission":               func(def Definition) []string { return CheckWorkflowAdmission(def, nil) },
-		"gate parameters":         CheckGateParameters,
-		"gate outcomes":           CheckGateOutcomes,
-		"required inputs":         CheckStageRequiredInputs,
-		"stage contracts":         CheckStageContracts,
-		"stage contract warnings": CheckStageContractWarnings,
-		"timeout coherence":       CheckStageTimeoutCoherence,
+		"warnings":                     CheckWarnings,
+		"reachability":                 CheckReachability,
+		"schedules":                    CheckSchedules,
+		"trigger fields":               CheckTriggerFields,
+		"admission":                    func(def Definition) []string { return CheckWorkflowAdmission(def, nil) },
+		"gate parameters":              CheckGateParameters,
+		"gate outcomes":                CheckGateOutcomes,
+		"required inputs":              CheckStageRequiredInputs,
+		"stage contracts":              CheckStageContracts,
+		"stage contract warnings":      CheckStageContractWarnings,
+		"timeout coherence":            CheckStageTimeoutCoherence,
+		"subprocess timeout coherence": CheckSubprocessTimeoutCoherence,
 	}
 	for name, check := range checks {
 		t.Run(name, func(t *testing.T) {
