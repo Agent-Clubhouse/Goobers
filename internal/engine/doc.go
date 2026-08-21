@@ -33,11 +33,6 @@
 // closing them is follow-on work, not a reason to weaken the conformance
 // surface to make a fixture pass:
 //
-//   - Transient worktree-provision failures (worktree.IsTransientProvisionError)
-//     are not reclassified to invoke.InfrastructureFailure on this path
-//     (workerhost.WorktreeWorkspaces.Provision → classifySeamError), so a clone/
-//     fetch flake burns the policy budget instead of the infra budget the local
-//     runner (#572) gives it.
 //   - taskOutcome does not honor the #415 non-retryable escalation bypass
 //     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
 //     the local runner, bypassing the Next gate).

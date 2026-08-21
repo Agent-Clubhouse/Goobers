@@ -213,6 +213,17 @@ func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
 	}
 }
 
+func TestClassifySeamErrorPreservesInfrastructureAttemptClass(t *testing.T) {
+	err := classifySeamError(invoke.InfrastructureFailure(errors.New("transient workspace failure")))
+	class, classifyErr := attemptFailureClass(err)
+	if classifyErr != nil {
+		t.Fatalf("attemptFailureClass: %v", classifyErr)
+	}
+	if class != journal.AttemptInfra {
+		t.Fatalf("attempt class = %q, want %q", class, journal.AttemptInfra)
+	}
+}
+
 // TestStageActivityOptionsAlwaysCarryExplicitRetryPolicy: every activity
 // dispatch carries an explicit single-attempt RetryPolicy, for every task
 // shape — Temporal's unlimited default is structurally unreachable (#622).
