@@ -31,16 +31,15 @@ func seedUnpushedDiffRun(t *testing.T, root, gaggle, runID string, at time.Time,
 		t.Fatalf("record prior diff artifact: %v", err)
 	}
 	meta := map[string]interface{}{
-		"schema":     "goobers.dev/unpushed-diff/v1",
-		"runId":      runID,
-		"workflow":   "implementation",
-		"stage":      "implement",
-		"attempt":    1,
-		"itemIds":    itemIDs,
-		"branch":     "goobers/implementation/" + runID,
-		"baseRef":    "main",
-		"recordedAt": at,
-		"diffBytes":  len(diff),
+		"schema":    "goobers.dev/unpushed-diff/v1",
+		"runId":     runID,
+		"workflow":  "implementation",
+		"stage":     "implement",
+		"attempt":   1,
+		"itemIds":   itemIDs,
+		"branch":    "goobers/implementation/" + runID,
+		"baseRef":   "main",
+		"diffBytes": len(diff),
 		"diff": map[string]interface{}{
 			"path": patchRef.Path, "digest": patchRef.Digest, "size": patchRef.Size,
 		},
@@ -192,7 +191,7 @@ func seedOrderedRun(t *testing.T, runsDir, runID string, at time.Time, pushBefor
 	}
 	metaJSON, err := json.Marshal(map[string]interface{}{
 		"schema": "goobers.dev/unpushed-diff/v1", "runId": runID, "stage": "implement",
-		"attempt": 1, "itemIds": []string{"42"}, "baseRef": "main", "recordedAt": at,
+		"attempt": 1, "itemIds": []string{"42"}, "baseRef": "main",
 		"diffBytes": len(diff),
 		"diff":      map[string]interface{}{"path": patchRef.Path, "digest": patchRef.Digest, "size": patchRef.Size},
 	})

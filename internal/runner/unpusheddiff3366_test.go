@@ -237,6 +237,59 @@ func TestEnvironmentalFaultAtLocalCIPreservesImplementDiff(t *testing.T) {
 	if string(byDigest) != string(patch) {
 		t.Fatal("metadata diff digest does not resolve to the recorded patch bytes")
 	}
+
+	assertUnpushedDiffSidecarIsDeterministic(t, runsDir, "run-3366")
+}
+
+// assertUnpushedDiffSidecarIsDeterministic guards the sidecar's bytes against
+// run-varying content. An artifact's content digest is conformance-normative on
+// the artifact.recorded event naming it (journal.ConformanceView, ARCHITECTURE
+// §3.3), so a wall-clock field in the sidecar makes two identical runs journal
+// different digests — which is exactly how a `recordedAt` field broke
+// test/e2e's TestConformanceWalkingSkeletonLocalRunnerDeterministicJournal.
+// Every key must be a deterministic function of the run's inputs; the recording
+// time belongs on the journal event, which conformance excludes.
+func assertUnpushedDiffSidecarIsDeterministic(t *testing.T, runsDir, runID string) {
+	t.Helper()
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	deterministic := map[string]bool{
+		"schema": true, "runId": true, "workflow": true, "stage": true, "attempt": true,
+		"itemIds": true, "itemUrl": true, "branch": true, "baseRef": true,
+		"diffBytes": true, "diff": true,
+	}
+	var checked int
+	for i := range events {
+		e := events[i]
+		if e.Type != journal.EventArtifactRecorded || e.Ref == nil ||
+			!strings.HasSuffix(e.Name, "/"+unpushedDiffMetaName) {
+			continue
+		}
+		raw, err := rd.ArtifactBytes(*e.Ref)
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatalf("unmarshal %s: %v", e.Name, err)
+		}
+		for key := range fields {
+			if !deterministic[key] {
+				t.Errorf("%s carries non-input-derived field %q — the sidecar digest is "+
+					"conformance-normative and must not vary between identical runs", e.Name, key)
+			}
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no unpushed-diff sidecar to check")
+	}
 }
 
 // TestNoUnpushedDiffArtifactWithoutCommittedWork: an agentic stage that

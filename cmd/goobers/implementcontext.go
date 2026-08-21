@@ -330,17 +330,20 @@ const (
 )
 
 // unpushedDiffArtifact mirrors internal/runner's unpushedDiffMetadata JSON.
+// It carries no timestamp by design: the sidecar's bytes are digest-compared
+// by journal conformance, so the recording time lives on the artifact.recorded
+// event that names it (journal.Event.Time), which is what this file orders
+// candidates by.
 type unpushedDiffArtifact struct {
-	Schema     string    `json:"schema"`
-	RunID      string    `json:"runId"`
-	Stage      string    `json:"stage"`
-	Attempt    int       `json:"attempt"`
-	ItemIDs    []string  `json:"itemIds"`
-	Branch     string    `json:"branch"`
-	BaseRef    string    `json:"baseRef"`
-	RecordedAt time.Time `json:"recordedAt"`
-	DiffBytes  int       `json:"diffBytes"`
-	Diff       struct {
+	Schema    string   `json:"schema"`
+	RunID     string   `json:"runId"`
+	Stage     string   `json:"stage"`
+	Attempt   int      `json:"attempt"`
+	ItemIDs   []string `json:"itemIds"`
+	Branch    string   `json:"branch"`
+	BaseRef   string   `json:"baseRef"`
+	DiffBytes int      `json:"diffBytes"`
+	Diff      struct {
 		Path   string `json:"path"`
 		Digest string `json:"digest"`
 		Size   int64  `json:"size"`
@@ -479,10 +482,12 @@ func priorUnpushedWorkFromRun(runDir string, itemIDs []string, since time.Time, 
 		return nil
 	}
 	work := &priorUnpushedWork{
-		RunID:      artifact.RunID,
-		Stage:      artifact.Stage,
-		Attempt:    artifact.Attempt,
-		RecordedAt: artifact.RecordedAt,
+		RunID:   artifact.RunID,
+		Stage:   artifact.Stage,
+		Attempt: artifact.Attempt,
+		// From the journal event, not the sidecar bytes: see
+		// unpushedDiffArtifact.
+		RecordedAt: meta.Time,
 		Branch:     artifact.Branch,
 		BaseRef:    artifact.BaseRef,
 		ItemIDs:    artifact.ItemIDs,

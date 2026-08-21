@@ -4087,19 +4087,27 @@ const (
 // subsequent run on the same backlog item matches itemIds against its own
 // claim, and a human reading the journal learns what was authored, from which
 // base, and where the diff bytes live — without replaying the run.
+//
+// Every field must be a deterministic function of the run's inputs. An
+// artifact's content digest is a conformance-normative field of the
+// artifact.recorded event that names it (ARCHITECTURE §3.3,
+// journal.ConformanceView), so a wall-clock or otherwise run-varying byte in
+// here would make two identical runs journal different digests and break the
+// local↔Temporal conformance comparison. Deliberately absent for that reason:
+// a recordedAt timestamp — the artifact.recorded event carries its own Time,
+// which conformance excludes, and that is what discovery orders candidates by.
 type unpushedDiffMetadata struct {
-	Schema     string                `json:"schema"`
-	RunID      string                `json:"runId"`
-	Workflow   string                `json:"workflow,omitempty"`
-	Stage      string                `json:"stage"`
-	Attempt    int                   `json:"attempt"`
-	ItemIDs    []string              `json:"itemIds,omitempty"`
-	ItemURL    string                `json:"itemUrl,omitempty"`
-	Branch     string                `json:"branch,omitempty"`
-	BaseRef    string                `json:"baseRef"`
-	RecordedAt time.Time             `json:"recordedAt"`
-	DiffBytes  int                   `json:"diffBytes"`
-	Diff       apiv1.ArtifactPointer `json:"diff"`
+	Schema    string                `json:"schema"`
+	RunID     string                `json:"runId"`
+	Workflow  string                `json:"workflow,omitempty"`
+	Stage     string                `json:"stage"`
+	Attempt   int                   `json:"attempt"`
+	ItemIDs   []string              `json:"itemIds,omitempty"`
+	ItemURL   string                `json:"itemUrl,omitempty"`
+	Branch    string                `json:"branch,omitempty"`
+	BaseRef   string                `json:"baseRef"`
+	DiffBytes int                   `json:"diffBytes"`
+	Diff      apiv1.ArtifactPointer `json:"diff"`
 }
 
 // recordUnpushedDiff persists the run branch's cumulative committed diff vs.
@@ -4160,15 +4168,14 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 		return
 	}
 	meta := unpushedDiffMetadata{
-		Schema:     unpushedDiffSchemaVersion,
-		RunID:      in.RunID,
-		Stage:      t.Name,
-		Attempt:    attempt,
-		ItemIDs:    r.unpushedDiffItemIDs(in),
-		Branch:     workspace.worktree.Branch,
-		BaseRef:    baseRef,
-		RecordedAt: time.Now().UTC(),
-		DiffBytes:  len(diff),
+		Schema:    unpushedDiffSchemaVersion,
+		RunID:     in.RunID,
+		Stage:     t.Name,
+		Attempt:   attempt,
+		ItemIDs:   r.unpushedDiffItemIDs(in),
+		Branch:    workspace.worktree.Branch,
+		BaseRef:   baseRef,
+		DiffBytes: len(diff),
 		Diff: apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 			MediaType: "text/x-diff", Integrity: ref.Integrity,

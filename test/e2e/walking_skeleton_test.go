@@ -1013,13 +1013,21 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 			implementEvents = append(implementEvents, e)
 		}
 	}
+	// The resumed attempt commits work, so it also records #3366's
+	// unpushed-diff artifact pair (patch + discovery sidecar) between its
+	// context manifest and stage.finished — the runner persists a run branch's
+	// committed-but-unpublished diff after every agentic attempt. The
+	// interrupted attempt 1 has no such pair: Resume journals its terminal
+	// failure from the journal alone, never dispatching it.
 	wantTypes := []journal.EventType{
 		journal.EventStageStarted, // attempt 1, pre-crash (hand-built above)
 		journal.EventArtifactRecorded,
-		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
-		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
-		journal.EventArtifactRecorded,
-		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
+		journal.EventStageFinished,    // attempt 1, infra, journaled by Resume
+		journal.EventStageStarted,     // attempt 2, the crash-driven continuation
+		journal.EventArtifactRecorded, // context manifest
+		journal.EventArtifactRecorded, // implement/unpushed-diff.patch (#3366)
+		journal.EventArtifactRecorded, // implement/unpushed-diff.json (#3366)
+		journal.EventStageFinished,    // attempt 2, the crash-driven continuation, success
 	}
 	if len(implementEvents) != len(wantTypes) {
 		t.Fatalf("implement-stage events = %d, want %d: %+v", len(implementEvents), len(wantTypes), implementEvents)
@@ -1042,13 +1050,25 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 	if implementEvents[4].Attempt != 2 || implementEvents[4].AttemptClass != journal.AttemptInfra || implementEvents[4].Type != journal.EventArtifactRecorded {
 		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", implementEvents[4])
 	}
-	if implementEvents[5].Attempt != 2 || implementEvents[5].AttemptClass != journal.AttemptInfra || implementEvents[5].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[5])
+	for _, want := range []string{"implement/unpushed-diff.patch", "implement/unpushed-diff.json"} {
+		var found bool
+		for _, e := range implementEvents {
+			if e.Name == want && e.Attempt == 2 && e.Ref != nil {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("resumed attempt recorded no %q — its committed work is unrecoverable if the run dies before publication (#3366)", want)
+		}
+	}
+	last := len(implementEvents) - 1
+	if implementEvents[last].Attempt != 2 || implementEvents[last].AttemptClass != journal.AttemptInfra || implementEvents[last].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[last])
 	}
 	// Every post-crash "implement" event is excluded from conformance
-	// (§3.3) — confirm IsConformanceNormative agrees for all four, same as
+	// (§3.3) — confirm IsConformanceNormative agrees for all of them, same as
 	// internal/runner's own crash-resume test.
-	for i := 2; i <= 5; i++ {
+	for i := 2; i <= last; i++ {
 		if implementEvents[i].IsConformanceNormative() {
 			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3)", i, implementEvents[i])
 		}
