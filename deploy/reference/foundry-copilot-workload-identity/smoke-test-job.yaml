@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: foundry-copilot-smoke-test
+  namespace: goobers-foundry
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        azure.workload.identity/use: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: goobers-foundry-copilot
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: copilot
+          image: CHANGE-ME-COPILOT-AZURE-CLI-IMAGE
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              token_response="$(
+                curl --fail-with-body --silent --show-error \
+                  --request POST \
+                  --url "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+                  --header "Content-Type: application/x-www-form-urlencoded" \
+                  --data-urlencode "client_id=${AZURE_CLIENT_ID}" \
+                  --data-urlencode "scope=https://cognitiveservices.azure.com/.default" \
+                  --data-urlencode "client_assertion=$(cat "${AZURE_FEDERATED_TOKEN_FILE}")" \
+                  --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+                  --data-urlencode "grant_type=client_credentials"
+              )"
+
+              export COPILOT_PROVIDER_BEARER_TOKEN
+              COPILOT_PROVIDER_BEARER_TOKEN="$(jq --exit-status --raw-output '.access_token' <<<"${token_response}")"
+
+              exec copilot \
+                --prompt "Reply with exactly: Foundry workload identity is ready." \
+                --silent \
+                --no-remote \
+                --secret-env-vars=COPILOT_PROVIDER_BEARER_TOKEN \
+                --disable-builtin-mcps
+          env:
+            - name: HOME
+              value: /home/nonroot
+            - name: COPILOT_PROVIDER_TYPE
+              value: azure
+            - name: COPILOT_PROVIDER_BASE_URL
+              value: https://CHANGE-ME-RESOURCE.openai.azure.com
+            - name: COPILOT_PROVIDER_MODEL_ID
+              value: CHANGE-ME-BASE-MODEL
+            - name: COPILOT_PROVIDER_WIRE_MODEL
+              value: CHANGE-ME-DEPLOYMENT-NAME
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: home
+              mountPath: /home/nonroot
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: home
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
