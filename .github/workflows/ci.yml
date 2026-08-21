@@ -558,9 +558,6 @@ jobs:
         env:
           GOOBERS_CI_RACE: ${{ matrix.race }}
           GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}
-        # Keep command execution consistent with the setup step on Windows;
-        # the contract suite launches POSIX-compatible fixture commands.
-        shell: bash
         run: go run ./test/ci group shipped
 
   integration:
