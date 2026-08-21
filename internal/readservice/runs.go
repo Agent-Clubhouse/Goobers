@@ -204,7 +204,20 @@ type OperatorRunSummary struct {
 	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
 	Review             *OperatorReview      `json:"review,omitempty"`
 	NextTransition     string               `json:"nextTransition,omitempty"`
-	PotentialBlockers  []string             `json:"potentialBlockers"`
+	// PotentialBlockers is strictly about the RUN: things impeding this run's
+	// own progress. Never put a read-side capability gap here (#3346).
+	PotentialBlockers []string `json:"potentialBlockers"`
+	// DiagnosticsLimitations records what THIS read invocation could not
+	// establish — a missing credential, an unreachable provider — as opposed to
+	// anything wrong with the run. A `goobers status` run without
+	// `github:issues:read` cannot double-check claim markers; that is a limit on
+	// the reader, and reporting it as the run's blocker manufactured a
+	// convincing false layer-N signal on two healthy runs (#3346).
+	//
+	// omitempty (unlike PotentialBlockers) so the many OperatorRunSummary
+	// construction sites cannot leak a JSON `null` into a consumer that expects
+	// an array; absent means "nothing the reader could not see".
+	DiagnosticsLimitations []string `json:"diagnosticsLimitations,omitempty"`
 }
 
 // OperatorIssue identifies the claimed work item displayed in status.

@@ -943,6 +943,12 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		if len(r.Operator.PotentialBlockers) > 0 {
 			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
 		}
+		// Explicitly disclaimed and rendered after blockers: this line is about
+		// what THIS status invocation could not check, not about the run (#3346).
+		if len(r.Operator.DiagnosticsLimitations) > 0 {
+			pf(stdout, "  diagnostics limited (not a run blocker): %s\n",
+				strings.Join(r.Operator.DiagnosticsLimitations, "; "))
+		}
 	}
 }
 
