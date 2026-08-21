@@ -714,14 +714,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
+| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. The stage's own `summary` posts to the driving item as the disposition's reasoning (#3363). Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked with its ready/claimed markers removed (#539's convention). The park label depends on whether `outputs.blockedBy` named a blocker (#2028): a named, non-cyclic blocker parks `goobers:blocked-on-sibling` (self-healing — see below); an unattributed block, or a detected circular dependency, parks `goobers:needs-human`. If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
 | `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
 > `error.retryable == false` **and** a recognized escalate code (`ISSUE_OVER_SCOPE`
-> / `NEEDS_DECOMPOSITION`) bypasses the `Next` gate evaluator and its repass
+> / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`) bypasses the `Next` gate evaluator and its repass
 > loop after one attempt. When that gate declares an `escalate` control branch,
 > the runner follows it so the workflow can perform deterministic disposition
 > work before terminating; otherwise it routes straight to `@escalate`
@@ -733,6 +733,31 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > distinct from `Task.Retry` below (which is infra-only). A recognized escalate
 > code with `retryable == true`, or a `failure` with an unrecognized/absent code,
 > follows the ordinary failure route above.
+>
+> **Item judgment vs. work failure (#3363):** `ISSUE_NOT_APPLICABLE` is the
+> disposition for an item whose premise no longer holds — the issue targets
+> files a later change deleted, or asks for work already done. It is a verified
+> conclusion ABOUT THE ITEM, not a failure of the work, so re-running the stage
+> can only re-derive it. Two consequences follow from recognizing it here.
+> First, the refusal is terminal on attempt 1 rather than review-failing an
+> empty diff and burning the repass budget. Second, the stage's own `summary`
+> is the deliverable: the runner posts it to the driving item as the
+> escalation's reasoning, so a correct refusal's citation reaches a human
+> instead of living only in the run journal. Emit the citation in `summary`
+> (the machine-readable code goes in `error.code`, a short restatement in
+> `error.message`). The code classifies as the `item-judgment` error class,
+> which status rollups count separately from work failures (#3364).
+>
+> **Infrastructure faults never charge the work budget (#3361):** a failure of
+> the substrate a stage runs ON — credential materialization, git provisioning,
+> network transport, host/workspace, claims-lock contention — is not evidence
+> about the work. Those failures are marked at their construction site, retried
+> on the runner's bounded INFRASTRUCTURE budget (journaled `attemptClass:
+> infra`, conformance-excluded), and never decrement `Task.Retry`'s attempts.
+> Their terminals carry a typed `infra*` error class, which keeps them out of
+> the failure-streak circuit breaker and out of the success-rate denominator
+> (#3364) — at attempt budgets of 1, the prior classification converted
+> transient infrastructure weather into permanent-looking work failures.
 >
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**

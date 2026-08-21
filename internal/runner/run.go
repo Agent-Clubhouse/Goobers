@@ -345,6 +345,13 @@ type FailedOutcome struct {
 	// external work items because nested execution errors can contain sensitive
 	// prompts, argv, credentials, environment values, or context.
 	Cause string
+	// Code is the stable machine-readable failure code the run terminated
+	// with — the same value Result.FailureCode carries (a stage's own typed
+	// code where one exists, else "run_failed"). Handlers use it to classify
+	// the terminal's disposition (telemetry.ClassifyError): an infra-fault
+	// terminal (#3361) must not feed work-quality signals like the
+	// failure-streak circuit breaker (#3364).
+	Code string
 }
 
 // FailedHandler is Config.Failed's shape. Implementations are instance-level
@@ -2085,6 +2092,17 @@ func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOu
 // notifier used by terminal gates. Provider and claim-resolution failures are
 // journaled and swallowed so notification cannot prevent terminal cleanup.
 func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, o BlockedOutcome) error {
+	return r.notifyStageEscalation(ctx, jr, runID, item, o.RepoRef, o.Stage, o.Reason)
+}
+
+// notifyStageEscalation posts a stage-attributed escalation comment on the
+// run's driving item(s). Shared by the blocked terminal (#544) and the
+// non-retryable disposition terminal (#415/#3363) — for the latter, the
+// stage's own stated reason IS the deliverable (a verified refusal's
+// citation), so it must reach the issue rather than live only in the run
+// journal on a pod disk. Provider and claim-resolution failures are journaled
+// and swallowed so notification cannot prevent terminal cleanup.
+func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, runID string, item *apiv1.BacklogItem, repoRef apiv1.RepoRef, stage, reason string) error {
 	if r.cfg.Escalation == nil {
 		return nil
 	}
@@ -2092,28 +2110,28 @@ func (r *Runner) notifyBlockedEscalation(ctx context.Context, jr *journal.Run, r
 	if err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type:  journal.EventError,
-			Stage: o.Stage,
+			Stage: stage,
 			Error: &journal.ErrorDetail{
 				Code:    "stage_terminal_item_resolution_failed",
 				Message: err.Error(),
 			},
 		}); aerr != nil {
-			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", o.Stage, aerr)
+			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", stage, aerr)
 		}
 		return nil
 	}
 	seq := jr.Seq()
 	for _, itemID := range itemIDs {
-		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(o.RepoRef), itemID, runID, seq, o.Stage, o.Reason); err != nil {
+		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, stage, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
 				Type:  journal.EventError,
-				Stage: o.Stage,
+				Stage: stage,
 				Error: &journal.ErrorDetail{
 					Code:    "stage_terminal_notification_failed",
 					Message: err.Error(),
 				},
 			}); aerr != nil {
-				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", o.Stage, aerr)
+				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", stage, aerr)
 			}
 		}
 	}
@@ -2340,9 +2358,30 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// fails (#110), and a journal write failure of either is reported
 	// alongside origErr, never swallowing it.
 	message := boundFailureMessage(origErr.Error())
+	// The typed failure code is resolved BEFORE journaling/notifying so both
+	// the run_failed cause event and the Failed handler carry it: finalState
+	// is the failing stage/gate name where available (a gate-eval error,
+	// e.g.), empty for a genuinely state-less failure (max-steps, unknown
+	// state).
+	failureCode := "run_failed"
+	var terminalRunner map[string]any
+	var coded stageCodedError
+	if errors.As(origErr, &coded) && coded.StageErrorCode() != "" {
+		failureCode = coded.StageErrorCode()
+		// A typed cause carries its classification into the runner namespace
+		// (conformance-excluded, same seam as runTask's executor_error
+		// refinement) so the rollup's run_errors row for this terminal
+		// classifies by disposition — an infra-fault terminal (#3361) must be
+		// distinguishable from a work failure in every downstream metric
+		// (#3364) without re-parsing message text.
+		terminalRunner = map[string]any{
+			stageErrorClassKey: string(telemetry.ClassifyError(failureCode)),
+		}
+	}
 	appendErr := jr.Append(journal.Event{
-		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Type:   journal.EventError,
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Runner: terminalRunner,
 	})
 	// #1054: leave a human-visible trace on the driving item before finish()'s
 	// FinalizeTerminal releases the run's claims — this walk-level path is the
@@ -2350,7 +2389,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// walk), the exact case that was silently returning the issue to ready.
 	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
 	// a hung provider call. The full origErr is what the item's comment records.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error()})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2358,14 +2397,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
 	// diagnostic-append failure must not silently drop the cause the caller
-	// (the scheduler/daemon echo) needs; finalState is the failing stage/gate
-	// name where available (a gate-eval error, e.g.), empty for a genuinely
-	// state-less failure (max-steps, unknown state).
-	failureCode := "run_failed"
-	var coded stageCodedError
-	if errors.As(origErr, &coded) && coded.StageErrorCode() != "" {
-		failureCode = coded.StageErrorCode()
-	}
+	// (the scheduler/daemon echo) needs.
 	res.FailureStage, res.FailureCode, res.FailureMessage = finalState, failureCode, message
 	if ferr != nil {
 		return res, fmt.Errorf("%w (additionally failed to finalize terminal failure: %w)", origErr, ferr)
@@ -2390,6 +2422,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
 	code, message := failureCauseFrom(cause)
 	journaledMessage := message
+	var terminalRunner map[string]any
 	if code != "" {
 		// Code-prefixed for the on-disk cause event only (matching #545's
 		// blockedReason convention — a code alongside the code-named
@@ -2397,10 +2430,17 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 		// run_failed messages); Result.FailureCode carries the code on its own
 		// for the echo sites, so FailureMessage below stays bare.
 		journaledMessage = code + ": " + message
+		// Runner-namespace classification (conformance-excluded), mirroring
+		// failTerminal: the terminal cause row classifies by disposition so
+		// infra-fault terminals stay out of work-quality rollups (#3361/#3364).
+		terminalRunner = map[string]any{
+			stageErrorClassKey: string(telemetry.ClassifyError(code)),
+		}
 	}
 	if aerr := jr.Append(journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Runner: terminalRunner,
 	}); aerr != nil {
 		// This degenerate journal-write failure routes through failTerminal,
 		// which fires notifyFailed itself — so the trace is left exactly once,
@@ -2410,7 +2450,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	// #1054: leave a human-visible trace on the driving item for a stage-reported
 	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
 	// The code-prefixed journaledMessage is the run's terminal cause.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: stage, Cause: journaledMessage})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: stage, Cause: journaledMessage, Code: code})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -2995,6 +3035,27 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// conclusion until the budget exhausts.
 		if result.Status == apiv1.ResultFailure && isNonRetryableEscalation(result.Error) {
 			target := taskEscalationTarget(machine, t)
+			// #3363: the stage's stated reason is a deliverable — a verified
+			// refusal's citation (ISSUE_NOT_APPLICABLE), an over-scope
+			// analysis — so it posts to the driving issue instead of living
+			// only in the run journal. Skipped when the escalation control
+			// branch routes to a task that owns the human-facing disposition
+			// itself (issue-close-out), mirroring the terminal-gate
+			// notification's own ownership rule.
+			notifies := true
+			if task, ok := machine.Task(target); ok && taskOwnsEscalationNotification(task) {
+				notifies = false
+			}
+			if notifies {
+				nerr := r.notifyStageEscalation(stalledAttemptContext(ctx), jr, runID, item, repoRef, t.Name, dispositionReason(result))
+				if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, t.Name, steps); stalled {
+					return "", stalledResult, false, stalledErr
+				}
+				if nerr != nil {
+					res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, nerr)
+					return "", res, false, err
+				}
+			}
 			switch target {
 			case workflow.TargetAbort:
 				res, err = r.finish(runID, jr, journal.PhaseAborted, t.Name, steps)
@@ -4325,6 +4386,22 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 	return &journal.ErrorDetail{Code: result.Error.Code, Message: message}
 }
 
+// dispositionReason is the human-facing explanation posted to the driving item
+// for a non-retryable disposition terminal (#3363). It applies the same rule
+// errorDetailFrom applies to the journal: the stage's SUMMARY is the reasoning
+// (a refusal's verified citation, an over-scope analysis) while error.Message
+// is usually a terse restatement of the code. Falls back to the coded error
+// detail when the stage supplied no summary, so the comment is never empty.
+func dispositionReason(result apiv1.ResultEnvelope) string {
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		if result.Error != nil && result.Error.Code != "" {
+			return result.Error.Code + ": " + summary
+		}
+		return summary
+	}
+	return blockedReason(result)
+}
+
 // escalateErrorCodes are the recognized non-retryable business dispositions an
 // agentic stage can emit to bypass the Next gate's repass loop (#415). Each
 // names a conclusion that re-running the stage can only re-derive — the item
@@ -4332,9 +4409,17 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 // attempt. Kept as a runner-owned policy set (the runner owns status→transition
 // routing), not a schema enum, so recognizing a new code never reopens the
 // closed envelope contract.
+//
+// ISSUE_NOT_APPLICABLE (#3363) is an item judgment, not a work failure: the
+// implementer verified the issue's premise no longer holds (targets deleted
+// files, work already done). Before it was recognized here, that refusal
+// routed into the Next gate, review-failed its empty diff, burned the repass
+// budget re-deriving the identical conclusion, and escalated with the
+// reasoning left only in the run journal.
 var escalateErrorCodes = map[string]bool{
-	"ISSUE_OVER_SCOPE":    true,
-	"NEEDS_DECOMPOSITION": true,
+	"ISSUE_OVER_SCOPE":                  true,
+	"NEEDS_DECOMPOSITION":               true,
+	telemetry.ErrCodeIssueNotApplicable: true,
 }
 
 // isNonRetryableEscalation reports whether a stage failure is a non-retryable

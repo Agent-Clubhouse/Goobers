@@ -207,13 +207,17 @@ func TestTelemetryStatsJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
 	}
+	// infraFailedRuns splits FailedRuns into work failures and infrastructure
+	// faults and is excluded from successRate's denominator (#3361/#3364), so
+	// it is part of the emitted contract on both aggregates.
 	assertJSONObjectKeys(t, document.Gaggles[0],
-		"gaggle", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
+		"gaggle", "totalRuns", "completedRuns", "failedRuns", "infraFailedRuns", "otherRuns",
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 	)
 	assertJSONObjectKeys(t, document.Runs[0],
-		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "otherRuns",
-		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs", "stuckAbortedRuns",
+		"gaggle", "workflow", "totalRuns", "completedRuns", "failedRuns", "infraFailedRuns",
+		"otherRuns", "successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
+		"stuckAbortedRuns",
 	)
 	assertJSONObjectKeys(t, document.Stages[0],
 		"gaggle", "workflow", "stage", "totalAttempts", "succeededAttempts", "failedAttempts",
