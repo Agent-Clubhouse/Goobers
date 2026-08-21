@@ -376,7 +376,7 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
 		if countErr != nil {
 			errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
-			prevCount = 0
+			continue
 		}
 		count := prevCount + 1
 
@@ -393,6 +393,20 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 			}); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
 			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, runURL string) error {
+	itemIDs, err := claimedItemIDsForRun(l, runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, itemID := range itemIDs {
+		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -421,11 +435,15 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 	}
 
 	return func(runID string, phase journal.RunPhase, finalState string) error {
-		if phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
+		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			runURL, _ := failureRunURL(l, cfg, runID)
-			_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+			if phase == journal.PhaseCompleted {
+				_ = resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL)
+			} else {
+				_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+			}
 		}
 		if inner != nil {
 			return inner(runID, phase, finalState)

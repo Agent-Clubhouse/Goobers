@@ -3021,9 +3021,13 @@ type blockedHandlerFakeCommenter struct {
 	calls    []providers.UpdateWorkItemRequest
 	comments []providers.Comment
 	nextID   int
+	listErr  error
 }
 
 func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return append([]providers.Comment(nil), f.comments...), nil
 }
 
@@ -4038,6 +4042,40 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	}
 	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
 		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+func TestBuildFailedHandlerSkipsUpsertWhenStreakReadFails(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{listErr: errors.New("provider unavailable")}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-streak-read-error", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if err := h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-streak-read-error",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+	}); err == nil {
+		t.Fatal("want streak read error")
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %d, want 0 when streak count cannot be read", len(fake.calls))
 	}
 }
 
