@@ -192,6 +192,10 @@ type Scheduler struct {
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
+	// stateOwner is the M5 generation/ownership guard for the shared state
+	// files this scheduler rewrites (stateguard.go): a second daemon against
+	// the same instance root trips ErrStateSeized instead of a data race.
+	stateOwner *stateOwner
 
 	mu          sync.Mutex
 	admissionMu sync.Mutex
@@ -357,7 +361,10 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		quotaResumePacing:     make(map[apiv1.Provider]bool),
 		authCircuits:          make(map[WorkflowIdentity]struct{}),
 		wake:                  make(chan struct{}, 1),
-		writeTriggerState:     writeTriggerEvaluations,
+		stateOwner:            newStateOwner(),
+	}
+	s.writeTriggerState = func(schedulerDir string, evaluations map[WorkflowIdentity]time.Time) error {
+		return writeTriggerEvaluations(schedulerDir, s.stateOwner, evaluations)
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -1056,7 +1063,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 			outstandingScheduleDemand[identity] = true
 		}
 	}
-	if err := writeScheduleDemandState(s.log.Dir(), outstandingScheduleDemand); err != nil {
+	if err := writeScheduleDemandState(s.log.Dir(), s.stateOwner, outstandingScheduleDemand); err != nil {
 		return err
 	}
 
@@ -1471,7 +1478,7 @@ func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding
 		} else {
 			delete(state, identity)
 		}
-		err = writeScheduleDemandState(s.log.Dir(), state)
+		err = writeScheduleDemandState(s.log.Dir(), s.stateOwner, state)
 	}
 	if err == nil {
 		return true

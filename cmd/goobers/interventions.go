@@ -301,6 +301,153 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 	return interventionResult(resolved)
 }
 
+// escalationResolutionMarker tags the HITL plane's deny resolution event: an
+// escalated run resolved as "stays denied" keeps its terminal phase, so the
+// resolution exists only as this journal record, appended by the run's own
+// journal writer (journal.Recover — the same writer recordInterventionMarker
+// uses). approve/redirect resolutions journal through the resume machinery
+// instead and need no marker of their own.
+const escalationResolutionMarker = "escalation.resolution"
+
+// scanEscalationResolution looks for an escalation.resolution marker under
+// key. replayed reports a marker whose payload fingerprint matches; a reused
+// key with a different payload is refused.
+func scanEscalationResolution(events []journal.Event, key, fingerprint string) (replayed bool, err error) {
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != escalationResolutionMarker {
+			continue
+		}
+		recordedKey, _ := event.Runner["idempotencyKey"].(string)
+		if recordedKey != key {
+			continue
+		}
+		recorded, _ := event.Runner["fingerprint"].(string)
+		if recorded != fingerprint {
+			return false, interventionConflict(
+				"idempotency_key_reused",
+				"Idempotency-Key was already used for a different resolution",
+			)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// AcceptDenyEscalation resolves an escalated (or failed) run as denied: the
+// escalation was reviewed and the run deliberately stays terminal. The
+// resolution event — actor, rationale, idempotency key — is journaled; a
+// replay of the same Idempotency-Key returns the current result without a
+// second event, and a reused key with a different payload is refused.
+func (s *runInterventionService) AcceptDenyEscalation(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	if err := admission.Err(); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "request_budget_exceeded", "the resolution was not accepted within the request budget", err,
+		)
+	}
+	if err := execution.Err(); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "daemon_stopping", "the daemon is stopping", err,
+		)
+	}
+	if input.IdempotencyKey == "" {
+		return httpapi.InterventionResult{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
+	}
+	rationale := strings.TrimSpace(input.Rationale)
+	if rationale == "" {
+		return httpapi.InterventionResult{}, interventionBadRequest("rationale_required", "deny rationale is required")
+	}
+	resolved, err := s.resolve(input.RunID)
+	if err != nil {
+		return httpapi.InterventionResult{}, err
+	}
+	return s.denyEscalation(resolved, input)
+}
+
+// denyEscalation is AcceptDenyEscalation after run resolution: scan for a
+// replay, then journal the resolution under the run's active-intervention
+// slot. Split out so the replay/append race is testable with a genuinely
+// stale resolved snapshot.
+func (s *runInterventionService) denyEscalation(resolved resolvedInterventionRun, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	rationale := strings.TrimSpace(input.Rationale)
+	fingerprint, err := interventionFingerprint("deny", input)
+	if err != nil {
+		return httpapi.InterventionResult{}, fmt.Errorf("fingerprint escalation resolution: %w", err)
+	}
+	replayed, err := scanEscalationResolution(resolved.events, input.IdempotencyKey, fingerprint)
+	if err != nil {
+		return httpapi.InterventionResult{}, err
+	}
+	if replayed {
+		return currentInterventionResult(resolved)
+	}
+	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
+		return httpapi.InterventionResult{}, interventionConflict(
+			"run_not_escalated",
+			fmt.Sprintf("run %q is %s; only escalated or failed runs can be denied", input.RunID, resolved.phase),
+		)
+	}
+	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
+	if !exclusive {
+		return httpapi.InterventionResult{}, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
+	}
+	defer releaseActive()
+
+	// Re-scan now that the slot is held (the recheck-under-writer pattern
+	// ClaimNotificationDelivery demonstrates): the scan above ran on a journal
+	// snapshot taken before the slot was acquired, so a concurrent same-key
+	// deny may have appended the resolution in between — approve/override are
+	// backstopped by ResumeFromTerminal's ExpectedTerminalSeq CAS, but deny's
+	// only writer-side guard is this recheck.
+	current, err := journal.OpenRead(resolved.runDir)
+	if err == nil {
+		var events []journal.Event
+		if events, err = current.Events(); err == nil {
+			replayed, err = scanEscalationResolution(events, input.IdempotencyKey, fingerprint)
+		}
+	}
+	if err != nil {
+		var interventionErr *httpapi.InterventionError
+		if errors.As(err, &interventionErr) {
+			return httpapi.InterventionResult{}, err
+		}
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("re-scan run before journaling escalation resolution: %w", err),
+		)
+	}
+	if replayed {
+		return currentInterventionResult(resolved)
+	}
+
+	_, scrubber := journal.DefaultScrubber()
+	run, _, err := journal.Recover(resolved.runDir, journal.WithScrubber(scrubber))
+	if err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("recover run to journal escalation resolution: %w", err),
+		)
+	}
+	appendErr := run.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":           escalationResolutionMarker,
+			"resolution":     "deny",
+			"idempotencyKey": input.IdempotencyKey,
+			"fingerprint":    fingerprint,
+			"actor":          input.Actor,
+			"rationale":      rationale,
+		},
+	})
+	closeErr := run.Close()
+	if err := errors.Join(appendErr, closeErr); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("journal escalation resolution: %w", err),
+		)
+	}
+	return currentInterventionResult(resolved)
+}
+
 func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun, error) {
 	if !apiv1.ValidRunID(runID) {
 		return resolvedInterventionRun{}, interventionBadRequest("invalid_run_id", "run ID is invalid")
