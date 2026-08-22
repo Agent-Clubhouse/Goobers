@@ -927,13 +927,11 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
-	// The #2386 un-breaking: a broader write grant explicitly SUBSUMES the
-	// narrowed read requirement (internal/capability.Subsumes, #3300), so a
-	// config already holding strictly more authority than the requirement
-	// asks for keeps compiling.
+	// Issue-read credentials are separately brokered, so a broader write grant
+	// cannot satisfy this requirement.
 	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesWrite)}
-	if _, err := compileAcknowledged(definition("write-subsumes-backlog-read", readOnlyTask)); err != nil {
-		t.Fatalf("read-only backlog-query with subsuming write capability should compile: %v", err)
+	if _, err := compileAcknowledged(definition("write-subsumes-backlog-read", readOnlyTask)); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_GITHUB_ISSUES_READ") {
+		t.Fatalf("read-only backlog-query with write capability should fail exact admission: %v", err)
 	}
 	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesRead)}
 	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {

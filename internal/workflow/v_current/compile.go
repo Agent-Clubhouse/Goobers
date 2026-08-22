@@ -505,15 +505,20 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 				problems = append(problems, unknownSubcommand(t.Name, subcommand))
 			}
 			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				// A declared capability satisfies the requirement when it IS
-				// the required one or explicitly subsumes it
-				// (internal/capability.Subsumes, #2386/#3300): narrowing a
-				// built-in's requirement must not reject configs already
-				// holding strictly more authority than the new requirement.
-				if !anyCapabilitySatisfies(t.Capabilities, use.Capability) {
+				// Most requirements accept an explicitly subsuming capability,
+				// but separately brokered credentials must be declared exactly.
+				satisfied := anyCapabilitySatisfies(t.Capabilities, use.Capability)
+				if use.RequiresExactCapability() {
+					satisfied = hasExactCapability(t.Capabilities, use.Capability)
+				}
+				if !satisfied {
+					var credential string
+					if use.RequiresExactCapability() {
+						credential = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
+					}
 					problems = append(problems, fmt.Sprintf(
-						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
-						t.Name, subcommand, use.Capability, use.Consequence,
+						"task %q invokes built-in subcommand %q but does not declare capability %q%s; %s",
+						t.Name, subcommand, use.Capability, credential, use.Consequence,
 					))
 				}
 			}
@@ -659,6 +664,15 @@ func unknownCapability(value string) string {
 func anyCapabilitySatisfies(declared []string, required capability.Capability) bool {
 	for _, held := range declared {
 		if capability.Subsumes(capability.Capability(held), required) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactCapability(declared []string, required capability.Capability) bool {
+	for _, held := range declared {
+		if capability.Capability(held) == required {
 			return true
 		}
 	}
