@@ -35,7 +35,7 @@ Current-state citations are against `main` @ `54c42936`.
 | D8 | Instance config: **`runners:` (plural) supersedes `runner:` (singular)**. No `runners:` ⇒ the legacy singular block is the implicit `self` entry — zero-change upgrade. Instance config gains a **`schemaVersion`** field (PO-D3) | `runner:` today is exactly one runner's claims (`internal/instance/config.go:120-126,262-270`); mapping it to the `self` row preserves every existing install byte-identically. The surface is strictly loaded on both sides (`DisallowUnknownFields`, `additionalProperties:false`, `schema_parity_test.go`) and its live copy is a known drifted fork — this is its first version field |
 | D9 | Inventory changes are **restart-only in v1**; updates follow **accept-and-pin**: in-flight runs finish against their pinned snapshot | `instance.yaml` is startup-only today (`cmd/goobers/configreload.go:147,204` digest covers only `config/`). Accept-and-pin answers #3449: no drain machinery is required for config updates (PO-D4) |
 | D10 | **Runner claims are trusted in v1** (RRQ-1 model): a false claim degrades to a runtime error with a named diagnostic; probe-pod verification is a later honesty layer (PO-D3) | The spike shape already documents the lie mode ("claim os=windows on a Linux container"); v1 states the trust model instead of pretending to verify |
-| D11 | **Declared repo-handoff edges**: a `workspace: repo` stage that consumes a predecessor's repo state names it with **`repoFrom: <task>`**; the compiler rejects the undeclared chain (WF022). Generalizes #2861 from cross-OS to cross-runner (PO-D6) | The run branch is the one implicit, untyped stage-to-stage channel (`docs/stage-contract.md` "a run's stages share one branch"); mode 3 makes the silent chain a silent *loss* (a node whose mirror lacks the commits provisions a pristine branch — `internal/worktree/worktree.go:50-72`). `inputsFrom` is the precedent for declared edges |
+| D11 | **Declared repo-handoff edges**: a `workspace: repo` stage that consumes a predecessor's repo state names its producer(s) with **`repoFrom:`** — scalar or **list** (`repoFrom: [implement, remediate-ci]` = "the run branch head as of the most recent listed producer that executed"); the compiler rejects the undeclared chain (WF022) and enforces list *coverage* (§4). Generalizes #2861 from cross-OS to cross-runner (PO-D6; delivery decisions 001/002) | The run branch is the one implicit, untyped stage-to-stage channel (`docs/stage-contract.md` "a run's stages share one branch"); mode 3 makes the silent chain a silent *loss* (a node whose mirror lacks the commits provisions a pristine branch — `internal/worktree/worktree.go:50-72`). `inputsFrom` is the precedent for declared edges. The list form exists because CI-repass lanes create true fan-in (goobers/implementation's `local-ci ← {implement, remediate-ci}`) that a scalar cannot express |
 | D12 | **Migration rules** (`goobers fix --to 3.0`): `requiredCapabilities` → `runsOn.capabilities`; `os=<goos>` tokens → `runsOn.os` (`darwin` → `macOS`); any remaining `os=*` token in a 3.0 document is **rejected** (CAP004) | One document, one vocabulary — the mechanical closure of the #659 drift hazard (PO-D2) |
 | D13 | **DSL 1.4 is dropped** in the release that ships 3.0; the binary carries exactly two interpreters, 2.0 (frozen) and 3.0. A missing `dslVersion` becomes a **hard error** in the same release | 1.4 is already deprecated with `unsupportedAfter v0.5.0` (`internal/supportmatrix/supportmatrix.go:44-110`); the missing-pin default is 1.4 (`api/validate/validate.go:1101-1116`), so dropping 1.4 *is* the §8.3 cutover — defaulting to a version that no longer loads would be strictly worse than erroring |
 | D14 | **2.0 lifecycle**: stays `supported` — the only backward-compat contract, local-runner-only, feature-frozen. Deprecation is **not scheduled now**; when it comes, the CI-enforced windows apply (≥1 released minor deprecated, ≥3 minor releases loadable, `supportpolicy.go:11-16`) and matrix transitions are staged across releases (append-only, tag-anchored) | PO-D0. The 1.4 window miscalculation (v0.2.0→v0.5.0) already reddened main once — state the clock rules up front |
@@ -211,17 +211,47 @@ tasks:
     repoFrom: implement                # declared handoff edge
   push-branch:
     run: { kind: push-branch }
-    repoFrom: local-ci
+    repoFrom: implement    # the last COMMITTING producer — local-ci mutates its
+                           # worktree but never advances the branch (decision 002)
     capabilities: [repo:push]
   open-pr:
     run: { kind: open-pr }
 ```
 
 **Compiler rule (WF022), generalizing #2861:** a `workspace: repo` stage that executes
-after a repo-writing stage of the same run must declare `repoFrom` naming its upstream; an
+after a *producer* of the same run must declare `repoFrom` covering its upstream; an
 undeclared chain is a compile error regardless of OS. A repo stage with no `repoFrom` and a
-repo-writing predecessor is refused, not defaulted — only committed work crosses a stage
+reaching producer is refused, not defaulted — only committed work crosses a stage
 boundary, and now only *declared* continuity does.
+
+**Producers, coverage, and computation (delivery decisions 001/002 — binding):**
+
+- **A producer ("definition") is a stage that advances the run-branch ref** as observed on
+  the transport (origin in mode 3; the local mirror in modes 1/2): agentic
+  non-`repo-readonly` stages and the ref-advancing builtins (`rebase-pr`,
+  `update-behind-pr` — the latter advances the ref provider-side, which counts).
+  `push-branch`/`push-remediated` *publish* existing commits and are consumers only.
+  Deterministic `make`/`sh` stages are non-producers by default, with an explicit
+  task-level opt-in for a genuinely committing script. Uncommitted worktree mutation is
+  never a definition — the stage contract already guarantees it cannot cross a stage
+  boundary in any mode, and branch transport physically carries commits only.
+- **Coverage rule:** on every forward path reaching the consumer, the last producer before
+  it must appear in the consumer's `repoFrom` list; an uncovered reaching producer, or a
+  declared producer that can never immediately precede the consumer, is WF022.
+- **Computation is reaching definitions** over the stage graph — gate-fail routing included
+  as edges, fixed-point over cycles, a consumer's own prior attempts excluded (gate
+  *repass* back-edges are attempt semantics, never repoFrom edges). It must **not** be
+  implemented as DFS back-edge pruning: on the live tree that misclassifies
+  `ci-gate --fail→ remediate-ci` (a loop re-entering through a *different* producer) as
+  droppable, yields `[implement]` alone, and on every CI repass would fetch the head as of
+  `implement` — silently discarding the remediation fix on exactly the path the lane
+  exists to serve.
+- **Enforcement, scoped by actor:** ref advances performed by the runner's own
+  publish/recovery primitives are sanctioned by construction (push-branch's
+  fetch+rebase-onto-remote race recovery per #3366; provider-side `UpdateBranch`). For
+  authored stage work, the runtime records the branch head before/after every non-producer
+  repo stage, and any advance is a fail-closed named error directing the author to declare
+  producer-ness — never a silent drop, and never a spurious failure under push contention.
 
 **Transport semantics.** The edge declares continuity; the runtime owns transport. At a
 declared edge in mode 3, the runtime pushes the run branch to origin when the producing
@@ -233,9 +263,13 @@ cluster-internal git remote is a deferred optimization behind the same contract 
 from); edge pushes are transport to the run branch, not a publish. #2861's cross-OS rule is
 subsumed: with every chain declared, the unsafe transition it rejected cannot be written.
 
-The migrator inserts `repoFrom` edges along the linear repo-stage chain automatically;
-graphs where the upstream is ambiguous (parallel repo stages, static fan-out) are refused
-with a named diagnostic for hand resolution (open point 5).
+The migrator computes `repoFrom` lists via the same reaching-definitions analysis and
+inserts them automatically; it refuses only where coverage cannot be computed, with a named
+diagnostic. On the live cloud tree this yields zero refusals; the canonical 14-workflow
+fixture table (commit reading) and its continuity-reading contrast table are frozen as
+migrator acceptance fixtures, with `goobers/implementation`'s
+`local-ci → [implement, remediate-ci]` as the discriminator separating a correct
+implementation from the naive one (delivery decisions 001/002).
 
 ---
 
@@ -293,8 +327,8 @@ deterministic):
    unsatisfiable). After migration, any remaining `os=*` token is rejected (CAP004) —
    bare `os=*` cannot be carried into 3.0.
 4. `run.network: none` → `runsOn.restrictions: [network:none]` (D16).
-5. `repoFrom` edges inserted along the linear repo-stage chain; ambiguous graphs refused
-   (§4).
+5. `repoFrom` edges computed as reaching definitions over the stage graph (§4); refusal
+   only where coverage cannot be computed.
 6. External call-out surface rewrites preview spelling to GA spelling if they differ
    (expected: none); the per-gaggle sandbox override is rewritten into the restrictions
    surface per the restrictions companion doc, or refused with a pointer when no
@@ -401,6 +435,9 @@ Landing 3.0 touches the shipped multi-version machinery, all of it designed for 
 8. A runner entry with `host: <image>` and no `engine:` block is refused with RNR002.
 9. A booting daemon whose config contains one unsatisfiable workflow starts, serves every
    other workflow, and refuses that workflow's runs with a named diagnostic (#2860).
+10. The migrator reproduces the frozen canonical fixture table exactly (set-normalized);
+    in particular `goobers/implementation` yields `local-ci: [implement, remediate-ci]` —
+    a `[implement]`-only result (the back-edge-pruning failure) is an automatic fail.
 
 ---
 
@@ -420,9 +457,9 @@ deliberately leaves to implementation:
 4. `schemaVersion` numbering and the instance-config migration diagnostic text —
    coordinate with the instance/runner companion doc; the live drifted fork must be ported
    deliberately at rollout.
-5. Migrator edge-inference beyond linear chains (static fan-out/fan-in repo stages): the
-   refusal diagnostic's guidance, and whether a later `goobers fix` pass can resolve
-   simple diamonds.
+5. ~~Migrator edge-inference beyond linear chains~~ — **closed** by delivery decisions
+   001/002 (list-valued `repoFrom`, reaching-definitions computation, commit reading,
+   actor-scoped enforcement); encoded in §4.
 6. Quantity canonicalization: whether validation normalizes equivalent spellings
    (`2000m` vs `2`) in diagnostics and digests, and whether the k8s apimachinery quantity
    parser is vendored or reimplemented.
