@@ -253,6 +253,12 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"),
 		},
 	},
+	"pr-comment-watch": {
+		ResultFile: "comment-watch-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so PR comment watching fails at runtime"),
+		},
+	},
 	"pr-select": {
 		ResultFile:         "selected-pr.json",
 		mutatesClaimLedger: true,

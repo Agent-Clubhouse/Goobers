@@ -361,6 +361,9 @@ post-merge fan-out + close the referenced issue (a workflow stage)
 \fBgoobers pr-claim\fR
 check PR liveness or release its remediation claim (a workflow stage)
 .TP
+\fBgoobers pr-comment-watch\fR
+label open goober PRs carrying unaddressed human comments (a workflow stage)
+.TP
 \fBgoobers pr-select\fR
 select one managed or advisory open PR for merge-review (a workflow stage)
 .TP
@@ -481,6 +484,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-override\fR(1),
 \fBgoobers-post-merge\fR(1),
 \fBgoobers-pr-claim\fR(1),
+\fBgoobers-pr-comment-watch\fR(1),
 \fBgoobers-pr-select\fR(1),
 \fBgoobers-preflight\fR(1),
 \fBgoobers-publish-batch\fR(1),

@@ -77,6 +77,7 @@ var synopsisByID = map[string]string{
 	"report-pr-status":       "  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)\n",
 	"gate-removal-guard":     "  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)\n",
 	"issue-close-out":        "  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)\n",
+	"pr-comment-watch":       "  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)\n",
 	"set-milestone":          "  goobers set-milestone --item ID --milestone N [path]\n                                assign an existing milestone to an issue (a workflow stage)\n",
 	"merge-pr":               "  goobers merge-pr                       conjunctive auto-merge \u2014 verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)\n",
 	"merge-queue-poll":       "  goobers merge-queue-poll               watch an enqueued pull request until merged, evicted, timed out, or opted out; dequeue opt-outs and route failures (a workflow stage)\n",

@@ -265,6 +265,16 @@
     ]
   },
   {
+    "command": "pr-comment-watch",
+    "resultFile": "comment-watch-result.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so PR comment watching fails at runtime"
+      }
+    ]
+  },
+  {
     "command": "pr-select",
     "resultFile": "selected-pr.json",
     "mutatesClaimLedger": true,

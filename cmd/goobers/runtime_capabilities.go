@@ -663,6 +663,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).
 			withExamples("goobers gather-issue-context"),
+		stageCommand("pr-comment-watch", apicontract.ActionWorkflowExecution, runPRCommentWatch).
+			withSynopsis(synopsisByID["pr-comment-watch"]).
+			withHelp("label open goober PRs carrying unaddressed human comments (a workflow stage)", prCommentWatchHelp).
+			withExamples("goobers pr-comment-watch"),
 		stageCommand("gather-ci-failures", apicontract.ActionWorkflowExecution, runGatherCIFailures).
 			withSynopsis(synopsisByID["gather-ci-failures"]).
 			withHelp("add failing CI diagnostics to a remediation brief (a workflow stage)", gatherCIFailuresHelp).
