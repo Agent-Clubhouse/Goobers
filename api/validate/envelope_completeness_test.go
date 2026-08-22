@@ -314,6 +314,8 @@ func completeJournalEvent() journal.Event {
 		Status:              "success",
 		WorkflowVersion:     1,
 		WorkflowDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceRunID:         "0af7651916cd43dd8448eb211c80319c",
+		SourceTerminalSeq:   7,
 		Outputs:             map[string]any{"ciStatus": "success"},
 		Artifacts: []journal.Ref{{
 			Path:      "artifacts/sha256/aa/plan.txt",

@@ -121,17 +121,20 @@ func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
 }
 
-// claimsPlanePath reports whether path is one of the claims-plane write
-// routes. Together with journalPlanePath these are the only parts of the
-// versioned surface a pod principal may reach. Everything else (reads,
-// triggers, HITL, interventions) stays human-only: a stage pod has no
-// business resolving escalations or minting runs.
-func claimsPlanePath(path string) bool {
+// podPlanePath reports whether path is one of the write routes a pod
+// principal may reach: the claims plane, plus the credential plane's resolve
+// route (distributed-state-and-coordination.md §11 — the plane exists FOR
+// stage pods). The journal plane is the third pod-reachable plane; it carries
+// a run-id segment and is matched structurally by journalPlanePath. Everything
+// else (reads, triggers, HITL, interventions) stays human-only: a stage pod
+// has no business resolving escalations or minting runs.
+func podPlanePath(path string) bool {
 	switch path {
 	case apicontract.ClaimAcquirePath,
 		apicontract.ClaimRenewPath,
 		apicontract.ClaimReleasePath,
-		apicontract.ClaimSettlePath:
+		apicontract.ClaimSettlePath,
+		apicontract.CredentialResolvePath:
 		return true
 	default:
 		return false
@@ -163,10 +166,13 @@ func journalPlanePath(path string) bool {
 // stays anonymous and would be refused.
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
-// to the claims and journal planes: their token proves "I am run X's stage
-// pod", which authorizes ledger operations and journal emission for that run
-// and nothing else. Per-run containment (the request's run matching the pod's
-// run) is enforced by the plane handlers, which can see the request.
+// to the pod planes (claims + credential resolve + journal emit): their token
+// proves "I am run X's stage pod", which authorizes ledger operations,
+// credential resolution, and journal emission for that run and nothing else.
+// Per-run containment (the request body's runId, or the path run id for the
+// journal plane, matching the pod's run) is enforced by the plane handlers,
+// which can see the request — and the credential handler additionally refuses
+// human principals outright (DS9: the plane serves stage pods only).
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -174,10 +180,10 @@ func RequireRoles() Authorizer {
 			return errors.New("no authenticated principal")
 		}
 		if IsPodPrincipal(principal) {
-			if (claimsPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
+			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
 				return nil
 			}
-			return fmt.Errorf("pod principal %q may only call the claims and journal planes", principal.Subject)
+			return fmt.Errorf("pod principal %q may only call the claims, credential, and journal planes", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -255,6 +261,7 @@ type handlerConfig struct {
 	triggers            TriggerService
 	escalations         EscalationService
 	journal             JournalService
+	credentials         CredentialService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.

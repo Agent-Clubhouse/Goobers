@@ -34,7 +34,12 @@ type EventRecord struct {
 // legacy run.yaml marker. Callers scanning a runs root may skip only this error.
 var ErrNotRunDirectory = errors.New("journal: not a run directory")
 
-// OpenRead opens an existing run directory for reading.
+// ErrJournalMigrationRequired identifies a journal that cannot be inspected
+// without first migrating its on-disk schema.
+var ErrJournalMigrationRequired = errors.New("journal: schema migration required")
+
+// OpenRead opens an existing run directory for reading, migrating an older
+// journal schema when necessary.
 func OpenRead(dir string) (*Reader, error) {
 	_, hasManifest, err := readSchemaInfo(dir)
 	if err != nil {
@@ -55,6 +60,35 @@ func OpenRead(dir string) (*Reader, error) {
 	return &Reader{dir: dir, schema: schema}, nil
 }
 
+// OpenReadOnly opens an existing run directory without writing or migrating it.
+// Journals that are not already at the current schema are refused with
+// ErrJournalMigrationRequired.
+func OpenReadOnly(dir string) (*Reader, error) {
+	info, hasManifest, err := readSchemaInfo(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !hasManifest {
+		if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w %q: %w", ErrNotRunDirectory, dir, err)
+			}
+			return nil, fmt.Errorf("journal: inspect run.yaml in %q: %w", dir, err)
+		}
+	}
+	done, err := admitJournalSchema(dir, info, hasManifest)
+	if err != nil {
+		return nil, err
+	}
+	if !done {
+		return nil, fmt.Errorf(
+			"%w: schema version %d must be migrated to version %d",
+			ErrJournalMigrationRequired, info.Version, CurrentSchemaVersion,
+		)
+	}
+	return &Reader{dir: dir, schema: info}, nil
+}
+
 // Dir returns the run directory.
 func (r *Reader) Dir() string { return r.dir }
 
@@ -64,18 +98,7 @@ func (r *Reader) Schema() SchemaInfo { return r.schema }
 // openCurrentJournal revalidates a journal while its writer lock is already
 // held. It must not attempt migration because migration acquires that same lock.
 func openCurrentJournal(dir string) (*Reader, error) {
-	info, exists, err := readSchemaInfo(dir)
-	if err != nil {
-		return nil, err
-	}
-	done, err := admitJournalSchema(dir, info, exists)
-	if err != nil {
-		return nil, err
-	}
-	if !done {
-		return nil, errors.New("journal: schema changed while acquiring writer lock")
-	}
-	return &Reader{dir: dir, schema: info}, nil
+	return OpenReadOnly(dir)
 }
 
 // Identity parses run.yaml and rejects payload schemas this build does not own.

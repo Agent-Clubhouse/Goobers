@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,14 @@ import (
 
 // ErrClosed is returned by writer operations after Close.
 var ErrClosed = errors.New("journal: run is closed")
+
+// ErrTerminalGenerationChanged means a continuation was checked against an
+// older terminal event than the source currently records.
+var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
+
+// ErrImmutableSourceLockMissing means a continuation source cannot be locked
+// without creating a file inside the source journal.
+var ErrImmutableSourceLockMissing = errors.New("immutable source journal lock is missing")
 
 // Run is a writer over a single run journal. It owns the append handle to
 // events.jsonl and enforces the durability contract: every Append scrubs, writes
@@ -60,6 +69,15 @@ func acquireRunLock(dir string) (*journalLock, error) {
 	return acquireJournalLock(dir, "run")
 }
 
+func acquireExistingRunLock(dir string) (*journalLock, error) {
+	path := filepath.Join(dir, fileLock)
+	lock, err := acquireExistingJournalLockPath(path, dir, "run")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s", ErrImmutableSourceLockMissing, path)
+	}
+	return lock, err
+}
+
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
 // to call with nil (a Run that never acquired one, e.g. a construction path
 // that failed before acquireRunLock ran).
@@ -72,6 +90,7 @@ type config struct {
 	scrubber       Scrubber
 	now            func() time.Time
 	inputIntegrity map[string]apiv1.Integrity
+	inputSource    map[string]string
 	appendObserver func(runID string, seq uint64)
 }
 
@@ -104,6 +123,17 @@ func WithInputIntegrity(grades map[string]apiv1.Integrity) Option {
 		c.inputIntegrity = make(map[string]apiv1.Integrity, len(grades))
 		for name, grade := range grades {
 			c.inputIntegrity[name] = grade
+		}
+	}
+}
+
+// WithInputSource records the caller-provided provenance for immutable input
+// snapshots.
+func WithInputSource(sources map[string]string) Option {
+	return func(c *config) {
+		c.inputSource = make(map[string]string, len(sources))
+		for name, source := range sources {
+			c.inputSource[name] = source
 		}
 	}
 }
@@ -204,6 +234,10 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	// the scrubbed digests.
 	id.Inputs = id.Inputs[:0:0]
 	for _, name := range sortedKeys(inputs) {
+		if name == "" || name == "." || name == ".." || path.Base(name) != name || strings.ContainsAny(name, `/\`) {
+			releaseRunLock(lock)
+			return nil, fmt.Errorf("journal: invalid input name %q", name)
+		}
 		ref, err := writeContent(dir, path.Join(dirInputs, name), inputs[name], cfg.scrubber)
 		if err != nil {
 			releaseRunLock(lock)
@@ -218,7 +252,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 			return nil, fmt.Errorf("journal: snapshot input %q has unknown integrity %q", name, integrity)
 		}
 		ref.Integrity = integrity
-		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref, Integrity: integrity})
+		id.Inputs = append(id.Inputs, InputRef{
+			Name: name, Ref: ref, Source: cfg.inputSource[name], Integrity: integrity,
+		})
 	}
 	if err := writeRunYAML(dir, id); err != nil {
 		releaseRunLock(lock)
@@ -247,11 +283,16 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		lock:     lock,
 		phase:    PhaseRunning,
 	}
-	if err := r.append(Event{Type: EventRunStarted, Status: string(PhaseRunning)}); err != nil {
+	if err := r.append(Event{
+		Type: EventRunStarted, Status: string(PhaseRunning),
+		SourceRunID: id.ContinuedFromRunID, SourceTerminalSeq: id.SourceTerminalSeq,
+		Actor: id.Operator, Target: id.RequestedTarget,
+	}); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
 		return nil, err
 	}
+
 	if err := r.checkpoint(); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
@@ -280,6 +321,88 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		published.observer(published.id.RunID, published.seq)
 	}
 	return published, nil
+}
+
+// ContinuationRequest is the journal-side creation contract for a continuation.
+// Inputs are copied into the new journal and never read from the source journal.
+type ContinuationRequest struct {
+	RunID               string
+	SourceRunID         string
+	ExpectedTerminalSeq uint64
+	Operator            string
+	Target              string
+	Inputs              map[string][]byte
+	InputIntegrity      map[string]apiv1.Integrity
+	InputSource         map[string]string
+}
+
+// CreateContinuation creates a distinct journal from a terminal source
+// generation. The source is opened read-only and is never rewritten.
+func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option) (*Run, error) {
+	if !apiv1.ValidRunID(req.SourceRunID) {
+		return nil, fmt.Errorf("journal: invalid source run id %q", req.SourceRunID)
+	}
+	if !apiv1.ValidRunID(req.RunID) {
+		return nil, fmt.Errorf("journal: invalid continuation run id %q", req.RunID)
+	}
+	if req.ExpectedTerminalSeq == 0 {
+		return nil, errors.New("journal: expected terminal sequence is required")
+	}
+	if strings.TrimSpace(req.Operator) == "" {
+		return nil, errors.New("journal: operator is required")
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		return nil, errors.New("journal: continuation target is required")
+	}
+	sourceDir := filepath.Join(runsDir, req.SourceRunID)
+	// Refuse legacy journals before taking their run lock. Lock acquisition can
+	// create .lock, and OpenRead may migrate, so either operation would mutate a
+	// source whose bytes must remain immutable.
+	if _, err := OpenReadOnly(sourceDir); err != nil {
+		return nil, fmt.Errorf("journal: inspect continuation source: %w", err)
+	}
+	sourceLock, err := acquireExistingRunLock(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: lock continuation source: %w", err)
+	}
+	defer releaseRunLock(sourceLock)
+	reader, err := OpenReadOnly(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open continuation source: %w", err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source phase: %w", err)
+	}
+	if phase != PhaseCompleted && phase != PhaseFailed && phase != PhaseAborted && phase != PhaseEscalated {
+		return nil, fmt.Errorf("journal: continuation source %q is not terminal (phase=%s)", req.SourceRunID, phase)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source events: %w", err)
+	}
+	var terminalSeq uint64
+	for _, event := range events {
+		if event.Type == EventRunFinished {
+			terminalSeq = event.Seq
+		}
+	}
+	if terminalSeq != req.ExpectedTerminalSeq {
+		return nil, fmt.Errorf("%w: source %q is at sequence %d, expected %d", ErrTerminalGenerationChanged, req.SourceRunID, terminalSeq, req.ExpectedTerminalSeq)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
+	}
+	id.RunID = req.RunID
+	id.ContinuedFromRunID = req.SourceRunID
+	id.SourceTerminalSeq = req.ExpectedTerminalSeq
+	id.Operator = strings.TrimSpace(req.Operator)
+	id.RequestedTarget = strings.TrimSpace(req.Target)
+	id.Trigger = Trigger{Kind: TriggerManual, Ref: req.SourceRunID}
+	return Create(runsDir, id, req.Inputs, append(opts,
+		WithInputIntegrity(req.InputIntegrity), WithInputSource(req.InputSource),
+	)...)
 }
 
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are

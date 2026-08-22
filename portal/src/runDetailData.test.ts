@@ -89,6 +89,33 @@ describe("run detail projection", () => {
     expect(events).toEqual(originalEvents);
   });
 
+  it("names a placement's node when one is known and its host otherwise (#3515)", () => {
+    const onANode = event(9, "runner.placement", {
+      stage: "implement",
+      runner: {
+        runner: "linux-large",
+        node: "aks-linux-0001",
+        host: "goobers-stage-implement-4x2vq",
+        os: "linux",
+        pod: "goobers-stage-implement-4x2vq",
+      },
+    });
+    const summary = eventSummary(onANode, undefined, "run-1");
+    expect(summary).toContain("node aks-linux-0001");
+    // The pod name must never also be presented as an unlabelled location.
+    expect(summary).not.toContain("host goobers-stage-implement-4x2vq");
+
+    // A local attempt knows no node. Its hostname is reported as a host, never
+    // promoted to a node it is not.
+    const local = event(10, "runner.placement", {
+      stage: "implement",
+      runner: { runner: "self", host: "build-box-07", os: "darwin" },
+    });
+    const localSummary = eventSummary(local, undefined, "run-1");
+    expect(localSummary).toContain("host build-box-07");
+    expect(localSummary).not.toContain("node ");
+  });
+
   it("retains unsupported schemas through safe generic presentation", () => {
     const unsupported = event(9, "future.recorded", {
       schema: "v2-preview",

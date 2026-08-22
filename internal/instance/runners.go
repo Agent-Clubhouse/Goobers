@@ -110,10 +110,16 @@ const (
 // (decision record D7, docs/design/goobernetes-restrictions.md §2).
 // Restrictions name effects, never mechanisms; growing this set is a product
 // decision recorded there, not a config-side addition. The schema-enum
-// registry guard pins the published schema enum to exactly these consts.
+// registry guard pins the published schema enum to exactly these consts. The
+// vocabulary itself lives in internal/runnercap (Restriction), the leaf both
+// this inventory surface and the DSL 3.0 runsOn.restrictions surface consume,
+// so the two closed lists cannot drift.
 type RunnerRestriction string
 
 // The closed v1 restriction effect list (goobernetes-restrictions.md §2).
+// Spelled as literals — the v_current schema-enum registry guard parses these
+// const literals to pin the published schema enum; TestRunnerRestrictionsMatchSharedVocabulary
+// pins them to the runnercap vocabulary the validation map derives from.
 const (
 	RunnerRestrictionNetworkNone      RunnerRestriction = "network:none"
 	RunnerRestrictionNetworkAllowlist RunnerRestriction = "network:allowlist"
@@ -122,14 +128,15 @@ const (
 	RunnerRestrictionEnvDefaultDeny   RunnerRestriction = "env:default-deny"
 )
 
-// knownRunnerRestrictions is the closed-list membership check for validation.
-var knownRunnerRestrictions = map[RunnerRestriction]bool{
-	RunnerRestrictionNetworkNone:      true,
-	RunnerRestrictionNetworkAllowlist: true,
-	RunnerRestrictionFSReadonly:       true,
-	RunnerRestrictionTmpEphemeral:     true,
-	RunnerRestrictionEnvDefaultDeny:   true,
-}
+// knownRunnerRestrictions is the closed-list membership check for validation,
+// derived from the shared vocabulary.
+var knownRunnerRestrictions = func() map[RunnerRestriction]bool {
+	known := make(map[RunnerRestriction]bool)
+	for _, r := range runnercap.KnownRestrictions() {
+		known[RunnerRestriction(r)] = true
+	}
+	return known
+}()
 
 // KnownRunnerRestrictions returns the closed v1 restriction effect list,
 // sorted for stable diagnostics.

@@ -230,10 +230,25 @@ runtime mystery.
   effects-not-mechanisms rule. The #3278 six-policy proxy shape (443-only egress,
   RFC1918 and 169.254.0.0/16 excepted so it can never pivot to IMDS) is recorded as the
   reference implementation candidate for that layer.
-- **Composition, not competition**: the k8s-infra-shape §5 deny-first posture ("no
-  inbound to stage pods, ever") remains the namespace baseline; restriction-driven
-  allowlists are rendered as the *allow* rules within it, never as a second competing
-  allowlist stack.
+- **Composition is additive, so grants are per-class ONLY** (delivery decision 004 —
+  a measured finding, not a preference): Kubernetes NetworkPolicy has no deny rule and no
+  precedence — effective egress is the union of every policy selecting the pod — so a
+  generic role-wide egress allow makes every narrower per-class policy a no-op. The
+  namespace baseline is exactly `default-deny-all` + `allow-dns` ("no inbound to stage
+  pods, ever" stands); **every** egress grant selects exactly one
+  `goobers.dev/runner-class` label, and the reference base's former generic
+  `allow-stage-egress` policy is removed. SEC-021 strengthen-only is implemented by
+  selecting a stricter CIDR SET for the class — never by adding policies, and **never by
+  prefix subtraction**: narrowing-by-subtraction works only where the sets are
+  prefix-disjoint, and same-provider co-location breaks it (subtracting Copilot from the
+  GitHub grant collapses 10,300 addresses to 60 and drops api.github.com itself — measured;
+  decision 008 accordingly defines the effect as "egress limited to these CIDRs", with
+  endpoint-class exclusion belonging to the #1307 FQDN layer). The
+  `goobers.dev/runner-class` label on every stage pod is **derived by the dispatcher from
+  the resolved restriction set and is non-overridable by workflow, gaggle, or stage input**
+  — asserted at dispatch, refuse-to-create on mismatch; RBAC cannot constrain label
+  values, so an overridable class label is privilege escalation into a broader egress
+  grant (binding on #3513).
 
 ## 7. Who applies what
 

@@ -225,6 +225,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
+		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {
@@ -383,7 +384,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
-		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise"}, desc: "Aggregate to detect"},
+		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "credit-assignment"}, desc: "Aggregate to detect"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
 		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},

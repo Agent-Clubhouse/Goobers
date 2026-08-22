@@ -47,6 +47,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
+	Root         string
 	Runner       *runner.Runner
 	Runners      map[string]*runner.Runner
 	LegacyRunner *runner.Runner
@@ -98,6 +99,10 @@ type schedulerSetup struct {
 	// Interventions is the atomically replaced definition snapshot used by the
 	// daemon's mutation service during config reload.
 	Interventions *interventionDefinitionRegistry
+	// CredentialPlane is the daemon credential service (#3511); set by up.go
+	// after API wiring so config reload can swap its config-derived snapshot
+	// alongside the intervention definitions. Nil outside the `up` daemon.
+	CredentialPlane *daemonCredentialService
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that
@@ -397,9 +402,18 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return err
 		}
-		recoveredClaims, err = ledger.RecoverExpired(time.Now())
-		if err != nil {
-			return err
+		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
+		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
+		// so `goobers up` closes this gate and reaps in its own startup
+		// recovery pass after the rebuild. The one-shot callers (`run`,
+		// `signal`) do the same when `engine:` is configured
+		// (oneShotClaimRecovery); only a pure mode-1 one-shot passes no gate
+		// and keeps reaping here as before.
+		if options.claimRecoveryGate.RecoveryPermitted() {
+			recoveredClaims, err = ledger.RecoverExpired(time.Now())
+			if err != nil {
+				return err
+			}
 		}
 		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
@@ -445,6 +459,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	return &schedulerSetup{
+		Root:              l.Root,
 		Runner:            definitions.Runner,
 		Runners:           definitions.Runners,
 		LegacyRunner:      legacyRunner,
@@ -1124,6 +1139,11 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.Root != "" {
+		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
+			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)
+		}))
+	}
 	// RRQ-1/#1101: the local runner's static advertised capability set, so
 	// dispatch can refuse a run whose gaggle/stages require a capability this
 	// runner does not claim. Wired uniformly for both `up` and `run`.

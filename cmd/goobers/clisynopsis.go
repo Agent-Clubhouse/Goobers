@@ -36,7 +36,7 @@ var synopsisByID = map[string]string{
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]\n                                serve and open the local operations portal\n",
 	"getting-started":        "  goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]\n                                serve and open the guided portal Getting Started walkthrough\n",
-	"run":                    "  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
+	"run":                    "  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
 	"run abort":              "  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted\n",
 	"run cancel":             "  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon\n",
 	"approve":                "  goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  approve a paused or escalated gate\n",

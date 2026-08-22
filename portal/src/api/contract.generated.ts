@@ -30,6 +30,7 @@ export const apiRoutes = {
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
+  "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

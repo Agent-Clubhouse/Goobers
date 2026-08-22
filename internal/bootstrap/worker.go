@@ -31,6 +31,12 @@ type EngineDeps struct {
 	// runs pinned with RunInput.LiveJournal need it; without one such a run's
 	// attempts fail closed as infra.
 	Journal engine.JournalEmitter
+	// Canary is the #2931 fail-closed dispatch canary: the exact-value secret
+	// registry (journal.RegistryScrubber) the activities assert serialized
+	// dispatch envelopes against before executing a stage. Wire the SAME
+	// registry every resolver-issued and credential-plane-minted value is
+	// registered with; nil disables the canary.
+	Canary journal.Scrubber
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -45,6 +51,7 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		Workspaces:      deps.Workspaces,
 		Scrubber:        deps.Scrubber,
 		Journal:         deps.Journal,
+		Canary:          deps.Canary,
 	})
 }
 

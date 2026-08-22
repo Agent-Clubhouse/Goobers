@@ -36,6 +36,13 @@ var projectableEventTypes = map[journal.EventType]bool{
 	journal.EventRefTouched:    true,
 	journal.EventError:         true,
 	journal.EventSpanRecorded:  true,
+	// Placement provenance (#3515) is non-normative for CONFORMANCE but is
+	// projectable: projectable and conformance-normative are different
+	// questions, and span.recorded is the standing precedent — also excluded
+	// from conformance, also projected. Without this entry a repair/backfill
+	// re-projection of any history carrying a placement op fails closed on a
+	// type the engine itself will emit (#3529).
+	journal.EventRunnerPlacement: true,
 }
 
 // spanUnavailableErrorCode marks the EventError a projection appends in place
@@ -186,6 +193,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 	inputIntegrity := map[string]apiv1.Integrity{
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}
+	// The reviewer-goober capability map pinned into the run input at start
+	// (#294): projected as a trusted input so the daemon credential plane
+	// resolves an agentic gate's reviewer grants from the run's pin, never
+	// the currently-served config (PR #3528).
+	if len(proj.GateGooberCapabilities) > 0 {
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = []byte(proj.GateGooberCapabilities)
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
 	}
 	if proj.Item != nil {
 		item := normalizeItemIntegrity(proj.Item)

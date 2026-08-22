@@ -22,7 +22,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -72,7 +72,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -124,7 +124,7 @@ Core commands:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -1503,9 +1503,10 @@ without claiming those local changes landed.
 processed, 1 = business error, 2 = usage/IO error.
 
 ### run
-Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
+       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
