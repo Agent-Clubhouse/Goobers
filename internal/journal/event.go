@@ -68,6 +68,15 @@ const (
 	// of the runner substrate, so the same workflow definition must produce
 	// identical conformance views sandboxed or not.
 	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
+	// EventRunnerPlacement records where a stage attempt physically executed
+	// (goobernetes-architecture.md §7): the resolved runner plus whatever
+	// node/OS/image/pod identity and dispatch timestamps the executing
+	// substrate knows. Like runner.annotation its payload lives entirely
+	// under Runner and it is excluded from conformance (decision record D14:
+	// placement is a substrate fact, never conformance surface — a local
+	// run's journal remains conformant with none of it). The typed payload
+	// is Placement (placement.go).
+	EventRunnerPlacement EventType = "runner.placement"
 	// EventNotificationRequested records exact pre-rendered content before any
 	// sink is attempted.
 	EventNotificationRequested EventType = "notification.requested"
@@ -438,9 +447,10 @@ func (e Event) IsConformanceNormative() bool {
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
 		return false
-	case EventRunnerAnnotation, EventRunnerIsolationPosture:
+	case EventRunnerAnnotation, EventRunnerIsolationPosture, EventRunnerPlacement:
 		// Local-runner lifecycle/substrate bookkeeping lives under runner.*
-		// only; isolation posture must never split the conformance surface.
+		// only; isolation posture and placement provenance must never split
+		// the conformance surface (§3.3, goobernetes-architecture.md §7).
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

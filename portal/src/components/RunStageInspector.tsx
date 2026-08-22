@@ -3,6 +3,7 @@ import { useLiveData } from "../liveData";
 import type {
   ArtifactContent,
   ArtifactMetadata,
+  AttemptPlacement,
   DaemonClient,
   RunEvent,
   StageAttempt,
@@ -69,6 +70,18 @@ function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
 function attemptLabel(attempt: StageAttempt): string {
   const retry = attempt.class === "initial" ? "" : ` (${attempt.class} retry)`;
   return `Attempt ${attempt.number}${retry}`;
+}
+
+// queueWaitMillis derives the dispatch latency from placement's two
+// timestamps, when both are present and parseable — the carrier the scale
+// rung reads (goobernetes-smoke.md §6.3). Local attempts never queue and
+// carry neither timestamp.
+function queueWaitMillis(placement: AttemptPlacement): number | undefined {
+  if (!placement.queuedAt || !placement.podStartedAt) {
+    return undefined;
+  }
+  const wait = Date.parse(placement.podStartedAt) - Date.parse(placement.queuedAt);
+  return Number.isFinite(wait) && wait >= 0 ? wait : undefined;
 }
 
 function repassDecision(
@@ -709,6 +722,22 @@ function AttemptDetail({
         <span>{attemptLabel(attempt)}</span>
         {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
+      {attempt.placement && (
+        <div aria-label="Attempt placement" className="attempt-summary-row">
+          <span className="mono">runner: {attempt.placement.runner}</span>
+          {attempt.placement.node && <span className="mono">node: {attempt.placement.node}</span>}
+          {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
+          {attempt.placement.image && (
+            <span className="mono">image: {attempt.placement.image}</span>
+          )}
+          {attempt.placement.pod && <span className="mono">pod: {attempt.placement.pod}</span>}
+          {queueWaitMillis(attempt.placement) !== undefined && (
+            <span className="mono">
+              queue wait: {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+            </span>
+          )}
+        </div>
+      )}
       {attempt.error && (
         <p className="artifact-load-error">
           {attempt.error.code}

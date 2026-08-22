@@ -1024,6 +1024,7 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,    // attempt 1, infra, journaled by Resume
 		journal.EventStageStarted,     // attempt 2, the crash-driven continuation
+		journal.EventRunnerPlacement,  // attempt 2's placement provenance (#3515; the hand-built attempt 1 predates it)
 		journal.EventArtifactRecorded, // context manifest
 		journal.EventArtifactRecorded, // implement/unpushed-diff.patch (#3366)
 		journal.EventArtifactRecorded, // implement/unpushed-diff.json (#3366)
@@ -1047,8 +1048,11 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 	if implementEvents[3].Attempt != 2 || implementEvents[3].AttemptClass != journal.AttemptInfra {
 		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementEvents[3])
 	}
-	if implementEvents[4].Attempt != 2 || implementEvents[4].AttemptClass != journal.AttemptInfra || implementEvents[4].Type != journal.EventArtifactRecorded {
-		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", implementEvents[4])
+	if implementEvents[4].Attempt != 2 || implementEvents[4].AttemptClass != journal.AttemptInfra || implementEvents[4].Type != journal.EventRunnerPlacement {
+		t.Errorf("resumed-attempt placement = %+v, want attempt=2 class=infra runner.placement", implementEvents[4])
+	}
+	if implementEvents[5].Attempt != 2 || implementEvents[5].AttemptClass != journal.AttemptInfra || implementEvents[5].Type != journal.EventArtifactRecorded {
+		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", implementEvents[5])
 	}
 	for _, want := range []string{"implement/unpushed-diff.patch", "implement/unpushed-diff.json"} {
 		var found bool

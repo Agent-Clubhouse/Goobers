@@ -3609,6 +3609,17 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
+		// Placement provenance (goobernetes-architecture.md §7): journal
+		// where this attempt executes, under runner.* — authoritative but
+		// never conformance surface. Modes 1–2 record the self runner; the
+		// mode-3 dispatcher fills node/pod/queue-wait through this same
+		// event shape (#3513), never a second mechanism. A journal that
+		// cannot be written is fatal (§2.6), same as stage.started above.
+		if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
+			err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
+		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
 		attemptAddendum := instructionAddendum

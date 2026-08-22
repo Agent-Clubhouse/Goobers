@@ -643,6 +643,14 @@ func formatEvent(ev journal.Event) string {
 			s += " stage=" + stage
 		}
 		return s
+	case journal.EventRunnerPlacement:
+		s := prefix
+		for _, key := range []string{"runner", "node", "os", "image", "pod"} {
+			if value, _ := ev.Runner[key].(string); value != "" {
+				s += " " + key + "=" + value
+			}
+		}
+		return s
 	case journal.EventRunStarted, journal.EventRunFinished:
 		if ev.Status != "" {
 			return fmt.Sprintf("%s status=%s", prefix, ev.Status)

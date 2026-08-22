@@ -665,6 +665,15 @@ export const goWireFixtures = {
         "number": 2,
         "class": "policy",
         "status": "success",
+        "placement": {
+          "runner": "self",
+          "node": "aks-linux-0001",
+          "os": "linux",
+          "image": "ghcr.io/goobers/goobers-base:v0.2.0",
+          "pod": "goobers-stage-implement-4x2vq",
+          "queuedAt": "2026-07-18T12:32:56Z",
+          "podStartedAt": "2026-07-18T12:32:56Z"
+        },
         "startedSeq": 4,
         "finishedSeq": 8,
         "startedAt": "2026-07-18T12:32:56Z",

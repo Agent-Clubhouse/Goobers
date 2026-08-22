@@ -256,6 +256,10 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		// Isolation posture is runner-substrate bookkeeping (#1305): the same
 		// definition must produce the same conformance view sandboxed or not.
 		{Type: EventRunnerIsolationPosture, Stage: "implement", Runner: map[string]any{"posture": "enforced"}},
+		// Placement provenance is a substrate fact (goobernetes-architecture
+		// §7): the same definition must produce the same conformance view
+		// wherever its attempts were placed.
+		PlacementEvent("implement", 2, AttemptPolicy, Placement{Runner: PlacementRunnerSelf, OS: "linux"}),
 		{Type: EventNotificationRequested, NotificationRequest: &apiv1.NotificationRequest{NotificationID: "notice-1"}},
 		{Type: EventNotificationReceipt, NotificationReceipt: &apiv1.NotificationReceipt{NotificationID: "notice-1"}},
 	}
@@ -267,7 +271,7 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		if ne.AttemptClass == AttemptInfra {
 			t.Errorf("infra-tagged event leaked through: %+v", ne)
 		}
-		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventGatePaused || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation || ne.Type == EventRunnerIsolationPosture {
+		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventGatePaused || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation || ne.Type == EventRunnerIsolationPosture || ne.Type == EventRunnerPlacement {
 			t.Errorf("excluded event type leaked through: %+v", ne)
 		}
 	}

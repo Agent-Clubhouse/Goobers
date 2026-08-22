@@ -222,6 +222,37 @@ describe("run stage inspector", () => {
     expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
   });
 
+  it("shows placement provenance when the attempt's journal recorded it (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: {
+          runner: "linux-large",
+          node: "aks-linux-0001",
+          os: "linux",
+          pod: "goobers-stage-review-4x2vq",
+          queuedAt: "2026-08-22T10:00:00Z",
+          podStartedAt: "2026-08-22T10:00:09Z",
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("runner: linux-large")).toBeInTheDocument();
+    expect(screen.getByText("node: aks-linux-0001")).toBeInTheDocument();
+    expect(screen.getByText("pod: goobers-stage-review-4x2vq")).toBeInTheDocument();
+    expect(screen.getByText("queue wait: 9s")).toBeInTheDocument();
+  });
+
+  it("omits the placement row for journals recorded before provenance existed", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByLabelText("Attempt placement")).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),
