@@ -134,10 +134,6 @@ func (p NestedAgentPolicy) Validate() error {
 		return fmt.Errorf("nested agent policy: unsupported context mode %q", p.Context.Mode)
 	}
 
-	var supportedEnvelopeSections = []string{
-		"run", "stage", "parentAgent", "objective", "capabilities",
-		"platformPolicy", "completionContract", "cancellation", "budget",
-	}
 	if p.Model.MaxReasoningEffort != "" && reasoningRank(string(p.Model.MaxReasoningEffort)) == 0 {
 		return fmt.Errorf("nested agent policy: unsupported reasoning effort %q", p.Model.MaxReasoningEffort)
 	}
@@ -145,6 +141,11 @@ func (p NestedAgentPolicy) Validate() error {
 		return fmt.Errorf("nested agent policy: platform policy must declare sandbox, cancellation, and completion contract")
 	}
 	return nil
+}
+
+var supportedEnvelopeSections = []string{
+	"run", "stage", "parentAgent", "objective", "capabilities",
+	"platformPolicy", "completionContract", "cancellation", "budget",
 }
 
 // AdmitChild intersects parent authority with the requested policy and profile.
