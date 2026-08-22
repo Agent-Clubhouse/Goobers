@@ -35,7 +35,7 @@ const (
 	statusHighlight            = "\x1b[1m"
 	statusReset                = "\x1b[0m"
 	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
-	statusFleetRowFormat       = "%-19.19s %-6.6s %-15.15s %-10.10s %s"
+	statusFleetRowFormat       = "%-19.19s %-7.7s %-15.15s %-10.10s %s"
 	statusSuccessRateWindow    = 10
 	statusNextFireScheduled    = "scheduled"
 	statusNextFireManual       = "manual"
@@ -273,6 +273,8 @@ type statusWorkflowSummary struct {
 	Gaggle            string           `json:"gaggle"`
 	InFlight          int              `json:"inFlight"`
 	MaxConcurrentRuns int              `json:"maxConcurrentRuns"`
+	DesiredRuns       int              `json:"desiredRuns,omitempty"`
+	AdmissionBlocked  string           `json:"admissionBlocked,omitempty"`
 	LastOutcome       journal.RunPhase `json:"lastOutcome,omitempty"`
 	LastOutcomeAt     *time.Time       `json:"lastOutcomeAt,omitempty"`
 	TerminalRuns      int              `json:"terminalRuns"`
@@ -311,6 +313,7 @@ func buildStatusFleetSummary(
 	workflows []apiv1.Workflow,
 	runs []runSummary,
 	lastEvals map[localscheduler.WorkflowIdentity]time.Time,
+	refill map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus,
 	now time.Time,
 	loc *time.Location,
 ) (statusFleetSummary, error) {
@@ -352,6 +355,12 @@ func buildStatusFleetSummary(
 			Gaggle:            def.Spec.Gaggle,
 			MaxConcurrentRuns: maxConcurrent,
 			NextFire:          nextFire,
+		}
+		if occupancy, ok := refill[identity]; ok {
+			workflowSummary.DesiredRuns = int(occupancy.DesiredRuns)
+			if occupancy.AdmissionBlocked {
+				workflowSummary.AdmissionBlocked = occupancy.BlockingCondition
+			}
 		}
 
 		var terminal []runSummary
@@ -447,7 +456,7 @@ func statusRunOutcomeTime(run runSummary) time.Time {
 
 func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now time.Time) {
 	pf(stdout, "Workflow summary (success rate over last %d terminal runs):\n", summary.SuccessRateWindow)
-	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "ACTIVE", "LAST (AGO)", "SUCCESS", "NEXT")
+	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "A/D/MAX", "LAST (AGO)", "SUCCESS", "NEXT")
 	nameCounts := make(map[string]int, len(summary.Workflows))
 	for _, workflow := range summary.Workflows {
 		nameCounts[workflow.Workflow]++
@@ -471,13 +480,23 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		}
 		pf(stdout, statusFleetRowFormat+"\n",
 			name,
-			fmt.Sprintf("%d/%d", workflow.InFlight, workflow.MaxConcurrentRuns),
+			statusConcurrencyText(workflow),
 			last,
 			success,
 			next,
 		)
+		if workflow.AdmissionBlocked != "" {
+			pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
+		}
 	}
 	pf(stdout, "\n")
+}
+
+func statusConcurrencyText(workflow statusWorkflowSummary) string {
+	if workflow.DesiredRuns > 0 {
+		return fmt.Sprintf("%d/%d/%d", workflow.InFlight, workflow.DesiredRuns, workflow.MaxConcurrentRuns)
+	}
+	return fmt.Sprintf("%d/-/%d", workflow.InFlight, workflow.MaxConcurrentRuns)
 }
 
 func formatSummaryAge(now, activity time.Time) string {
@@ -740,12 +759,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	loadRuns := func() ([]runSummary, error) {
 		return listStatusRuns(context.Background(), reads)
 	}
-	loadFleetSummary := func(runs []runSummary, now time.Time) (statusFleetSummary, error) {
+	loadFleetSummary := func(
+		runs []runSummary,
+		schedulerStatus readservice.SchedulerStatus,
+		now time.Time,
+	) (statusFleetSummary, error) {
 		lastEvals, err := statusWorkflowLastEvals(l)
 		if err != nil {
 			return statusFleetSummary{}, err
 		}
-		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
+		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
+		for _, occupancy := range schedulerStatus.RefillOccupancy {
+			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
+		}
+		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, refill, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
@@ -770,16 +797,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		} else {
 			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		}
-		summary, err := loadFleetSummary(runs, now)
-		if err != nil {
-			return "", err
-		}
-		renderStatusFleetSummary(&text, summary, now)
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
+			summary, summaryErr := loadFleetSummary(runs, status, now)
+			if summaryErr != nil {
+				return "", summaryErr
+			}
+			renderStatusFleetSummary(&text, summary, now)
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
 			text.WriteString(refusedWorkflowStatusLines(status))
+		} else {
+			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
+			if summaryErr != nil {
+				return "", summaryErr
+			}
+			renderStatusFleetSummary(&text, summary, now)
 		}
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
@@ -839,7 +872,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	var fleetSummary *statusFleetSummary
 	if supportsWatch {
-		summary, err := loadFleetSummary(allRuns, now)
+		status, statusErr := reads.SchedulerStatus(context.Background())
+		if statusErr != nil {
+			status = readservice.SchedulerStatus{}
+		}
+		summary, err := loadFleetSummary(allRuns, status, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2

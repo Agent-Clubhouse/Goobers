@@ -150,8 +150,14 @@ function WorkflowDetailWorkspace({
           <div>
             <dt>Concurrency</dt>
             <dd>
-              {workflow.concurrency.activeRuns} active /{" "}
-              {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.activeRuns} active
+              {workflow.concurrency.desiredRuns !== undefined
+                ? ` / ${workflow.concurrency.desiredRuns} desired`
+                : ""}{" "}
+              / {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.admissionBlocked && (
+                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+              )}
             </dd>
           </div>
           <div>
@@ -375,6 +381,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
 
 function formatReadiness(readiness: ReadinessConditions): string {
   const limits = [
+    ["desired runs", readiness.desiredConcurrentRuns],
     ["runs", readiness.maxConcurrentRuns],
     ["runs/hour", readiness.maxRunsPerHour],
     ["runs/day", readiness.maxRunsPerDay],
