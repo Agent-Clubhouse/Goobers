@@ -427,7 +427,7 @@
         "usage": { "$ref": "#/$defs/agentUsage" },
         "results": { "type": "array", "items": { "$ref": "#/$defs/ref" } },
         "dependsOn": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "fidelity": { "type": "string" }
+        "fidelity": { "type": "string", "enum": ["full", "partial", "none"] }
       }
     },
     "agentUsage": {
