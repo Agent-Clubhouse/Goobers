@@ -15,7 +15,7 @@ func TestTriggerEvaluationsRoundTrip(t *testing.T) {
 		alpha: time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC),
 		beta:  time.Date(2026, time.July, 20, 9, 30, 0, 0, time.UTC),
 	}
-	if err := writeTriggerEvaluations(dir, evaluations); err != nil {
+	if err := writeTriggerEvaluations(dir, nil, evaluations); err != nil {
 		t.Fatal(err)
 	}
 

@@ -90,6 +90,15 @@ github.com/goobers/goobers/internal/workflow/v_current.newFeatureRegistryAgainst
 github.com/goobers/goobers/internal/workflow/v_current.validateFeatureRegistryEvolution # Feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_next.newFeatureRegistryAgainstReleased # Next-interpreter feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_next.validateFeatureRegistryEvolution # Next-interpreter feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
+github.com/goobers/goobers/internal/workflow/v_3_0.dslVersionLevel # 3.0-interpreter copy of the v_next per-version level lookup, reachable only through the release-gate evolution validation the tagged-baseline tests drive (#3505).
+github.com/goobers/goobers/internal/workflow/v_3_0.CheckGaggleFeatureSupport # 3.0-interpreter Gaggle policy API retained for versioned-interpreter parity and exercised by preview-policy tests (#3505, mirrors the v_next entry).
+github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpreter feature lookup retained as part of the independently versioned interpreter API (#3505).
+github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_next entry).
+github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_next entry).
+github.com/goobers/goobers/internal/workflow/v_3_0.RepoFromCoverage # WF022 coverage projection consumed by the dslmigrate --to 3.0 target (#3516) and pinned today by the golden discriminator fixture (#3505).
+github.com/goobers/goobers/internal/workflow/v_3_0.DerivedCapabilities # D7 derived-requirements seam the constraint solve consumes (#3506); pinned by derivation tests until that wave lands (#3505).
+github.com/goobers/goobers/internal/workflow/v_3_0.EffectiveCapabilities # D7 derived-union seam the constraint solve consumes (#3506); pinned by derivation tests until that wave lands (#3505).
+github.com/goobers/goobers/internal/workflow/v_3_0.EffectiveRunsOn # §2 gaggle-floor merge seam the constraint solve consumes (#3506); pinned by the os-unspecified acceptance test until that wave lands (#3505).
 github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
 github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
@@ -161,9 +170,7 @@ github.com/goobers/goobers/internal/journal.encodeCompleteness # Cross-runner co
 github.com/goobers/goobers/internal/journal.encodeOutputs # Cross-runner conformance helper (stage Outputs) retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
-github.com/goobers/goobers/internal/journal.Reader.Schema # Journal schema inspection accessor required by the persisted-schema compatibility contract and exercised by migration tests.
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.

@@ -61,6 +61,51 @@ func CheckPushBoundaries(def Definition, gaggleRequiredCapabilities []string) []
 	return interpreter.checkPushBoundaries(def, gaggleRequiredCapabilities)
 }
 
+// CheckRunsOnOSTokens reports os=* capability tokens in a document — CAP004
+// (dsl-3.0.md D12). Only the 3.0 interpreter can produce findings; earlier
+// versions have no runsOn surface to scan.
+func CheckRunsOnOSTokens(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkRunsOnOSTokens(def, gaggleRunsOn)
+}
+
+// CheckRunsOnRestrictions reports restriction tokens outside the closed v1
+// effect list, with did-you-mean suggestions — CAP005 (dsl-3.0.md §5).
+func CheckRunsOnRestrictions(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkRunsOnRestrictions(def, gaggleRunsOn)
+}
+
+// CheckRunsOnPlacement reports structural runsOn problems on a 3.0 document
+// (invalid os enum, malformed quantity, gaggle-vs-stage OS conflict, removed
+// 2.0 surface) — and, on a pre-3.0 document, any use of the 3.0-only surface
+// (runsOn/repoFrom/commitsRepo, or a gaggle runsOn floor), which those frozen
+// interpreters must never learn.
+func CheckRunsOnPlacement(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkRunsOnPlacement(def, gaggleRunsOn)
+}
+
+// CheckRepoHandoffs reports undeclared, mis-covered, or dead repoFrom
+// repo-handoff declarations — WF022 (dsl-3.0.md §4), computed as reaching
+// definitions over the stage graph.
+func CheckRepoHandoffs(def Definition) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkRepoHandoffs(def)
+}
+
 // CheckGateParameters reports invalid built-in gate parameters.
 func CheckGateParameters(def Definition) []string {
 	interpreter, err := interpreterForDefinition(def)

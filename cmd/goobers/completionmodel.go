@@ -223,6 +223,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
+		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {

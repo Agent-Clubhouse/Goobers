@@ -345,6 +345,44 @@ spec:
                     minLength: 1
                     type: string
                 type: object
+              runsOn:
+                description: |-
+                  RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
+                  toolchain capability tags, and required runner restrictions that merge
+                  into every stage of every workflow in this gaggle — capabilities and
+                  restrictions union with the stage's own; an OS conflict between gaggle
+                  and stage is a compile error, never a silent override. No quantities at
+                  gaggle level. It is the 3.0 successor of RequiredCapabilities above and
+                  activates only for gaggles whose workflows are pinned to DSL 3.0; the
+                  3.0 interpreter refuses a gaggle that still declares
+                  RequiredCapabilities, and earlier interpreters refuse this field.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities union into every stage's runsOn.capabilities. Same open
+                      tag grammar (internal/runnercap); os=* tokens are rejected (CAP004).
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  os:
+                    description: |-
+                      OS every stage of this gaggle requires. Enum, same vocabulary as a
+                      stage's runsOn.os.
+                    enum:
+                    - linux
+                    - windows
+                    - macOS
+                    type: string
+                  restrictions:
+                    description: |-
+                      Restrictions union into every stage's runsOn.restrictions. Closed v1
+                      effect list; unknown tokens are rejected with a suggestion (CAP005).
+                    items:
+                      type: string
+                    maxItems: 8
+                    type: array
+                type: object
               sandbox:
                 description: |-
                   Sandbox overrides the instance-wide isolation posture for this gaggle's

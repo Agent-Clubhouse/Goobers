@@ -30,8 +30,8 @@ import (
 // internal/workflow/v_current/frozen_patch_test.go).
 
 // snapshotCapabilityUse mirrors CapabilityUse field-for-field, including the
-// unexported conditional machinery, so no requirement surface can change
-// without moving the rendered bytes.
+// unexported conditional machinery and the DSL-version window (#3504), so no
+// requirement surface can change without moving the rendered bytes.
 type snapshotCapabilityUse struct {
 	Capability  capability.Capability `json:"capability"`
 	Consequence string                `json:"consequence"`
@@ -40,6 +40,8 @@ type snapshotCapabilityUse struct {
 	FlagValue   string                `json:"flagValue,omitempty"`
 	AnyFlags    []string              `json:"anyFlags,omitempty"`
 	UnlessFlags []string              `json:"unlessFlags,omitempty"`
+	SinceDSL    string                `json:"sinceDSL,omitempty"`
+	UntilDSL    string                `json:"untilDSL,omitempty"`
 }
 
 // snapshotCommand mirrors Command plus its manifest key.
@@ -48,6 +50,8 @@ type snapshotCommand struct {
 	ResultFile         string                  `json:"resultFile,omitempty"`
 	MutatesClaimLedger bool                    `json:"mutatesClaimLedger,omitempty"`
 	ClaimMutationFlags []string                `json:"claimMutationFlags,omitempty"`
+	SinceDSL           string                  `json:"sinceDSL,omitempty"`
+	UntilDSL           string                  `json:"untilDSL,omitempty"`
 	Capabilities       []snapshotCapabilityUse `json:"capabilities"`
 }
 
@@ -73,6 +77,8 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 				FlagValue:   use.flagValue,
 				AnyFlags:    use.anyFlags,
 				UnlessFlags: use.unlessFlags,
+				SinceDSL:    use.sinceDSL,
+				UntilDSL:    use.untilDSL,
 			})
 		}
 		entries = append(entries, snapshotCommand{
@@ -80,6 +86,8 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 			ResultFile:         entry.ResultFile,
 			MutatesClaimLedger: entry.mutatesClaimLedger,
 			ClaimMutationFlags: entry.claimMutationFlags,
+			SinceDSL:           entry.sinceDSL,
+			UntilDSL:           entry.untilDSL,
 			Capabilities:       uses,
 		})
 	}
@@ -266,6 +274,29 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 			entry := table["backlog-query"]
 			entry.claimMutationFlags = []string{"claim"}
 			table["backlog-query"] = entry
+		}},
+		// The #3504 version-window surface: gating an element to a DSL
+		// version window IS a requirement change (for the versions inside
+		// the window) and must be as visible to the byte guard as any other.
+		{"capability use gated to a later DSL version", func(table map[string]Command) {
+			entry := table["backlog-dedupe"]
+			entry.Capabilities[0].sinceDSL = "3.0"
+			table["backlog-dedupe"] = entry
+		}},
+		{"capability use retired at a DSL version", func(table map[string]Command) {
+			entry := table["backlog-dedupe"]
+			entry.Capabilities[0].untilDSL = "3.0"
+			table["backlog-dedupe"] = entry
+		}},
+		{"command gated to a later DSL version", func(table map[string]Command) {
+			entry := table["backlog-dedupe"]
+			entry.sinceDSL = "3.0"
+			table["backlog-dedupe"] = entry
+		}},
+		{"command retired at a DSL version", func(table map[string]Command) {
+			entry := table["backlog-dedupe"]
+			entry.untilDSL = "3.0"
+			table["backlog-dedupe"] = entry
 		}},
 	}
 

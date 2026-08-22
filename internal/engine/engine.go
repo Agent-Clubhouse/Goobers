@@ -165,8 +165,13 @@ func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
 	return result, err
 }
 
+// scheduledRunWorkflowIDSuffix distinguishes a scheduled run's child workflow
+// id from its Schedule action claim id. The claim liveness probe
+// (liveness.go) inverts this mapping, so both sides share the constant.
+const scheduledRunWorkflowIDSuffix = "-run"
+
 func scheduledRunWorkflowID(claimID string) string {
-	return claimID + "-run"
+	return claimID + scheduledRunWorkflowIDSuffix
 }
 
 // RunScheduled binds a timestamped schedule claim to the run and records the

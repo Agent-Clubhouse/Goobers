@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -367,11 +368,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	// DS6 (distributed-state-and-coordination.md §10): the gate keeps every
+	// expired-claim reap — setup's included — a no-op until the renewal set
+	// has been rebuilt from ledger + liveness below.
+	claimRecoveryGate := localscheduler.NewRecoveryGate()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
 		withStartupProgress(func(message string) {
 			pf(stdout, "startup: %s\n", message)
 		}),
+		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
 		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
@@ -480,9 +486,34 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// The write planes (#3509, distributed-state-and-coordination.md §7):
+	// claims over the same ledger + flock the CLI claimants use, triggers
+	// through the same scheduler path the pending-triggers sweep dispatches,
+	// HITL resolution over the intervention machinery. The file seams remain
+	// for local/mode-1 callers.
+	triggerPlane := newDaemonTriggerService()
+	// The credential plane (#3511, distributed-state-and-coordination.md §11,
+	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
+	// stage start through the same capability-gated machinery the local
+	// runner's executors resolve through. The snapshot is replaced on config
+	// reload (see configreload.go) so a reloaded gaggle's grants apply.
+	//
+	// Wired on every daemon, but RULED fail-closed (PR #3528 finding 2): the
+	// route itself requires an authenticated POD principal unconditionally —
+	// on this file's loopback null-auth posture (no api.auth block, so no
+	// authenticator below) every resolve answers a typed 403 rather than
+	// handing raw secret material to any local caller. Local modes never need
+	// the plane; their resolution stays in-process via buildCredentialEnv.
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
+	setup.CredentialPlane = credentialPlane
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithCredentialService(credentialPlane),
 	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
@@ -502,7 +533,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(authenticator))
+		// Pod-to-daemon authn (#3509 §14 open point, resolved as per-run
+		// minted bearers): chain the pod-token verifier in front of the human
+		// OIDC authenticator. The registry is daemon-local (sound under DS1);
+		// the mode-3 dispatcher mints into it at stage dispatch (#3482).
+		podTokens := podauth.NewRegistry()
+		chained, err := podauth.NewAuthenticator(podTokens, authenticator)
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -519,6 +560,28 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
+	// any reap is permitted — DS6's load-bearing ordering
+	// (distributed-state-and-coordination.md §10): this process's in-memory
+	// run tracking is empty right now, but a distributed run dispatched by
+	// the previous daemon process is still executing on the engine, and its
+	// claims must be renewed — not reaped — across the restart. Only a
+	// renewal pass whose ledger write completed opens the gate; a failed pass
+	// leaves it closed and the periodic tick below retries both halves.
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	if err != nil {
+		pf(stderr, "error: build claim liveness probe: %v\n", err)
+		return 1
+	}
+	defer closeClaimLiveness()
+	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+		if !isJournaledClaimsLockTimeout(renewErr) {
+			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+		}
+	} else if probeErr != nil {
+		pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
+	}
+
 	// Claim recovery (#131/#793): released once now and periodically thereafter
 	// to recover expired leases and claim cleanup deferred by a terminal
 	// finalizer's bounded lock timeout — before the scheduler starts admitting
@@ -530,7 +593,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -640,6 +703,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 	interventions.AttachScheduler(sched)
+	triggerPlane.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -763,11 +827,15 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recovery sweep above already ran BEFORE resume tracked anything, on the
 	// prior process's now possibly-stale leases, so a resumed run's claim
 	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. Best-effort,
+	// interval right when a restart just made that most likely. The resumed
+	// runs are tracked by the registry now, so the ledger-driven pass covers
+	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
-	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
-		pf(stdout, "warning: renew resumed claims: %v\n", err)
+	if len(resumed) > 0 {
+		if _, _, err := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+			pf(stdout, "warning: renew resumed claims: %v\n", err)
+		}
 	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
@@ -864,17 +932,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
-				// Renew before reaping (#2014): both run in the same tick, and a
-				// still-tracked run's lease must be pushed back into the future
+				// Renew before reaping (#2014/DS6): both run in the same tick,
+				// and a live run's lease must be pushed back into the future
 				// before recoverExpiredClaims below checks it against now — doing
-				// it in the other order would let a run this process is still
-				// actively driving get reaped on the exact tick its lease was due
-				// to be renewed, on nothing worse than ordinary ticker jitter.
-				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				// it in the other order would let a run that is still live get
+				// reaped on the exact tick its lease was due to be renewed, on
+				// nothing worse than ordinary ticker jitter.
+				// rebuildClaimRenewalSet also self-heals DS6's startup ordering:
+				// if the startup rebuild failed (gate still closed), a completed
+				// pass here IS the rebuild — recovery below is permitted from
+				// here on.
+				probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate)
 				if isJournaledClaimsLockTimeout(renewErr) {
 					claimRenewErrors.report(nil)
-				} else {
+				} else if renewErr != nil {
 					claimRenewErrors.report(renewErr)
+				} else {
+					claimRenewErrors.report(probeErr)
 				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {

@@ -10,7 +10,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/scheduleexpr"
 )
 
@@ -92,7 +91,7 @@ func overPrivilegeWarnings(task apiv1.Task) []string {
 	if !isShellStage(task) || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
 		return nil
 	}
-	required := providerstage.RequiredCapabilities(task.Run.Command[1], task.Run.Command[2:])
+	required := builtinManifest.RequiredCapabilities(task.Run.Command[1], task.Run.Command[2:])
 	if len(required) == 0 {
 		return nil
 	}
