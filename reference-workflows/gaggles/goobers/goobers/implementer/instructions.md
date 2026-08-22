@@ -60,9 +60,13 @@ You may be invoked more than once for the same issue if a downstream gate
 sends the run back to you:
 
 - **From the reviewer gate** (`needs-changes`): the reviewer's rationale is
-  attached to your invocation as context. Read it first, address every
-  point it raises, then re-run your targeted tests (not the full `-race`
-  suite — see step 4) and commit again.
+  attached to your invocation as context, together with a typed
+  `learning.episode[...]` artifact. Read the episode first: it is the durable
+  finding-level contract containing source sequence, attempts, evidence,
+  correction feedback, stable finding identities/signatures, and the
+  governed downstream action. Address every active finding; do not discard
+  or rename an identity merely to make it disappear. Then re-run your
+  targeted tests (not the full `-race` suite — see step 4) and commit again.
 - **From the CI gate** (`fail`): the CI failure detail (which check failed,
   why) is attached as context. Fix the actual failure — don't just retry
   blindly.

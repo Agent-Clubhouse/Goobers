@@ -88,6 +88,7 @@ func TestTelemetryQueryAggregateFilter(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
+
 	var got candidateFindingsArtifact
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatal(err)
@@ -125,6 +126,7 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 		start.Add(-time.Minute),
 		"core",
 		telemetryAggregateValues{telemetryAggregateCreditAssignment},
+		nil,
 		thresholds,
 	)
 	if err != nil {
@@ -162,6 +164,20 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 		t.Fatal(err)
 	}
 	validateCandidateFindings(t, data)
+}
+
+func TestTelemetryQueryLearningActionFilterIsExplicitAndRepeatable(t *testing.T) {
+	var actions telemetryLearningActionValues
+	if err := actions.Set("code-issue"); err != nil {
+		t.Fatal(err)
+	}
+	if err := actions.Set("code-issue"); err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 1 || !actions.includes("code-issue") ||
+		actions.includes("instruction-or-skill") {
+		t.Fatalf("learning actions = %v", actions)
+	}
 }
 
 func TestTelemetryQueryScopesFindingsToRunGaggle(t *testing.T) {
@@ -274,11 +290,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, thresholds)
+	first, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, thresholds)
+	second, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,6 +431,7 @@ func TestTelemetryQueryRejectsInvalidTypedFlags(t *testing.T) {
 		{name: "unknown flag", args: []string{"--bogus"}},
 		{name: "nonpositive window", args: []string{"--window", "0s"}},
 		{name: "unknown aggregate", args: []string{"--aggregate", "latency"}},
+		{name: "unknown learning action", args: []string{"--learning-action", "model-weight-update"}},
 		{name: "malformed threshold", args: []string{"--threshold", "min-samples"}},
 		{name: "unknown threshold", args: []string{"--threshold", "mystery=1"}},
 		{name: "nonpositive count", args: []string{"--threshold", "min-samples=0"}},

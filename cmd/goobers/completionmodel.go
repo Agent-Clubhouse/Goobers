@@ -384,9 +384,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
-		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "credit-assignment"}, desc: "Aggregate to detect"},
+		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "workflow-untriggered", "stage-unreached", "credit-assignment", "learning-episode"}, desc: "Aggregate to detect"},
+		{name: "learning-action", takesArg: true, values: []string{"instruction-or-skill", "workflow-or-gate", "targeted-test-mapping", "code-issue"}, desc: "Governed learning action to include"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
-		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "format", takesArg: true, values: []string{"candidate-findings", "effective-version-efficacy", "tutor-live-verification"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -97,6 +99,7 @@ const (
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
 	telemetryAggregateCreditAssignment    telemetryAggregate = "credit-assignment"
+	telemetryAggregateLearningEpisode     telemetryAggregate = "learning-episode"
 )
 
 type telemetryAggregateValues []telemetryAggregate
@@ -107,6 +110,33 @@ func (v *telemetryAggregateValues) String() string {
 		values[i] = string(aggregate)
 	}
 	return strings.Join(values, ",")
+}
+
+type telemetryLearningActionValues []string
+
+func (v *telemetryLearningActionValues) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *telemetryLearningActionValues) Set(raw string) error {
+	switch raw {
+	case learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+		learning.ActionTargetedTest, learning.ActionCodeIssue:
+	default:
+		return fmt.Errorf(
+			"unknown learning action %q (allowed: %s, %s, %s, %s)",
+			raw, learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+			learning.ActionTargetedTest, learning.ActionCodeIssue,
+		)
+	}
+	if !slices.Contains(*v, raw) {
+		*v = append(*v, raw)
+	}
+	return nil
+}
+
+func (v telemetryLearningActionValues) includes(action string) bool {
+	return len(v) == 0 || slices.Contains(v, action)
 }
 
 func (v *telemetryAggregateValues) Set(raw string) error {
@@ -128,8 +158,10 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateStageUnreached
 	case string(telemetryAggregateCreditAssignment):
 		aggregate = telemetryAggregateCreditAssignment
+	case string(telemetryAggregateLearningEpisode), "learning-episodes":
+		aggregate = telemetryAggregateLearningEpisode
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -174,6 +206,10 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateCreditAssignment:
 			if kind == rollup.FindingCreditAssignment {
+				return true
+			}
+		case telemetryAggregateLearningEpisode:
+			if kind == rollup.FindingLearningEpisode {
 				return true
 			}
 		}
@@ -267,17 +303,24 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MinCreditFailureShare = rate
+	case "min-learning-episode-runs", "minLearningEpisodeRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinLearningEpisodeRuns = n
 	default:
 		return fmt.Errorf("unknown threshold %q", key)
 	}
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
-	"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n" +
+	"With no --aggregate, all supported aggregates are evaluated. --learning-action\n" +
+	"filters learning-episode findings to governed action families. Threshold rates\n" +
 	"are fractions from 0 through 1; count thresholds are positive integers.\n\n" +
 	"--format effective-version-efficacy (requires --workflow) instead assesses\n" +
 	"the workflow's most recent EffectiveVersion transition — the version-\n" +
@@ -302,10 +345,12 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)")
+	var learningActions telemetryLearningActionValues
+	fs.Var(&learningActions, "learning-action", "learning action to include; repeat for multiple (instruction-or-skill, workflow-or-gate, targeted-test-mapping, code-issue)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share, min-learning-episode-runs)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -445,7 +490,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
 		return 1
 	}
-	result, err := detectCandidateFindingsWithCredit(db, creditStore, *window, since, queryGaggle, aggregates, thresholds)
+	result, err := detectCandidateFindingsWithCredit(db, creditStore, *window, since, queryGaggle, aggregates, learningActions, thresholds)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -484,6 +529,7 @@ func detectCandidateFindingsWithCredit(
 	since time.Time,
 	gaggle string,
 	aggregates telemetryAggregateValues,
+	learningActions telemetryLearningActionValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
 	if thresholds == (rollup.Thresholds{}) {
@@ -549,6 +595,10 @@ func detectCandidateFindingsWithCredit(
 	filtered := make([]rollup.Finding, 0, len(findings))
 	for _, finding := range findings {
 		if !aggregates.includes(finding.Kind) {
+			continue
+		}
+		if finding.Kind == rollup.FindingLearningEpisode &&
+			!learningActions.includes(finding.RecommendedAction) {
 			continue
 		}
 		if finding.FlaggedRuns == nil {
