@@ -17,6 +17,7 @@ const PlacementRunnerSelf = "self"
 const (
 	placementKeyRunner       = "runner"
 	placementKeyNode         = "node"
+	placementKeyHost         = "host"
 	placementKeyOS           = "os"
 	placementKeyImage        = "image"
 	placementKeyPod          = "pod"
@@ -39,9 +40,22 @@ type Placement struct {
 	// Runner is the resolved runners-inventory entry name;
 	// PlacementRunnerSelf for the daemon's own host.
 	Runner string `json:"runner"`
-	// Node is the cluster node (or, for self placement, the host) the
-	// attempt executed on, when known.
+	// Node is the CLUSTER NODE the attempt executed on, and nothing else: it
+	// is filled only from an authority that actually knows one — the
+	// deployment's downward API (GOOBERS_RUNNER_NODE) today, the mode-3
+	// dispatcher tomorrow. It is deliberately NOT defaulted to the process
+	// hostname: inside a pod the hostname is the POD name, so defaulting would
+	// pollute the one field the dispatcher fills with real node names, and
+	// every "which node ran this?" query would silently answer with pod names.
+	// Absent means the substrate does not know its node.
 	Node string `json:"node,omitempty"`
+	// Host is the executing process's own hostname — the honest label for
+	// what os.Hostname() returns, which on a bare host is the machine and
+	// inside a pod is the pod. Recorded whenever the substrate can see it,
+	// alongside (not instead of) Node, so a reader can always tell the two
+	// apart. Readers that want "where did this run" show Node when present
+	// and fall back to Host.
+	Host string `json:"host,omitempty"`
 	// OS is the GOOS of the executing substrate.
 	OS string `json:"os,omitempty"`
 	// Image is the container image reference the attempt ran under, when the
@@ -73,6 +87,7 @@ func PlacementEvent(stage string, attempt int, class AttemptClass, p Placement) 
 		}
 	}
 	setNonEmpty(placementKeyNode, p.Node)
+	setNonEmpty(placementKeyHost, p.Host)
 	setNonEmpty(placementKeyOS, p.OS)
 	setNonEmpty(placementKeyImage, p.Image)
 	setNonEmpty(placementKeyPod, p.Pod)
@@ -106,6 +121,7 @@ func PlacementFromEvent(e Event) (Placement, bool) {
 	p := Placement{
 		Runner:       str(placementKeyRunner),
 		Node:         str(placementKeyNode),
+		Host:         str(placementKeyHost),
 		OS:           str(placementKeyOS),
 		Image:        str(placementKeyImage),
 		Pod:          str(placementKeyPod),

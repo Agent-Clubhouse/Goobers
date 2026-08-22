@@ -463,6 +463,7 @@ func newWireFixtures() wireFixtures {
 					Placement: &journal.Placement{
 						Runner:       "self",
 						Node:         "aks-linux-0001",
+						Host:         "goobers-stage-implement-4x2vq",
 						OS:           "linux",
 						Image:        "ghcr.io/goobers/goobers-base:v0.2.0",
 						Pod:          "goobers-stage-implement-4x2vq",

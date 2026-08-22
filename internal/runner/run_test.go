@@ -1931,7 +1931,6 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		journal.EventRunStarted,
 		journal.EventRefTouched, // the run branch, journaled up front (#133)
 		journal.EventStageStarted,
-		journal.EventRunnerPlacement,  // placement provenance, excluded from conformance (#3515)
 		journal.EventArtifactRecorded, // runner-assembled context manifest
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,
@@ -4551,9 +4550,8 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	wantTypes := []journal.EventType{
 		journal.EventStageStarted, // attempt 1, pre-crash
 		journal.EventArtifactRecorded,
-		journal.EventStageFinished,   // attempt 1, infra, journaled by Resume
-		journal.EventStageStarted,    // attempt 2, the crash-driven continuation
-		journal.EventRunnerPlacement, // attempt 2's placement provenance (#3515; the hand-built attempt 1 predates it)
+		journal.EventStageFinished, // attempt 1, infra, journaled by Resume
+		journal.EventStageStarted,  // attempt 2, the crash-driven continuation
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished, // attempt 2, the crash-driven continuation, success
 	}
@@ -4574,21 +4572,18 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	if stageEvents[3].Attempt != 2 || stageEvents[3].AttemptClass != journal.AttemptInfra {
 		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", stageEvents[3])
 	}
-	if stageEvents[4].Attempt != 2 || stageEvents[4].AttemptClass != journal.AttemptInfra || stageEvents[4].Type != journal.EventRunnerPlacement {
-		t.Errorf("resumed-attempt placement = %+v, want attempt=2 class=infra runner.placement", stageEvents[4])
+	if stageEvents[4].Attempt != 2 || stageEvents[4].AttemptClass != journal.AttemptInfra || stageEvents[4].Type != journal.EventArtifactRecorded {
+		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", stageEvents[4])
 	}
-	if stageEvents[5].Attempt != 2 || stageEvents[5].AttemptClass != journal.AttemptInfra || stageEvents[5].Type != journal.EventArtifactRecorded {
-		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", stageEvents[5])
-	}
-	if stageEvents[6].Attempt != 2 || stageEvents[6].AttemptClass != journal.AttemptInfra || stageEvents[6].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", stageEvents[6])
+	if stageEvents[5].Attempt != 2 || stageEvents[5].AttemptClass != journal.AttemptInfra || stageEvents[5].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", stageEvents[5])
 	}
 
 	// Every post-crash event for "implement" (the interrupted marker AND the
-	// crash-driven continuation's own started/placement/context/finished) is
-	// excluded from the conformance set (§3.3) — confirm IsConformanceNormative
-	// agrees for all of them, not just the interrupted marker.
-	for i := 2; i <= 6; i++ {
+	// crash-driven continuation's own started/context/finished) is excluded
+	// from the conformance set (§3.3) — confirm IsConformanceNormative agrees
+	// for all four, not just the interrupted marker.
+	for i := 2; i <= 5; i++ {
 		if stageEvents[i].IsConformanceNormative() {
 			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3) — only the original attempt=1 events may be normative for a crashed stage", i, stageEvents[i])
 		}

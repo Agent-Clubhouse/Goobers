@@ -478,3 +478,45 @@ func TestConformanceViewOnRealJournal(t *testing.T) {
 		t.Error("expected a ref.touched event in the view")
 	}
 }
+
+// TestRunnerNamespaceIsExcludedWithoutEnumeration: the runner.* exclusion is a
+// NAMESPACE rule, not a hand-maintained list. IsConformanceNormative's default
+// arm fails OPEN (returns true), so a runner.* type added later without a
+// matching switch case would silently enter the conformance surface — exactly
+// the divergence §3.3 says the namespace can never cause. A type invented here,
+// that no production code knows about, must already be excluded.
+func TestRunnerNamespaceIsExcludedWithoutEnumeration(t *testing.T) {
+	future := Event{Type: EventType(RunnerEventNamespace + "gpu.topology"), Stage: "implement", Attempt: 1}
+	if future.IsConformanceNormative() {
+		t.Fatalf("%q reports conformance-normative — the runner.* exclusion is enumerated, not a namespace rule", future.Type)
+	}
+	if !IsRunnerNamespace(future.Type) {
+		t.Fatalf("IsRunnerNamespace(%q) = false", future.Type)
+	}
+	if view := ConformanceView([]Event{
+		{Schema: EventSchema, Seq: 1, Type: EventRunStarted},
+		{Schema: EventSchema, Seq: 2, Type: future.Type, Stage: "implement", Runner: map[string]any{"gpus": "8"}},
+		{Schema: EventSchema, Seq: 3, Type: EventRunFinished, Status: "completed"},
+	}); len(view) != 2 {
+		t.Fatalf("conformance view = %v, want the two non-runner events only", view)
+	}
+
+	// Every runner.* type that exists today rides the same rule, and nothing
+	// outside the namespace is swept up by it.
+	for _, declared := range []EventType{EventRunnerAnnotation, EventRunnerIsolationPosture, EventRunnerPlacement} {
+		if !IsRunnerNamespace(declared) {
+			t.Errorf("IsRunnerNamespace(%q) = false", declared)
+		}
+		if (Event{Type: declared}).IsConformanceNormative() {
+			t.Errorf("%q reports conformance-normative", declared)
+		}
+	}
+	for _, outside := range []EventType{EventStageStarted, EventStageFinished, EventGateEvaluated, EventRunFinished, EventType("runnerless.thing")} {
+		if IsRunnerNamespace(outside) {
+			t.Errorf("IsRunnerNamespace(%q) = true — the rule is the %q PREFIX, not a substring match", outside, RunnerEventNamespace)
+		}
+		if !(Event{Type: outside}).IsConformanceNormative() {
+			t.Errorf("%q lost its conformance-normative status", outside)
+		}
+	}
+}

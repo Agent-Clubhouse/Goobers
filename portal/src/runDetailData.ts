@@ -821,7 +821,11 @@ export function eventSummary(
       if (!runner) {
         return "Placement provenance was recorded for this attempt.";
       }
-      const where = ["node", "os", "pod"]
+      // node is a real cluster node; host is the executing process's own
+      // hostname (the POD name inside a pod). Name whichever one the substrate
+      // actually knew, preferring the node — never labelling a host as a node.
+      const placementNode = typeof event.runner?.node === "string" ? event.runner.node : "";
+      const where = [placementNode ? "node" : "host", "os", "pod"]
         .map((key) => {
           const value = event.runner?.[key];
           return typeof value === "string" && value ? `${key} ${value}` : "";

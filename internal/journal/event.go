@@ -1,10 +1,25 @@
 package journal
 
 import (
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+// RunnerEventNamespace is the dotted prefix of the runner.* namespace — the
+// ONLY sanctioned runner-specific divergence (§3.3, goobernetes-architecture.md
+// §7). Membership is decided by the PREFIX, never by an enumeration of the
+// types that happen to exist today: every authority states the rule as a
+// namespace, so a runner.* type added tomorrow is excluded from conformance the
+// moment it is declared, with no second edit anywhere to remember.
+const RunnerEventNamespace = "runner."
+
+// IsRunnerNamespace reports whether t lives in the runner.* namespace and is
+// therefore never conformance surface, whatever it is called.
+func IsRunnerNamespace(t EventType) bool {
+	return strings.HasPrefix(string(t), RunnerEventNamespace)
+}
 
 // EventType is the kind of an orchestration event. The taxonomy is the
 // conformance surface (§3.3): the runner, telemetry, portal, and conformance
@@ -440,17 +455,21 @@ func (e Event) IsConformanceNormative() bool {
 	if e.AttemptClass == AttemptInfra {
 		return false
 	}
+	// The runner.* NAMESPACE rule (§3.3): local-runner lifecycle and substrate
+	// bookkeeping — annotations, isolation posture, placement provenance, and
+	// whatever the namespace grows next — is authoritative but never
+	// conformance surface. Enumerating the members here would fail OPEN for a
+	// new runner.* type (the default arm below returns true), so the prefix,
+	// not a list, is what decides.
+	if IsRunnerNamespace(e.Type) {
+		return false
+	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
 		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
-		return false
-	case EventRunnerAnnotation, EventRunnerIsolationPosture, EventRunnerPlacement:
-		// Local-runner lifecycle/substrate bookkeeping lives under runner.*
-		// only; isolation posture and placement provenance must never split
-		// the conformance surface (§3.3, goobernetes-architecture.md §7).
 		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only

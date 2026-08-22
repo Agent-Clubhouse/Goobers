@@ -608,8 +608,10 @@ export interface AttemptList {
 export interface AttemptPlacement {
   /** Runners-inventory entry name; "self" for the daemon's own host. */
   runner: string;
-  /** Cluster node (or, for self placement, the host) the attempt ran on. */
+  /** Cluster node the attempt ran on — only ever a real node, never a hostname. */
   node?: string;
+  /** The executing process's own hostname; inside a pod this is the pod name. */
+  host?: string;
   /** GOOS of the executing substrate. */
   os?: string;
   /** Container image reference the attempt ran under. */

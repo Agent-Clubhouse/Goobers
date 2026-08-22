@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -16,15 +17,21 @@ import (
 // fills the same journal.Placement fields directly — one event shape, one
 // emission mechanism (goobernetes-architecture.md §7).
 const (
+	// PlacementEnvNamespace is the shared prefix of the family. Like the
+	// runner.* event namespace, membership is decided by the PREFIX (see
+	// placementDeclared): a variable added to this family later turns
+	// placement recording on with no second edit to remember here.
+	PlacementEnvNamespace = "GOOBERS_RUNNER_"
 	// EnvPlacementNode names the cluster node the process is scheduled on
-	// (k8s downward API spec.nodeName).
-	EnvPlacementNode = "GOOBERS_RUNNER_NODE"
+	// (k8s downward API spec.nodeName). This is the ONLY authority for the
+	// placement node field on a self attempt — the process hostname is not one.
+	EnvPlacementNode = PlacementEnvNamespace + "NODE"
 	// EnvPlacementPod names the pod the process runs in (downward API
 	// metadata.name).
-	EnvPlacementPod = "GOOBERS_RUNNER_POD"
+	EnvPlacementPod = PlacementEnvNamespace + "POD"
 	// EnvPlacementImage is the container image reference the process runs
 	// under.
-	EnvPlacementImage = "GOOBERS_RUNNER_IMAGE"
+	EnvPlacementImage = PlacementEnvNamespace + "IMAGE"
 )
 
 // selfPlacement captures what THIS process knows about the substrate a stage
@@ -38,14 +45,43 @@ func selfPlacement() journal.Placement {
 	p := journal.Placement{
 		Runner: journal.PlacementRunnerSelf,
 		OS:     runtime.GOOS,
-		Node:   os.Getenv(EnvPlacementNode),
-		Pod:    os.Getenv(EnvPlacementPod),
-		Image:  os.Getenv(EnvPlacementImage),
+		// Node ONLY from the deployment's downward API. os.Hostname() is not
+		// a node name — inside a pod it is the POD name — so it goes to Host,
+		// the field whose name is true of it in both places.
+		Node:  os.Getenv(EnvPlacementNode),
+		Pod:   os.Getenv(EnvPlacementPod),
+		Image: os.Getenv(EnvPlacementImage),
 	}
-	if p.Node == "" {
-		if host, err := os.Hostname(); err == nil {
-			p.Node = host
-		}
+	if host, err := os.Hostname(); err == nil {
+		p.Host = host
 	}
 	return p
+}
+
+// placementDeclared reports whether this deployment has said ANYTHING about
+// placement — a runners: inventory in instance.yaml, or any GOOBERS_RUNNER_*
+// identity variable. It is the emission gate for placement provenance
+// (goobernetes-architecture.md §11 item 1, zero-declaration invariance): an
+// instance that declares no runners and sets no placement env must keep
+// writing byte-identical journals, so recording a runner.placement event on
+// every stage attempt of every such install is exactly the change §11 item 1
+// forbids. Once placement is declared, the provenance is what the operator
+// asked for.
+func placementDeclared(runnersDeclared bool, environ []string) bool {
+	if runnersDeclared {
+		return true
+	}
+	for _, entry := range environ {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && value != "" && strings.HasPrefix(key, PlacementEnvNamespace) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordsPlacement is placementDeclared bound to this runner's configuration
+// and the live process environment.
+func (r *Runner) recordsPlacement() bool {
+	return placementDeclared(r.cfg.RunnersDeclared, os.Environ())
 }

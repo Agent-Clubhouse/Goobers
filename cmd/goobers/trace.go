@@ -645,7 +645,7 @@ func formatEvent(ev journal.Event) string {
 		return s
 	case journal.EventRunnerPlacement:
 		s := prefix
-		for _, key := range []string{"runner", "node", "os", "image", "pod"} {
+		for _, key := range []string{"runner", "node", "host", "os", "image", "pod"} {
 			if value, _ := ev.Runner[key].(string); value != "" {
 				s += " " + key + "=" + value
 			}

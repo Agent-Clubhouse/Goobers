@@ -725,7 +725,15 @@ function AttemptDetail({
       {attempt.placement && (
         <div aria-label="Attempt placement" className="attempt-summary-row">
           <span className="mono">runner: {attempt.placement.runner}</span>
-          {attempt.placement.node && <span className="mono">node: {attempt.placement.node}</span>}
+          {/* node is a real cluster node; host is the executing process's own
+              hostname, which inside a pod is the pod name. Show the node when
+              some authority declared one, and otherwise the honest host —
+              never one labelled as the other. */}
+          {attempt.placement.node ? (
+            <span className="mono">node: {attempt.placement.node}</span>
+          ) : (
+            attempt.placement.host && <span className="mono">host: {attempt.placement.host}</span>
+          )}
           {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
           {attempt.placement.image && (
             <span className="mono">image: {attempt.placement.image}</span>

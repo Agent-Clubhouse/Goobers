@@ -668,6 +668,7 @@ export const goWireFixtures = {
         "placement": {
           "runner": "self",
           "node": "aks-linux-0001",
+          "host": "goobers-stage-implement-4x2vq",
           "os": "linux",
           "image": "ghcr.io/goobers/goobers-base:v0.2.0",
           "pod": "goobers-stage-implement-4x2vq",

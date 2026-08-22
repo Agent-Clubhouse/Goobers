@@ -17,6 +17,7 @@ func TestPlacementEventRoundTrip(t *testing.T) {
 	want := Placement{
 		Runner:       "linux-large",
 		Node:         "aks-linux-0001",
+		Host:         "goobers-stage-implement-4x2vq",
 		OS:           "linux",
 		Image:        "ghcr.io/goobers/goobers-base:v0.2.0",
 		Pod:          "goobers-stage-implement-4x2vq",
@@ -42,7 +43,7 @@ func TestPlacementEventRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("PlacementFromEvent reported not-a-placement for a round-tripped placement event")
 	}
-	if got.Runner != want.Runner || got.Node != want.Node || got.OS != want.OS ||
+	if got.Runner != want.Runner || got.Node != want.Node || got.Host != want.Host || got.OS != want.OS ||
 		got.Image != want.Image || got.Pod != want.Pod {
 		t.Fatalf("decoded identity = %+v, want %+v", got, want)
 	}

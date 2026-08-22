@@ -359,8 +359,11 @@ func TestStageAttemptsCarryPlacementProvenance(t *testing.T) {
 	podStartedAt := queuedAt.Add(9 * time.Second)
 
 	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	// The self attempt knows its own hostname and NOTHING about a cluster
+	// node: node stays absent rather than borrowing the hostname, which inside
+	// a pod would be the pod name (#3515 finding 4).
 	emit(journal.PlacementEvent("implement", 1, "", journal.Placement{
-		Runner: journal.PlacementRunnerSelf, OS: "linux", Node: "daemon-host",
+		Runner: journal.PlacementRunnerSelf, OS: "linux", Host: "daemon-host",
 	}))
 	emit(journal.Event{
 		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
@@ -374,7 +377,7 @@ func TestStageAttemptsCarryPlacementProvenance(t *testing.T) {
 	emit(journal.PlacementEvent("implement", 2, journal.AttemptPolicy, journal.Placement{
 		Runner: "linux-large", OS: "linux", Node: "aks-linux-0001",
 		Image: "ghcr.io/goobers/goobers-base:v0.2.0", Pod: "goobers-stage-implement-4x2vq",
-		QueuedAt: &queuedAt, PodStartedAt: &podStartedAt,
+		Host: "goobers-stage-implement-4x2vq", QueuedAt: &queuedAt, PodStartedAt: &podStartedAt,
 	}))
 	emit(journal.Event{
 		Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
@@ -392,15 +395,19 @@ func TestStageAttemptsCarryPlacementProvenance(t *testing.T) {
 		t.Fatalf("attempts = %d, want 2", len(got.Attempts))
 	}
 	first := got.Attempts[0].Placement
-	if first == nil || first.Runner != journal.PlacementRunnerSelf || first.Node != "daemon-host" || first.OS != "linux" {
-		t.Fatalf("attempt 1 placement = %+v, want self/daemon-host/linux", first)
+	if first == nil || first.Runner != journal.PlacementRunnerSelf || first.Host != "daemon-host" || first.OS != "linux" {
+		t.Fatalf("attempt 1 placement = %+v, want self/host=daemon-host/linux", first)
+	}
+	if first.Node != "" {
+		t.Fatalf("attempt 1 placement claims node %q — a self attempt's hostname is not a cluster node", first.Node)
 	}
 	if first.Pod != "" || first.QueuedAt != nil || first.PodStartedAt != nil {
 		t.Fatalf("attempt 1 (self) placement carries pod/queue fields it cannot know: %+v", first)
 	}
 	second := got.Attempts[1].Placement
 	if second == nil || second.Runner != "linux-large" || second.Pod != "goobers-stage-implement-4x2vq" ||
-		second.Image != "ghcr.io/goobers/goobers-base:v0.2.0" {
+		second.Image != "ghcr.io/goobers/goobers-base:v0.2.0" || second.Node != "aks-linux-0001" ||
+		second.Host != "goobers-stage-implement-4x2vq" {
 		t.Fatalf("attempt 2 placement = %+v", second)
 	}
 	if second.QueuedAt == nil || !second.QueuedAt.Equal(queuedAt) ||
