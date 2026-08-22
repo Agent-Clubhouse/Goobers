@@ -395,6 +395,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.nestedAgentPolicy",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.next",
       "stability": "ga",
       "sinceVersion": "dev"

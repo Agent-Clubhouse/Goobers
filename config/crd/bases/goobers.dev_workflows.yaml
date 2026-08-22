@@ -574,6 +574,148 @@ spec:
                       description: Name uniquely identifies this state within the
                         workflow.
                       type: string
+                    nestedAgentPolicy:
+                      description: |-
+                        NestedAgentPolicy controls child-agent delegation and context. It is
+                        admitted before execution; omitted preserves legacy non-nested behavior.
+                      properties:
+                        context:
+                          description: NestedContextPolicy selects the optional parent
+                            context visible to a child.
+                          properties:
+                            artifactNames:
+                              items:
+                                type: string
+                              type: array
+                            envelopeSections:
+                              items:
+                                type: string
+                              type: array
+                            mode:
+                              description: ContextMode controls which parent task
+                                context a child receives.
+                              enum:
+                              - fresh
+                              - inherited
+                              - explicit
+                              type: string
+                          required:
+                          - mode
+                          type: object
+                        delegation:
+                          description: DelegationAuthority controls whether and how
+                            a child may delegate further.
+                          enum:
+                          - disabled
+                          - coordinator-only
+                          - bounded
+                          type: string
+                        maxDepth:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        model:
+                          description: NestedModelPolicy constrains the model and
+                            reasoning effort used by a child.
+                          properties:
+                            allowlist:
+                              items:
+                                type: string
+                              type: array
+                            maxReasoningEffort:
+                              description: ReasoningEffort is the portable reasoning-effort
+                                ceiling for a child.
+                              enum:
+                              - minimal
+                              - low
+                              - medium
+                              - high
+                              type: string
+                          type: object
+                        peerMessaging:
+                          type: boolean
+                        permittedProfiles:
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                        platformPolicy:
+                          description: |-
+                            PlatformPolicy is immutable execution policy inherited by every child,
+                            including children using fresh context.
+                          properties:
+                            budget:
+                              description: Limits bound a stage's execution. Zero
+                                values mean "no explicit limit".
+                              properties:
+                                maxCostUSD:
+                                  description: MaxCostUSD caps the run's spend.
+                                  minimum: 0
+                                  type: number
+                                maxDurationSeconds:
+                                  description: MaxDurationSeconds caps wall-clock
+                                    time for the stage.
+                                  format: int32
+                                  minimum: 0
+                                  type: integer
+                                maxTokens:
+                                  description: MaxTokens caps model tokens the run
+                                    may consume.
+                                  format: int64
+                                  minimum: 0
+                                  type: integer
+                              type: object
+                            cancellation:
+                              minLength: 1
+                              type: string
+                            capabilities:
+                              items:
+                                type: string
+                              type: array
+                            completionContract:
+                              minLength: 1
+                              type: string
+                            contentExclusions:
+                              items:
+                                type: string
+                              type: array
+                            credentials:
+                              items:
+                                type: string
+                              type: array
+                            filesystemRoots:
+                              items:
+                                type: string
+                              type: array
+                            networkEgress:
+                              items:
+                                type: string
+                              type: array
+                            policyActions:
+                              items:
+                                type: string
+                              type: array
+                            sandbox:
+                              minLength: 1
+                              type: string
+                          required:
+                          - budget
+                          - cancellation
+                          - completionContract
+                          - sandbox
+                          type: object
+                        version:
+                          enum:
+                          - v1alpha1
+                          type: string
+                      required:
+                      - context
+                      - delegation
+                      - model
+                      - permittedProfiles
+                      - platformPolicy
+                      - version
+                      type: object
                     next:
                       description: Next is the name of the next state (task or gate).
                         Empty means terminal.

@@ -36,6 +36,16 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n\n---\n\n")
 	}
 	fmt.Fprintf(&b, "## Task\n\n%s\n\n", req.Envelope.Goal)
+	if req.ExecutionPolicy != nil {
+		policy, err := json.Marshal(req.ExecutionPolicy)
+		if err != nil {
+			return fmt.Sprintf("nested execution policy could not be rendered: %v", err)
+		}
+		b.WriteString("## Immutable execution policy\n\n")
+		b.WriteString("The following parent-intersected policy is authoritative. Do not delegate, use context, select models, message peers, or access resources outside it.\n\n```json\n")
+		b.Write(policy)
+		b.WriteString("\n```\n\n")
+	}
 
 	if cones := req.Envelope.CheckoutCones[""]; len(cones) > 0 {
 		fmt.Fprintf(&b, "## Workspace\n\n"+
