@@ -230,10 +230,17 @@ runtime mystery.
   effects-not-mechanisms rule. The #3278 six-policy proxy shape (443-only egress,
   RFC1918 and 169.254.0.0/16 excepted so it can never pivot to IMDS) is recorded as the
   reference implementation candidate for that layer.
-- **Composition, not competition**: the k8s-infra-shape §5 deny-first posture ("no
-  inbound to stage pods, ever") remains the namespace baseline; restriction-driven
-  allowlists are rendered as the *allow* rules within it, never as a second competing
-  allowlist stack.
+- **Composition is additive, so grants are per-class ONLY** (delivery decision 004 —
+  a measured finding, not a preference): Kubernetes NetworkPolicy has no deny rule and no
+  precedence — effective egress is the union of every policy selecting the pod — so a
+  generic role-wide egress allow makes every narrower per-class policy a no-op. The
+  namespace baseline is exactly `default-deny-all` + `allow-dns` ("no inbound to stage
+  pods, ever" stands); **every** egress grant selects exactly one
+  `goobers.dev/runner-class` label, and the reference base's former generic
+  `allow-stage-egress` policy is removed. SEC-021 strengthen-only is implemented by
+  NARROWING renders — a stricter mandate renders smaller per-class grant sets — never by
+  adding policies. The dispatcher stamps exactly one `goobers.dev/runner-class` label on
+  every stage pod (zero or two breaks the model; binding on #3513).
 
 ## 7. Who applies what
 
