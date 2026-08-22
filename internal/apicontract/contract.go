@@ -59,6 +59,11 @@ const (
 	ClaimSettlePath          = V1Prefix + "/claims/settle"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
+	// events for one run, idempotent per op, sequence assigned at acceptance
+	// by the daemon's single writer. Span adoption by digest rides the same
+	// route as a span-kind op rather than a second endpoint.
+	RunJournalEmitPath = V1Prefix + "/runs/{run}/journal/emit"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -96,6 +101,7 @@ const (
 	RouteClaimSettle       RouteID = "claimSettle"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
+	RouteJournalEmit       RouteID = "journalEmit"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -205,6 +211,11 @@ var v1Routes = []Route{
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+
+	// The journal plane (§8, DS4) is machinery advancing a run's own record —
+	// a machine seam like the claims plane, not an operator capability, so it
+	// shares the workflow-execution class and stays outside runtime parity.
+	{ID: RouteJournalEmit, Method: http.MethodPost, Path: RunJournalEmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

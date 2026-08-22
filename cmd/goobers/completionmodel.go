@@ -188,6 +188,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
 		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
 	"engine-project": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
@@ -197,6 +198,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},

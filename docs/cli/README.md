@@ -1046,6 +1046,12 @@ Usage: goobers engine-start [flags] <workflow> [path]
 Dispatch one run onto the tier-3 engine (experimental). The run id is
 derived from gaggle, workflow, and --dedupe-key.
 
+--live-journal pins live journal authorship into the run: workers emit
+journal events through the daemon's journal plane as they happen, so the
+run is visible mid-flight; without it the journal is projected from
+history at close, as before. Requires the daemon's write API to be
+reachable from every worker serving the run (worker --daemon-api).
+
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 ~~~
 
@@ -3325,6 +3331,10 @@ Flags:
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
+  --daemon-api <url>         daemon write API base URL; wires live journal
+                             emission through the journal plane, with the
+                             per-run bearer from $GOOBERS_POD_TOKEN when
+                             set (default $GOOBERS_DAEMON_API)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

@@ -144,6 +144,9 @@ type StartSpec struct {
 	// GateGooberCapabilities maps reviewer goober names to their granted
 	// capabilities; instance policy pinned into the run at start (WF-016).
 	GateGooberCapabilities map[string][]string
+	// LiveJournal pins live journal authorship (DS4) into the run: the
+	// starter sets it when the daemon's journal plane serves this instance.
+	LiveJournal bool
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -178,5 +181,6 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		TriggerKind:            s.TriggerKind,
 		BranchNamespace:        s.BranchNamespace,
 		GateGooberCapabilities: s.GateGooberCapabilities,
+		LiveJournal:            s.LiveJournal,
 	}, nil
 }

@@ -50,6 +50,12 @@ type JournalOp struct {
 	Span *JournalSpanOp `json:"span,omitempty"`
 	// Time is the workflow-deterministic timestamp for this write.
 	Time time.Time `json:"time"`
+	// EmitKey is the op's live-emission idempotency key (DS4), assigned once
+	// by assignEmitKeys for a run with live journaling and empty otherwise.
+	// The repair projection (ProjectRun) deliberately ignores it: a
+	// re-projected journal carries no emit keys, which is what
+	// livejournal.Authored keys the live/projected distinction on.
+	EmitKey string `json:"emitKey,omitempty"`
 }
 
 // JournalArtifactOp records one content-addressed artifact the projection
@@ -123,6 +129,14 @@ type runJournal struct {
 	usesRepo       bool
 	branchRecorded bool
 	branchRef      *journal.ExternalRef
+
+	// Live emission state (DS4). live mirrors RunInput.LiveJournal — pinned
+	// input, so replay agrees. emitted is the count of ops the live writer has
+	// durably accepted; ordinals drives idempotency-key assignment
+	// (assignEmitKeys). All plain workflow state.
+	live     bool
+	emitted  int
+	ordinals map[string]int
 }
 
 // newRunJournal builds the recorder and registers the projection query. The
@@ -162,6 +176,7 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 			Definition: definition,
 		},
 		usesRepo: runner.MachineUsesRepo(m),
+		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
 			Kind:     "branch",

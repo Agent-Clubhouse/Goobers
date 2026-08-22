@@ -14,6 +14,7 @@ import (
 	"path"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
@@ -120,10 +121,11 @@ func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
 }
 
-// claimsPlanePath reports whether path is one of the claims-plane write routes
-// — the only part of the versioned surface a pod principal may reach.
-// Everything else (reads, triggers, HITL, interventions) stays human-only: a
-// stage pod has no business resolving escalations or minting runs.
+// claimsPlanePath reports whether path is one of the claims-plane write
+// routes. Together with journalPlanePath these are the only parts of the
+// versioned surface a pod principal may reach. Everything else (reads,
+// triggers, HITL, interventions) stays human-only: a stage pod has no
+// business resolving escalations or minting runs.
 func claimsPlanePath(path string) bool {
 	switch path {
 	case apicontract.ClaimAcquirePath,
@@ -136,6 +138,24 @@ func claimsPlanePath(path string) bool {
 	}
 }
 
+// journalPlanePath reports whether path is the journal plane's emit route
+// (§8, DS4) — the second pod-reachable plane. Matched structurally because
+// the route carries a run-id segment; Handler() has already refused
+// non-clean paths, so segment counting is sound. Which run the pod may emit
+// into is enforced by the handler, which can see both the path run id and
+// the principal.
+func journalPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	run, ok := strings.CutSuffix(rest, "/journal/emit")
+	if !ok {
+		return false
+	}
+	return run != "" && !strings.Contains(run, "/")
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
@@ -143,10 +163,10 @@ func claimsPlanePath(path string) bool {
 // stays anonymous and would be refused.
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
-// to the claims plane: their token proves "I am run X's stage pod", which
-// authorizes ledger operations for that run and nothing else. Per-run
-// containment (the claim request's runId matching the pod's run) is enforced
-// by the claims handlers, which can see the request body.
+// to the claims and journal planes: their token proves "I am run X's stage
+// pod", which authorizes ledger operations and journal emission for that run
+// and nothing else. Per-run containment (the request's run matching the pod's
+// run) is enforced by the plane handlers, which can see the request.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -154,10 +174,10 @@ func RequireRoles() Authorizer {
 			return errors.New("no authenticated principal")
 		}
 		if IsPodPrincipal(principal) {
-			if claimsPlanePath(request.URL.Path) && request.Method == http.MethodPost {
+			if (claimsPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
 				return nil
 			}
-			return fmt.Errorf("pod principal %q may only call the claims plane", principal.Subject)
+			return fmt.Errorf("pod principal %q may only call the claims and journal planes", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -234,6 +254,7 @@ type handlerConfig struct {
 	claims              ClaimService
 	triggers            TriggerService
 	escalations         EscalationService
+	journal             JournalService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -471,6 +492,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
+	registerJournalPlaneRoutes(router, config, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {

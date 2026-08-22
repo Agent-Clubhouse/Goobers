@@ -24,17 +24,37 @@ type completedRunClient interface {
 // is durably published.
 type ProjectionObserver func(context.Context, string, uint64) error
 
-// CompletedRunReconciler projects closed Temporal engine runs into their
-// gaggle's standard journal root. Reconcile is bounded to one visibility page;
-// successive calls continue pagination and cycle back to the newest page.
+// CompletedRunReconciler is the repair/backfill projection over closed
+// Temporal engine runs (DS5 — demoted from journal authority). A run whose
+// journal was live-authored (DS4) is VERIFIED against a history
+// re-projection, with divergences filed through the divergence reporter —
+// never silently repaired; a run with no live journal (pre-upgrade history,
+// or a run started without live journaling) still projects exactly as
+// before. Reconcile is bounded to one visibility page; successive calls
+// continue pagination and cycle back to the newest page.
 type CompletedRunReconciler struct {
 	client        completedRunClient
 	namespace     string
 	runsDirs      map[string]string
 	observe       ProjectionObserver
 	spans         SpanSink
+	live          LiveJournalRegistry
+	report        DivergenceReporter
+	verified      map[string]bool
 	nextPageToken []byte
 }
+
+// LiveJournalRegistry answers whether the daemon's live writer currently
+// holds a run's journal open. Such a run is never touched here: Temporal may
+// report the workflow closed while the final emission is still landing.
+type LiveJournalRegistry interface {
+	IsOpen(runID string) bool
+}
+
+// DivergenceReporter files one live-vs-projected divergence (or repair
+// annotation) into the named channel the #2871 parity ledger reads — the
+// daemon wires an instance-journal error event with a stable code.
+type DivergenceReporter func(runID, detail string)
 
 // WithSpans attaches a span sink, so each newly projected run also emits
 // backdated telemetry (#2865). Optional: a nil sink leaves the reconciler
@@ -43,6 +63,29 @@ type CompletedRunReconciler struct {
 func (r *CompletedRunReconciler) WithSpans(sink SpanSink) *CompletedRunReconciler {
 	r.spans = sink
 	return r
+}
+
+// WithLiveJournals attaches the daemon's live-writer registry so runs the
+// writer still holds open are skipped (DS4/DS5). Optional: nil keeps the
+// pre-live behavior.
+func (r *CompletedRunReconciler) WithLiveJournals(live LiveJournalRegistry) *CompletedRunReconciler {
+	r.live = live
+	return r
+}
+
+// WithDivergenceReporter attaches the parity channel divergences are filed
+// to. Optional: without one, divergences surface only as reconcile errors.
+func (r *CompletedRunReconciler) WithDivergenceReporter(report DivergenceReporter) *CompletedRunReconciler {
+	r.report = report
+	return r
+}
+
+// reportDivergence files into the named channel, falling back to nothing when
+// none is wired (the caller has already decided the reconcile outcome).
+func (r *CompletedRunReconciler) reportDivergence(runID, detail string) {
+	if r.report != nil {
+		r.report(runID, detail)
+	}
 }
 
 // NewCompletedRunReconciler constructs a reconciler scoped to configured
@@ -101,26 +144,83 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			errs = append(errs, err)
 			continue
 		}
+		// The live writer still owns this journal: even though Temporal
+		// reports the workflow closed, the terminal emission may be landing
+		// right now. Touching the directory here would race the single
+		// writer; the next cycle finds the journal closed and proceeds.
+		if r.live != nil && r.live.IsOpen(runID) {
+			continue
+		}
+		backfillingLive := false
 		if journal.Recorded(dir) {
-			complete, err := projectedJournalComplete(dir)
+			inspection, err := inspectJournal(dir)
 			if err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			if complete {
+			if inspection.complete {
+				if inspection.liveAuthored && !r.verified[runID] {
+					// DS5: the journal already exists from live authorship —
+					// VERIFY against the independent history re-projection
+					// instead of writing. A divergence is filed, never
+					// silently repaired; the live journal stays the record.
+					if err := r.verifyLiveRun(ctx, runID, gaggle, inspection.events); err != nil {
+						errs = append(errs, err)
+						continue
+					}
+					if r.verified == nil {
+						r.verified = map[string]bool{}
+					}
+					r.verified[runID] = true
+				}
 				if err := observeProjectedRun(ctx, r.observe, runID, dir); err != nil {
 					errs = append(errs, err)
 				}
 				continue
 			}
+			// An incomplete live-authored journal of a CLOSED run is the
+			// crash-orphan case (the daemon died before the terminal emission
+			// landed): backfilling it from history is exactly the repair role
+			// DS5 retains — annotated below so the repair is visible, never
+			// silent.
+			backfillingLive = inspection.liveAuthored
 		}
 		if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe, r.spans); err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		if backfillingLive {
+			r.reportDivergence(runID, "incomplete live-authored journal of a closed run was backfilled from the history re-projection")
+		}
 		projected++
 	}
 	return projected, errors.Join(errs...)
+}
+
+// verifyLiveRun diffs a complete live-authored journal's normative view
+// against the history re-projection (DS5's conformance cross-check). A
+// divergence is filed through the reporter; inability to verify (the query
+// failed, the history is unprojectable) is an error so the next cycle
+// retries.
+func (r *CompletedRunReconciler) verifyLiveRun(ctx context.Context, runID, gaggle string, liveEvents []journal.Event) error {
+	proj, err := queryProjection(ctx, r.client, runID)
+	if err != nil {
+		return fmt.Errorf("engine: verify live journal for %q: %w", runID, err)
+	}
+	if proj.Identity.RunID != runID || proj.Identity.Gaggle != gaggle {
+		r.reportDivergence(runID, fmt.Sprintf(
+			"history projects identity %s/%s, journal directory is %s/%s",
+			proj.Identity.Gaggle, proj.Identity.RunID, gaggle, runID))
+		return nil
+	}
+	divergence, err := DiffLiveJournal(liveEvents, proj)
+	if err != nil {
+		return fmt.Errorf("engine: verify live journal for %q: %w", runID, err)
+	}
+	if divergence != "" {
+		r.reportDivergence(runID, divergence)
+	}
+	return nil
 }
 
 // ProjectCompletedRunForGaggle is the manual projection path with the same

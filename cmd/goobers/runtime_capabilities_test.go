@@ -69,7 +69,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
-		"triggerIngest": true,
+		"triggerIngest": true, "journalEmit": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {

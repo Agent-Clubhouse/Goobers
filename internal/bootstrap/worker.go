@@ -25,6 +25,12 @@ type EngineDeps struct {
 	Auto       invoke.Automated
 	Workspaces engine.WorkspaceProvisioner
 	Scrubber   journal.Scrubber
+	// Journal is the live-journal emission seam (DS4): in the daemon it is
+	// the *livejournal.Writer itself, on a remote worker it is
+	// livejournal.HTTPEmitter at the daemon write API's journal plane. Only
+	// runs pinned with RunInput.LiveJournal need it; without one such a run's
+	// attempts fail closed as infra.
+	Journal engine.JournalEmitter
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -38,6 +44,7 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		ScheduleService: temporalClient.WorkflowService(),
 		Workspaces:      deps.Workspaces,
 		Scrubber:        deps.Scrubber,
+		Journal:         deps.Journal,
 	})
 }
 

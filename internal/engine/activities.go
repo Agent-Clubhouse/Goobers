@@ -54,6 +54,12 @@ type Activities struct {
 	// Scrubber removes secret-shaped material before activity results enter
 	// Temporal history. Nil uses the journal's pattern scrubber.
 	Scrubber journal.Scrubber
+	// Journal is the live-journal emission seam (DS4): in-process it is the
+	// daemon's *livejournal.Writer, remotely it is livejournal.HTTPEmitter at
+	// the write API's journal plane. Required only for runs pinned with
+	// RunInput.LiveJournal; a run that demands live journaling on a worker
+	// with no emitter fails closed as an infra-classed attempt (EmitJournal).
+	Journal JournalEmitter
 }
 
 type stageActivityResult struct {
