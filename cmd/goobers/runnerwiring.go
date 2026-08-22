@@ -312,6 +312,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// Wire the existing-fix handler (#3236): when implement returns no-work
+		// with existingFixCommit set, strip goobers:ready to prevent reclaim.
+		ExistingFix: buildExistingFixHandler(l, cfg, resolver, sharedReg),
 		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
 		// covers PhaseFailed; this covers the remaining non-completed terminals
 		// so that a repeating escalation loop doesn't churn indefinitely.

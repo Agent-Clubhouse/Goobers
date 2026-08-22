@@ -30,6 +30,7 @@ const (
 	LabelApproved   = "goobers:approved"
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
+	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
 	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"

@@ -8586,3 +8586,100 @@ func TestRunnerLegitimateChangedRepassConverges(t *testing.T) {
 		}
 	}
 }
+
+// TestRunnerInvokesExistingFixHandlerOnImplementNoWork proves the runner
+// invokes the ExistingFix handler when implement returns no-work with
+// existingFixCommit set (issue #3236) — preventing a permanent reclaim loop.
+func TestRunnerInvokesExistingFixHandlerOnImplementNoWork(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var handlerCalled bool
+	var handlerOutcome ExistingFixOutcome
+	handler := func(ctx context.Context, o ExistingFixOutcome) error {
+		handlerCalled = true
+		handlerOutcome = o
+		return nil
+	}
+
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ExistingFix = handler
+
+	item := &apiv1.BacklogItem{ID: "123", Title: "Test issue"}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Item:    item,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !handlerCalled {
+		t.Fatalf("ExistingFix handler was not called")
+	}
+	if handlerOutcome.ItemID != "123" {
+		t.Fatalf("handler ItemID = %q, want 123", handlerOutcome.ItemID)
+	}
+	if handlerOutcome.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", handlerOutcome.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}
+
+func TestRunnerResolvesExistingFixItemFromClaimLedger(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix-claimed"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var got ExistingFixOutcome
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ClaimedItems = func(resolvedRunID string) ([]string, error) {
+		if resolvedRunID != runID {
+			t.Fatalf("ClaimedItems run id = %q, want %q", resolvedRunID, runID)
+		}
+		return []string{"456"}, nil
+	}
+	r.cfg.ExistingFix = func(_ context.Context, o ExistingFixOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got.ItemID != "456" {
+		t.Fatalf("handler ItemID = %q, want 456", got.ItemID)
+	}
+	if got.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", got.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}

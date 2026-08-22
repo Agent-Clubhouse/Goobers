@@ -747,3 +747,37 @@ func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, add
 	}
 	return summaries.String(), true
 }
+
+// buildExistingFixHandler wires runner.Config.ExistingFix (#3236): the
+// instance-level handler strips goobers:ready and goobers:critical labels from
+// an issue when the implement stage returns no-work with existingFixCommit set,
+// preventing a permanent reclaim loop when the fix is already on main.
+func buildExistingFixHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.ExistingFixHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	updater := &escalationCommenter{
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
+	}
+
+	return func(ctx context.Context, o runner.ExistingFixOutcome) error {
+		if o.ItemID == "" {
+			return nil
+		}
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		// Strip both goobers:ready and goobers:critical labels to prevent reclaim
+		_, err := updater.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repoRef,
+			ID:           o.ItemID,
+			RemoveLabels: []string{providers.LabelReady, providers.LabelCritical},
+		})
+		return err
+	}
+}
