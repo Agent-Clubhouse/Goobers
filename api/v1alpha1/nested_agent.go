@@ -8,6 +8,7 @@ import (
 // NestedAgentPolicyVersion is the portable nested-agent policy contract.
 const NestedAgentPolicyVersion = "v1alpha1"
 
+// +kubebuilder:validation:Enum=disabled;coordinator-only;bounded
 type DelegationAuthority string
 
 const (
@@ -16,6 +17,7 @@ const (
 	DelegationBounded     DelegationAuthority = "bounded"
 )
 
+// +kubebuilder:validation:Enum=fresh;inherited;explicit
 type ContextMode string
 
 const (
@@ -24,6 +26,7 @@ const (
 	ContextExplicit  ContextMode = "explicit"
 )
 
+// +kubebuilder:validation:Enum=minimal;low;medium;high
 type ReasoningEffort string
 
 const (
@@ -36,10 +39,13 @@ const (
 // NestedAgentPolicy describes authority granted to children of an agentic stage.
 // Empty policy means the stage is not using nested agents.
 type NestedAgentPolicy struct {
-	Version           string              `json:"version" yaml:"version"`
-	Delegation        DelegationAuthority `json:"delegation" yaml:"delegation"`
-	MaxDepth          int32               `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty"`
-	PermittedProfiles []string            `json:"permittedProfiles,omitempty" yaml:"permittedProfiles,omitempty"`
+	// +kubebuilder:validation:Enum=v1alpha1
+	Version    string              `json:"version" yaml:"version"`
+	Delegation DelegationAuthority `json:"delegation" yaml:"delegation"`
+	// +kubebuilder:validation:Minimum=0
+	MaxDepth int32 `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	PermittedProfiles []string            `json:"permittedProfiles" yaml:"permittedProfiles"`
 	Context           NestedContextPolicy `json:"context" yaml:"context"`
 	Model             NestedModelPolicy   `json:"model" yaml:"model"`
 	PeerMessaging     bool                `json:"peerMessaging,omitempty" yaml:"peerMessaging,omitempty"`
@@ -66,16 +72,19 @@ type NestedModelPolicy struct {
 // PlatformPolicy is immutable execution policy inherited by every child,
 // including children using fresh context.
 type PlatformPolicy struct {
-	Capabilities       []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	PolicyActions      []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
-	Credentials        []string `json:"credentials,omitempty" yaml:"credentials,omitempty"`
-	Sandbox            string   `json:"sandbox" yaml:"sandbox"`
-	FilesystemRoots    []string `json:"filesystemRoots,omitempty" yaml:"filesystemRoots,omitempty"`
-	NetworkEgress      []string `json:"networkEgress,omitempty" yaml:"networkEgress,omitempty"`
-	ContentExclusions  []string `json:"contentExclusions,omitempty" yaml:"contentExclusions,omitempty"`
-	Budget             Limits   `json:"budget" yaml:"budget"`
-	Cancellation       string   `json:"cancellation" yaml:"cancellation"`
-	CompletionContract string   `json:"completionContract" yaml:"completionContract"`
+	Capabilities  []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
+	Credentials   []string `json:"credentials,omitempty" yaml:"credentials,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	Sandbox           string   `json:"sandbox" yaml:"sandbox"`
+	FilesystemRoots   []string `json:"filesystemRoots,omitempty" yaml:"filesystemRoots,omitempty"`
+	NetworkEgress     []string `json:"networkEgress,omitempty" yaml:"networkEgress,omitempty"`
+	ContentExclusions []string `json:"contentExclusions,omitempty" yaml:"contentExclusions,omitempty"`
+	Budget            Limits   `json:"budget" yaml:"budget"`
+	// +kubebuilder:validation:MinLength=1
+	Cancellation string `json:"cancellation" yaml:"cancellation"`
+	// +kubebuilder:validation:MinLength=1
+	CompletionContract string `json:"completionContract" yaml:"completionContract"`
 }
 
 // ChildExecutionPolicy is the immutable policy handed to an admitted child.
@@ -84,6 +93,7 @@ type ChildExecutionPolicy struct {
 	StageID        string              `json:"stageId"`
 	Attempt        int32               `json:"attempt"`
 	ParentAgent    string              `json:"parentAgent"`
+	Profile        string              `json:"profile"`
 	Objective      string              `json:"objective"`
 	Ownership      string              `json:"ownership"`
 	Capabilities   []string            `json:"capabilities,omitempty"`
@@ -96,6 +106,26 @@ type ChildExecutionPolicy struct {
 	PeerMessaging  bool                `json:"peerMessaging,omitempty"`
 }
 
+// StagePlatformAuthority derives the parent authority from runner-owned stage
+// fields, never from the requested nested policy. Resource classes the runner
+// cannot prove are deliberately absent so child admission fails closed.
+func StagePlatformAuthority(env InvocationEnvelope, completionContract string) PlatformPolicy {
+	roots := []string{"workspace"}
+	for _, workspace := range env.AdditionalWorkspaces {
+		roots = append(roots, "workspace:"+workspace.Name)
+	}
+	return PlatformPolicy{
+		Capabilities:       append([]string(nil), env.Capabilities...),
+		PolicyActions:      append([]string(nil), env.PolicyActions...),
+		Credentials:        append([]string(nil), env.Capabilities...),
+		Sandbox:            "workspace",
+		FilesystemRoots:    roots,
+		Budget:             env.Limits,
+		Cancellation:       "stage-context",
+		CompletionContract: completionContract,
+	}
+}
+
 // Validate rejects unknown policy values and contradictory context/delegation
 // settings before an adapter is allowed to launch a child.
 func (p NestedAgentPolicy) Validate() error {
@@ -104,6 +134,11 @@ func (p NestedAgentPolicy) Validate() error {
 	}
 	if len(p.PermittedProfiles) == 0 {
 		return fmt.Errorf("nested agent policy: at least one permitted profile is required")
+	}
+	for _, profile := range p.PermittedProfiles {
+		if _, ok := supportedNestedAgentProfiles[profile]; !ok {
+			return fmt.Errorf("nested agent policy: unsupported profile %q", profile)
+		}
 	}
 	switch p.Delegation {
 	case DelegationDisabled:
@@ -145,6 +180,9 @@ func (p NestedAgentPolicy) Validate() error {
 	if p.PlatformPolicy.Sandbox == "" || p.PlatformPolicy.Cancellation == "" || p.PlatformPolicy.CompletionContract == "" {
 		return fmt.Errorf("nested agent policy: platform policy must declare sandbox, cancellation, and completion contract")
 	}
+	if err := validateLimits(p.PlatformPolicy.Budget, "nested agent policy: child budget"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -158,6 +196,9 @@ var supportedEnvelopeSections = []string{
 // It never widens capabilities, credentials, roots, egress, or model authority.
 func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, model, reasoning string) (ChildExecutionPolicy, error) {
 	if err := policy.Validate(); err != nil {
+		return ChildExecutionPolicy{}, err
+	}
+	if err := validateParentExecutionPolicy(parent); err != nil {
 		return ChildExecutionPolicy{}, err
 	}
 	if !slices.Contains(policy.PermittedProfiles, profile) {
@@ -178,11 +219,6 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	if reasoning != "" && reasoningRank(reasoning) == 0 {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: unsupported reasoning effort %q", reasoning)
 	}
-	for _, permitted := range policy.PermittedProfiles {
-		if _, ok := supportedNestedAgentProfiles[permitted]; !ok {
-			return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: unsupported profile %q", permitted)
-		}
-	}
 	if !isDelegationAllowed(parent.Delegation, parent.MaxDepth, policy.Delegation, policy.MaxDepth) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: child delegation exceeds parent authority")
 	}
@@ -202,6 +238,9 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	if policy.PlatformPolicy.CompletionContract != "" && policy.PlatformPolicy.CompletionContract != parent.PlatformPolicy.CompletionContract {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: completion contract differs from parent authority")
 	}
+	if !limitsWithin(policy.PlatformPolicy.Budget, parent.PlatformPolicy.Budget) {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: budget exceeds parent authority")
+	}
 	if policy.Model.MaxReasoningEffort != "" && reasoning != "" && reasoningRank(reasoning) > reasoningRank(string(policy.Model.MaxReasoningEffort)) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: reasoning effort %q exceeds ceiling %q", reasoning, policy.Model.MaxReasoningEffort)
 	}
@@ -209,6 +248,7 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: reasoning effort %q exceeds parent ceiling %q", reasoning, parent.Model.MaxReasoningEffort)
 	}
 	child := parent
+	child.Profile = profile
 	child.PolicyActions = intersection(parent.PolicyActions, policy.PlatformPolicy.PolicyActions)
 	child.Capabilities = intersection(parent.Capabilities, policy.PlatformPolicy.Capabilities)
 	child.PlatformPolicy = intersectPlatform(parent.PlatformPolicy, policy.PlatformPolicy)
@@ -221,6 +261,66 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	}
 	child.PeerMessaging = parent.PeerMessaging && policy.PeerMessaging
 	return child, nil
+}
+
+func validateParentExecutionPolicy(parent ChildExecutionPolicy) error {
+	switch {
+	case parent.RunID == "":
+		return fmt.Errorf("nested agent policy: parent run identity is required")
+	case parent.StageID == "":
+		return fmt.Errorf("nested agent policy: parent stage identity is required")
+	case parent.Attempt < 1:
+		return fmt.Errorf("nested agent policy: parent attempt must be >= 1")
+	case parent.ParentAgent == "":
+		return fmt.Errorf("nested agent policy: parent agent identity is required")
+	case parent.Objective == "":
+		return fmt.Errorf("nested agent policy: parent objective is required")
+	case parent.Ownership == "":
+		return fmt.Errorf("nested agent policy: parent ownership boundary is required")
+	case parent.PlatformPolicy.Sandbox == "":
+		return fmt.Errorf("nested agent policy: parent sandbox authority is required")
+	case parent.PlatformPolicy.Cancellation == "":
+		return fmt.Errorf("nested agent policy: parent cancellation channel is required")
+	case parent.PlatformPolicy.CompletionContract == "":
+		return fmt.Errorf("nested agent policy: parent completion contract is required")
+	}
+	if !isSubset(parent.Capabilities, parent.PlatformPolicy.Capabilities) {
+		return fmt.Errorf("nested agent policy: parent capabilities exceed parent platform authority")
+	}
+	if !isSubset(parent.PolicyActions, parent.PlatformPolicy.PolicyActions) {
+		return fmt.Errorf("nested agent policy: parent policy actions exceed parent platform authority")
+	}
+	if err := validateLimits(parent.PlatformPolicy.Budget, "nested agent policy: parent budget"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateLimits(limits Limits, name string) error {
+	switch {
+	case limits.MaxDurationSeconds < 0:
+		return fmt.Errorf("%s maxDurationSeconds must be >= 0", name)
+	case limits.MaxTokens < 0:
+		return fmt.Errorf("%s maxTokens must be >= 0", name)
+	case limits.MaxCostUSD < 0:
+		return fmt.Errorf("%s maxCostUSD must be >= 0", name)
+	default:
+		return nil
+	}
+}
+
+func limitsWithin(requested, parent Limits) bool {
+	return limitWithin(int64(requested.MaxDurationSeconds), int64(parent.MaxDurationSeconds)) &&
+		limitWithin(requested.MaxTokens, parent.MaxTokens) &&
+		floatLimitWithin(requested.MaxCostUSD, parent.MaxCostUSD)
+}
+
+func limitWithin(requested, parent int64) bool {
+	return requested == 0 || parent == 0 || requested <= parent
+}
+
+func floatLimitWithin(requested, parent float64) bool {
+	return requested == 0 || parent == 0 || requested <= parent
 }
 
 func isDelegationAllowed(parent DelegationAuthority, parentDepth int32, child DelegationAuthority, childDepth int32) bool {
@@ -287,6 +387,7 @@ func isSubset(values, set []string) bool {
 func intersectPlatform(a, b PlatformPolicy) PlatformPolicy {
 	out := a
 	out.Capabilities = intersection(a.Capabilities, b.Capabilities)
+	out.PolicyActions = intersection(a.PolicyActions, b.PolicyActions)
 	out.Credentials = intersection(a.Credentials, b.Credentials)
 	out.FilesystemRoots = intersection(a.FilesystemRoots, b.FilesystemRoots)
 	out.NetworkEgress = intersection(a.NetworkEgress, b.NetworkEgress)

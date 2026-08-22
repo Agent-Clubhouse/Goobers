@@ -6,6 +6,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "workspace", "repoRef", "limits"],
+  "allOf": [
+    {
+      "if": { "required": ["nestedAgentPolicy"] },
+      "then": { "required": ["attempt", "goober", "ownershipBoundary", "parentPlatformPolicy"] }
+    }
+  ],
   "properties": {
     "taskId": { "type": "string", "minLength": 1, "description": "Stage instance identifier within this run." },
     "workflowId": { "type": "string", "minLength": 1, "description": "Workflow definition identifier being executed." },
@@ -26,6 +32,8 @@
     },
     "goober": { "type": "string", "minLength": 1, "description": "Goober this invocation is for; absent for a deterministic stage or an automated gate. The local runner dispatches from the workflow definition and never needed it on the wire; a Temporal worker has only the envelope, so without it the agentic seam cannot resolve which goober to construct." },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
+    "attempt": { "type": "integer", "minimum": 1, "description": "One-based attempt number for this stage execution." },
+    "ownershipBoundary": { "type": "string", "minLength": 1, "description": "Runner-authored boundary identifying the work this invocation owns." },
     "instructionAddendum": {
       "type": "string",
       "minLength": 1,
@@ -91,6 +99,15 @@
           "agent:model"
         ]
       }
+    },
+    "policyActions": {
+      "type": "array",
+      "description": "Runner-admitted externally mutating actions available to this stage.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "parentPlatformPolicy": {
+      "$ref": "workflow.schema.json#/$defs/task/properties/nestedAgentPolicy/properties/platformPolicy",
+      "description": "Runner-derived parent authority used to admit a nested child. Never derived from nestedAgentPolicy."
     },
     "limits": { "$ref": "#/$defs/limits", "description": "Execution and agent-usage limits applied to this stage." },
     "nestedAgentPolicy": {

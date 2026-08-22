@@ -188,31 +188,47 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 		return GooberContext{}, err
 	}
 	contextPointers := copyContextPointers(env.ContextPointers)
+	item := env.Item
+	inputs := copyInputs(env.Inputs)
 	var envelope *ExecutionEnvelope
 	var executionPolicy *apiv1.ChildExecutionPolicy
 	var envelopeSections map[string]interface{}
 	if env.NestedAgentPolicy != nil {
 		policy := env.NestedAgentPolicy
-		executionPolicy = &apiv1.ChildExecutionPolicy{
-			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt, ParentAgent: env.Goober,
-			Objective: env.Goal, Capabilities: append([]string(nil), env.Capabilities...),
-			Ownership: env.OwnershipBoundary, PolicyActions: append([]string(nil), env.PolicyActions...),
-			PlatformPolicy: policy.PlatformPolicy, Delegation: policy.Delegation,
-			MaxDepth: policy.MaxDepth, Context: policy.Context, Model: policy.Model,
-			PeerMessaging: policy.PeerMessaging,
+		if env.ParentPlatformPolicy == nil {
+			return GooberContext{}, fmt.Errorf("nested agent policy: parent platform authority is required")
 		}
-		envelope = &ExecutionEnvelope{
+		parent := apiv1.ChildExecutionPolicy{
 			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt, ParentAgent: env.Goober,
 			Objective: env.Goal, Capabilities: append([]string(nil), env.Capabilities...),
 			Ownership: env.OwnershipBoundary, PolicyActions: append([]string(nil), env.PolicyActions...),
-			PlatformPolicy:     policy.PlatformPolicy,
-			CompletionContract: policy.PlatformPolicy.CompletionContract,
-			Cancellation:       policy.PlatformPolicy.Cancellation,
-			Budget:             policy.PlatformPolicy.Budget,
+			PlatformPolicy: *env.ParentPlatformPolicy, Delegation: apiv1.DelegationBounded,
+			MaxDepth: policy.MaxDepth + 1, PeerMessaging: true,
+		}
+		profile := policy.PermittedProfiles[0]
+		model := ""
+		if len(policy.Model.Allowlist) > 0 {
+			model = policy.Model.Allowlist[0]
+		}
+		admitted, err := apiv1.AdmitChild(parent, *policy, profile, model, "")
+		if err != nil {
+			return GooberContext{}, err
+		}
+		executionPolicy = &admitted
+		envelope = &ExecutionEnvelope{
+			RunID: admitted.RunID, StageID: admitted.StageID, Attempt: admitted.Attempt, ParentAgent: admitted.ParentAgent,
+			Objective: admitted.Objective, Capabilities: append([]string(nil), admitted.Capabilities...),
+			Ownership: admitted.Ownership, PolicyActions: append([]string(nil), admitted.PolicyActions...),
+			PlatformPolicy:     admitted.PlatformPolicy,
+			CompletionContract: admitted.PlatformPolicy.CompletionContract,
+			Cancellation:       admitted.PlatformPolicy.Cancellation,
+			Budget:             admitted.PlatformPolicy.Budget,
 		}
 		switch env.NestedAgentPolicy.Context.Mode {
 		case apiv1.ContextFresh:
 			contextPointers = nil
+			item = nil
+			inputs = nil
 		case apiv1.ContextExplicit:
 			for _, name := range env.NestedAgentPolicy.Context.ArtifactNames {
 				found := false
@@ -228,6 +244,8 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 			}
 			contextPointers = selectContextPointers(contextPointers, env.NestedAgentPolicy.Context.ArtifactNames)
 			envelopeSections = selectEnvelopeSections(*envelope, env.NestedAgentPolicy.Context.EnvelopeSections)
+			item = nil
+			inputs = nil
 		}
 	}
 	return GooberContext{
@@ -238,8 +256,8 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 		Goal:              env.Goal,
 		Instructions:      instructions,
 		RepoRef:           env.RepoRef,
-		Item:              env.Item,
-		Inputs:            copyInputs(env.Inputs),
+		Item:              item,
+		Inputs:            inputs,
 		ContextPointers:   contextPointers,
 		MinimumIntegrity:  env.MinimumIntegrity,
 		Limits:            env.Limits,

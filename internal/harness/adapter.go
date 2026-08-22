@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -71,6 +72,10 @@ type RunRequest struct {
 	Envelope apiv1.InvocationEnvelope
 	// ExecutionPolicy is the parent-intersected policy enforced for a nested run.
 	ExecutionPolicy *apiv1.ChildExecutionPolicy
+	// SelectedEnvelopeSections is the optional context view requested by an
+	// explicit-context nested policy. ExecutionPolicy remains mandatory and is
+	// never filtered by this presentation-only selection.
+	SelectedEnvelopeSections map[string]any
 	// Instructions is the goober's resolved instructions.md body (persona,
 	// scope, done-criteria) — goober-level, not per-invocation.
 	Instructions string
@@ -263,43 +268,121 @@ type ConfigResolver interface {
 	ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error)
 }
 
-// NestedPolicyCapability declares that an adapter understands and enforces the
-// portable nested-agent policy envelope. Adapters must opt in explicitly;
-// silently passing policy to an adapter that cannot enforce it is unsafe.
+// NestedPolicyCapability declares that an adapter has a distinct child launch
+// path which understands and enforces the portable nested-agent policy
+// envelope. Validation alone is not sufficient: RunNested must be the method
+// that launches the child so the ordinary adapter path cannot silently ignore
+// the effective policy.
 type NestedPolicyCapability interface {
 	ValidateNestedAgentPolicy(apiv1.NestedAgentPolicy) error
+	RunNested(context.Context, RunRequest) (Outcome, error)
 }
 
-func validateNestedExecution(req RunRequest) error {
-	if req.Envelope.NestedAgentPolicy == nil {
-		if req.ExecutionPolicy != nil {
-			return fmt.Errorf("harness: effective nested policy has no declaration")
-		}
-		return nil
-	}
-	if req.ExecutionPolicy == nil {
-		return fmt.Errorf("harness: nested execution has no admitted child policy")
-	}
-	if req.ExecutionPolicy.Delegation == apiv1.DelegationDisabled && req.Envelope.NestedAgentPolicy.Delegation != apiv1.DelegationDisabled {
-		return fmt.Errorf("harness: child delegation was not reduced to the admitted leaf policy")
-	}
-	if !nestedCapabilitiesSubset(req.ExecutionPolicy.Capabilities, req.Envelope.Capabilities) ||
-		!nestedCapabilitiesSubset(req.ExecutionPolicy.PolicyActions, req.Envelope.PolicyActions) {
-		return fmt.Errorf("harness: effective nested policy exceeds stage authority")
+func validateStandardExecution(req RunRequest) error {
+	if req.Envelope.NestedAgentPolicy != nil || req.ExecutionPolicy != nil {
+		return fmt.Errorf("harness: nested execution requires the adapter child-launch path")
 	}
 	return nil
 }
 
-// ValidateNestedAgentPolicy performs the adapter-side admission check.
-func ValidateNestedAgentPolicy(adapter Adapter, policy apiv1.NestedAgentPolicy) error {
-	if err := policy.Validate(); err != nil {
+func validateNestedExecution(req RunRequest) error {
+	if req.Envelope.NestedAgentPolicy == nil {
+		return fmt.Errorf("harness: nested execution has no policy declaration")
+	}
+	if req.ExecutionPolicy == nil {
+		return fmt.Errorf("harness: nested execution has no admitted child policy")
+	}
+	if req.ExecutionPolicy.Profile == "" ||
+		!slices.Contains(req.Envelope.NestedAgentPolicy.PermittedProfiles, req.ExecutionPolicy.Profile) {
+		return fmt.Errorf("harness: nested execution profile was not admitted")
+	}
+	if !sameStrings(req.ExecutionPolicy.Capabilities, req.Envelope.Capabilities) ||
+		!sameStrings(req.ExecutionPolicy.PolicyActions, req.Envelope.PolicyActions) {
+		return fmt.Errorf("harness: nested envelope was not narrowed to effective authority")
+	}
+	if req.Envelope.ParentPlatformPolicy != nil {
+		return fmt.Errorf("harness: nested envelope exposes parent platform authority")
+	}
+	declaration := req.Envelope.NestedAgentPolicy
+	if declaration.Delegation != req.ExecutionPolicy.Delegation ||
+		declaration.MaxDepth != req.ExecutionPolicy.MaxDepth ||
+		declaration.PeerMessaging != req.ExecutionPolicy.PeerMessaging ||
+		!sameStrings(declaration.PermittedProfiles, []string{req.ExecutionPolicy.Profile}) ||
+		declaration.Context.Mode != req.ExecutionPolicy.Context.Mode ||
+		!sameStrings(declaration.Context.ArtifactNames, req.ExecutionPolicy.Context.ArtifactNames) ||
+		!sameStrings(declaration.Context.EnvelopeSections, req.ExecutionPolicy.Context.EnvelopeSections) ||
+		!sameStrings(declaration.Model.Allowlist, req.ExecutionPolicy.Model.Allowlist) ||
+		declaration.Model.MaxReasoningEffort != req.ExecutionPolicy.Model.MaxReasoningEffort ||
+		!samePlatformPolicy(declaration.PlatformPolicy, req.ExecutionPolicy.PlatformPolicy) {
+		return fmt.Errorf("harness: nested declaration was not reduced to effective authority")
+	}
+	if !sameStrings(req.ExecutionPolicy.PlatformPolicy.Capabilities, req.ExecutionPolicy.Capabilities) ||
+		!sameStrings(req.ExecutionPolicy.PlatformPolicy.PolicyActions, req.ExecutionPolicy.PolicyActions) ||
+		req.Envelope.Limits != req.ExecutionPolicy.PlatformPolicy.Budget {
+		return fmt.Errorf("harness: nested runtime resources differ from effective authority")
+	}
+	if len(req.ExecutionPolicy.Model.Allowlist) > 0 &&
+		!slices.Contains(req.ExecutionPolicy.Model.Allowlist, req.Model) {
+		return fmt.Errorf("harness: nested model was not admitted")
+	}
+	effort, err := configuredReasoningEffort(req.HarnessOptions)
+	if err != nil {
 		return err
+	}
+	if effort != "" &&
+		req.ExecutionPolicy.Model.MaxReasoningEffort != "" &&
+		nestedReasoningRank(effort) > nestedReasoningRank(req.ExecutionPolicy.Model.MaxReasoningEffort) {
+		return fmt.Errorf("harness: nested reasoning effort exceeds effective authority")
+	}
+	return nil
+}
+
+func sameStrings(left, right []string) bool {
+	return slices.Equal(left, right)
+}
+
+func samePlatformPolicy(left, right apiv1.PlatformPolicy) bool {
+	return sameStrings(left.Capabilities, right.Capabilities) &&
+		sameStrings(left.PolicyActions, right.PolicyActions) &&
+		sameStrings(left.Credentials, right.Credentials) &&
+		left.Sandbox == right.Sandbox &&
+		sameStrings(left.FilesystemRoots, right.FilesystemRoots) &&
+		sameStrings(left.NetworkEgress, right.NetworkEgress) &&
+		sameStrings(left.ContentExclusions, right.ContentExclusions) &&
+		left.Budget == right.Budget &&
+		left.Cancellation == right.Cancellation &&
+		left.CompletionContract == right.CompletionContract
+}
+
+func nestedReasoningRank(value apiv1.ReasoningEffort) int {
+	switch value {
+	case apiv1.ReasoningMinimal:
+		return 1
+	case apiv1.ReasoningLow:
+		return 2
+	case apiv1.ReasoningMedium:
+		return 3
+	case apiv1.ReasoningHigh:
+		return 4
+	default:
+		return 0
+	}
+}
+
+// ValidateNestedAgentPolicy performs the adapter-side admission check and
+// returns the adapter's mandatory child-launch path.
+func ValidateNestedAgentPolicy(adapter Adapter, policy apiv1.NestedAgentPolicy) (NestedPolicyCapability, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
 	}
 	capability, ok := adapter.(NestedPolicyCapability)
 	if !ok {
-		return fmt.Errorf("harness: %s does not support nested-agent policy enforcement", adapter.Name())
+		return nil, fmt.Errorf("harness: %s does not support nested-agent policy enforcement", adapter.Name())
 	}
-	return capability.ValidateNestedAgentPolicy(policy)
+	if err := capability.ValidateNestedAgentPolicy(policy); err != nil {
+		return nil, err
+	}
+	return capability, nil
 }
 
 // ValidateConfig delegates model and option validation to adapter. An adapter

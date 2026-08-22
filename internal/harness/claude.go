@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -106,10 +105,6 @@ type ClaudeAdapter struct {
 
 // Name returns the adapter's diagnostic identity.
 func (c *ClaudeAdapter) Name() string { return "claude-code" }
-
-func (c *ClaudeAdapter) ValidateNestedAgentPolicy(policy apiv1.NestedAgentPolicy) error {
-	return policy.Validate()
-}
 
 // ValidateConfig checks Claude Code model and harness option values. This is
 // called during config admission, so an unsupported model is rejected before
@@ -242,7 +237,7 @@ func (c *ClaudeAdapter) runner() ProcessRunner {
 
 // Run executes one non-interactive Claude Code session.
 func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
-	if err := validateNestedExecution(req); err != nil {
+	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
 	if len(c.Command) == 0 {

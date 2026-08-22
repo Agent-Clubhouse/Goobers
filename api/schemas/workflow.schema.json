@@ -347,12 +347,12 @@
           "type": "object",
           "additionalProperties": false,
           "description": "Versioned policy governing delegated children of this agentic task.",
-          "required": ["version", "delegation", "context", "model", "platformPolicy"],
+          "required": ["version", "delegation", "permittedProfiles", "context", "model", "platformPolicy"],
           "properties": {
             "version": { "type": "string", "const": "v1alpha1", "description": "Portable nested-agent policy schema version." },
             "delegation": { "type": "string", "enum": ["disabled", "coordinator-only", "bounded"], "description": "Delegation authority available to children." },
             "maxDepth": { "type": "integer", "minimum": 0, "description": "Maximum additional delegation depth for bounded authority." },
-            "permittedProfiles": { "type": "array", "uniqueItems": true, "description": "Agent profiles a child may select.", "items": { "type": "string", "minLength": 1 } },
+            "permittedProfiles": { "type": "array", "minItems": 1, "uniqueItems": true, "description": "Agent profiles a child may select.", "items": { "type": "string", "minLength": 1 } },
             "context": {
               "type": "object", "additionalProperties": false, "required": ["mode"], "description": "Whether and which task context is selected for the child.",
               "properties": {
@@ -371,9 +371,10 @@
             "peerMessaging": { "type": "boolean", "description": "Whether the child may message peer agents." },
             "platformPolicy": {
               "type": "object", "additionalProperties": false, "description": "Immutable platform restrictions inherited by every child.",
-              "required": ["sandbox", "cancellation", "completionContract"],
+              "required": ["sandbox", "budget", "cancellation", "completionContract"],
               "properties": {
                 "capabilities": { "type": "array", "uniqueItems": true, "description": "Capability ceiling inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "policyActions": { "type": "array", "uniqueItems": true, "description": "Externally mutating action ceiling inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
                 "credentials": { "type": "array", "uniqueItems": true, "description": "Credential grants inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
                 "sandbox": { "type": "string", "minLength": 1, "description": "Sandbox posture inherited from the parent." },
                 "filesystemRoots": { "type": "array", "uniqueItems": true, "description": "Writable/readable filesystem roots inherited from the parent.", "items": { "type": "string", "minLength": 1 } },

@@ -21,7 +21,8 @@ package v1alpha1
 // unknown fields are a validation error, and additive changes bump this version.
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
-const StageContractVersion = "v1alpha8"
+// v1alpha9 adds runner-authored nested-agent authority and ownership fields.
+const StageContractVersion = "v1alpha9"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -129,7 +130,8 @@ type InvocationEnvelope struct {
 	// PolicyActions are the externally mutating actions authorized for this stage.
 	PolicyActions []string `json:"policyActions,omitempty"`
 	// ParentPlatformPolicy is the authority inherited by a nested child.
-	// It is required when a nested policy grants resources beyond capabilities.
+	// It is required whenever NestedAgentPolicy is present and is authored by
+	// the runner, never copied from the requested child policy.
 	ParentPlatformPolicy *PlatformPolicy `json:"parentPlatformPolicy,omitempty"`
 	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`

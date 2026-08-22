@@ -149,6 +149,7 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.spec.tasks.nestedAgentPolicy.model.maxReasoningEffort":          "nested-agent model ceiling consumed by adapters",
 	"workflow.spec.tasks.nestedAgentPolicy.peerMessaging":                     "nested-agent peer messaging ceiling consumed by adapters",
 	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.capabilities":       "nested-agent capability ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.policyActions":      "nested-agent action ceiling consumed by adapters",
 	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.credentials":        "nested-agent credential ceiling consumed by adapters",
 	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.sandbox":            "nested-agent sandbox ceiling consumed by adapters",
 	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.filesystemRoots":    "nested-agent filesystem ceiling consumed by adapters",
