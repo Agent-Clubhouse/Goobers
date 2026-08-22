@@ -113,6 +113,9 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateStoredCopilotAuthBoundaries(cfg, set.Workflows, goobers); err != nil {
+		return nil, fmt.Errorf("worker: credential admission: %w", err)
+	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)

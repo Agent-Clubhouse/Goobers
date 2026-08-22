@@ -102,9 +102,15 @@ the first agentic stage when preflight is disabled) even when ordinary
 repository operations work.
 
 Goobers still models model access as **`agent:model`**. When no token grant is
-configured, the Copilot adapter uses the stored CLI session. When a grant is
-configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
-from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
+configured, the Copilot adapter uses the stored CLI session. A code-authoring
+stage may also declare `repo:push`: its repository token stays out of the
+Copilot subprocess, and the later deterministic push stage receives that scoped
+credential under `GOOBERS_CRED_REPO_PUSH`. Any other capability that would put
+`GH_TOKEN` in the Copilot subprocess requires an explicit, distinct
+`agent:model` credential; admission rejects the workflow before an agentic
+attempt or workflow budget can be consumed. When a model grant is configured,
+Goobers injects `COPILOT_GITHUB_TOKEN` alongside the repository `GH_TOKEN`, so
+the existing explicit two-token behavior is unchanged.
 
 The production harness auth preflight runs before the configured capability
 credential is resolved, but since #1996 it can authenticate a clean service or
@@ -174,7 +180,11 @@ inline — use a supported token reference such as `token.env`, `token.file`,
 `token.keychain`, or `token.store` (`CFG-009`/`SEC-010`).
 
 Omitting only the `agent:model` entry opts into stored Copilot CLI
-authentication. Missing grants for repository capabilities remain errors.
+authentication. This supports model-only stages and local code-authoring stages
+whose `repo:push` credential is consumed by a separate deterministic publisher.
+GitHub API capabilities used inside the agentic subprocess require the explicit
+model credential described above. Missing grants for repository capabilities
+remain errors.
 
 Verify harness availability before a live run with
 `goobers validate --check-harness`. When `AuthCheckArgs` is configured, its

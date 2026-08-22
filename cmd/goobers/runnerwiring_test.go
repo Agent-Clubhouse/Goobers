@@ -429,6 +429,158 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	}
 }
 
+func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
+	workflowWithTask := func(capabilities ...string) []apiv1.Workflow {
+		return []apiv1.Workflow{{
+			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "example",
+				Tasks: []apiv1.Task{{
+					Name:         "implement",
+					Type:         apiv1.TaskAgentic,
+					Goober:       "implementer",
+					Capabilities: capabilities,
+				}},
+			},
+		}}
+	}
+	copilotGoober := apiv1.GooberSpec{
+		Gaggle:       "example",
+		Harness:      apiv1.HarnessCopilot,
+		Capabilities: []string{"agent:model", "repo:push", "github:issues:write"},
+	}
+
+	t.Run("repo push remains a legitimate stored-login authoring workflow", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			workflowWithTask("agent:model", "repo:push"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("github tool token is rejected at admission", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			workflowWithTask("agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), `workflow "implementation" task "implement"`) ||
+			!strings.Contains(err.Error(), `capability "github:issues:write"`) ||
+			!strings.Contains(err.Error(), "configure a distinct agent:model credential") {
+			t.Fatalf("admission error = %v, want actionable GH_TOKEN shadowing rejection", err)
+		}
+	})
+
+	t.Run("explicit model credential preserves two-token behavior", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Credentials: []instance.CredentialGrant{{
+				Capability: "agent:model",
+				Token:      instance.TokenRef{Env: "COPILOT_TOKEN"},
+			}}},
+			workflowWithTask("agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("unused goober authority does not overbroaden the stage boundary", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			workflowWithTask("agent:model"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("claude stored auth is unaffected", func(t *testing.T) {
+		claudeGoober := copilotGoober
+		claudeGoober.Harness = apiv1.HarnessClaudeCode
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			workflowWithTask("agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": claudeGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("agentic gate uses reviewer capabilities", func(t *testing.T) {
+		workflows := []apiv1.Workflow{{
+			ObjectMeta: metav1.ObjectMeta{Name: "review"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "example",
+				Gates: []apiv1.Gate{{
+					Name:      "quality",
+					Evaluator: apiv1.EvaluatorAgentic,
+					Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				}},
+			},
+		}}
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			workflows,
+			map[string]apiv1.GooberSpec{"reviewer": copilotGoober},
+		)
+		if err == nil || !strings.Contains(err.Error(), `workflow "review" gate "quality"`) {
+			t.Fatalf("admission error = %v, want agentic-gate rejection", err)
+		}
+	})
+}
+
+func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repository-token")
+	root := initDemo(t)
+	for _, path := range []string{
+		filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"),
+		filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated := strings.Replace(string(raw), "- repo:push\n", "- repo:push\n        - github:issues:write\n", 1)
+		if strings.HasSuffix(path, "goober.yaml") {
+			updated = strings.Replace(string(raw), "- repo:push\n", "- repo:push\n    - github:issues:write\n", 1)
+		}
+		if updated == string(raw) {
+			t.Fatalf("%s did not contain repo:push fixture", path)
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	adapterCalls := 0
+	previousAdapter := newAgenticAdapter
+	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+		adapterCalls++
+		return &harnesstest.FakeAdapter{}
+	}
+	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code == 0 ||
+		!strings.Contains(stderr, `capability "github:issues:write"`) ||
+		!strings.Contains(stderr, "configure a distinct agent:model credential") {
+		t.Fatalf("run admission = code %d, stdout %q, stderr %q; want actionable rejection", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "created run ") {
+		t.Fatalf("workflow was admitted and consumed a run budget: %q", stdout)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("agentic adapter constructed %d times before credential admission", adapterCalls)
+	}
+}
+
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
 	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
