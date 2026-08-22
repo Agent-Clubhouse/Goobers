@@ -84,6 +84,18 @@ restatement. Backend is an implementation choice with the digest contract fixed:
 Blob/Files, daemon-minted per-run-scoped credential — no byte-path, preferred at scale). v1
 may start daemon-fronted. **This adds one pod egress destination (§4).**
 
+**Blob-plane scoping is security-relevant (decision 012):** the blob-endpoint grant is
+`podSelector` + port scoped at BOTH ends — the stage-pod egress selects the blob-endpoint pod
+and port, the endpoint's ingress selects the stage-pod runner-class and port — **never
+`namespaceSelector`.** The v1 endpoint (goobers-api) shares goobers-system with the
+egress-proxy (which carries a 0.0.0.0/0-except-RFC1918 allow); a namespace-scoped blob grant
+would give every stage pod a path to the proxy's allowlist (hosts no runner class's CIDR
+grant includes) — a per-class-model bypass. A tight pod+port pair cannot. If the backend moves
+off the daemon, its replacement gets its own tight pair, never a widened namespace rule. And
+**every runner class carries the blob row, `restricted` included** — without it a restricted
+stage hangs at materialize (not a policy denial); it is the class's own data path, not a grant
+to withhold.
+
 ## 3. The runner-class label — derived and non-overridable (decision 004, corrected)
 
 The dispatcher stamps exactly one `goobers.dev/runner-class` label, **derived from the
@@ -101,7 +113,7 @@ allows:
 
 | Destination | Purpose | Transport |
 | --- | --- | --- |
-| Kubernetes **API server** | pods create/delete/get/list/watch; pods/log get; resourcequotas/limitranges get/list/watch; apps/deployments **get** only (DI-9 template read) | HTTPS to the in-cluster API endpoint |
+| Kubernetes **API server** | pods create/delete/get/list/watch; pods/log get; resourcequotas/limitranges get/list/watch; apps/deployments **get** only (DI-9 template read) | HTTPS — but on AKS the API server is a MANAGED control plane (not a pod, a public Azure endpoint IP), so the only portable NetworkPolicy expression is an **ipBlock of the control-plane IP**, which Azure does not pin. It fails CLOSED to a total stage-plane outage when the IP moves, and provenance only catches that on re-render — so a **periodic live-endpoint drift preflight is required (#3560)**, not author-time provenance |
 | **Temporal** `:7233` | poll the (gaggle × runner-type) activity queues | gRPC |
 | Blobstore (dispatcher's own) | reads the resolved inventory / staging | **volume mount, NOT network** — no egress rule |
 | The daemon write API | mint stage-scoped credentials for pods, journal emits | in-cluster to the daemon service (loopback if co-located; else goobers-system service) |
