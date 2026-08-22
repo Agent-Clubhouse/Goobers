@@ -217,7 +217,7 @@ Workflow-stage and connector commands:
   goobers reconcile-post-merge [--max N] [--lookback D]
                                 reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
-  goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
+  goobers telemetry-query [--window <d>] [--aggregate <name>] [--learning-action <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
                                 emit versioned candidate findings (a connector stage)
   goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
                                 emit the docs-drift churn digest since the watermark (a connector stage)
@@ -275,7 +275,7 @@ Usage:
   goobers reconcile-post-merge [--max N] [--lookback D]
                                 reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
   goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
-  goobers telemetry-query [--window <d>] [--aggregate <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
+  goobers telemetry-query [--window <d>] [--aggregate <name>] [--learning-action <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
                                 emit versioned candidate findings (a connector stage)
   goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
                                 emit the docs-drift churn digest since the watermark (a connector stage)
@@ -1899,12 +1899,13 @@ A run that used multiple grouped agent cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### telemetry-query
-Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
 
 Query the instance telemetry rollup for threshold-crossing failure and gate
 patterns. The built-in connector stage writes a versioned candidate-findings
 artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.
-With no --aggregate, all supported aggregates are evaluated. Threshold rates
+With no --aggregate, all supported aggregates are evaluated. --learning-action
+filters learning-episode findings to governed action families. Threshold rates
 are fractions from 0 through 1; count thresholds are positive integers.
 
 --format effective-version-efficacy (requires --workflow) instead assesses

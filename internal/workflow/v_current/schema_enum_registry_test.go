@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/learning"
 )
 
 // This file is the single, registry-driven guard against a whole class of bug
@@ -62,7 +63,7 @@ func goConsts(relPath, typeName string) func(t *testing.T) []string {
 func TestEnvelopeIsValidMatchesGoConsts(t *testing.T) {
 	const envelope = "api/v1alpha1/envelope.go"
 	srcFile := filepath.Join(moduleRoot(t), filepath.FromSlash(envelope))
-	for _, typeName := range []string{"FindingClass", "ResultStatus", "VerdictDecision"} {
+	for _, typeName := range []string{"FindingClass", "LearningClassification", "ResultStatus", "VerdictDecision"} {
 		t.Run(typeName, func(t *testing.T) {
 			declared := typedStringConsts(t, srcFile, typeName)
 			accepted := isValidStringCases(t, srcFile, typeName)
@@ -109,6 +110,15 @@ func runnerOnlyCapabilities(_ *testing.T) []string {
 // enums.
 func policyActionVocabulary(_ *testing.T) []string { return knownPolicyActions() }
 
+func learningActionVocabulary(_ *testing.T) []string {
+	return []string{
+		learning.ActionInstructionOrSkill,
+		learning.ActionWorkflowOrGate,
+		learning.ActionTargetedTest,
+		learning.ActionCodeIssue,
+	}
+}
+
 var constBackedEnums = []enumRule{
 	// --- capabilities (4 locations, one vocabulary). The runner-only entries
 	// StageDeclarable withholds are subtracted via exclude, exercising the
@@ -136,6 +146,9 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "properties/decision/enum", source: "api/v1alpha1.VerdictDecision", want: goConsts("api/v1alpha1/envelope.go", "VerdictDecision")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/severity/enum", source: "api/v1alpha1.Severity", want: goConsts("api/v1alpha1/envelope.go", "Severity")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/class/enum", source: "api/v1alpha1.FindingClass", want: goConsts("api/v1alpha1/envelope.go", "FindingClass")},
+	{schema: "verdict.schema.json", path: "$defs/finding/properties/learningClassification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/classification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/recommendedAction/enum", source: "internal/learning action vocabulary", want: learningActionVocabulary},
 	{schema: "notification-request.schema.json", path: "properties/severity/enum", source: "api/v1alpha1.NotificationSeverity", want: goConsts("api/v1alpha1/notification.go", "NotificationSeverity")},
 	{schema: "notification-receipt.schema.json", path: "properties/status/enum", source: "api/v1alpha1.NotificationDeliveryStatus", want: goConsts("api/v1alpha1/notification.go", "NotificationDeliveryStatus")},
 

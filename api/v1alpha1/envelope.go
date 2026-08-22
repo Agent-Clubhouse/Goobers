@@ -387,12 +387,18 @@ func (c FindingClass) RequiresCodeChange() bool {
 type LearningClassification string
 
 const (
+	// LearningInstruction routes a finding to instruction remediation.
 	LearningInstruction LearningClassification = "instruction"
-	LearningSkill       LearningClassification = "skill"
-	LearningWorkflow    LearningClassification = "workflow"
-	LearningGate        LearningClassification = "gate"
-	LearningValidation  LearningClassification = "validation"
-	LearningCodeDefect  LearningClassification = "code-defect"
+	// LearningSkill routes a finding to skill remediation.
+	LearningSkill LearningClassification = "skill"
+	// LearningWorkflow routes a finding to workflow remediation.
+	LearningWorkflow LearningClassification = "workflow"
+	// LearningGate routes a finding to gate remediation.
+	LearningGate LearningClassification = "gate"
+	// LearningValidation routes a finding to targeted validation remediation.
+	LearningValidation LearningClassification = "validation"
+	// LearningCodeDefect routes a finding to an unapproved code issue.
+	LearningCodeDefect LearningClassification = "code-defect"
 )
 
 // IsValid reports whether c is a supported durable-learning classification.

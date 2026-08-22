@@ -403,7 +403,7 @@ func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query learning episodes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []LearningEpisode
 	for rows.Next() {
 		var episode LearningEpisode

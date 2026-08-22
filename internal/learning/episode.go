@@ -1,3 +1,4 @@
+// Package learning defines durable finding-level repass episode contracts.
 package learning
 
 import (
@@ -11,22 +12,33 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// EpisodeSchema is the versioned wire schema for injected learning episodes.
 const EpisodeSchema = "goobers.dev/learning/episode/v1"
 
 const (
+	// ActionInstructionOrSkill routes instruction and skill learning to Tutor.
 	ActionInstructionOrSkill = "instruction-or-skill"
-	ActionWorkflowOrGate     = "workflow-or-gate"
-	ActionTargetedTest       = "targeted-test-mapping"
-	ActionCodeIssue          = "code-issue"
+	// ActionWorkflowOrGate routes workflow and gate learning to Tutor.
+	ActionWorkflowOrGate = "workflow-or-gate"
+	// ActionTargetedTest routes validation learning to Tutor.
+	ActionTargetedTest = "targeted-test-mapping"
+	// ActionCodeIssue routes code defects to unapproved issue nomination.
+	ActionCodeIssue = "code-issue"
 )
 
 const (
-	OutcomeUnresolved     = "unresolved"
-	OutcomeFixed          = "fixed"
-	OutcomeRepeated       = "repeated"
+	// OutcomeUnresolved means no later result established a disposition.
+	OutcomeUnresolved = "unresolved"
+	// OutcomeFixed means a later result resolved or suppressed the finding.
+	OutcomeFixed = "fixed"
+	// OutcomeRepeated means the same finding persisted in a later result.
+	OutcomeRepeated = "repeated"
+	// OutcomeChangedFailure means a later result failed with different findings.
 	OutcomeChangedFailure = "changed-failure"
-	OutcomeEscalated      = "escalated"
-	OutcomeFalseFinding   = "false-finding"
+	// OutcomeEscalated means the run terminated without resolving the finding.
+	OutcomeEscalated = "escalated"
+	// OutcomeFalseFinding means deterministic evidence disproved the finding.
+	OutcomeFalseFinding = "false-finding"
 )
 
 // Episode is the bounded, typed artifact injected into a repass. Journal
@@ -86,6 +98,7 @@ func NormalizeFinding(f *apiv1.Finding, gate, evidenceDigest string) {
 	}
 }
 
+// FindingSignature returns the normalized cross-run identity signature.
 func FindingSignature(gate string, f apiv1.Finding) string {
 	location := trailingLocation.ReplaceAllString(strings.TrimSpace(strings.ToLower(f.Location)), "")
 	message := strings.Join(strings.Fields(strings.ToLower(f.Message)), " ")
@@ -104,6 +117,7 @@ func FindingSignature(gate string, f apiv1.Finding) string {
 	}, "|")
 }
 
+// ClassificationForFinding derives the conservative governed action family.
 func ClassificationForFinding(f apiv1.Finding) apiv1.LearningClassification {
 	if f.LearningClassification.IsValid() {
 		return f.LearningClassification
@@ -124,6 +138,7 @@ func ClassificationForFinding(f apiv1.Finding) apiv1.LearningClassification {
 	return apiv1.LearningInstruction
 }
 
+// RecommendedAction maps a classification to its governed execution route.
 func RecommendedAction(classification apiv1.LearningClassification) string {
 	switch classification {
 	case apiv1.LearningWorkflow, apiv1.LearningGate:
@@ -137,6 +152,7 @@ func RecommendedAction(classification apiv1.LearningClassification) string {
 	}
 }
 
+// ActionsForFindings builds the authoritative finding-level action contract.
 func ActionsForFindings(findings []apiv1.Finding) []FindingAction {
 	actions := make([]FindingAction, 0, len(findings))
 	for _, finding := range findings {
@@ -151,6 +167,7 @@ func ActionsForFindings(findings []apiv1.Finding) []FindingAction {
 	return actions
 }
 
+// EffectiveVersion identifies the exact workflow and goober digest pair.
 func EffectiveVersion(workflowDigest, gooberDigest string) string {
 	if workflowDigest == "" && gooberDigest == "" {
 		return ""
@@ -160,6 +177,7 @@ func EffectiveVersion(workflowDigest, gooberDigest string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// CombinedSignature returns a stable episode summary over finding signatures.
 func CombinedSignature(findings []apiv1.Finding) string {
 	signatures := make([]string, 0, len(findings))
 	for _, finding := range findings {
@@ -171,6 +189,7 @@ func CombinedSignature(findings []apiv1.Finding) string {
 	return strings.Join(signatures, "\n")
 }
 
+// EpisodeID returns a stable identity for one source event and finding set.
 func EpisodeID(episode Episode) string {
 	data, _ := json.Marshal(struct {
 		RunID     string   `json:"runId"`

@@ -44,7 +44,7 @@ startedAt: 2026-08-21T00:00:00Z
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.IngestRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ startedAt: 2026-08-21T00:00:00Z
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.IngestRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestLearningEpisodesClassifyEveryOutcomeAndExcludeNonActionableClusters(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, outcome := range []string{
 		learning.OutcomeFixed,
@@ -192,7 +192,7 @@ func TestDetectLearningEpisodesRequiresDistinctRunsAndRoutesCodeDefects(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	for _, runID := range []string{"code-learning-1", "code-learning-2"} {
 		run := writeFixedLearningRun(t, root, runID, "shared-code-signature", apiv1.LearningCodeDefect)
 		if err := db.IngestRun(context.Background(), run); err != nil {
@@ -232,7 +232,7 @@ func TestLearningClustersSeparateReclassifiedRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	for _, fixture := range []struct {
 		runID          string
 		classification apiv1.LearningClassification
@@ -291,7 +291,7 @@ func TestLearningEpisodesProjectSameEvaluationDisproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := db.IngestRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
