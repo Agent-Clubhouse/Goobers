@@ -1,9 +1,10 @@
 # Goobers container image (docs/design/k8s-infra-shape.md §2).
 #
 # One image carries the goobers binary (daemon `up`, worker-style stage
-# invocation via args) plus the tier-3 operator binary, so the reference
-# manifests under deploy/reference/ can run every control-plane component
-# from a single build. Build from the repo root:
+# invocation via args), the default Copilot agent harness, and the tier-3
+# operator binary, so the reference manifests under deploy/reference/ can run
+# every control-plane component and stage kind from a single build. Build from
+# the repo root:
 #
 #   docker build -f packaging/docker/Dockerfile -t <registry>/goobers:<tag> .
 #
@@ -15,8 +16,15 @@
 # Publishing this image from CI on tagged releases is a follow-up; nothing in
 # .github/workflows builds or pushes it yet.
 
-ARG GO_IMAGE=docker.io/library/golang:1.26
-ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22
+# GO_IMAGE is pinned to the exact patch version go.mod declares, never a
+# floating minor: a floating tag builds the shipped image with whatever 1.26.x
+# the registry serves that day, with no commit recording the change (#3452).
+# Bump trigger: a change to the `go` directive in go.mod — never a calendar.
+# `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
+# the two disagree, so the bump has to land in the same diff.
+ARG GO_IMAGE=docker.io/library/golang:1.26.6
+ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim
+ARG COPILOT_VERSION=1.0.80
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -36,21 +44,29 @@ RUN go build -trimpath \
     && go build -trimpath -ldflags "-s -w" -o /out/goobers-operator ./cmd/operator
 
 FROM ${RUNTIME_IMAGE}
-# git + CA bundle: the daemon manages real clones/worktrees and speaks HTTPS
-# to the git/backlog provider; tzdata resolves instance-local schedule
-# triggers.
-RUN apk add --no-cache git ca-certificates tzdata
+# git + gh + CA bundle support repository/provider operations; tzdata resolves
+# instance-local schedule triggers. Copilot is the default agent harness.
+ARG COPILOT_VERSION
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates gh git tzdata \
+    && npm install --global --omit=dev "@github/copilot@${COPILOT_VERSION}" \
+    && git --version \
+    && gh --version \
+    && node --version \
+    && copilot --version \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/goobers /out/goobers-operator /usr/local/bin/
 # 65532 mirrors the conventional distroless "nonroot" uid/gid so pod
 # securityContexts (runAsNonRoot, runAsUser: 65532) hold across base images.
-RUN addgroup -g 65532 nonroot \
-    && adduser -D -H -u 65532 -G nonroot nonroot \
+RUN groupadd --gid 65532 nonroot \
+    && useradd --uid 65532 --gid nonroot --home-dir /home/nonroot --create-home nonroot \
     && mkdir -p /instance \
     && chown nonroot:nonroot /instance
+ENV HOME=/home/nonroot
 USER 65532:65532
 WORKDIR /instance
 ENTRYPOINT ["goobers"]
-# Daemon by default. Override args for worker-style invocation (task-queue
-# workers once v2-cloud-scale A1.6 lands), or set the container command to
-# ["goobers-operator"] for the operator Deployment.
+# Daemon by default. Override args to host a Temporal task-queue worker, or set
+# the container command to ["goobers-operator"] for the operator Deployment.
 CMD ["up"]

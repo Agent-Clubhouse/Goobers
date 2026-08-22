@@ -203,6 +203,29 @@ func TestRunnerHumanGatePassAndReject(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeUsesPinnedDefinitionWhenMachineOmitted(t *testing.T) {
+	machine := humanGateFixtureMachine(t)
+	r, runsDir := newTestRunnerWithDeterministic(t, nil, nil)
+	const runID = "human-pinned-definition"
+	startHumanGateRun(t, r, machine, runID)
+
+	result, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   runID,
+		RepoRef: humanGateRepoRef(),
+		HumanDecision: &HumanGateDecision{
+			Gate:     "approval",
+			PauseSeq: latestHumanPauseSeq(t, runsDir, runID, "approval"),
+			Decision: "pass",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+}
+
 func TestRunnerHumanGateDecisionFailsClosed(t *testing.T) {
 	machine := humanGateFixtureMachine(t)
 	r, runsDir := newTestRunnerWithDeterministic(t, nil, nil)

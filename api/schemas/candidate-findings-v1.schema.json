@@ -44,6 +44,7 @@
           "enum": [
             "stage-failure-rate",
             "error-signature",
+            "ci-check-failure",
             "gate-never-fails",
             "gate-repass-churn",
             "workflow-untriggered",

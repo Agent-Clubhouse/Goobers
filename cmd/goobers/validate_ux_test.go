@@ -404,8 +404,9 @@ func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("strict validate code=%d, want 0 (deprecation notices are strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "DVL020") {
-		t.Fatalf("strict validate did not render the DVL020 deprecation notice:\n%s", stdout)
+	const want = "WARNING DVL020 gaggles/example/workflows/default-implement.yaml Gaggle/example Workflow/default-implement:"
+	if !strings.Contains(stdout, want) {
+		t.Fatalf("strict validate did not render the DVL020 notice with full provenance:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "--strict treats warnings as errors") {
 		t.Fatalf("strict validate promoted a deprecation notice:\n%s", stdout)
@@ -703,6 +704,38 @@ func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
 	}
 }
 
+func TestValidateWarnsOnUnpartitionedGaggleWithSibling(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		`  isolation:
+    namespace: gaggle-example
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		"spec.requireLabels is empty",
+		`no label partition from declared sibling "Billing team"`,
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestValidateNoWarningOnDisjointSiblingLabels(t *testing.T) {
 	root := initDeterministicDemo(t)
 	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
@@ -872,6 +905,41 @@ func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "REPOSITORY repos[0] acme/monorepo: could not determine repository size: rate limited") {
 		t.Fatalf("checkTargetRepositories() output missing size-check-failure diagnostic:\n%s", stdout.String())
+	}
+}
+
+// TestValidateRejectsInsecureNonLoopbackOTLP reproduces #3333's live
+// v0.2.0 Goobernetes cutover incident: an instance.yaml with
+// telemetry.otlp.insecure: true against a non-loopback collector endpoint
+// passed every check available at the time and only killed the daemon (and
+// both workers) at boot with the runtime's "insecure mode is allowed only
+// for localhost or a loopback IP" refusal. `goobers validate` must reach
+// that same refusal — config-load parity — so this dies in CI, not at
+// cutover, and the message must name both escape routes (a loopback sidecar
+// collector, or a TLS endpoint) so the failure teaches the fix.
+func TestValidateRejectsInsecureNonLoopbackOTLP(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, "telemetry:\n"+
+		"  otlp:\n"+
+		"    endpoint: goobers-collector.goobers-system:4317\n"+
+		"    insecure: true\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		`insecure mode is allowed only for localhost or a loopback IP`,
+		`loopback sidecar collector`,
+		`TLS collector`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

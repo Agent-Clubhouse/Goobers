@@ -123,15 +123,19 @@ type TelemetryReadyPool struct {
 
 // TelemetryGaggleStats is the run aggregate for one gaggle.
 type TelemetryGaggleStats struct {
-	Gaggle        string   `json:"gaggle"`
-	TotalRuns     int      `json:"totalRuns"`
-	CompletedRuns int      `json:"completedRuns"`
-	FailedRuns    int      `json:"failedRuns"`
-	OtherRuns     int      `json:"otherRuns"`
-	SuccessRate   *float64 `json:"successRate,omitempty"`
-	AvgDurationMs *float64 `json:"avgDurationMs,omitempty"`
-	MinDurationMs *int64   `json:"minDurationMs,omitempty"`
-	MaxDurationMs *int64   `json:"maxDurationMs,omitempty"`
+	Gaggle        string `json:"gaggle"`
+	TotalRuns     int    `json:"totalRuns"`
+	CompletedRuns int    `json:"completedRuns"`
+	FailedRuns    int    `json:"failedRuns"`
+	// InfraFailedRuns is how many of FailedRuns terminated on an
+	// infrastructure fault rather than a verdict about the work, and are
+	// therefore excluded from SuccessRate's denominator (#3361/#3364).
+	InfraFailedRuns int      `json:"infraFailedRuns"`
+	OtherRuns       int      `json:"otherRuns"`
+	SuccessRate     *float64 `json:"successRate,omitempty"`
+	AvgDurationMs   *float64 `json:"avgDurationMs,omitempty"`
+	MinDurationMs   *int64   `json:"minDurationMs,omitempty"`
+	MaxDurationMs   *int64   `json:"maxDurationMs,omitempty"`
 }
 
 // TelemetryRunStats is the run aggregate for one workflow. Optional metrics
@@ -149,6 +153,11 @@ type TelemetryRunStats struct {
 	AvgDurationMs  *float64 `json:"avgDurationMs,omitempty"`
 	MinDurationMs  *int64   `json:"minDurationMs,omitempty"`
 	MaxDurationMs  *int64   `json:"maxDurationMs,omitempty"`
+	// InfraFailedRuns is how many of FailedRuns terminated on an
+	// infrastructure fault (credential materialization, git, network, lock
+	// contention) rather than a verdict about the work, and are therefore
+	// excluded from SuccessRate's denominator (#3361/#3364).
+	InfraFailedRuns int `json:"infraFailedRuns"`
 	// StuckAbortedRuns is how many of TotalRuns were excluded from
 	// Avg/Min/MaxDurationMs because they hung and were later aborted (the
 	// watchdog's max-duration expiry) rather than reaching a designed
@@ -208,6 +217,7 @@ type TelemetryUsageStats struct {
 	P50CopilotPremiumRequests *float64 `json:"p50CopilotPremiumRequests,omitempty"`
 	P95CopilotPremiumRequests *float64 `json:"p95CopilotPremiumRequests,omitempty"`
 	CostSamples               int      `json:"costSamples"`
+	CostUSD                   *float64 `json:"costUSD,omitempty"`
 	P50CostUSD                *float64 `json:"p50CostUSD,omitempty"`
 	P95CostUSD                *float64 `json:"p95CostUSD,omitempty"`
 	RetryWasteAttempts        int      `json:"retryWasteAttempts"`
@@ -384,13 +394,16 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	for _, stat := range stats.Gaggles {
 		item := TelemetryGaggleStats{
-			Gaggle:        stat.Gaggle,
-			TotalRuns:     stat.TotalRuns,
-			CompletedRuns: stat.CompletedRuns,
-			FailedRuns:    stat.FailedRuns,
-			OtherRuns:     stat.OtherRuns,
+			Gaggle:          stat.Gaggle,
+			TotalRuns:       stat.TotalRuns,
+			CompletedRuns:   stat.CompletedRuns,
+			FailedRuns:      stat.FailedRuns,
+			InfraFailedRuns: stat.InfraFailedRuns,
+			OtherRuns:       stat.OtherRuns,
 		}
-		if stat.CompletedRuns+stat.FailedRuns > 0 {
+		// The rate is absent, not zero, when nothing reached a verdict about
+		// the work — an all-infra-fault window makes no claim either way.
+		if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
 		}
 		if stat.HasDuration {
@@ -409,10 +422,11 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			TotalRuns:        stat.TotalRuns,
 			CompletedRuns:    stat.CompletedRuns,
 			FailedRuns:       stat.FailedRuns,
+			InfraFailedRuns:  stat.InfraFailedRuns,
 			OtherRuns:        stat.OtherRuns,
 			StuckAbortedRuns: stat.StuckAbortedRuns,
 		}
-		if stat.CompletedRuns+stat.FailedRuns > 0 {
+		if stat.CompletedRuns+stat.FailedRuns-stat.InfraFailedRuns > 0 {
 			item.SuccessRate = float64Pointer(stat.SuccessRate)
 		}
 		if stat.HasDuration {
@@ -492,6 +506,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
 		}
 		if stat.HasCost {
+			item.CostUSD = float64Pointer(stat.CostUSD)
 			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
 			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
 		}

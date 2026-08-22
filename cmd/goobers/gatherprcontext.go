@@ -106,16 +106,6 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// issues:write and repo:push are both used below (ListComments hits the
-	// issues API; the checkout is a git operation) — both checked explicitly
-	// before any call is made, matching #360/#361's capability-absent-refuses-
-	// first contract. In V0 all three resolve to the identical repo credential
-	// (runnerwiring.go's credentialedCapabilities), so only prToken is
-	// actually needed to construct the provider.
-	if _, err := providerToken(capability.GitHubIssuesWrite); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

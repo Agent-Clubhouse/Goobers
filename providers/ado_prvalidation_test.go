@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
@@ -228,6 +229,11 @@ func TestADOProviderPollPullRequestProviderError(t *testing.T) {
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	// The assertion is "the 500 surfaces as an error", not "the retries were
+	// timed": stub the backoff sleep (the in-package idiom, cf.
+	// ado_landing_test.go) so the retry ladder still runs but costs no real
+	// wall-clock time instead of 1+2+4+8 = 15s.
+	provider.sleep = func(context.Context, time.Duration) error { return nil }
 	_, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
 		Repository: RepositoryRef{Name: "repo", Project: "project"},
 		PullID:     "42",

@@ -164,6 +164,25 @@ func TestParseDashboardListen(t *testing.T) {
 	}
 }
 
+func TestDashboardWaitFlag(t *testing.T) {
+	var wait dashboardWaitFlag
+	if err := wait.Set("true"); err != nil {
+		t.Fatal(err)
+	}
+	if wait.duration() != dashboardAttachTimeout {
+		t.Fatalf("bare wait duration = %s, want %s", wait.duration(), dashboardAttachTimeout)
+	}
+	if err := wait.Set("2m"); err != nil {
+		t.Fatal(err)
+	}
+	if wait.duration() != 2*time.Minute {
+		t.Fatalf("explicit wait duration = %s, want 2m", wait.duration())
+	}
+	if err := wait.Set("0s"); err == nil {
+		t.Fatal("zero wait duration accepted")
+	}
+}
+
 // TestValidateDashboardListenHostFailsClosedOffLoopback mirrors
 // TestValidateAPIListenFailClosedOffLoopback (internal/instance) for the
 // portal's own gate (#2884): a non-loopback bind is refused unless
@@ -248,6 +267,21 @@ func freeNonLoopbackTestPort(t *testing.T) int {
 	return port
 }
 
+func useLoopbackDashboardTestListener(t *testing.T) {
+	t.Helper()
+	original := listenDashboardTCP
+	listenDashboardTCP = func(network, address string) (net.Listener, error) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		return net.Listen(network, net.JoinHostPort("127.0.0.1", port))
+	}
+	t.Cleanup(func() {
+		listenDashboardTCP = original
+	})
+}
+
 // TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth pins the
 // fail-closed CLI behaviour (#2884): --listen to a non-loopback host is
 // refused at startup, before anything is served, when instance.yaml has no
@@ -273,6 +307,11 @@ func TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth(t *testing.T) {
 func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 	root := initDemo(t)
 	setDashboardAPIAuth(t, root)
+	// Preserve the configured non-loopback host through validation and URL
+	// publication, but never expose the disposable test binary off-loopback.
+	// Windows Defender otherwise asks for a persistent firewall decision for
+	// the temporary goobers.test.exe.
+	useLoopbackDashboardTestListener(t)
 	port := freeNonLoopbackTestPort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &dashboardURLWriter{url: make(chan string, 1)}
@@ -439,7 +478,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err != nil {
 		release()
 		t.Fatal(err)
@@ -459,7 +498,7 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	standalone, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	standalone, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,6 +514,150 @@ func TestPrepareDashboardAPIAttachesOnlyToLiveDaemon(t *testing.T) {
 	standalone.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.HealthPath, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("standalone health status = %d, body = %q", response.Code, response.Body.String())
+	}
+}
+
+func TestPrepareDashboardAPIWaitsForConcurrentlyStartingDaemon(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+			Healthy:       true,
+		})
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		api dashboardAPI
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 2*time.Second)
+		done <- result{api: api, err: err}
+	}()
+	select {
+	case result := <-done:
+		t.Fatalf("dashboard stopped waiting before daemon startup: %v", result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, instance.DefaultDaemonLivenessTimeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		defer func() {
+			if err := result.api.close(); err != nil {
+				t.Error(err)
+			}
+		}()
+		if result.api.mode != dashboardModeDaemon {
+			t.Fatalf("mode = %q, want daemon", result.api.mode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dashboard did not attach after daemon startup")
+	}
+}
+
+func TestPrepareDashboardAPIWaitsForLockReacquisitionDuringStartup(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockReleased := make(chan struct{})
+	var releaseOnce sync.Once
+	daemon := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.HealthPath {
+			http.NotFound(response, request)
+			return
+		}
+		releaseOnce.Do(func() {
+			release()
+			close(lockReleased)
+		})
+		_ = json.NewEncoder(response).Encode(readservice.Health{
+			APIVersion:    readservice.APIVersion,
+			SchemaVersion: readservice.SchemaVersion,
+			Ready:         true,
+			Healthy:       true,
+		})
+	}))
+	defer daemon.Close()
+	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "http://"))
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		api dashboardAPI
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 2*time.Second)
+		done <- result{api: api, err: err}
+	}()
+	select {
+	case <-lockReleased:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard did not probe the first daemon")
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("dashboard selected a mode after the daemon lock disappeared: mode=%q err=%v", result.api.mode, result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	releaseAgain, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseAgain()
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.api.mode != dashboardModeDaemon {
+			t.Fatalf("mode = %q, want daemon", result.api.mode)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("dashboard did not attach after daemon lock reacquisition")
+	}
+}
+
+func TestPrepareDashboardAPIWaitForDaemonTimesOut(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 150*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "up.lock") {
+		t.Fatalf("wait error = %v, want timeout naming up.lock", err)
 	}
 }
 
@@ -499,7 +682,7 @@ func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
 	// The refusal must name the cause up front — not probe a 401ing health
 	// endpoint until the attach timeout.
 	start := time.Now()
-	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err == nil || !strings.Contains(err.Error(), "bearer token") {
 		t.Fatalf("prepareDashboardAPI error = %v, want bearer-token refusal", err)
 	}
@@ -534,7 +717,7 @@ func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
 	// would report a protocol error, never a certificate one) and fails fast
 	// on the untrusted test certificate instead of spinning to the attach
 	// timeout, whose message says "unavailable" rather than "does not trust".
-	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	_, err = prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err == nil || !strings.Contains(err.Error(), "does not trust") {
 		t.Fatalf("prepareDashboardAPI error = %v, want fail-fast certificate trust error", err)
 	}
@@ -580,7 +763,7 @@ func TestPrepareDashboardAPIAttachesWhenDaemonTicksAreStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,8 +968,8 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 	case <-time.After(2 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("dashboard reported cancellation as an error: %q", stderr.String())
+	if stderr.String() != "dashboard: mode=daemon\n" {
+		t.Fatalf("dashboard mode output = %q, want daemon mode", stderr.String())
 	}
 	if stdout.String() != dashboardAddress+"\n" {
 		t.Fatalf("dashboard output = %q, want %q", stdout.String(), dashboardAddress+"\n")
@@ -848,7 +1031,7 @@ func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true)
+	api, err := prepareDashboardAPI(context.Background(), layout, config, log.New(io.Discard, "", 0), true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,6 +1155,7 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &dashboardURLWriter{url: make(chan string, 1)}
 	done := make(chan int, 1)
+	var stderr bytes.Buffer
 	originalLauncher := launchDashboardBrowser
 	browserCalled := false
 	launchDashboardBrowser = func(context.Context, string) error {
@@ -981,7 +1165,7 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	defer func() { launchDashboardBrowser = originalLauncher }()
 
 	go func() {
-		done <- runDashboardContext(ctx, []string{"--port=auto", "--no-open", root}, started, io.Discard)
+		done <- runDashboardContext(ctx, []string{"--port=auto", "--no-open", root}, started, &stderr)
 	}()
 
 	var address string
@@ -1031,5 +1215,8 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		_ = events.Body.Close()
 		t.Fatal("dashboard did not stop after cancellation")
+	}
+	if stderr.String() != "dashboard: mode=standalone\n" {
+		t.Fatalf("dashboard mode output = %q, want standalone mode", stderr.String())
 	}
 }

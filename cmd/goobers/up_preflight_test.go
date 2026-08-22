@@ -102,4 +102,15 @@ func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
 			t.Errorf("up stderr missing %q: %q", want, stderr.String())
 		}
 	}
+	for _, want := range []string{
+		"startup: validating instance configuration",
+		"startup: instance configuration valid",
+		"startup: loading instance and workflow configuration",
+		`startup: initializing gaggle "example" runtime`,
+		"startup: scheduler initialized",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("up stdout missing %q: %q", want, stdout.String())
+		}
+	}
 }

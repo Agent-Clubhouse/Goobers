@@ -1176,7 +1176,7 @@ func TestRunDetailProjectsExecutedTransitions(t *testing.T) {
 	}
 }
 
-func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
+func TestUnknownSchemaFailsClosedDespiteTornTail(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, _ := createFixtureRun(
 		t,
@@ -1206,33 +1206,28 @@ func TestUnknownSchemasAndTornTailRemainInspectable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	detail, err := service.GetRun(context.Background(), "run-future")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if detail.Phase != journal.PhaseRunning || detail.Graph != nil || detail.GraphStatus != "unavailable" {
-		t.Fatalf("future run detail = %+v", detail)
-	}
-	if detail.TransitionsStatus != "unavailable" || detail.Transitions != nil {
-		t.Fatalf("transitions = %+v (%s), want unavailable/nil without a pinned graph", detail.Transitions, detail.TransitionsStatus)
-	}
-	events, err := service.RunEvents(context.Background(), "run-future")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(events.Events) != 2 {
-		t.Fatalf("events = %+v", events.Events)
-	}
-	future := events.Events[1]
-	if future.KnownSchema || future.Seq != 2 || future.Branch != 4 ||
-		!strings.Contains(string(future.Raw), `"answer":42`) {
-		t.Fatalf("future event = %+v", future)
-	}
-	if future.Category != RunEventUnknown || future.ReplayChapter {
-		t.Fatalf("future event classification = (%q, %t)", future.Category, future.ReplayChapter)
-	}
-	if future.Status != "" {
-		t.Fatalf("unsupported type-specific status was trusted: %+v", future)
+	for _, operation := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "GetRun", run: func() error {
+			_, err := service.GetRun(context.Background(), "run-future")
+			return err
+		}},
+		{name: "RunEvents", run: func() error {
+			_, err := service.RunEvents(context.Background(), "run-future")
+			return err
+		}},
+	} {
+		err := operation.run()
+		if err == nil {
+			t.Fatalf("%s accepted a newer journal schema", operation.name)
+		}
+		for _, want := range []string{"event/v99", "event/v1", "minimum binary"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s error %q does not contain %q", operation.name, err, want)
+			}
+		}
 	}
 }
 
@@ -1879,6 +1874,8 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 			"escalated":     true,
 			"duplicateDiff": true,
 			"diffDigest":    "sha256:aaaa",
+			"reason":        "UNCHANGED_REPASS",
+			"repassTarget":  "implement",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -1889,12 +1886,13 @@ func TestDuplicateDiffEscalationUsesRunnerMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantReason := "UNCHANGED_REPASS: repass produced a diff identical to the immediately prior attempt (implement-classified failure)"
 	if detail.Escalation == nil ||
 		detail.Escalation.Selector.Kind != "gate" ||
 		detail.Escalation.Selector.Name != "review" ||
 		detail.Escalation.SelectedBranch != "needs-changes" ||
-		detail.Escalation.TerminalReason != "repass produced a diff identical to the immediately prior attempt" {
-		t.Fatalf("duplicate-diff escalation = %+v", detail.Escalation)
+		detail.Escalation.TerminalReason != wantReason {
+		t.Fatalf("duplicate-diff escalation = %+v, want reason %q", detail.Escalation, wantReason)
 	}
 }
 

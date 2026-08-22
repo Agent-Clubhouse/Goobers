@@ -46,9 +46,36 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "requiredCapabilities": {
-          "description": "Runner (toolchain/platform) capabilities every run of this gaggle needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101).",
+          "description": "Runner (toolchain/platform) capabilities every run of this gaggle needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101). DSL ≤2.0 only: DSL 3.0 removes this field in favor of spec.runsOn (dsl-3.0.md D1/D12); the 3.0 interpreter refuses it with a pointer diagnostic.",
           "type": "array",
           "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "runsOn": {
+          "description": "Gaggle-level placement floor (DSL 3.0 only, dsl-3.0.md §2): OS, toolchain capability tags, and required runner restrictions that merge into every stage of every workflow in this gaggle — capabilities and restrictions union with the stage's own; an OS conflict with a stage is a compile error. No quantities at gaggle level. Activates only for gaggles whose workflows pin DSL 3.0.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "os": {
+              "description": "Operating system every stage of this gaggle requires — same validated enum as a stage's runsOn.os.",
+              "type": "string",
+              "enum": ["linux", "windows", "macOS"]
+            },
+            "capabilities": {
+              "description": "Toolchain tags unioned into every stage's runsOn.capabilities (internal/runnercap grammar). os=* tokens are rejected (CAP004). maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 32,
+              "items": { "$ref": "#/$defs/runnerCapability" }
+            },
+            "restrictions": {
+              "description": "Isolation effects unioned into every stage's runsOn.restrictions, from the closed v1 effect list (Goobernetes decision D7). Unknown tokens are rejected with a suggestion (CAP005). maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+              }
+            }
+          }
         },
         "branchNamespace": {
           "description": "refs/heads/ root this gaggle's run branches live under (providers.BranchName). Empty defaults to 'goobers/'. A trailing slash is optional. Must be a valid ref-path segment sequence (#965/#1010).",
@@ -56,6 +83,7 @@
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
           "type": "object",
@@ -153,7 +181,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
@@ -178,7 +206,6 @@
           "minLength": 1,
           "description": "CEL predicate over the provider's typed native-field projection. ANDed with labels; unavailable fields are errors."
         },
-        "query": { "type": "string", "description": "Provider-specific query used to narrow candidate work items." },
         "connectionRef": { "type": "string", "description": "Manifest connection that supplies credentials for this backlog." }
       }
     }

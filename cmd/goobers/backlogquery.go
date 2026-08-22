@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -94,7 +95,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -108,6 +109,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--read-only | --claim | 
 	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
 	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
 	"and uses only the github:issues:read capability.\n\n" +
+	"--debug writes candidate eligibility, exclusion, and claim-loss details to\n" +
+	"stderr. Diagnostics contain item IDs and selection metadata only; normal\n" +
+	"output and claim behavior are unchanged.\n\n" +
 	"With --release, removes the provider-visible claim marker and then releases\n" +
 	"every claim this run holds in the local ledger (issues #234/#1003). A\n" +
 	"workflow that only reads/labels an item, never opening a PR or closing the\n" +
@@ -163,6 +167,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
+	debug := fs.Bool("debug", false, "explain candidate eligibility, exclusions, and lost claim attempts on stderr")
 	fs.Usage = helpUsage(stderr, "backlog-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -186,6 +191,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		layout: layoutFor(root),
 		stdout: stdout,
 		stderr: stderr,
+		debug:  *debug,
 	}
 	if mode == backlogQueryModeRelease {
 		return runBacklogQueryRelease(env)
@@ -245,6 +251,13 @@ type backlogQueryEnv struct {
 	ghIssueProvider *providers.GitHubProvider
 	stdout          io.Writer
 	stderr          io.Writer
+	debug           bool
+}
+
+func (env backlogQueryEnv) debugf(format string, args ...interface{}) {
+	if env.debug {
+		pf(env.stderr, "debug: "+format+"\n", args...)
+	}
 }
 
 func (env *backlogQueryEnv) openProvider(readOnly bool) int {
@@ -487,8 +500,10 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	persistResweepState := resweep.persist
 
 	if !claim {
+		reportBacklogEligibility(env, scan.eligible, nil, verifiedSkips)
 		return runPlainBacklogQuery(env, scan)
 	}
+	reportBacklogEligibility(env, eligible, readOnlyResweep, verifiedSkips)
 	return runClaimBacklogQuery(ctx, env, backlogClaimOptions{
 		eligible:               eligible,
 		readOnlyResweep:        readOnlyResweep,
@@ -631,7 +646,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return
 		}
 		for _, item := range session.newlyClaimed {
-			if releaseErr := session.release(item); releaseErr != nil {
+			if releaseErr := session.rollback(ctx, item); releaseErr != nil {
 				pf(stderr, "error: roll back claim %s after backlog query failure: %v\n", item.ID, releaseErr)
 			}
 		}
@@ -695,7 +710,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
 		maxItems:            maxItems,
-		runID:               runID,
 		curationRun:         curationRun,
 		stalenessPolicy:     stalenessPolicy,
 		observedAt:          observedAt,
@@ -710,7 +724,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 
 type claimedBacklogResultOptions struct {
 	maxItems            int
-	runID               string
 	curationRun         bool
 	stalenessPolicy     backlogStalenessPolicy
 	observedAt          time.Time
@@ -761,15 +774,6 @@ func writeClaimedBacklogResult(
 	if err := opts.persistResweepState(); err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
-	}
-	for index := range claimed {
-		if _, err := env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-			Repository: env.backlogRepo,
-			ID:         claimed[index].ID,
-			RunID:      opts.runID,
-		}); err != nil {
-			pf(env.stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", claimed[index].ID, err)
-		}
 	}
 	writeClaimedBacklogSummary(env.stdout, claimed, readOnly)
 	return 0
@@ -868,32 +872,36 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			pf(session.env.stderr, "error: %v\n", err)
 			return malformedReadyItems, 1
 		}
-		if !labelFilter.ReferencesLabel(providers.LabelReady) {
-			continue
-		}
-		for index := firstNewClaim; index < len(session.claimed); {
-			if !session.claimed[index].HasLabel(providers.LabelReady) {
-				index++
-				continue
-			}
-			transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
-				ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
-			)
-			if err != nil {
-				return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
-			}
-			if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
-				malformed := session.claimed[index]
-				if releaseErr := session.release(malformed); releaseErr != nil {
-					pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
-					return malformedReadyItems, 1
+		if labelFilter.ReferencesLabel(providers.LabelReady) {
+			for index := firstNewClaim; index < len(session.claimed); {
+				if !session.claimed[index].HasLabel(providers.LabelReady) {
+					index++
+					continue
 				}
-				pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
-				session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
-				malformedReadyItems++
-				continue
+				transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
+					ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
+				)
+				if err != nil {
+					return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
+				}
+				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
+					malformed := session.claimed[index]
+					if releaseErr := session.releaseLedger(malformed); releaseErr != nil {
+						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+						return malformedReadyItems, 1
+					}
+					session.forgetNewClaim(malformed.ID)
+					pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
+					session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+					malformedReadyItems++
+					continue
+				}
+				index++
 			}
-			index++
+		}
+		if err := session.confirmProviderClaims(ctx, firstNewClaim); err != nil {
+			pf(session.env.stderr, "error: confirm provider claim: %v\n", err)
+			return malformedReadyItems, 1
 		}
 	}
 	return malformedReadyItems, 0
@@ -942,6 +950,8 @@ func (session *backlogClaimSession) acquireLocked() error {
 			if _, preexisting := session.preexistingClaimIDs[item.ID]; !preexisting {
 				session.newlyClaimed = append(session.newlyClaimed, item)
 			}
+		} else {
+			session.env.debugf("claim lost %s: ledger claim held by another run", item.ID)
 		}
 	}
 	return nil
@@ -1012,7 +1022,53 @@ func (session *backlogClaimSession) claimItem(ledger backlogClaimLedger, item pr
 	return ok, nil
 }
 
-func (session *backlogClaimSession) release(item providers.WorkItem) error {
+func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
+	for index := start; index < len(session.claimed); {
+		item := session.claimed[index]
+		result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
+			Repository: session.env.backlogRepo,
+			ID:         item.ID,
+			RunID:      session.runID,
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", item.ID, err)
+		}
+		if result.Claimed {
+			index++
+			continue
+		}
+
+		if err := session.releaseLedger(item); err != nil {
+			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
+		}
+		session.forgetNewClaim(item.ID)
+		session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
+	}
+	return nil
+}
+
+func (session *backlogClaimSession) forgetNewClaim(itemID string) {
+	for index := range session.newlyClaimed {
+		if session.newlyClaimed[index].ID != itemID {
+			continue
+		}
+		session.newlyClaimed = append(session.newlyClaimed[:index], session.newlyClaimed[index+1:]...)
+		return
+	}
+}
+
+func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
+	_, providerErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+		Repository: session.env.backlogRepo,
+		ID:         item.ID,
+		RunID:      session.runID,
+	})
+	ledgerErr := session.releaseLedger(item)
+	return errors.Join(providerErr, ledgerErr)
+}
+
+func (session *backlogClaimSession) releaseLedger(item providers.WorkItem) error {
 	return withClaimLock(session.lockPath, claimLockOperationBacklogRelease, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
 			filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),
@@ -1125,10 +1181,21 @@ func appendBlockedResweepCandidates(
 	}
 	filtered := items[:0]
 	for _, item := range items {
-		if !item.HasLabel(opts.trustLabel) ||
-			!item.HasLabel(blockedOnSiblingLabel) ||
-			item.HasLabel(providers.LabelNeedsHuman) ||
-			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+		env.debugf("candidate %s reached eligibility evaluation (blocked re-sweep)", item.ID)
+		if !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if !item.HasLabel(blockedOnSiblingLabel) {
+			env.debugf("excluded %s: missing required label %q", item.ID, blockedOnSiblingLabel)
+			continue
+		}
+		if item.HasLabel(providers.LabelNeedsHuman) {
+			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
@@ -1140,6 +1207,9 @@ func appendBlockedResweepCandidates(
 		return nil, 1
 	}
 	if len(items) > opts.policy.maxItems {
+		for _, item := range items[opts.policy.maxItems:] {
+			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+		}
 		items = items[:opts.policy.maxItems]
 	}
 	budget := opts.maxItems - len(result.eligible)
@@ -1147,17 +1217,25 @@ func appendBlockedResweepCandidates(
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
 		if err != nil {
 			pf(env.stderr, "warning: dependency recheck item %s: %v\n", item.ID, err)
+			env.debugf("excluded %s: native issue dependency check unavailable: %v", item.ID, err)
 			continue
 		}
 		if len(blockers) == 0 {
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
+			env.debugf("excluded %s: dependency recheck has no named native blocker", item.ID)
 			continue
 		}
-		if blockersActionable(blockers) && budget > 0 {
-			result.eligible = append(result.eligible, item)
-			result.modeByID[item.ID] = "dependency-recheck"
-			budget--
+		if !blockersActionable(blockers) {
+			env.debugf("excluded %s: %s", item.ID, openBlockersExclusionReason(blockers))
+			continue
 		}
+		if budget == 0 {
+			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+			continue
+		}
+		result.eligible = append(result.eligible, item)
+		result.modeByID[item.ID] = "dependency-recheck"
+		budget--
 	}
 	result.state.BlockedCursor = nextCursor.Cursor
 	return items, 0
@@ -1170,6 +1248,20 @@ func blockersActionable(blockers []providers.WorkItem) bool {
 		}
 	}
 	return true
+}
+
+func openBlockersExclusionReason(blockers []providers.WorkItem) string {
+	var ids []string
+	for _, blocker := range blockers {
+		if blocker.State != "" && strings.EqualFold(blocker.State, "open") && !blocker.HasLabel(providers.LabelNeedsHuman) {
+			ids = append(ids, blocker.ID)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "dependency recheck still has an actionable open blocker"
+	}
+	return fmt.Sprintf("dependency recheck still has actionable open blocker(s): %s", strings.Join(ids, ","))
 }
 
 func appendReadyResweepCandidates(
@@ -1194,10 +1286,21 @@ func appendReadyResweepCandidates(
 	}
 	filtered := items[:0]
 	for _, item := range items {
-		if !item.HasLabel(opts.trustLabel) ||
-			!item.HasLabel(opts.policy.readyLabel) ||
-			item.HasLabel(providers.LabelNeedsHuman) ||
-			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+		env.debugf("candidate %s reached eligibility evaluation (ready re-sweep)", item.ID)
+		if !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if !item.HasLabel(opts.policy.readyLabel) {
+			env.debugf("excluded %s: missing required label %q", item.ID, opts.policy.readyLabel)
+			continue
+		}
+		if item.HasLabel(providers.LabelNeedsHuman) {
+			env.debugf("excluded %s: has excluded label %q", item.ID, providers.LabelNeedsHuman)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		matched, matchErr := opts.fieldFilter.Matches(item.Fields)
@@ -1205,10 +1308,12 @@ func appendReadyResweepCandidates(
 			pf(env.stderr, "error: evaluate fieldPredicate for re-sweep item %s: %v\n", item.ID, matchErr)
 			return nil, nextCursor, 1
 		}
-		if matched {
-			item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
-			filtered = append(filtered, item)
+		if !matched {
+			env.debugf("excluded %s: field predicate not matched", item.ID)
+			continue
 		}
+		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
+		filtered = append(filtered, item)
 	}
 	items = filtered
 	if err := sortBacklogResweepCandidates(items, opts.selectionPriority, opts.fieldOrder, result.state.LastSweptAt); err != nil {
@@ -1217,6 +1322,9 @@ func appendReadyResweepCandidates(
 	}
 	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible))
 	if len(items) > budget {
+		for _, item := range items[budget:] {
+			env.debugf("excluded %s: ready re-sweep selection capacity exhausted", item.ID)
+		}
 		items = items[:budget]
 	}
 	for _, item := range items {
@@ -1229,6 +1337,31 @@ func appendReadyResweepCandidates(
 		}
 	}
 	return items, nextCursor, 0
+}
+
+func reportBacklogEligibility(
+	env backlogQueryEnv,
+	eligible, readOnly []providers.WorkItem,
+	skipped map[string]blockedEligibilitySkip,
+) {
+	if !env.debug {
+		return
+	}
+	eligibleCount := 0
+	for _, item := range eligible {
+		if _, blocked := skipped[item.ID]; blocked {
+			continue
+		}
+		env.debugf("eligible %s", item.ID)
+		eligibleCount++
+	}
+	for _, item := range readOnly {
+		env.debugf("eligible %s (read-only re-sweep)", item.ID)
+		eligibleCount++
+	}
+	if eligibleCount == 0 {
+		env.debugf("eligible set empty")
+	}
 }
 
 func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int {
@@ -1252,6 +1385,17 @@ func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int 
 		if err := advanceBacklogScanCursor(scan.lockPath, scan.cursorPath, scan.cursor, scan.nextCursor); err != nil {
 			pf(env.stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
+		}
+		// #233 parity for list/scan pumps: a stage that declares a resultFile is
+		// a scheduled pump feeding a downstream stage, not an interactive
+		// listing. An empty scan must then report ResultNoWork so the runner
+		// short-circuits to a clean PhaseCompleted before any downstream agentic
+		// stage runs — otherwise a scan-then-act workflow invokes its
+		// model-backed stage every tick only to rediscover there is nothing to
+		// act on, burning tokens on every empty poll. Interactive `backlog-query`
+		// (no declared resultFile) keeps its human-readable "no eligible items".
+		if providerInput("resultFile", "") != "" {
+			return writeNoWorkResult(env.stdout, env.stderr, "no eligible items")
 		}
 		pln(env.stdout, "no eligible items")
 		return 0
@@ -1375,10 +1519,13 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	}
 	result.nextCursor = nextCursor
 	for _, item := range items {
+		env.debugf("candidate %s reached eligibility evaluation", item.ID)
 		if opts.trustLabel != "" && !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
 		if opts.respectAssignee && item.Assignee != opts.assignedTo {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		matched, matchErr := opts.labelFilter.Matches(item.Labels)
@@ -1387,6 +1534,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			return result, 1
 		}
 		if !matched {
+			env.debugf("excluded %s: %s", item.ID, labelExclusionReason(item, opts))
 			continue
 		}
 		matched, matchErr = opts.fieldFilter.Matches(item.Fields)
@@ -1394,23 +1542,46 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			pf(env.stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
 			return result, 1
 		}
-		if !matched || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+		if !matched {
+			env.debugf("excluded %s: field predicate not matched", item.ID)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		item.Integrity = providers.IntegrityForLabels(item.Labels, opts.trustLabel)
 		result.eligible = append(result.eligible, item)
+	}
+	result.eligible, err = filterDecompositionEligibility(ctx, env.issueProvider, env.backlogRepo, result.eligible)
+	if err != nil {
+		return result, failProviderStage(env.stderr, "verify decomposition publication barrier", err, "claimed-item.json")
 	}
 	if opts.openIssues != nil {
 		backstopped := result.eligible[:0]
 		for _, item := range result.eligible {
 			if !opts.openIssues[item.ID] {
 				backstopped = append(backstopped, item)
+			} else {
+				env.debugf("excluded %s: review state has a linked open pull request", item.ID)
 			}
 		}
 		result.eligible = backstopped
 	}
 	var warnings []string
-	result.eligible, warnings = filterDeclaredDependencyEligibility(ctx, env.issueProvider, env.backlogRepo, result.eligible)
+	var dependencyExcluded func(providers.WorkItem, string)
+	if env.debug {
+		dependencyExcluded = func(item providers.WorkItem, reason string) {
+			env.debugf("excluded %s: %s", item.ID, reason)
+		}
+	}
+	result.eligible, warnings = filterDeclaredDependencyEligibilityDebug(
+		ctx,
+		env.issueProvider,
+		env.backlogRepo,
+		result.eligible,
+		dependencyExcluded,
+	)
 	for _, warning := range warnings {
 		pf(env.stderr, "warning: native issue dependencies: %s\n", warning)
 	}
@@ -1443,12 +1614,27 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	result.verifiedSkips = make(map[string]blockedEligibilitySkip, len(result.observedSkips))
 	for _, skip := range result.observedSkips {
 		result.verifiedSkips[skip.ItemID] = skip
+		env.debugf("excluded %s: %s", skip.ItemID, skip.reason())
 	}
 	if err := sortEligibleByFields(result.eligible, opts.selectionPriority, opts.fieldOrder); err != nil {
 		pf(env.stderr, "error: apply fieldOrder: %v\n", err)
 		return result, 1
 	}
 	return result, 0
+}
+
+func labelExclusionReason(item providers.WorkItem, opts backlogScanOptions) string {
+	for _, label := range opts.requireLabels {
+		if !item.HasLabel(label) {
+			return fmt.Sprintf("missing required label %q", label)
+		}
+	}
+	for _, label := range opts.excludeLabels {
+		if item.HasLabel(label) {
+			return fmt.Sprintf("has excluded label %q", label)
+		}
+	}
+	return "label predicate not matched"
 }
 
 func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
@@ -1494,10 +1680,13 @@ func runReadOnlyBacklogQuery(
 
 	eligible := items[:0]
 	for _, item := range items {
+		env.debugf("candidate %s reached eligibility evaluation", item.ID)
 		if opts.trustLabel != "" && !item.HasLabel(opts.trustLabel) {
+			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
 		if opts.respectAssignee && item.Assignee != opts.assignedTo {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		matched, matchErr := opts.labelFilter.Matches(item.Labels)
@@ -1506,6 +1695,7 @@ func runReadOnlyBacklogQuery(
 			return 1
 		}
 		if !matched {
+			env.debugf("excluded %s: %s", item.ID, labelExclusionReason(item, opts))
 			continue
 		}
 		matched, matchErr = opts.fieldFilter.Matches(item.Fields)
@@ -1513,23 +1703,66 @@ func runReadOnlyBacklogQuery(
 			pf(env.stderr, "error: evaluate fieldPredicate for item %s: %v\n", item.ID, matchErr)
 			return 1
 		}
-		if !matched || (item.State != "" && !strings.EqualFold(item.State, "open")) {
+		if !matched {
+			env.debugf("excluded %s: field predicate not matched", item.ID)
+			continue
+		}
+		if item.State != "" && !strings.EqualFold(item.State, "open") {
+			env.debugf("excluded %s: state is not open", item.ID)
 			continue
 		}
 		eligible = append(eligible, item)
+	}
+	eligible, err = filterDecompositionEligibility(ctx, env.issueProvider, env.backlogRepo, eligible)
+	if err != nil {
+		return failProviderStage(env.stderr, "verify decomposition publication barrier", err, "claimed-item.json")
 	}
 	if err := sortEligibleByFields(eligible, opts.selectionPriority, opts.fieldOrder); err != nil {
 		pf(env.stderr, "error: apply fieldOrder: %v\n", err)
 		return 1
 	}
+
 	if len(eligible) == 0 {
+		env.debugf("eligible set empty")
 		pln(env.stdout, "no eligible items")
 		return 0
 	}
 	for _, item := range eligible {
+		env.debugf("eligible %s", item.ID)
 		pf(env.stdout, "%s\t%s\n", item.ID, item.Title)
 	}
 	return 0
+}
+
+func filterDecompositionEligibility(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	items []providers.WorkItem,
+) ([]providers.WorkItem, error) {
+	filtered := items[:0]
+	for _, item := range items {
+		parentID, digest, _, marked, conflict := decomposition.ChildBatchIdentity(item.Body)
+		if !marked {
+			filtered = append(filtered, item)
+			continue
+		}
+		if conflict {
+			continue
+		}
+		if _, err := provider.GetWorkItem(ctx, repo, parentID); err != nil {
+			return nil, fmt.Errorf("get decomposition parent %s for child %s: %w", parentID, item.ID, err)
+		}
+		comments, err := provider.ListComments(ctx, repo, parentID)
+		if err != nil {
+			return nil, fmt.Errorf("list decomposition parent %s comments for child %s: %w", parentID, item.ID, err)
+		}
+		published, recordConflict := decomposition.PublishedRecordIncludes(comments, parentID, digest, item.ID)
+		if published && !recordConflict {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 // backlogIssueProvider is the provider surface backlog-query's provider-neutral
@@ -1541,7 +1774,7 @@ func runReadOnlyBacklogQuery(
 // *providers.GitHubProvider and are skipped for ADO.
 //
 // It embeds the full providers.Provider (not just BacklogProvider) so
-// filterDeclaredDependencyEligibility can wrap it in a providers.Dispatcher
+// filterDeclaredDependencyEligibilityDebug can wrap it in a providers.Dispatcher
 // (CONF-5, #2078): the native-dependency check goes through
 // backlog.blockers instead of calling HasOpenWorkItemBlocker directly, so a
 // provider that doesn't declare the capability fails closed with
@@ -1552,7 +1785,13 @@ type backlogIssueProvider interface {
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
 }
 
-func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIssueProvider, repo providers.RepositoryRef, eligible []providers.WorkItem) ([]providers.WorkItem, []string) {
+func filterDeclaredDependencyEligibilityDebug(
+	ctx context.Context,
+	provider backlogIssueProvider,
+	repo providers.RepositoryRef,
+	eligible []providers.WorkItem,
+	excluded func(providers.WorkItem, string),
+) ([]providers.WorkItem, []string) {
 	dispatcher := providers.NewDispatcher(provider)
 	filtered := eligible[:0]
 	var warnings []string
@@ -1564,13 +1803,51 @@ func filterDeclaredDependencyEligibility(ctx context.Context, provider backlogIs
 		blocked, err := dispatcher.HasOpenWorkItemBlocker(ctx, repo, item.ID)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("check item %s: %v", item.ID, err))
+			if excluded != nil {
+				excluded(item, fmt.Sprintf("native issue dependency check unavailable: %v", err))
+			}
 			continue
 		}
 		if !blocked {
 			filtered = append(filtered, item)
+			continue
+		}
+		if excluded != nil {
+			excluded(item, nativeDependencyExclusionReason(ctx, provider, repo, item))
 		}
 	}
 	return filtered, warnings
+}
+
+type workItemBlockerLister interface {
+	ListWorkItemBlockers(context.Context, providers.RepositoryRef, string) ([]providers.WorkItem, error)
+}
+
+func nativeDependencyExclusionReason(
+	ctx context.Context,
+	provider backlogIssueProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+) string {
+	lister, ok := provider.(workItemBlockerLister)
+	if !ok {
+		return "native issue dependencies include an open blocker"
+	}
+	blockers, err := lister.ListWorkItemBlockers(ctx, repo, item.ID)
+	if err != nil {
+		return "native issue dependencies include an open blocker"
+	}
+	ids := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		if blocker.State == "" || strings.EqualFold(blocker.State, "open") {
+			ids = append(ids, blocker.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return "native issue dependencies include an open blocker"
+	}
+	sort.Strings(ids)
+	return fmt.Sprintf("native issue dependencies include open blocker(s): %s", strings.Join(ids, ","))
 }
 
 // openPRIssueNumbers returns the set of issue numbers already referenced by

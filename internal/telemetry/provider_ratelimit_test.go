@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/providers"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestStageRateLimitObserverEmitsSafeTypedEvent(t *testing.T) {
@@ -51,7 +52,7 @@ func TestStageRateLimitObserverEmitsSafeTypedEvent(t *testing.T) {
 }
 
 func TestClientRateLimitObserverExportsStandaloneSafeEvent(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "provider-rate-limit-test",
 		SpanExporter: exporter,

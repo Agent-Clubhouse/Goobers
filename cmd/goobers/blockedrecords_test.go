@@ -678,9 +678,12 @@ func TestFilterBlockedEligibilityProviderFailureKeepsAffectedItemParked(t *testi
 		}
 	}))
 	t.Cleanup(api.Close)
+	// The 503 is here to make the blocker lookup fail, not to exercise the
+	// retry ladder: spend the transient-retry budget up front so the failure
+	// is immediate instead of costing 1+2+4+8 = 15s of real backoff sleep.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key509 := blockedRecordKey(repo, "509")
 	key510 := blockedRecordKey(repo, "510")
@@ -728,9 +731,10 @@ func TestFilterBlockedEligibilityProviderFailureKeepsUnresolvedItemParked(t *tes
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(api.Close)
+	// As above: the assertion is on the parked outcome, not on retry timing.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key510 := blockedRecordKey(repo, "510")
 	recs := map[string]blockedRecord{

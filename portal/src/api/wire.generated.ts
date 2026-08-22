@@ -127,7 +127,6 @@ export const goWireFixtures = {
           "labels": [
             "goobers:ready"
           ],
-          "query": "is:issue",
           "connectionRef": "github"
         },
         "gooberCount": 1,
@@ -421,7 +420,21 @@ export const goWireFixtures = {
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1,
-        "noWork": false
+        "noWork": false,
+        "operator": {
+          "issue": {
+            "number": "673",
+            "title": "Improve operator status"
+          },
+          "currentStage": "review",
+          "liveness": "terminal",
+          "trajectory": "parked",
+          "claim": {
+            "leaseStatus": "released",
+            "providerMarker": "recorded"
+          },
+          "potentialBlockers": []
+        }
       }
     ],
     "workflowActivity": [
@@ -457,6 +470,20 @@ export const goWireFixtures = {
     "policyRetryCount": 1,
     "infraRetryCount": 1,
     "noWork": false,
+    "operator": {
+      "issue": {
+        "number": "673",
+        "title": "Improve operator status"
+      },
+      "currentStage": "review",
+      "liveness": "terminal",
+      "trajectory": "parked",
+      "claim": {
+        "leaseStatus": "released",
+        "providerMarker": "recorded"
+      },
+      "potentialBlockers": []
+    },
     "graph": {
       "name": "implementation",
       "version": 7,
@@ -709,6 +736,7 @@ export const goWireFixtures = {
         "totalRuns": 4,
         "completedRuns": 3,
         "failedRuns": 1,
+        "infraFailedRuns": 0,
         "otherRuns": 0,
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
@@ -728,6 +756,7 @@ export const goWireFixtures = {
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
         "maxDurationMs": 140001,
+        "infraFailedRuns": 0,
         "stuckAbortedRuns": 1
       }
     ],
@@ -772,6 +801,7 @@ export const goWireFixtures = {
         "p50CopilotPremiumRequests": 1,
         "p95CopilotPremiumRequests": 2,
         "costSamples": 4,
+        "costUSD": 1.5,
         "p50CostUSD": 1.25,
         "p95CostUSD": 2.5,
         "retryWasteAttempts": 1,

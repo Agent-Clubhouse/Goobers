@@ -18,6 +18,7 @@ import (
 const (
 	pushRemediatedResultName      = "push-remediated-result.json"
 	pushRemediatedPublishedOutput = "published"
+	pushRemediatedLocalHeadOutput = "localHead"
 )
 
 // runPushRemediated implements `goobers push-remediated` (issue #392):
@@ -200,7 +201,7 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
-	return writePushRemediatedResult(selectedNumber, true, current.Head, stderr)
+	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
 }
 
 // runPushRemediatedADO runs the push-remediated stage on Azure DevOps. The
@@ -317,22 +318,23 @@ func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, std
 	}
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
-	return writePushRemediatedResult(selectedNumber, true, current.Head, stderr)
+	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
 }
 
 func skipTerminalRemediatedPullRequest(selectedNumber int, stdout, stderr io.Writer) int {
 	// The rework remains committed in the run journal, but publishing it to a
 	// merged or closed PR branch would be actively wrong.
 	pf(stdout, "PR #%d is no longer open (merged/closed during remediation) — nothing to push\n", selectedNumber)
-	return writePushRemediatedResult(selectedNumber, false, "", stderr)
+	return writePushRemediatedResult(selectedNumber, false, "", "", stderr)
 }
 
-func writePushRemediatedResult(selectedNumber int, published bool, head string, stderr io.Writer) int {
+func writePushRemediatedResult(selectedNumber int, published bool, head, localHead string, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", pushRemediatedResultName)
 	data, err := json.Marshal(map[string]string{
 		"selectedNumber":              strconv.Itoa(selectedNumber),
 		pushRemediatedPublishedOutput: strconv.FormatBool(published),
 		"head":                        head,
+		pushRemediatedLocalHeadOutput: localHead,
 	})
 	if err != nil {
 		pf(stderr, "error: marshal push-remediated result: %v\n", err)

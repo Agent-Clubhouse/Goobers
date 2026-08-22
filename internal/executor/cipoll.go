@@ -33,6 +33,7 @@ import (
 const (
 	OutputCIStatus       = "ciStatus"
 	OutputCIFailedChecks = "ciFailedChecks"
+	OutputPRNumber       = InputPRNumber
 	CIChecksArtifactName = "ci-checks.json"
 )
 
@@ -101,9 +102,7 @@ type CIChecksArtifactMetadata struct {
 // gives up waiting for a terminal check state before the overall Timeout
 // expires — deliberately distinct from providers.CheckStatePassing/
 // CheckStateFailing (#239) so a downstream ci-status gate check can route a
-// stalled/slow CI queue to escalation instead of the "fail" branch's
-// implement repass, which was the worst possible response to CI merely being
-// slow: re-implementing a change that was never actually reviewed as failing.
+// stalled/slow CI queue separately from the "fail" branch's implement repass.
 const CIStatusTimeout = "timeout"
 
 // Well-known Task.Inputs keys a ci-poll stage may declare (see
@@ -363,7 +362,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		invoke.ReportProgress(ctx)
 		if err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			if !providers.IsTransientError(err) {
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
@@ -373,11 +372,11 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
 			}
 			if now().After(deadline) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			if serr := sleep(ctx, backoff(interval, maxInterval, attempt)); serr != nil {
 				if ciPollDeadlineExceeded(parentCtx, ctx) {
-					return ciPollTimeoutOutcome(timeout), nil
+					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 				}
 				return apiv1.ResultEnvelope{}, serr
 			}
@@ -386,16 +385,16 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		consecutiveErrors = 0
 		switch result.CheckState {
 		case providers.CheckStatePassing:
-			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing"), nil
+			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), nil
 		case providers.CheckStateFailing:
 			return e.ciPollFailureOutcome(ctx, cfg, result)
 		}
 		if now().After(deadline) {
-			return ciPollTimeoutOutcome(timeout), nil
+			return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 		}
 		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
-				return ciPollTimeoutOutcome(timeout), nil
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
 			return apiv1.ResultEnvelope{}, err
 		}
@@ -403,7 +402,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 }
 
 func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
-	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing")
+	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing", cfg.PullID)
 	names := failingCheckNames(result.Checks)
 	if len(names) == 0 {
 		return outcome, nil
@@ -683,16 +682,12 @@ func ciPollDeadlineExceeded(parentCtx, pollCtx context.Context) bool {
 }
 
 // ciPollTimeoutOutcome builds the ResultEnvelope for a poll that exhausted
-// its Timeout while still pending. Outputs[OutputCIStatus] is set to
-// CIStatusTimeout — distinct from "passing"/"failing" — so a downstream
-// ci-status gate check can route it to escalation rather than the "fail"
-// branch's implement repass (#239): CI merely being slow is not the same
-// evidence as CI having actually failed, and re-implementing in response
-// wastes an agentic attempt on the worst possible diagnosis.
-func ciPollTimeoutOutcome(timeout time.Duration) apiv1.ResultEnvelope {
+// its Timeout while still pending. It preserves the PR number so a workflow
+// can checkpoint and re-enter ci-poll without losing the pull request context.
+func ciPollTimeoutOutcome(timeout time.Duration, pullID string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
-		Outputs: map[string]interface{}{OutputCIStatus: CIStatusTimeout},
+		Outputs: map[string]interface{}{OutputCIStatus: CIStatusTimeout, OutputPRNumber: pullID},
 		Error: &apiv1.ErrorInfo{
 			Code:      "poll_timeout",
 			Message:   fmt.Sprintf("ci-poll timed out after %s waiting for a terminal check state", timeout),
@@ -705,11 +700,12 @@ func ciPollTimeoutOutcome(timeout time.Duration) apiv1.ResultEnvelope {
 // ciPollOutcome builds the ResultEnvelope for a poll that reached a terminal
 // state: the stage itself always succeeded (it determined an outcome); the
 // outcome is carried in Outputs[OutputCIStatus] using the providers.CheckState
-// vocabulary ("passing"/"failing"), not apiv1.ResultStatus.
-func ciPollOutcome(checkState providers.CheckState, summary string) apiv1.ResultEnvelope {
+// vocabulary ("passing"/"failing"), not apiv1.ResultStatus. The PR number is
+// passed through for workflow loops that poll the same pull request again.
+func ciPollOutcome(checkState providers.CheckState, summary, pullID string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{OutputCIStatus: string(checkState)},
+		Outputs: map[string]interface{}{OutputCIStatus: string(checkState), OutputPRNumber: pullID},
 		Summary: summary,
 	}
 }

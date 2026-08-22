@@ -158,6 +158,36 @@ runConditions:
     implementation: 4
   claimsLockTimeout: 30s
 `},
+		{"schemaVersion 2 runners inventory", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: self
+    host: self
+    provides:
+      os: linux
+      cpu: 8000m
+      memory: 16Gi
+      disk: 100Gi
+      capabilities: [go@1.26, make, gcc]
+  - name: ci-linux
+    host: ghcr.io/example/goobers-ci:v0.7.0
+    provides:
+      os: linux
+      cpu: 4000m
+      memory: 8Gi
+      disk: 60Gi
+      capabilities: [go@1.26]
+    restrictions: [network:allowlist, tmp:ephemeral]
+  - name: win-pool
+    host: win-runner-pool
+    provides:
+      os: windows
+engine:
+  hostPort: temporal.goobers-system:7233
+`},
 		{"credentials stores and telemetry", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
@@ -202,6 +232,26 @@ workcopies:
 				t.Fatalf("valid instance.yaml was rejected: %v", err)
 			}
 		})
+	}
+}
+
+// TestInstanceSchemaAcceptsWorkflowSourceGitHubAppFixture is #3274's agreed
+// acceptance: a sanitized copy of the cloud deployment's real instance.yaml,
+// exercising the three-way combination a synthetic document misses — per-repo
+// App auth x daemonIdentity App auth x workflowSource App auth, with two
+// different installation IDs. Before $defs.workflowSource gained the auth
+// property this failed with exactly one error ('auth' unexpected under
+// workflowSource, because the def is additionalProperties:false), so the
+// deployment's own config could not validate. It must now validate with zero
+// errors, unchanged.
+func TestInstanceSchemaAcceptsWorkflowSourceGitHubAppFixture(t *testing.T) {
+	schema := compileInstanceSchema(t)
+	fixture, err := os.ReadFile(filepath.Join("testdata", "instance-workflowsource-app-auth.fixture.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInstanceYAML(t, schema, string(fixture)); err != nil {
+		t.Fatalf("#3274 acceptance fixture was rejected: %v", err)
 	}
 }
 
@@ -326,6 +376,56 @@ credentials:
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
 `, "repos"},
+		{"unsupported schemaVersion", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 3
+repos: []
+`, "enum"},
+		{"runner entry without host", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci-linux
+`, "host"},
+		{"runner name that kubernetes could not carry", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: CI_Linux
+    host: self
+`, "pattern"},
+		{"runner os outside the enum", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: mac
+    host: self
+    provides:
+      os: darwin
+`, "enum"},
+		{"runner quantity that is not a quantity", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci
+    host: self
+    provides:
+      cpu: fast
+`, "pattern"},
+		{"runner restriction outside the closed list", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci
+    host: self
+    restrictions: [network:proxy]
+`, "enum"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

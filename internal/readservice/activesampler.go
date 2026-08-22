@@ -40,14 +40,17 @@ import (
 //
 // # Deliberately throwaway
 //
-// Wave 2 replaces this entirely with an indexed query over a stored phase
-// column (§5.4), at which point the sampler and the walk both go. It exists
-// because that is several waves away and the portal is unusable now.
+// Projected topologies now sample an indexed query over the stored phase column.
+// The historical walk remains for topologies without a projection.
 
 // ErrActiveCountsUnavailable reports that no active-run sample has been taken
 // yet. Callers surface it as an explicitly degraded state rather than blocking
 // or falling back to the synchronous walk.
 var ErrActiveCountsUnavailable = errors.New("readservice: active run counts not sampled yet")
+
+// ErrActiveSamplerStopTimeout reports that sampler shutdown reached its finite
+// wait bound because an in-flight filesystem operation did not return.
+var ErrActiveSamplerStopTimeout = errors.New("readservice: active run sampler shutdown timed out")
 
 // activeSample is one completed observation of the active-run set.
 type activeSample struct {
@@ -60,7 +63,7 @@ type activeSample struct {
 	err error
 }
 
-// activeRunSampler walks the run roots on an interval and publishes the result.
+// activeRunSampler samples active counts on an interval and publishes the result.
 //
 // It holds no reference to a request context: the walk must not be cancellable
 // by whichever reader happened to trigger it, which was one of the ways the old
@@ -70,11 +73,14 @@ type activeRunSampler struct {
 	layout   instance.Layout
 	interval time.Duration
 	now      func() time.Time
+	walk     func(context.Context) (map[localscheduler.WorkflowIdentity]int, error)
+
+	stopTimeout time.Duration
 
 	mu     sync.RWMutex
 	sample *activeSample
 
-	// sampling guards against overlapping walks. At 1x a walk takes seconds; an
+	// sampling guards against overlapping samples. A historical walk takes seconds; an
 	// interval shorter than the walk would otherwise stack them and turn a
 	// mitigation into a load generator.
 	sampling sync.Mutex
@@ -85,6 +91,7 @@ type activeRunSampler struct {
 	stop        chan struct{}
 	done        chan struct{}
 	doneOnce    sync.Once
+	cancel      context.CancelFunc
 }
 
 // defaultActiveSampleInterval is how often the sampler refreshes.
@@ -94,6 +101,10 @@ type activeRunSampler struct {
 // well under the time a human spends reading a page. The age is reported either
 // way, so a stale sample is visible rather than assumed fresh.
 const defaultActiveSampleInterval = 30 * time.Second
+
+// activeSamplerStopTimeout bounds daemon shutdown when an operating-system
+// filesystem call cannot be interrupted by context cancellation.
+const activeSamplerStopTimeout = 5 * time.Second
 
 // newActiveRunSampler creates a sampler. It does not start until Start is
 // called, so a read service constructed for a one-shot CLI command does not
@@ -105,13 +116,16 @@ func newActiveRunSampler(layout instance.Layout, interval time.Duration, now fun
 	if now == nil {
 		now = time.Now
 	}
-	return &activeRunSampler{
-		layout:   layout,
-		interval: interval,
-		now:      now,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+	sampler := &activeRunSampler{
+		layout:      layout,
+		interval:    interval,
+		now:         now,
+		stopTimeout: activeSamplerStopTimeout,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
+	sampler.walk = sampler.walkRuns
+	return sampler
 }
 
 // Start begins sampling in the background. Repeated calls are idempotent. The
@@ -123,12 +137,14 @@ func (a *activeRunSampler) Start() {
 		a.lifecycleMu.Unlock()
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
 	a.started = true
 	a.lifecycleMu.Unlock()
 
 	go func() {
 		defer a.doneOnce.Do(func() { close(a.done) })
-		a.refresh()
+		a.refresh(ctx)
 		ticker := time.NewTicker(a.interval)
 		defer ticker.Stop()
 		for {
@@ -136,50 +152,61 @@ func (a *activeRunSampler) Start() {
 			case <-a.stop:
 				return
 			case <-ticker.C:
-				a.refresh()
+				a.refresh(ctx)
 			}
 		}
 	}()
 }
 
-// Stop halts sampling and waits for the in-flight walk to finish. Repeated
-// calls are safe, including before Start or concurrently with Start.
-func (a *activeRunSampler) Stop() {
+// Stop cancels sampling and waits up to five seconds for the in-flight walk.
+// It returns ErrActiveSamplerStopTimeout if lower-level I/O cannot be
+// interrupted within that bound. Repeated calls are safe.
+func (a *activeRunSampler) Stop() error {
 	a.lifecycleMu.Lock()
 	if !a.stopped {
 		a.stopped = true
 		close(a.stop)
+		if a.cancel != nil {
+			a.cancel()
+		}
 	}
 	if !a.started {
 		a.doneOnce.Do(func() { close(a.done) })
 	}
 	a.lifecycleMu.Unlock()
 
-	<-a.done
+	timer := time.NewTimer(a.stopTimeout)
+	defer timer.Stop()
+	select {
+	case <-a.done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("%w after %s", ErrActiveSamplerStopTimeout, a.stopTimeout)
+	}
 }
 
 // refresh takes one sample.
-func (a *activeRunSampler) refresh() {
-	// Skip rather than queue if a walk is already running: overlapping
+func (a *activeRunSampler) refresh(ctx context.Context) {
+	// Skip rather than queue if a sample is already running: overlapping
 	// multi-second walks would compound rather than refresh.
 	if !a.sampling.TryLock() {
 		return
 	}
 	defer a.sampling.Unlock()
 
-	counts, err := a.walk()
+	counts, err := a.walk(ctx)
 	a.mu.Lock()
 	a.sample = &activeSample{counts: counts, takenAt: a.now(), err: err}
 	a.mu.Unlock()
 }
 
 // walk performs the O(history) directory walk the read paths no longer do.
-func (a *activeRunSampler) walk() (map[localscheduler.WorkflowIdentity]int, error) {
-	runDirs, err := a.layout.RunDirs()
+func (a *activeRunSampler) walkRuns(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+	runDirs, err := a.layout.RunDirsContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate run roots: %w", err)
 	}
-	counts, err := localscheduler.ActiveRunCountsByWorkflowDirs(runDirs)
+	counts, err := localscheduler.ActiveRunCountsByWorkflowDirsContext(ctx, runDirs)
 	if err != nil {
 		return nil, fmt.Errorf("read active run projection: %w", err)
 	}
@@ -213,7 +240,7 @@ func (a *activeRunSampler) SampleNow(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	a.refresh()
+	a.refresh(ctx)
 	_, _, err := a.Counts()
 	return err
 }

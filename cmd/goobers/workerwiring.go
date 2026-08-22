@@ -77,6 +77,11 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 	}, nil
 }
 
+// SharedRegistry exposes the instance-global exact-value secret registry every
+// executor this process builds registers resolved credentials into. It is what
+// the #2931 dispatch canary asserts serialized envelopes against.
+func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
+
 // forGaggle builds (once) the runner config for a gaggle, reusing the daemon's
 // own wiring so the worker's executors are configured identically to tier 1 —
 // same credential grants, same env allowlist, same stage timeouts, same
@@ -107,10 +112,14 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 		return nil, fmt.Errorf("worker: load config directory: %w", err)
 	}
 	instance.ApplyGaggleCICommand(set)
+	instance.ApplyGaggleOutboxMirror(set)
 
 	goobers, err := resolveGoobersForGaggle(set, gaggle)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+		return nil, fmt.Errorf("worker: credential admission: %w", err)
 	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
@@ -127,9 +136,13 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 
 	scoped := l.ForGaggle(gaggle)
 	project := gaggleProjectRef(set, gaggle)
-	runnerCfg, credentialedMgr, err := buildRunnerConfig(
-		scoped, cfg, goobers, instructions,
-		nil, // telemetry: the worker's spans come from the engine, not this client
+	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               scoped,
+		Config:               cfg,
+		Goobers:              goobers,
+		InstructionsByGoober: instructions,
+		// The worker's spans come from the engine, not this client.
+		Telemetry: nil,
 		// nil manager ON PURPOSE. buildRunnerConfig builds its own only when
 		// this is nil, and that is the branch that attaches the git
 		// environment — WithGitEnvironment, the askpass resolver that
@@ -138,11 +151,16 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 		// the first engine dispatches failed: a bare manager clones a public
 		// repo happily and dies on a private one with "could not read Username
 		// for 'https://github.com'".
-		w.shared, nil, branchNamespacesByGaggle(set), project, nil,
-		harnessInfo, stores,
-		instance.EffectiveAgenticSandbox(cfg, nil),
-		nil, // provider quota: scheduler-side concern, not the executor's
-	)
+		SharedRegistry:   w.shared,
+		WorktreeManager:  nil,
+		BranchNamespaces: branchNamespacesByGaggle(set),
+		GaggleProject:    project,
+		HarnessInfo:      harnessInfo,
+		CredentialStores: stores,
+		SandboxPosture:   instance.EffectiveAgenticSandbox(cfg, nil),
+		// Provider quota is a scheduler-side concern, not the executor's.
+		ProviderQuota: nil,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("worker: build runner config for gaggle %q: %w", gaggle, err)
 	}

@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // withHarnessAdapter substitutes harnessAdapterFor for the duration of a
@@ -49,7 +50,7 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 
 func TestCheckHarnessesSucceeds(t *testing.T) {
 	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
@@ -65,7 +66,7 @@ func TestCheckHarnessesSucceeds(t *testing.T) {
 
 func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
 	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
-		return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
@@ -83,7 +84,7 @@ func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 	calls := 0
 	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
 		calls++
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
@@ -126,7 +127,7 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	var gotEnvPassthrough []string
 	withHarnessAdapter(t, func(h apiv1.Harness, envPassthrough []string, _ map[string][]string) (harness.Adapter, error) {
 		gotEnvPassthrough = append([]string(nil), envPassthrough...)
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	code, stdout, stderr := runArgs(t, "validate", "--check-harness", root)
 	if code != 0 {
@@ -140,7 +141,7 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	}
 
 	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
-		return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	code, stdout, _ = runArgs(t, "validate", "--check-harness", root)
 	if code != 1 {

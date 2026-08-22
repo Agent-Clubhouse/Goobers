@@ -47,6 +47,8 @@ import (
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
@@ -331,7 +333,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 		_ = listener.Close()
 	})
 
-	journalExporter := telemetry.NewMemoryExporter()
+	journalExporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: journalExporter,
@@ -427,9 +429,240 @@ func TestBuildEnvCapabilities(t *testing.T) {
 	}
 }
 
+func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
+	configSetWithTask := func(project apiv1.RepoRef, capabilities ...string) *instance.ConfigSet {
+		return &instance.ConfigSet{
+			Gaggles: []apiv1.Gaggle{{
+				ObjectMeta: metav1.ObjectMeta{Name: "example"},
+				Spec:       apiv1.GaggleSpec{Project: project},
+			}},
+			Workflows: []apiv1.Workflow{{
+				ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Tasks: []apiv1.Task{{
+						Name:         "implement",
+						Type:         apiv1.TaskAgentic,
+						Goober:       "implementer",
+						Capabilities: capabilities,
+					}},
+				},
+			}},
+		}
+	}
+	copilotGoober := apiv1.GooberSpec{
+		Gaggle:       "example",
+		Harness:      apiv1.HarnessCopilot,
+		Capabilities: []string{"agent:model", "repo:push", "github:issues:write"},
+	}
+
+	t.Run("repo push remains a legitimate stored-login authoring workflow", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "repo:push"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("github tool token is rejected at admission", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "github",
+				Owner:    "acme",
+				Name:     "web",
+				Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+			}}},
+			configSetWithTask(apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "acme",
+				Name:     "web",
+			}, "agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err == nil ||
+			!strings.Contains(err.Error(), `workflow "implementation" task "implement"`) ||
+			!strings.Contains(err.Error(), `capability "github:issues:write"`) ||
+			!strings.Contains(err.Error(), "configure a distinct agent:model credential") {
+			t.Fatalf("admission error = %v, want actionable GH_TOKEN shadowing rejection", err)
+		}
+	})
+
+	t.Run("explicit model credential preserves two-token behavior", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Credentials: []instance.CredentialGrant{{
+				Capability: "agent:model",
+				Token:      instance.TokenRef{Env: "COPILOT_TOKEN"},
+			}}},
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("unused goober authority does not overbroaden the stage boundary", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			configSetWithTask(apiv1.RepoRef{}, "agent:model"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	t.Run("claude stored auth is unaffected", func(t *testing.T) {
+		claudeGoober := copilotGoober
+		claudeGoober.Harness = apiv1.HarnessClaudeCode
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{},
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "github:issues:write"),
+			map[string]apiv1.GooberSpec{"implementer": claudeGoober},
+		)
+		if err != nil {
+			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	for _, authKind := range []string{
+		instance.ADOAuthAzureCLI,
+		instance.ADOAuthWorkloadIdentity,
+		instance.ADOAuthManagedIdentity,
+	} {
+		t.Run("tokenless ADO "+authKind+" auth is accepted", func(t *testing.T) {
+			err := validateStoredCopilotAuthBoundaries(
+				&instance.Config{Repos: []instance.RepoRef{
+					{
+						Provider: "github",
+						Owner:    "other",
+						Name:     "repo",
+						Token:    instance.TokenRef{Env: "OTHER_REPO_TOKEN"},
+					},
+					{
+						Provider: "ado",
+						Owner:    "acme",
+						Project:  "widgets",
+						Name:     "web",
+						Auth:     &instance.RepoAuthConfig{Kind: authKind},
+					},
+				}},
+				configSetWithTask(apiv1.RepoRef{
+					Provider: apiv1.ProviderADO,
+					Owner:    "acme",
+					Project:  "widgets",
+					Name:     "web",
+				}, "agent:model", "provider:pr:write"),
+				map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+			)
+			if err != nil {
+				t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+			}
+		})
+	}
+
+	t.Run("materialized ADO PAT is rejected", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "ado",
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+				Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT},
+				Token:    instance.TokenRef{Env: "ADO_PAT"},
+			}}},
+			configSetWithTask(apiv1.RepoRef{
+				Provider: apiv1.ProviderADO,
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+			}, "agent:model", "provider:pr:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err == nil || !strings.Contains(err.Error(), `capability "provider:pr:write"`) {
+			t.Fatalf("admission error = %v, want materialized ADO PAT rejection", err)
+		}
+	})
+
+	t.Run("agentic gate uses reviewer capabilities", func(t *testing.T) {
+		workflows := []apiv1.Workflow{{
+			ObjectMeta: metav1.ObjectMeta{Name: "review"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "example",
+				Gates: []apiv1.Gate{{
+					Name:      "quality",
+					Evaluator: apiv1.EvaluatorAgentic,
+					Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+				}},
+			},
+		}}
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "github",
+				Owner:    "acme",
+				Name:     "web",
+				Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+			}}},
+			&instance.ConfigSet{Workflows: workflows},
+			map[string]apiv1.GooberSpec{"reviewer": copilotGoober},
+		)
+		if err == nil || !strings.Contains(err.Error(), `workflow "review" gate "quality"`) {
+			t.Fatalf("admission error = %v, want agentic-gate rejection", err)
+		}
+	})
+}
+
+func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repository-token")
+	root := initDemo(t)
+	for _, path := range []string{
+		filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"),
+		filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated := strings.Replace(string(raw), "- repo:push\n", "- repo:push\n        - github:issues:write\n", 1)
+		if strings.HasSuffix(path, "goober.yaml") {
+			updated = strings.Replace(string(raw), "- repo:push\n", "- repo:push\n    - github:issues:write\n", 1)
+		}
+		if updated == string(raw) {
+			t.Fatalf("%s did not contain repo:push fixture", path)
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	adapterCalls := 0
+	previousAdapter := newAgenticAdapter
+	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
+		adapterCalls++
+		return &harnesstest.FakeAdapter{}
+	}
+	t.Cleanup(func() { newAgenticAdapter = previousAdapter })
+
+	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	if code == 0 ||
+		!strings.Contains(stderr, `capability "github:issues:write"`) ||
+		!strings.Contains(stderr, "configure a distinct agent:model credential") {
+		t.Fatalf("run admission = code %d, stdout %q, stderr %q; want actionable rejection", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "created run ") {
+		t.Fatalf("workflow was admitted and consumed a run budget: %q", stdout)
+	}
+	if adapterCalls != 0 {
+		t.Fatalf("agentic adapter constructed %d times before credential admission", adapterCalls)
+	}
+}
+
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -498,7 +731,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -554,7 +787,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "")
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -665,6 +898,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
 				nil,
+				false,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -687,6 +921,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		},
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -715,9 +950,9 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	var runRequest harness.RunRequest
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			runRequest = req
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status: apiv1.ResultSuccess,
 			})
 		}}
@@ -737,6 +972,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		},
 		[]string{"COPILOT_HOME"},
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -749,22 +985,14 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	}
 
 	layout := instance.NewLayout(t.TempDir())
-	runnerCfg, _, err := buildRunnerConfig(
-		layout,
-		&instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
-		resolvedGoobers,
-		map[string]string{"coder": "instructions"},
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	runnerCfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               layout,
+		Config:               &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
+		Goobers:              resolvedGoobers,
+		InstructionsByGoober: map[string]string{"coder": "instructions"},
+		SharedRegistry:       journal.NewRegistryScrubber(),
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -801,22 +1029,14 @@ func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 		}},
 	}
 	scrubber := journal.NewRegistryScrubber()
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()),
-		&instance.Config{},
-		map[string]apiv1.GooberSpec{gooberName: spec},
-		map[string]string{gooberName: "instructions"},
-		nil,
-		scrubber,
-		nil,
-		nil,
-		apiv1.RepoRef{},
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:               instance.NewLayout(t.TempDir()),
+		Config:               &instance.Config{},
+		Goobers:              map[string]apiv1.GooberSpec{gooberName: spec},
+		InstructionsByGoober: map[string]string{gooberName: "instructions"},
+		SharedRegistry:       scrubber,
+		SandboxPosture:       instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -827,6 +1047,127 @@ func TestBuildRunnerConfigAcceptsMCPServersForClaudeCode(t *testing.T) {
 	}
 	if goober == nil {
 		t.Fatal("NewAgentic returned a nil goober for a valid claude-code mcpServers declaration")
+	}
+}
+
+func TestBuildDeterministicExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          "goobers",
+		ArtifactRecorder: runnerWiringArtifactRecorder{},
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildDeterministicExecutor returned nil")
+	}
+}
+
+// TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile is the
+// wiring-level regression test for #3342: a deployment with a read-only root
+// filesystem and nothing writable at the OS default temp directory (no
+// TMPDIR, no /tmp) previously failed every goobers-CLI stage's built-in
+// error file creation with "open /tmp/goobers-builtin-error-…: read-only
+// file system". buildDeterministicExecutor now wires ScratchDir onto the
+// ShellExecutor, which this confirms end-to-end by running a stub "goobers"
+// command that echoes GOOBERS_BUILTIN_ERROR_FILE back and asserting it was
+// created under the configured ScratchDir, not the OS default temp dir.
+func TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchDir := filepath.Join(t.TempDir(), "scratch")
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := runnerWiringArtifactRecorder{}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          stub,
+		ArtifactRecorder: rec,
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+		ScratchDir:       scratchDir,
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+
+	result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Command: []string{"goobers", "some-subcommand"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	if !strings.HasPrefix(builtinErrorFile, scratchDir+string(filepath.Separator)) {
+		t.Fatalf("builtin error file %q was not created under the configured ScratchDir %q — still depends on the OS default temp directory", builtinErrorFile, scratchDir)
+	}
+	if _, err := os.Stat(scratchDir); err != nil {
+		t.Fatalf("ScratchDir was not created: %v", err)
+	}
+}
+
+func TestBuildAgenticExecutorIndependently(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterRegistry := harness.NewRegistry()
+	if err := adapterRegistry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	scrubber := journal.NewRegistryScrubber()
+	got, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName:      "coder",
+		Goobers:         map[string]apiv1.GooberSpec{"coder": {}},
+		Instructions:    map[string]string{"coder": "instructions"},
+		AdapterRegistry: adapterRegistry,
+		Resolver:        resolver,
+		SharedRegistry:  scrubber,
+		RunsDir:         t.TempDir(),
+		ArtifactRecorder: runnerWiringHarnessRecorder{
+			dir: t.TempDir(),
+		},
+		SecretRegistrar: scrubber,
+	})
+	if err != nil {
+		t.Fatalf("buildAgenticExecutor: %v", err)
+	}
+	if got == nil {
+		t.Fatal("buildAgenticExecutor returned nil")
+	}
+}
+
+func TestBuildAgenticExecutorIndependentlyRejectsUnknownGoober(t *testing.T) {
+	_, err := buildAgenticExecutor(agenticExecutorInput{
+		GooberName: "missing",
+		Goobers:    map[string]apiv1.GooberSpec{},
+	})
+	if err == nil || !strings.Contains(err.Error(), `goober "missing" not found`) {
+		t.Fatalf("buildAgenticExecutor error = %v, want unknown-goober error", err)
 	}
 }
 
@@ -848,22 +1189,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceAtAlternateRoot(t *testing.T) {
 			CleanPolicy: instance.WorkspaceCleanIgnoredSafe,
 		},
 	}}}
-	cfg, manager, err := buildRunnerConfig(
-		instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).WithWorkcopiesRoot(shortRoot).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -912,27 +1244,18 @@ func TestBuildRunnerConfigGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
 		Owner:    "acme",
 		Name:     "web",
 	}
-	_, manager, err := buildRunnerConfig(
-		instance.NewLayout(".").ForGaggle("builders"),
-		&instance.Config{Repos: []instance.RepoRef{{
+	_, manager, err := buildRunnerConfig(runnerCompositionInput{
+		Layout: instance.NewLayout(".").ForGaggle("builders"),
+		Config: &instance.Config{Repos: []instance.RepoRef{{
 			Provider: "github",
 			Owner:    "acme",
 			Name:     "web",
 			Token:    instance.TokenRef{Env: "GOOBERS_TEST_GITHUB_TOKEN"},
 		}}},
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -962,22 +1285,13 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		Name:      "monolith",
 		LargeRepo: true,
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(t.TempDir()).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -1030,22 +1344,13 @@ func TestBuildRunnerConfigWiresPinnedWorkspaceForADOCombinedOwner(t *testing.T) 
 			Pinned: true,
 		},
 	}}}
-	cfg, _, err := buildRunnerConfig(
-		instance.NewLayout(root).ForGaggle("builders"),
-		instanceConfig,
-		nil,
-		nil,
-		nil,
-		journal.NewRegistryScrubber(),
-		nil,
-		nil,
-		project,
-		nil,
-		nil,
-		nil,
-		instance.SandboxDisabled,
-		nil,
-	)
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
+		Layout:         instance.NewLayout(root).ForGaggle("builders"),
+		Config:         instanceConfig,
+		SharedRegistry: journal.NewRegistryScrubber(),
+		GaggleProject:  project,
+		SandboxPosture: instance.SandboxDisabled,
+	})
 	if err != nil {
 		t.Fatalf("buildRunnerConfig: %v", err)
 	}
@@ -1503,11 +1808,11 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 	prev := newGitHubAppTokenSource
 	mints := 0
 	var gotRepo instance.RepoRef
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepo = repo
-		return func(context.Context) (string, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("minted-token-%d", mints), nil
+			return fmt.Sprintf("minted-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -1542,7 +1847,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 
 func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return nil, errors.New("store-backed key not resolvable here")
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -1566,8 +1871,8 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 // the last entry's minting source and hand it the first's grants.
 func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ResolveFunc, error) {
-		return func(context.Context) (string, error) { return "minted", nil }, nil
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		return func(context.Context) (string, time.Time, error) { return "minted", time.Time{}, nil }, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
 
@@ -1593,10 +1898,10 @@ func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 func TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo(t *testing.T) {
 	prev := newGitHubAppTokenSource
 	mints := 0
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
-		return func(context.Context) (string, error) {
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("ghs_minted_%d", mints), nil
+			return fmt.Sprintf("ghs_minted_%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -1723,22 +2028,16 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 	}
 	build := func(manager *worktree.Manager) *worktree.Manager {
 		t.Helper()
-		_, manager, err := buildRunnerConfig(
-			layout,
-			&instance.Config{Repos: []instance.RepoRef{repo}},
-			map[string]apiv1.GooberSpec{},
-			map[string]string{},
-			nil,
-			journal.NewRegistryScrubber(),
-			manager,
-			nil,
-			apiv1.RepoRef{},
-			nil,
-			harnessPreflightInfo{},
-			nil,
-			instance.SandboxDisabled,
-			nil,
-		)
+		_, manager, err := buildRunnerConfig(runnerCompositionInput{
+			Layout:               layout,
+			Config:               &instance.Config{Repos: []instance.RepoRef{repo}},
+			Goobers:              map[string]apiv1.GooberSpec{},
+			InstructionsByGoober: map[string]string{},
+			SharedRegistry:       journal.NewRegistryScrubber(),
+			WorktreeManager:      manager,
+			HarnessInfo:          harnessPreflightInfo{},
+			SandboxPosture:       instance.SandboxDisabled,
+		})
 		if err != nil {
 			t.Fatalf("buildRunnerConfig: %v", err)
 		}
@@ -1832,7 +2131,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1879,6 +2178,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		journal.NewRegistryScrubber(),
 		nil,
 		localscheduler.NewProviderQuotaState(),
+		nil,
 		nil,
 		nil,
 	)
@@ -2295,11 +2595,11 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 	prev := newDaemonIdentityGitHubAppTokenSource
 	mints := 0
 	var gotRepoName string
-	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepoName = gaggleRepoName
-		return func(context.Context) (string, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("minted-daemon-token-%d", mints), nil
+			return fmt.Sprintf("minted-daemon-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newDaemonIdentityGitHubAppTokenSource = prev })
@@ -2949,17 +3249,25 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 // escFakeCommenter, which only keeps the last) — buildBlockedHandler's
 // multi-item fallback path needs every call visible.
 type blockedHandlerFakeCommenter struct {
-	calls    []providers.UpdateWorkItemRequest
-	comments []providers.Comment
-	nextID   int
+	calls     []providers.UpdateWorkItemRequest
+	comments  []providers.Comment
+	nextID    int
+	listErr   error
+	updateErr error
 }
 
 func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return append([]providers.Comment(nil), f.comments...), nil
 }
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.calls = append(f.calls, req)
+	if f.updateErr != nil {
+		return providers.WorkItem{}, f.updateErr
+	}
 	if req.Comment != "" {
 		f.nextID++
 		f.comments = append(f.comments, providers.Comment{
@@ -3787,6 +4095,98 @@ func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	}
 }
 
+func TestBuildExistingFixHandlerNilForRepoLessInstance(t *testing.T) {
+	if h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), &instance.Config{}, nil, nil); h != nil {
+		t.Fatalf("expected a nil handler for no repos, got %+v", h)
+	}
+}
+
+func TestBuildExistingFixHandlerNoItemIDIsANoop(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %+v, want none when item id is missing", fake.calls)
+	}
+}
+
+func TestBuildExistingFixHandlerRemovesReadyAndCriticalLabels(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		ItemID:  "463",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(fake.calls))
+	}
+	call := fake.calls[0]
+	if call.ID != "463" {
+		t.Fatalf("request ID = %q, want 463", call.ID)
+	}
+	wantRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if call.Repository != wantRepo {
+		t.Fatalf("request repository = %+v, want %+v", call.Repository, wantRepo)
+	}
+	if !slices.Equal(call.RemoveLabels, []string{providers.LabelReady, providers.LabelCritical}) {
+		t.Fatalf("RemoveLabels = %v, want [%s %s]", call.RemoveLabels, providers.LabelReady, providers.LabelCritical)
+	}
+}
+
+func TestBuildExistingFixHandlerPropagatesUpdateFailure(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{updateErr: errors.New("provider unavailable")}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		ItemID:  "463",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err == nil {
+		t.Fatal("want update error")
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 update attempt", len(fake.calls))
+	}
+}
+
 func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -3969,6 +4369,40 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	}
 	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
 		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+func TestBuildFailedHandlerSkipsUpsertWhenStreakReadFails(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{listErr: errors.New("provider unavailable")}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-streak-read-error", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if err := h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-streak-read-error",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+	}); err == nil {
+		t.Fatal("want streak read error")
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %d, want 0 when streak count cannot be read", len(fake.calls))
 	}
 }
 

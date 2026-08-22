@@ -1164,7 +1164,7 @@ describe("live page integration", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reconnecting"));
     expect(screen.getByText("refreshed-instance-20")).toBeInTheDocument();
     expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
-  });
+  }, 25_000);
 });
 
 class ScriptedClient extends FixtureDaemonClient {

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,14 +80,16 @@ const runPhaseMaxChunkSize = 1 << 20
 var errPhaseTailBudgetExhausted = errors.New("journal: run phase tail budget exhausted")
 
 // PhaseBounded returns the same phase Phase does, reading a bounded tail of the
-// event log instead of all of it.
+// event log instead of all of it. Cancellation is checked between bounded
+// filesystem reads and event records, including during the full-read fallback.
 //
 // Use it where phase is needed for many runs at once and the journals are not
 // otherwise being read — the daemon's active-run reconciliation is the case it
 // exists for. A caller that is going to read the events anyway must use
 // PhaseFromEvents on the records it already has (#1557), not this.
-func (r *Reader) PhaseBounded() (RunPhase, error) {
-	phase, decided, bytesRead, err := tailPhase(filepath.Join(r.dir, fileEvents))
+func (r *Reader) PhaseBounded(ctx context.Context) (RunPhase, error) {
+	path := filepath.Join(r.dir, fileEvents)
+	phase, decided, bytesRead, err := tailPhaseContext(ctx, path)
 	readprobe.RecordRunPhaseBytes(bytesRead)
 	if err == nil && decided {
 		return phase, nil
@@ -94,7 +97,7 @@ func (r *Reader) PhaseBounded() (RunPhase, error) {
 	if err != nil && !errors.Is(err, errPhaseTailBudgetExhausted) {
 		return "", err
 	}
-	return r.Phase()
+	return phaseContext(ctx, path)
 }
 
 // tailPhase scans events.jsonl backwards for the record reconstructPhase would
@@ -107,7 +110,10 @@ func (r *Reader) PhaseBounded() (RunPhase, error) {
 //
 // bytesRead is how much of the journal the scan actually touched, so a test can
 // assert the bound in work rather than in wall time.
-func tailPhase(path string) (phase RunPhase, decided bool, bytesRead int, err error) {
+func tailPhaseContext(ctx context.Context, path string) (phase RunPhase, decided bool, bytesRead int, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, 0, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -136,6 +142,9 @@ func tailPhase(path string) (phase RunPhase, decided bool, bytesRead int, err er
 		tail      int // bytes after the file's last newline: a torn final append
 	)
 	for start > 0 {
+		if err := ctx.Err(); err != nil {
+			return "", false, len(window), err
+		}
 		chunkStart := start - chunkSize
 		if chunkStart < 0 {
 			chunkStart = 0
@@ -165,7 +174,7 @@ func tailPhase(path string) (phase RunPhase, decided bool, bytesRead int, err er
 		}
 
 		if tailKnown {
-			found, ph, scanErr := decisivePhaseInChunk(window[:len(window)-tail], start == 0)
+			found, ph, scanErr := decisivePhaseInChunkContext(ctx, window[:len(window)-tail], start == 0)
 			if scanErr != nil {
 				return "", false, len(window), scanErr
 			}
@@ -199,8 +208,11 @@ func tailPhase(path string) (phase RunPhase, decided bool, bytesRead int, err er
 // first record has no preceding newline: without it a single-record journal is
 // never examined, and a run whose only event is run.finished would read back as
 // still running.
-func decisivePhaseInChunk(buf []byte, atFileStart bool) (found bool, phase RunPhase, err error) {
+func decisivePhaseInChunkContext(ctx context.Context, buf []byte, atFileStart bool) (found bool, phase RunPhase, err error) {
 	for len(buf) > 0 {
+		if err := ctx.Err(); err != nil {
+			return false, "", err
+		}
 		nl := bytes.LastIndexByte(buf, '\n')
 		var line []byte
 		if nl < 0 {
@@ -235,4 +247,80 @@ func decisivePhaseInChunk(buf []byte, atFileStart bool) (found bool, phase RunPh
 		}
 	}
 	return false, "", nil
+}
+
+func phaseContext(ctx context.Context, path string) (phase RunPhase, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PhaseRunning, nil
+		}
+		return "", fmt.Errorf("journal: open events log: %w", err)
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+
+	phase, bytesRead, err := phaseFromReaderContext(ctx, file)
+	readprobe.RecordRunPhaseBytes(bytesRead)
+	return phase, err
+}
+
+// phaseFromReaderContext scans forward so it preserves Phase's corruption
+// checks while avoiding an uncancellable whole-file read.
+func phaseFromReaderContext(ctx context.Context, reader io.Reader) (RunPhase, int, error) {
+	phase := PhaseRunning
+	buf := make([]byte, runPhaseChunkSize)
+	var pending []byte
+	bytesRead := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", bytesRead, err
+		}
+		n, readErr := reader.Read(buf)
+		bytesRead += n
+		if err := ctx.Err(); err != nil {
+			return "", bytesRead, err
+		}
+		pending = append(pending, buf[:n]...)
+		for {
+			nl := bytes.IndexByte(pending, '\n')
+			if nl < 0 {
+				break
+			}
+			if err := ctx.Err(); err != nil {
+				return "", bytesRead, err
+			}
+			line := bytes.TrimSpace(pending[:nl])
+			if stripped := bytes.TrimLeft(line, "\x00"); len(stripped) != len(line) {
+				line = bytes.TrimSpace(stripped)
+			}
+			if len(line) > 0 {
+				var ev Event
+				if err := json.Unmarshal(line, &ev); err != nil {
+					return "", bytesRead, fmt.Errorf("journal: corrupt event at seq boundary: %w", err)
+				}
+				switch ev.Type {
+				case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
+					phase = PhaseRunning
+				case EventRunFinished:
+					phase = phaseFromStatus(ev.Status)
+				}
+			}
+			pending = pending[nl+1:]
+		}
+		if len(pending) > maxEventBytes {
+			return "", bytesRead, fmt.Errorf("journal: scan events log: event exceeds %d bytes", maxEventBytes)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return phase, bytesRead, nil
+			}
+			return "", bytesRead, fmt.Errorf("journal: read events log: %w", readErr)
+		}
+		if n == 0 {
+			return "", bytesRead, io.ErrNoProgress
+		}
+	}
 }

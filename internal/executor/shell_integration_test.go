@@ -13,7 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationShellExecutor_TimeoutGivesUpOnEscapedDescendant is the

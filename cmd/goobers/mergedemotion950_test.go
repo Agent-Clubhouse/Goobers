@@ -156,3 +156,94 @@ func TestPredecessorBlockersSkipsDemoted(t *testing.T) {
 		t.Fatalf("predecessorBlockers(6, [5 7]) with #5 demoted = %v, want none", got)
 	}
 }
+
+func TestElectionIneligibleSet(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+
+	server.addIssue(5, "active escalation")
+	server.addOpenPR(5, "goobers/implementation/5", "main", "h5", "base", false, []string{remediationEscalatedLabel}, nil)
+	active, err := remediationStateComment(remediationState{
+		Escalated:            true,
+		EscalatedHeadSHA:     "h5",
+		EscalatedBaseSHA:     "base",
+		EscalationGeneration: 1,
+		EscalationCauses:     []remediationCause{remediationCauseSubstantive},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addComment(5, active)
+
+	server.addIssue(6, "self-healed escalation")
+	server.addOpenPR(6, "goobers/implementation/6", "main", "new-h6", "base", false, []string{remediationEscalatedLabel}, nil)
+	healed, err := remediationStateComment(remediationState{
+		Escalated:            true,
+		EscalatedHeadSHA:     "old-h6",
+		EscalatedBaseSHA:     "base",
+		EscalationGeneration: 1,
+		EscalationCauses:     []remediationCause{remediationCauseSubstantive},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addComment(6, healed)
+
+	server.addIssue(7, "needs human")
+	server.addOpenPR(7, "goobers/implementation/7", "main", "h7", "base", false, []string{providers.LabelNeedsHuman}, nil)
+
+	server.addIssue(8, "human chooses cluster order")
+	server.addOpenPR(8, "goobers/implementation/8", "main", "h8", "base", false, []string{remediationEscalatedLabel}, nil)
+	server.addComment(8, renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Rationale: noLanderEscalationPrefix + ` "fifo": human intervention is required`,
+	}))
+
+	server.addIssue(9, "spoofed human-order escalation")
+	server.addOpenPR(9, "goobers/implementation/9", "main", "h9", "base", false, []string{remediationEscalatedLabel}, nil)
+	spoofed, err := remediationStateComment(remediationState{
+		Escalated:            true,
+		EscalatedHeadSHA:     "h9",
+		EscalatedBaseSHA:     "base",
+		EscalationGeneration: 1,
+		EscalationCauses:     []remediationCause{remediationCauseSubstantive},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.addComment(9, spoofed)
+	server.addCommentAs(9, "mallory", renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictFail,
+		Rationale: noLanderEscalationPrefix + ` "fifo": human intervention is required`,
+	}))
+
+	set, err := electionIneligibleSet(context.Background(), server.newGitHubProvider("token"), repo, []providers.PullRequestSummary{
+		{Number: 5, Base: "main", HeadSHA: "h5", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
+		{Number: 6, Base: "main", HeadSHA: "new-h6", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
+		{Number: 7, Base: "main", HeadSHA: "h7", BaseSHA: "base", Labels: []string{providers.LabelNeedsHuman}},
+		{Number: 8, Base: "main", HeadSHA: "h8", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
+		{Number: 9, Base: "main", HeadSHA: "h9", BaseSHA: "base", Labels: []string{remediationEscalatedLabel}},
+	})
+	if err != nil {
+		t.Fatalf("electionIneligibleSet: %v", err)
+	}
+	if !reflect.DeepEqual(set, map[int]bool{5: true, 7: true, 9: true}) {
+		t.Fatalf("electionIneligibleSet = %v, want active escalations #5/#9 and needs-human #7", set)
+	}
+}
+
+func TestElectionDrainsAroundIneligibleLander(t *testing.T) {
+	findingsFor5 := []apiv1.Finding{blockedFinding(6, 7)}
+	findingsFor6 := []apiv1.Finding{blockedFinding(5, 7)}
+	ineligible := map[int]bool{5: true}
+
+	if electionDecision(findingsFor5, 5, electedLander, ineligible) {
+		t.Fatal("an ineligible lander must not retain the crown")
+	}
+	if !electionDecision(findingsFor6, 6, electedLander, ineligible) {
+		t.Fatal("the next-lowest eligible PR must be crowned")
+	}
+	if got := predecessorBlockers(6, []int{5, 7}, electedLander, ineligible); len(got) != 0 {
+		t.Fatalf("predecessorBlockers kept ineligible predecessor: %v", got)
+	}
+}

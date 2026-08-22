@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 // TestNewDoesNotMutateGlobalOTelState guards against #1557: New used to call
@@ -35,7 +36,7 @@ func TestNewDoesNotMutateGlobalOTelState(t *testing.T) {
 	ctx := context.Background()
 	client, err := New(ctx, Config{
 		ServiceName:  "telemetry-test",
-		SpanExporter: NewMemoryExporter(),
+		SpanExporter: telemetrytest.NewMemoryExporter(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +58,7 @@ func TestResourceIncludesEnvironmentAndBuildIdentity(t *testing.T) {
 
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte(secret))
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:    "configured-service",
 		ServiceVersion: "v1.2.3",
@@ -99,7 +100,7 @@ func TestResourceGeneratesUniqueServiceInstanceID(t *testing.T) {
 
 	instanceIDs := make([]string, 0, 2)
 	for range 2 {
-		exporter := NewMemoryExporter()
+		exporter := telemetrytest.NewMemoryExporter()
 		client, err := New(context.Background(), Config{SpanExporter: exporter})
 		if err != nil {
 			t.Fatal(err)
@@ -126,7 +127,7 @@ func TestResourceGeneratesUniqueServiceInstanceID(t *testing.T) {
 
 func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: exporter,
@@ -267,7 +268,7 @@ func TestRunTaskGateSpansUseRunTraceAndAttributes(t *testing.T) {
 }
 
 func TestSpanEventLimitBoundsAttemptAccumulation(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "telemetry-limit-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +304,7 @@ func TestSpanEventLimitBoundsAttemptAccumulation(t *testing.T) {
 
 func TestSchedulerSpanAttributes(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -333,7 +334,7 @@ func TestSchedulerSpanAttributes(t *testing.T) {
 
 func TestSchedulerSpanCanUseRunTraceIDWithoutParentContext(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -441,7 +442,7 @@ func TestOTLPExporterPushesAlongsideJournalExporter(t *testing.T) {
 		_ = listener.Close()
 	})
 
-	journalExporter := NewMemoryExporter()
+	journalExporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: journalExporter,
@@ -640,7 +641,7 @@ func TestOTLPExporterSecureModeOverridesInsecureEnvironment(t *testing.T) {
 }
 
 func TestMemoryExporterReset(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -670,7 +671,7 @@ func TestMemoryExporterReset(t *testing.T) {
 
 func TestInvalidRunIDIsRejected(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -692,7 +693,7 @@ func TestInvalidRunIDIsRejected(t *testing.T) {
 
 func TestMismatchedParentTraceIsRejected(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -725,7 +726,7 @@ func TestMismatchedParentTraceIsRejected(t *testing.T) {
 
 func TestValidationErrorsAreReturned(t *testing.T) {
 	ctx := context.Background()
-	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: NewMemoryExporter()})
+	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: telemetrytest.NewMemoryExporter()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -787,7 +788,7 @@ func TestUnsupportedExporterIsRejected(t *testing.T) {
 
 func TestSpanFailRecordsErrorStatus(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -826,7 +827,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 	const secret = "opaque-encoded-ado-credential"
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte(secret))
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "telemetry-test",
 		SpanExporter: exporter,
@@ -875,7 +876,7 @@ func TestClientScrubsRegisteredCredentialBeforeExport(t *testing.T) {
 // OTel's own coarser two-value axis.
 func TestSpanCompleteRecordsOutcome(t *testing.T) {
 	ctx := context.Background()
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(ctx, Config{ServiceName: "telemetry-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

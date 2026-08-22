@@ -145,6 +145,41 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	}
 }
 
+func TestResumeInterruptedRunsRejectsFutureJournalSchema(t *testing.T) {
+	l := instance.NewLayout(t.TempDir()).ForGaggle("g")
+	if err := os.MkdirAll(filepath.Join(l.RunsDir(), "00-unrelated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(l.RunsDir(), "01-future")
+	if err := os.Mkdir(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	_, _, err = resumeInterruptedRuns(
+		context.Background(), l, nil, nil, nil, nil, nil, nil, nil, nil,
+		func(string, string) {}, &wg,
+	)
+	if err == nil {
+		t.Fatal("resume scan accepted a future journal schema")
+	}
+	for _, want := range []string{"01-future", "version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("resume scan error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)

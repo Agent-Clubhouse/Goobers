@@ -13,6 +13,7 @@
 //   - Tree.Kill hard-terminates the entire tree.
 //   - Tree.RequestDump asks the tree to emit diagnostics and exit (unix only).
 //   - Alive reports whether a pid names a live process.
+//   - StartOrphanReaper installs the container-init reaping contract (linux).
 //
 // On unix a tree is a process group: Configure puts the child in a new session
 // (Setsid), so its process-group id equals its pid, and Kill signals the whole
@@ -25,5 +26,14 @@
 // false "dead" is destructive (the worktree reaper would delete a live run's
 // worktree), while a false "alive" merely defers a reap. Alive therefore fails
 // toward alive on an ambiguous probe (see the unix implementation's EPERM
-// handling).
+// handling). That trade holds only while "defers" is temporary: an unreaped
+// zombie answers a signal-0 probe forever, turning a deferred reap into a
+// permanent leak, so linux additionally reads /proc state and calls a zombie
+// dead (#3399).
+//
+// Reaping the tree is only half of the job when the daemon is its container's
+// pid 1: the kernel reparents every orphaned stage descendant onto it, and a Go
+// program waits for nothing but its own exec.Cmd children. StartOrphanReaper
+// supplies the missing init half — pid-1-guarded, so nothing changes for a
+// daemon running under a normal init (#3398).
 package proc

@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 type liveAgenticAttempt struct {
@@ -91,11 +92,11 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 	}
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
 			returned := make(chan struct{})
 			started <- liveAgenticAttempt{workspace: req.Workspace, returned: returned}
 			<-proceed
-			err := harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			err := harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "fixture agent completed during daemon drain",
 			})
@@ -135,7 +136,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequest(l.SchedulerDir(), "", "acceptance")
+		requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "acceptance")
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}

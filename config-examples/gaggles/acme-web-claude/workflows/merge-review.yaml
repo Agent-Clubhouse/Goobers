@@ -48,6 +48,12 @@ spec:
       run:
         command: ["goobers", "pr-select"]
       inputs:
+        # pr-select is the authoritative source of advisoryMode. With
+        # authorScope=any, daemon-owned PRs are managed (false) and all other
+        # selected PRs are advisory (true). Ownership uses the configured
+        # daemon identity when available, falling back to these head prefixes.
+        # The resulting mix follows incoming PR traffic; no fixed ratio is
+        # expected, and a window containing only one class is valid.
         headPrefixes: "goobers/implementation/,goobers/docs-updater/"
         authorScope: "any"
         resultFile: "selected-pr.json"
@@ -410,6 +416,9 @@ spec:
         pass: scope-gate
         fail: ""
 
+    # apply-verdict passes through pr-select's decision unchanged. Advisory
+    # selections terminate after their non-blocking review is published;
+    # managed selections continue through the independent merge safeguards.
     - name: advisory-verdict
       evaluator: automated
       automated:

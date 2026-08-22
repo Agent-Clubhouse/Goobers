@@ -194,8 +194,11 @@ func copyTree(src, dst string, skip map[string]bool) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() && skip[path] {
-			return filepath.SkipDir
+		if skip[path] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {

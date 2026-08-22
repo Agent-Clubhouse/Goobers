@@ -9,6 +9,11 @@
   "properties": {
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
     "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
+    "schemaVersion": {
+      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on both halves of the contract, so a config that declares 2 and uses runners: hard-fails on an older binary by design instead of being silently misread.",
+      "type": "integer",
+      "enum": [1, 2]
+    },
     "repos": {
       "description": "Repositories this instance connects to. Every gaggle's project and backlog must resolve to an entry here — a gaggle whose provider/owner/name matches no entry has no credential and can never run — so this list, not the gaggle, is where a repository's identity and auth live.",
       "type": "array",
@@ -45,6 +50,11 @@
     "runner": {
       "description": "This runner's static claims and execution defaults: the toolchains it advertises, the extra ambient environment variables stages may see, and the baseline stage deadline.",
       "$ref": "#/$defs/runner"
+    },
+    "runners": {
+      "description": "The runner inventory (plural; supersedes the singular runner block's capability claims). Each entry is one runner class the scheduler may place stages on: the daemon host itself (host: self), a container image the dispatcher instantiates one fresh, never-reused pod per stage attempt from, or a consumer-authored Deployment named as a pod template by reference. Absent, the singular runner block maps to the implicit self entry — the zero-change upgrade every existing install rides. Declared, runner.capabilities must be empty: the inventory owns capability claims (the runner block's execution settings keep their current homes). Inventory edits are restart-only in v1; in-flight runs finish against their pinned snapshot (accept-and-pin).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/runnerEntry" }
     },
     "engine": {
       "description": "Tier-3 Temporal engine connection shared by the runtime, scheduler, workers, dispatchers, and daemon projection loop. GOOBERS_TEMPORAL_HOSTPORT, GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE override these values at process startup.",
@@ -251,6 +261,10 @@
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`. The key only ever signs short-lived App JWTs in this process; stages receive minted installation tokens, never the key, so an env name that stages can see is refused.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
         }
       },
       "allOf": [
@@ -343,7 +357,21 @@
           "$ref": "#/$defs/tokenRef"
         },
         "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier for kind `github-app` (see repos[].auth.appId)." },
-        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId)." },
+        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId). Covers ONE owner, so it is valid only when every GitHub repo in this instance shares a single owner; use `installations` otherwise. Mutually exclusive with `installations`." },
+        "installations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-owner installation bindings for kind `github-app`: one App, one key, one slug, one installation per owner. Required when the instance's repos span more than one GitHub owner — an App installation belongs to exactly one owner, so a single `installationId` mints tokens that fail with a 422 on the first repo in any other owner. Every owner appearing in `repos[]` must be bound. Mutually exclusive with `installationId`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "installationId"],
+            "properties": {
+              "owner": { "type": "string", "minLength": 1, "description": "GitHub owner this installation covers; matches a repos[].owner value." },
+              "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID of the App on that owner." }
+            }
+          }
+        },
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`.",
           "$ref": "#/$defs/tokenRef"
@@ -361,7 +389,13 @@
         },
         {
           "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
-          "then": { "required": ["appId", "installationId", "privateKey"] }
+          "then": {
+            "required": ["appId", "privateKey"],
+            "oneOf": [
+              { "required": ["installationId"] },
+              { "required": ["installations"] }
+            ]
+          }
         }
       ]
     },
@@ -412,11 +446,15 @@
       "properties": {
         "kind": { "type": "string", "enum": ["local-dir", "git"], "description": "How the workflow tree is obtained. `local-dir` accepts only path; `git` accepts exactly one of path or url." },
         "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
-        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref." },
+        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
         "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
         "token": {
           "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "GitHub App installation-token minting for a REMOTE git source: kind `github-app` with appId, installationId, and privateKey, the same shape repos[].auth uses. Mutually exclusive with token — exactly one identity mechanism per source; short-lived minted tokens replace the static ref, and the private key is refused any env name stages can see.",
+          "$ref": "#/$defs/repoAuth"
         }
       },
       "allOf": [
@@ -505,6 +543,76 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$",
       "examples": ["dotnet@8"]
     },
+    "runnerEntry": {
+      "description": "One declared runner: a name, where stages placed on it execute (host), what it claims to provide, and the restriction effects it enforces. Claims are trusted in v1 — a false claim degrades to a runtime error with a named diagnostic, never a silent misroute.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host"],
+      "properties": {
+        "name": {
+          "description": "This runner's handle in diagnostics, placement provenance, and (later) queue keying. A lowercase DNS label, unique within the inventory.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["ci-linux"]
+        },
+        "host": {
+          "description": "Where a stage placed on this runner executes: the literal \"self\" (the daemon host — the only kind that executes locally), a container image reference (registry[:port]/repository[:tag][@digest] — the dispatcher instantiates one fresh pod per stage attempt from it), or the bare name of a consumer-authored Deployment whose pod template is instantiated per stage attempt, by reference — never resident execution. A value carrying \"/\", \":\", or \"@\" is read as an image reference; any other bare name is read as a Deployment name, so a plain image shorthand like \"ubuntu\" must spell a registry, tag, or digest. A host that is not \"self\" requires the instance to declare an engine: block, or the config is refused at load.",
+          "type": "string",
+          "minLength": 1,
+          "examples": ["self", "ghcr.io/example/goobers-ci:v0.7.0"]
+        },
+        "provides": {
+          "description": "This runner's claim set: OS, resource ceilings, and preinstalled toolchain/platform capabilities.",
+          "$ref": "#/$defs/runnerProvides"
+        },
+        "restrictions": {
+          "description": "The isolation effects this runner ENFORCES — effects, never mechanisms. A stage requiring a restriction matches only runners that enforce it. Drawn from the closed v1 effect list; an unknown token is refused at load.",
+          "type": "array",
+          "items": {
+            "description": "One enforced restriction effect from the closed v1 list.",
+            "type": "string",
+            "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+          }
+        }
+      }
+    },
+    "runnerProvides": {
+      "description": "What a runner claims to provide. Quantities are ceilings — they become pod resource limits, while a stage's declared minimums become requests — written as Kubernetes quantity strings verbatim.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "description": "The runner's operating system. Empty claims no OS.",
+          "type": "string",
+          "enum": ["linux", "windows", "macOS"]
+        },
+        "cpu": {
+          "description": "CPU ceiling as a Kubernetes quantity string, e.g. 8000m.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["8000m"]
+        },
+        "memory": {
+          "description": "Memory ceiling as a Kubernetes quantity string, e.g. 16Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["16Gi"]
+        },
+        "disk": {
+          "description": "Disk ceiling as a Kubernetes quantity string, e.g. 100Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["100Gi"]
+        },
+        "capabilities": {
+          "description": "Toolchain and platform capabilities this runner claims are ALREADY INSTALLED — the same open vocabulary as runner.capabilities, matched exactly at schedule time.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/runnerCapability" }
+        }
+      }
+    },
+    "quantity": {
+      "description": "A positive Kubernetes quantity string, verbatim (2000m, 4Gi): a decimal number with an optional binary (Ki/Mi/Gi/Ti/Pi/Ei), decimal (n/u/m/k/M/G/T/P/E), or scientific-notation suffix. Parsed with Kubernetes semantics at load, where zero and negative values are refused.",
+      "type": "string",
+      "pattern": "^(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$"
+    },
     "harnessName": {
       "description": "An agent harness whose launcher may be overridden.",
       "type": "string",
@@ -528,7 +636,7 @@
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted leaves concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1."
+          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted MEANS UNLIMITED — concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1. Note this is the opposite of a workflow's own readiness.maxRunsPerHour, where zero/omitted falls back to a default of 10 rather than unlimited."
         },
         "workflowBudgets": {
           "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
@@ -543,7 +651,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Instance default for consecutive non-pass gate evaluations before a run escalates instead of looping. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
+          "description": "Instance default for how many times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
         },
         "stalledRunTimeout": {
           "description": "How long a running journal may stay silent before the watchdog escalates the run. Empty defaults to 45 minutes. Size it above your slowest single stage, or a healthy long stage looks stalled.",
@@ -583,7 +691,7 @@
               "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
               "examples": ["http://127.0.0.1:4317"]
             },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Acceptable for a loopback collector; GOOBERS_OTLP_INSECURE overrides it." },
+            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
             "headers": {
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",

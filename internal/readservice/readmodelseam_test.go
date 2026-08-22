@@ -68,7 +68,7 @@ func TestReadServiceCannotWriteProjectedFacts(t *testing.T) {
 	// And the reads it does need are present, so the seam is narrow rather than
 	// merely empty — a handle carrying nothing would also pass the checks above
 	// while being useless.
-	for _, name := range []string{"ListRuns", "LatestPerWorkflow", "GetRun", "State"} {
+	for _, name := range []string{"ListRuns", "LatestPerWorkflow", "ActiveRunCounts", "GetRun", "State"} {
 		if _, found := field.Type.MethodByName(name); !found {
 			t.Errorf("LocalSources.ReadModel (%s) is missing %s, which the read paths use",
 				field.Type, name)

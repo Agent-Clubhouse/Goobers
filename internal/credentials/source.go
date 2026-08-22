@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/platform/secfile"
 )
@@ -129,6 +130,33 @@ type StoreResolver interface {
 // own their caching and must honor context cancellation.
 type ResolveFunc func(ctx context.Context) (string, error)
 
+// ExpiringResolveFunc is a dynamic source whose values carry a stated expiry
+// (GitHub App installation tokens do). The expiry is returned atomically with
+// the value it belongs to, which is what lets the credential plane honor DS10
+// (distributed-state-and-coordination.md §11): a mint response must carry the
+// credential's TTL so a consumer never treats a snapshot as unbounded. A zero
+// expiry means the source could not state one for this value.
+type ExpiringResolveFunc func(ctx context.Context) (string, time.Time, error)
+
+// DropExpiry adapts f to the plain ResolveFunc seam for consumers that only
+// need the value (worktree git auth, providers).
+func (f ExpiringResolveFunc) DropExpiry() ResolveFunc {
+	return func(ctx context.Context) (string, error) {
+		value, _, err := f(ctx)
+		return value, err
+	}
+}
+
+// ExpiringResolver is an optional Resolver refinement: ResolveWithExpiry
+// returns the value for name together with its stated expiry when the backing
+// source has one (a zero time otherwise). Callers that do not need expiry keep
+// using Resolve; the Injector consults this interface structurally so a Set
+// can carry per-capability expiry without any wiring changes.
+type ExpiringResolver interface {
+	Resolver
+	ResolveWithExpiry(ctx context.Context, name string) (string, time.Time, error)
+}
+
 // tokenRefResolver holds no secret material itself. Every TokenRef is re-read
 // at resolve time so a rotated env var, file, Keychain item, or store secret
 // takes effect without restarting the process (store reads are TTL-cached by
@@ -138,9 +166,12 @@ type tokenRefResolver struct {
 	refs    map[string]TokenRef
 	stores  StoreResolver
 	sources map[string]ResolveFunc
+	// expiring are dynamic sources that state each value's expiry. They share
+	// the refs/sources namespace: a name appears in at most one of the three.
+	expiring map[string]ExpiringResolveFunc
 }
 
-var _ Resolver = (*tokenRefResolver)(nil)
+var _ ExpiringResolver = (*tokenRefResolver)(nil)
 
 // NewResolver builds the local env/file/Keychain Resolver from a set of token refs.
 // Names must be unique and each ref must be well-formed. A store-backed ref
@@ -173,6 +204,16 @@ func NewResolverWithSources(refs []TokenRef, sources map[string]ResolveFunc) (Re
 // name may not appear in both. stores may be nil only when no ref is
 // store-backed; otherwise construction fails closed.
 func NewResolverWith(refs []TokenRef, stores StoreResolver, sources map[string]ResolveFunc) (Resolver, error) {
+	return NewResolverWithExpiring(refs, stores, sources, nil)
+}
+
+// NewResolverWithExpiring builds a Resolver from token refs, an optional store
+// resolver, plain dynamic sources, and expiry-stating dynamic sources
+// (ExpiringResolveFunc, e.g. GitHub App installation-token mints). All four
+// share one name namespace. The returned Resolver also implements
+// ExpiringResolver: ResolveWithExpiry reports the stated expiry for expiring
+// sources and a zero time for every other ref kind.
+func NewResolverWithExpiring(refs []TokenRef, stores StoreResolver, sources map[string]ResolveFunc, expiring map[string]ExpiringResolveFunc) (Resolver, error) {
 	byName := make(map[string]TokenRef, len(refs))
 	for _, r := range refs {
 		if err := r.validate(); err != nil {
@@ -197,27 +238,59 @@ func NewResolverWith(refs []TokenRef, stores StoreResolver, sources map[string]R
 			return nil, fmt.Errorf("credentials: duplicate token ref name %q", name)
 		}
 	}
-	return &tokenRefResolver{refs: byName, stores: stores, sources: sources}, nil
+	for name, fn := range expiring {
+		if name == "" {
+			return nil, errors.New("credentials: dynamic source has no name")
+		}
+		if fn == nil {
+			return nil, fmt.Errorf("credentials: dynamic source %q is nil", name)
+		}
+		if _, dup := byName[name]; dup {
+			return nil, fmt.Errorf("credentials: duplicate token ref name %q", name)
+		}
+		if _, dup := sources[name]; dup {
+			return nil, fmt.Errorf("credentials: duplicate token ref name %q", name)
+		}
+	}
+	return &tokenRefResolver{refs: byName, stores: stores, sources: sources, expiring: expiring}, nil
 }
 
 // Resolve returns the secret value for the named token ref.
 func (r *tokenRefResolver) Resolve(ctx context.Context, name string) (string, error) {
+	value, _, err := r.ResolveWithExpiry(ctx, name)
+	return value, err
+}
+
+// ResolveWithExpiry returns the secret value for the named token ref plus its
+// stated expiry when the backing source has one (zero time otherwise).
+func (r *tokenRefResolver) ResolveWithExpiry(ctx context.Context, name string) (string, time.Time, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", time.Time{}, err
+	}
+	if fn, ok := r.expiring[name]; ok {
+		value, expiresAt, err := fn(ctx)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("credentials: token ref %q: %w", name, err)
+		}
+		if strings.TrimSpace(value) == "" {
+			return "", time.Time{}, fmt.Errorf("%w: ref %q", ErrTokenRefEmpty, name)
+		}
+		return value, expiresAt, nil
 	}
 	if fn, ok := r.sources[name]; ok {
 		value, err := fn(ctx)
 		if err != nil {
-			return "", fmt.Errorf("credentials: token ref %q: %w", name, err)
+			return "", time.Time{}, fmt.Errorf("credentials: token ref %q: %w", name, err)
 		}
 		if strings.TrimSpace(value) == "" {
-			return "", fmt.Errorf("%w: ref %q", ErrTokenRefEmpty, name)
+			return "", time.Time{}, fmt.Errorf("%w: ref %q", ErrTokenRefEmpty, name)
 		}
-		return value, nil
+		return value, time.Time{}, nil
 	}
 	ref, ok := r.refs[name]
 	if !ok {
-		return "", fmt.Errorf("%w: %q", ErrTokenRefNotFound, name)
+		return "", time.Time{}, fmt.Errorf("%w: %q", ErrTokenRefNotFound, name)
 	}
-	return ref.resolve(ctx, r.stores)
+	value, err := ref.resolve(ctx, r.stores)
+	return value, time.Time{}, err
 }

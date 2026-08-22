@@ -160,6 +160,41 @@ call, not by anything the model writes into its own JSON. A leftover
 instruction saying otherwise is inert (nothing reads a model-set
 `artifacts` field) and confusing — remove it.
 
+## When the tools are missing at runtime
+
+A registered MCP server whose subprocess fails to start is, from the
+model's side, indistinguishable from a server that was never declared: the
+CLI proceeds without it and the tools simply do not exist for that whole
+session. The failure then surfaces two layers away wearing an unrelated
+costume — typically the agent itself reporting `blocked` with a
+missing-required-tools message that says nothing about MCP (#3356).
+
+The claude-code adapter therefore compares the servers it registered for
+the invocation against the CLI's own per-server connection report and
+journals a `runner.annotation` of kind `mcp-server-unavailable` for every
+registered server that was not connected:
+
+```jsonc
+{"type":"runner.annotation","stage":"curate","runner":{
+  "kind":"mcp-server-unavailable",
+  "servers":[{"server":"goobers-io","status":"failed"}],
+  "detail":"registered MCP servers were not connected at invocation; ..."}}
+```
+
+Grep a run's `events.jsonl` for `mcp-server-unavailable` first whenever a
+stage reports missing tools — if it is there, the tool loss is the cause
+and the stage's own message is a symptom. The annotation never changes a
+run's outcome; it only names the cause. Absence of the annotation is not
+proof the servers were present: it is only emitted for harnesses that
+report per-server connection state (claude-code does; Copilot's session
+transcript carries no equivalent), and never when no report was observed
+at all.
+
+A related and much quieter config shape is a `spec.skills` entry whose
+package directory does not exist. `goobers validate` reports it as
+`SKILL002`; a dangling declaration contributes nothing at runtime, so
+either delete it or add the package rather than letting the warning ride.
+
 ## Security notes
 
 - `goobers-io` carries no credential and needs none — it never touches

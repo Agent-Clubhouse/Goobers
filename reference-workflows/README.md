@@ -24,30 +24,34 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **9 goobers and 9 workflows**.
-<!-- reference-inventory: goobers=9 workflows=9 -->
+The shipped tree loads **11 goobers and 11 workflows**.
+<!-- reference-inventory: goobers=11 workflows=11 -->
 
 | Goober role | Purpose |
 |---|---|
 | `analyst` | Diagnoses Tutor signals from telemetry and journals. |
 | `config-author` | Drafts Tutor changes inside the confined config roots. |
 | `curator` | Deduplicates, tags, scopes, and roadmaps approved issues. |
+| `decomposer` | Designs read-only, validated delivery slices for oversized work. |
 | `docs` | Updates documentation from a scoped signal. |
 | `implementer` | Implements claimed issues and PR remediation in a worktree. |
 | `nominator` | Files evidence-backed backlog items. |
 | `quality-lead` | Collates the quality sprint's parallel findings. |
 | `quality-researcher` | Audits one quality lens without write authority. |
 | `reviewer` | Produces independent implementation and PR-lifecycle verdicts. |
+| `test-quality-analyst` | Classifies recurring test failures and drafts bounded fix or quarantine findings. |
 
 | Workflow | Purpose |
 |---|---|
 | `backlog-curation` | Curates maintainer-approved backlog items. |
+| `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
 | `implementation` | Implements a ready issue and opens a PR. |
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
 | `quality-sprint` | Runs parallel quality audits and nominates findings. |
 | `self-update` | Stages an operator-requested Goobers binary update. |
+| `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
 | `tutor` | Diagnoses run evidence and proposes confined config changes. |
 | `work-nomination` | Nominates repository work from telemetry and repo signals. |
 
@@ -182,7 +186,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 9 goober(s), 9 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to
@@ -238,12 +242,17 @@ After the canonical quickstart has created and validated a regular instance:
   issues carrying `goobers:nominated` + an evidence footer. Filed issues are
   **not** pre-approved — a maintainer reviews and applies `goobers:approved`
   before curation will touch them.
+- **Decomposition** (04:53 local, once daily, or on direct invocation): selects
+  the same oldest eligible escalation, designs and validates bounded single-PR
+  slices, and publishes them only after deterministic validation.
 - **PR lifecycle:** `merge-review` reviews and may land eligible managed PRs;
   `pr-remediation` rebases or fixes PRs that need work.
 - **Maintenance:** `docs-updater` handles documentation signals,
-  `quality-sprint` nominates findings from parallel audits, `tutor` proposes
-  confined config improvements, and `self-update` stages requested binary
-  updates. Their trigger and budget details live in their workflow YAML.
+  `quality-sprint` nominates findings from parallel audits,
+  `test-suite-quality` nominates recurring flaky-test fixes or bounded
+  quarantines, `tutor` proposes confined config improvements, and
+  `self-update` stages requested binary updates. Their trigger and budget
+  details live in their workflow YAML.
 
 ## Observing a run
 

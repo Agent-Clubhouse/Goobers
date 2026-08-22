@@ -522,6 +522,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 			demoted = nil
 		}
+		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+		if ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
+		}
+		demoted = unionPRSets(demoted, ineligible)
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)

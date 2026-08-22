@@ -120,6 +120,12 @@ const (
 	EventClaimReleased EventType = "claim.released"
 	// EventClaimForceReleased records an operator overriding a claim lease.
 	EventClaimForceReleased EventType = "claim.force_released"
+	// EventClaimRefused records the claims plane refusing a lease because a
+	// live lease is held by a different run — the losing side of a
+	// two-claimant race, journaled so both outcomes are observable (§13 item
+	// 2 of distributed-state-and-coordination.md). The ledger itself journals
+	// only transitions; the refusal is the write API's own record.
+	EventClaimRefused EventType = "claim.refused"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.
@@ -172,6 +178,24 @@ const (
 	AttemptInfra AttemptClass = "infra"
 	// AttemptHuman is an explicit operator-requested rerun. Normative.
 	AttemptHuman AttemptClass = "human"
+)
+
+const (
+	// RunnerAnnotationRunRecovery identifies a recovered run.
+	RunnerAnnotationRunRecovery = "run.recovery"
+	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
+	RunnerAnnotationTriggerRecovery = "trigger.recovery"
+	// RunnerAnnotationWorkflowDigestDrift identifies in-flight runs whose
+	// pinned workflow digest no longer matches the served definition (#3376):
+	// they either resume from their pinned snapshot or, when that snapshot is
+	// unavailable, are refused at the next daemon restart.
+	RunnerAnnotationWorkflowDigestDrift = "workflow.digest.drift"
+	// RecoveryActionResumed records continuation of an interrupted stage.
+	RecoveryActionResumed = "resumed"
+	// RecoveryActionRetried records a new attempt after interruption.
+	RecoveryActionRetried = "retried"
+	// RecoveryActionNewClaim records an item claimed after daemon restart.
+	RecoveryActionNewClaim = "new_claim"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in

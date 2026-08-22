@@ -64,6 +64,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	instance.ApplyGaggleCICommand(set)
+	instance.ApplyGaggleOutboxMirror(set)
 	target := *gaggle
 	if target == "" {
 		for i := range set.Workflows {

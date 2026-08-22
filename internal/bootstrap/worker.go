@@ -25,6 +25,12 @@ type EngineDeps struct {
 	Auto       invoke.Automated
 	Workspaces engine.WorkspaceProvisioner
 	Scrubber   journal.Scrubber
+	// Canary is the #2931 fail-closed dispatch canary: the exact-value secret
+	// registry (journal.RegistryScrubber) the activities assert serialized
+	// dispatch envelopes against before executing a stage. Wire the SAME
+	// registry every resolver-issued and credential-plane-minted value is
+	// registered with; nil disables the canary.
+	Canary journal.Scrubber
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -38,6 +44,7 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		ScheduleService: temporalClient.WorkflowService(),
 		Workspaces:      deps.Workspaces,
 		Scrubber:        deps.Scrubber,
+		Canary:          deps.Canary,
 	})
 }
 

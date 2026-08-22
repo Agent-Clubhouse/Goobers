@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // ExportOutputError reports a failure writing selected records to the export
@@ -67,6 +69,9 @@ func ExportJournalOTLP(runsDirs []string, since, until time.Time, out io.Writer)
 }
 
 func exportRunOTLP(runID, runDir string, since, until time.Time, out io.Writer) error {
+	if _, err := journal.OpenRead(runDir); err != nil {
+		return fmt.Errorf("run %q: open journal: %w", runID, err)
+	}
 	path := filepath.Join(runDir, spansDirName, otlpFileName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {

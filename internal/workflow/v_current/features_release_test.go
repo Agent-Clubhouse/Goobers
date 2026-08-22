@@ -2,6 +2,7 @@ package vcurrent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,9 +34,6 @@ func TestFeatureRegistryAgainstLatestRelease(t *testing.T) {
 	released, tag := loadLatestReleasedFeatureRegistry(t, root)
 
 	if _, err := newFeatureRegistryAgainstReleased(released, AllFeatures()); err != nil {
-		if tag == "" {
-			t.Fatalf("current feature registry violates the pre-release compatibility policy: %v", err)
-		}
 		t.Fatalf("current feature registry violates compatibility with %s: %v", tag, err)
 	}
 }
@@ -55,6 +53,10 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	runGit(t, root, "add", ".")
 	runGit(t, root, "commit", "-q", "-m", "release ga feature")
 	runGit(t, root, "tag", "v1.1.0")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, root, "init", "--bare", "-q", remote)
+	runGit(t, root, "remote", "add", "origin", remote)
+	runGit(t, root, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
 
 	fabricatedHistory := []SupportTransition{
 		{Level: SupportPreview, SinceVersion: "dev"},
@@ -65,6 +67,7 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	writeFixtureFeatureRegistry(t, root, SupportRemoved, "v1.3.0", fabricatedHistory)
 	runGit(t, root, "add", ".")
 	runGit(t, root, "commit", "-q", "-m", "fabricate deprecation and removal")
+	runGit(t, root, "tag", "v9.0.0")
 
 	released, tag := loadLatestReleasedFeatureRegistry(t, root)
 	if tag != "v1.1.0" {
@@ -91,19 +94,81 @@ func TestLatestReleasedFeatureRegistryComesFromTag(t *testing.T) {
 	}
 }
 
+// TestReleaseBaselineGateFailsLoudlyWithoutTag proves the empty-baseline guard
+// in loadLatestReleasedFeatureRegistry actually fires. It re-runs the real gate
+// in a subprocess whose repository origin has no version-shaped tag — the exact
+// shape of the 8-day window in which v0.1.0's tag was unreachable from main
+// until #2924's ls-remote fix. Before the guard, that gate compared against an
+// empty registry and passed vacuously.
+func TestReleaseBaselineGateFailsLoudlyWithoutTag(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "README.md"), "fixture without releases\n")
+	runGit(t, root, "init", "-q")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	runGit(t, root, "config", "user.name", "Test")
+	runGit(t, root, "config", "commit.gpgSign", "false")
+	runGit(t, root, "config", "tag.gpgSign", "false")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "fixture without releases")
+	// A tag that is not version-shaped must not count as a baseline either.
+	runGit(t, root, "tag", "not-a-release")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, root, "init", "--bare", "-q", remote)
+	runGit(t, root, "remote", "add", "origin", remote)
+	runGit(t, root, "push", "-q", "origin", "HEAD:refs/heads/main", "--tags")
+
+	output, err := runTestBinary(t, root, "^TestFeatureRegistryAgainstLatestRelease$")
+	if err == nil {
+		t.Fatalf("gate passed with no release baseline; it must fail loudly:\n%s", output)
+	}
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("re-run gate without baseline: %v: %s", err, output)
+	}
+	for _, want := range []string{
+		"no release baseline",
+		"nothing to compare against",
+		"explicit opt-in",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("gate failure does not explain %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestReleaseBaselineTagIsEchoed asserts the gate names the release it compared
+// against in its log. A green gate that never says which baseline it used is
+// the other half of how #2924's vacuous pass went unnoticed.
+func TestReleaseBaselineTagIsEchoed(t *testing.T) {
+	output, err := runTestBinary(t, "", "^TestLatestReleasedFeatureRegistryComesFromTag$")
+	if err != nil {
+		t.Fatalf("re-run fixture-tag test: %v:\n%s", err, output)
+	}
+	if !strings.Contains(output, "feature registry baseline: release v1.1.0") {
+		t.Fatalf("baseline tag is not echoed in the test log:\n%s", output)
+	}
+}
+
 func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (FeatureRegistry, string) {
 	t.Helper()
-	tag := latestReleaseTag(t, repository)
+	tag, revision := latestReleaseTag(t, repository)
 	if tag == "" {
-		registry, err := NewFeatureRegistry(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return registry, ""
+		// Comparing against an empty registry makes this gate pass vacuously.
+		// That exact failure mode was live for 8 days while v0.1.0's tag was
+		// unreachable from main (#2924) and nothing reported the guard was
+		// off. v0.1.0 exists on origin, so an empty result here is always a
+		// defect, never a fresh-repository default.
+		t.Fatalf("no release baseline: git ls-remote found no version-shaped tag on origin of %s; "+
+			"the compatibility gate has nothing to compare against and would pass vacuously; "+
+			"a repository with genuinely no releases yet must make that an explicit opt-in, not a silent default",
+			repository)
 	}
+	// Name the baseline so CI output shows which release the gate compared
+	// against (asserted by TestReleaseBaselineTagIsEchoed).
+	t.Logf("feature registry baseline: release %s (%s)", tag, revision)
 
 	releaseTree := filepath.Join(t.TempDir(), "release")
-	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, tag)
+	runGit(t, repository, "worktree", "add", "--detach", "-q", releaseTree, revision)
 	t.Cleanup(func() {
 		if output, err := testgit.Command("-C", repository, "worktree", "remove", "--force", releaseTree).CombinedOutput(); err != nil {
 			t.Errorf("remove release worktree: %v: %s", err, strings.TrimSpace(string(output)))
@@ -127,6 +192,10 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	if err := json.Unmarshal([]byte(output), &features); err != nil {
 		t.Fatalf("decode feature registry from release %s: %v", tag, err)
 	}
+	features, err := FeaturesAtDSLVersion(features, DSLVersion)
+	if err != nil {
+		t.Fatalf("project feature registry from release %s to DSL %s: %v", tag, DSLVersion, err)
+	}
 	registry, err := NewFeatureRegistry(features)
 	if err != nil {
 		t.Fatalf("feature registry from release %s is invalid: %v", tag, err)
@@ -134,22 +203,28 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	return registry, tag
 }
 
-func latestReleaseTag(t *testing.T, repository string) string {
+func latestReleaseTag(t *testing.T, repository string) (string, string) {
 	t.Helper()
-	output := runGit(t, repository, "tag", "--merged", "HEAD", "--list")
-	var latestTag string
+	output := runGit(t, repository, "ls-remote", "--tags", "--refs", "origin")
+	var latestTag, latestRevision string
 	var latestVersion releaseVersion
-	for _, tag := range strings.Fields(output) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		tag := strings.TrimPrefix(fields[1], "refs/tags/")
 		version, err := parseReleaseVersion(tag, false)
 		if err != nil {
 			continue
 		}
 		if latestTag == "" || compareReleaseVersions(version, latestVersion) > 0 {
 			latestTag = tag
+			latestRevision = fields[0]
 			latestVersion = version
 		}
 	}
-	return latestTag
+	return latestTag, latestRevision
 }
 
 func writeFixtureFeatureRegistry(
@@ -171,10 +246,16 @@ type SupportTransition struct {
 	SinceVersion string `+"`json:\"sinceVersion\"`"+`
 }
 
+type DSLFeatureSupport struct {
+	Version string `+"`json:\"version\"`"+`
+	Level   string `+"`json:\"level\"`"+`
+}
+
 type Feature struct {
 	ID           string              `+"`json:\"id\"`"+`
 	Level        string              `+"`json:\"level\"`"+`
 	SinceVersion string              `+"`json:\"sinceVersion\"`"+`
+	DSLVersions  []DSLFeatureSupport `+"`json:\"dslVersions\"`"+`
 	History      []SupportTransition `+"`json:\"history\"`"+`
 }
 
@@ -187,10 +268,14 @@ func AllFeatures() []Feature {
 		ID:           "example.feature",
 		Level:        %q,
 		SinceVersion: %q,
+		DSLVersions: []DSLFeatureSupport{{
+			Version: %q,
+			Level:   %q,
+		}},
 		History:      history,
 	}}
 }
-`, historyJSON, level, sinceVersion)
+`, historyJSON, level, sinceVersion, DSLVersion, level)
 	source = "package workflow\n\nimport \"encoding/json\"\n\n" + strings.TrimPrefix(source, "package workflow\n\n")
 	writeFile(t, filepath.Join(root, "internal", "workflow", "features.go"), source)
 }
@@ -229,4 +314,20 @@ func runCommand(t *testing.T, directory, name string, args ...string) string {
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+// runTestBinary re-executes this test binary against a single test so a test
+// can observe another test failing or logging: t.Fatalf and t.Logf cannot be
+// observed in-process. An empty directory inherits the parent's working
+// directory.
+func runTestBinary(t *testing.T, directory, pattern string) (string, error) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(executable, "-test.run="+pattern, "-test.v")
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	return string(output), err
 }

@@ -91,6 +91,7 @@ const (
 	telemetryAggregateAll                 telemetryAggregate = "all"
 	telemetryAggregateStageFailureRate    telemetryAggregate = "stage-failure-rate"
 	telemetryAggregateErrorSignature      telemetryAggregate = "error-signature"
+	telemetryAggregateCICheckFailure      telemetryAggregate = "ci-check-failure"
 	telemetryAggregateGateNoise           telemetryAggregate = "gate-noise"
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
@@ -116,6 +117,8 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateStageFailureRate
 	case string(telemetryAggregateErrorSignature), "error-signatures":
 		aggregate = telemetryAggregateErrorSignature
+	case string(telemetryAggregateCICheckFailure):
+		aggregate = telemetryAggregateCICheckFailure
 	case string(telemetryAggregateGateNoise):
 		aggregate = telemetryAggregateGateNoise
 	case string(telemetryAggregateWorkflowUntriggered):
@@ -125,7 +128,7 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 	case string(telemetryAggregateCreditAssignment):
 		aggregate = telemetryAggregateCreditAssignment
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -150,6 +153,10 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateErrorSignature:
 			if kind == rollup.FindingErrorSignature {
+				return true
+			}
+		case telemetryAggregateCICheckFailure:
+			if kind == rollup.FindingCICheckFailure {
 				return true
 			}
 		case telemetryAggregateGateNoise:
@@ -223,6 +230,12 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MinErrorSignatureCount = n
+	case "min-ci-check-failure-runs", "minCICheckFailureRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCICheckFailureRuns = n
 	case "min-gate-evaluations", "minGateEvaluations":
 		n, err := parsePositiveInt()
 		if err != nil {
@@ -288,10 +301,10 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2

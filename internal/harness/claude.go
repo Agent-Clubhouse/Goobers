@@ -402,6 +402,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
 	}
+	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
+	out.InputInspectionReceipts = receipts
+	out.InputInspectionReceiptsCollected = receiptsCollected
+	if receiptsErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
+	}
 	if native, ok := convertClaudeStreams(claudeInvocationStreams(invocationResults, captures, req.MaxTranscriptBytes), prompts, req.MaxTranscriptBytes, result.TranscriptDroppedBytes); ok {
 		out.Metrics = native.metrics
 		out.ModelUsage = native.modelUsage
@@ -411,6 +417,11 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 			out.TranscriptTruncated = native.truncated
 			out.TranscriptDroppedBytes = native.droppedBytes
 		}
+		// Surface registered-but-unusable MCP servers loudly (#3356): the
+		// CLI's init event is the only place a failed server registration is
+		// visible — the session otherwise proceeds silently without those
+		// tools, and the resulting stage failure wears an unrelated costume.
+		out.MCPServerFailures = claudeMCPServerFailures(req, native)
 	}
 	if runErr != nil {
 		return out, runErr

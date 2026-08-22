@@ -23,6 +23,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	cfg := Config{
 		Workspace:    ws,
 		ArtifactFile: "findings.md",
+		ReceiptFile:  filepath.Join(".goobers", "mcp-io", ReceiptFileName),
 		Inputs:       map[string]string{"churn-data.artifact[0]": ".goobers/context/00-churn-data.artifact_0_"},
 		RunID:        "run-123",
 		WorkflowID:   "implementation",
@@ -52,7 +53,7 @@ func TestServeFullSession(t *testing.T) {
 	srv, ws := newTestServer(t)
 
 	var in bytes.Buffer
-	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{}))
+	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{"protocolVersion": "2025-06-18"}))
 	in.WriteString(rpcLine(t, -1, "notifications/initialized", nil))
 	in.WriteString(rpcLine(t, 2, "tools/list", map[string]interface{}{}))
 	in.WriteString(rpcLine(t, 3, "tools/call", map[string]interface{}{
@@ -75,8 +76,11 @@ func TestServeFullSession(t *testing.T) {
 	if err := srv.Serve(&in, &out, &errBuf); err != nil {
 		t.Fatalf("Serve: %v (stderr: %s)", err, errBuf.String())
 	}
-	if errBuf.Len() != 0 {
-		t.Fatalf("unexpected stderr: %s", errBuf.String())
+	// stderr carries exactly one line now — the once-per-session negotiated
+	// protocol version (#3457). Anything else on stderr is still a failure.
+	wantStderr := "mcpio: MCP protocol version negotiated: requested=2025-06-18 agreed=2025-06-18\n"
+	if errBuf.String() != wantStderr {
+		t.Fatalf("stderr = %q, want %q", errBuf.String(), wantStderr)
 	}
 
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -138,6 +142,247 @@ func TestServeFullSession(t *testing.T) {
 		if !strings.Contains(string(runInfoResult), want) {
 			t.Fatalf("get_run_info missing %q: %s", want, runInfoResult)
 		}
+	}
+
+	receipts, err := ReadInputInspectionReceipts(ws, filepath.Join(".goobers", "mcp-io", ReceiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("input inspection receipts = %+v, want list_inputs and read_input", receipts)
+	}
+	if receipts[0].Tool != "list_inputs" || !receipts[0].Success {
+		t.Fatalf("list_inputs receipt = %+v", receipts[0])
+	}
+	if receipts[1].Tool != "read_input" || receipts[1].Input != "churn-data.artifact[0]" ||
+		!receipts[1].Success || !strings.HasPrefix(receipts[1].InputDigest, "sha256:") ||
+		receipts[1].StartLine != 1 || receipts[1].EndLine != 1 {
+		t.Fatalf("read_input receipt = %+v", receipts[1])
+	}
+}
+
+func TestGrepInputRecordsMatches(t *testing.T) {
+	srv, ws := newTestServer(t)
+	var out bytes.Buffer
+	if err := srv.Serve(strings.NewReader(rpcLine(t, 1, "tools/call", map[string]interface{}{
+		"name": "grep_input",
+		"arguments": map[string]interface{}{
+			"name": "churn-data.artifact[0]", "pattern": "upstream", "contextLines": 1,
+		},
+	})), &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	receipts, err := ReadInputInspectionReceipts(ws, filepath.Join(".goobers", "mcp-io", ReceiptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 || receipts[0].Tool != "grep_input" ||
+		receipts[0].Input != "churn-data.artifact[0]" || !receipts[0].Success ||
+		!strings.HasPrefix(receipts[0].InputDigest, "sha256:") ||
+		len(receipts[0].MatchLines) != 1 || receipts[0].MatchLines[0] != 1 {
+		t.Fatalf("grep_input receipts = %+v", receipts)
+	}
+}
+
+// TestInitializeNegotiatesProtocolVersion is the regression test for #3457.
+// The server used to answer any protocolVersion outside its own list with
+// -32602, which the MCP lifecycle forbids — a server that doesn't support
+// the requested revision MUST answer with one it does support and let the
+// client decide. The old behaviour wasn't a pedantic violation: Copilot CLI
+// 1.0.80 requests a revision newer than the list, the handshake failed, and
+// every agentic stage on that build lost the whole goobers-io toolset. The
+// error is now reserved for an initialize carrying no usable
+// protocolVersion at all, where there is nothing to negotiate from.
+func TestInitializeNegotiatesProtocolVersion(t *testing.T) {
+	newest := supportedProtocolVersions[0]
+
+	tests := []struct {
+		name string
+		// params is what rides in the initialize request; nil omits the
+		// params member entirely.
+		params interface{}
+		// wantVersion is the protocolVersion the initialize result must
+		// echo. Empty means the case must fail instead.
+		wantVersion string
+		// wantError is an exact error-message match; wantErrorPrefix a
+		// prefix match, for messages that wrap a json decoder error.
+		wantError       string
+		wantErrorPrefix string
+	}{
+		{
+			name:        "newest supported echoed verbatim",
+			params:      map[string]interface{}{"protocolVersion": "2025-11-25"},
+			wantVersion: "2025-11-25",
+		},
+		{
+			name:        "previous supported echoed verbatim, not upgraded to newest",
+			params:      map[string]interface{}{"protocolVersion": "2025-06-18"},
+			wantVersion: "2025-06-18",
+		},
+		{
+			name:        "oldest supported echoed verbatim, not upgraded to newest",
+			params:      map[string]interface{}{"protocolVersion": "2024-11-05"},
+			wantVersion: "2024-11-05",
+		},
+		{
+			// The shape of the next CLI bump after the one that caused
+			// #3457: a revision that does not exist yet must negotiate, not
+			// fail, or this outage simply recurs.
+			name:        "unknown newer version negotiates down to newest supported",
+			params:      map[string]interface{}{"protocolVersion": "2026-11-25"},
+			wantVersion: newest,
+		},
+		{
+			name:        "unknown older version negotiates up to newest supported",
+			params:      map[string]interface{}{"protocolVersion": "2024-01-01"},
+			wantVersion: newest,
+		},
+		{
+			// The spec's own example of a client that isn't speaking dated
+			// revisions at all. Still a well-formed string, so still a
+			// negotiation input rather than an error.
+			name:        "unrecognized version scheme negotiates to newest supported",
+			params:      map[string]interface{}{"protocolVersion": "1.0.0"},
+			wantVersion: newest,
+		},
+		{
+			name:      "absent params",
+			params:    nil,
+			wantError: "initialize requires protocolVersion",
+		},
+		{
+			name:      "missing protocolVersion",
+			params:    map[string]interface{}{},
+			wantError: "initialize requires protocolVersion",
+		},
+		{
+			name:      "empty protocolVersion",
+			params:    map[string]interface{}{"protocolVersion": ""},
+			wantError: "initialize requires protocolVersion",
+		},
+		{
+			name:            "malformed protocolVersion type",
+			params:          map[string]interface{}{"protocolVersion": 20251125},
+			wantErrorPrefix: "invalid initialize params:",
+		},
+		{
+			name:            "malformed params shape",
+			params:          []interface{}{"2025-11-25"},
+			wantErrorPrefix: "invalid initialize params:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			var out, errBuf bytes.Buffer
+			if err := srv.Serve(
+				strings.NewReader(rpcLine(t, 1, "initialize", tt.params)),
+				&out,
+				&errBuf,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			var response rpcResponse
+			if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantError != "" || tt.wantErrorPrefix != "" {
+				if response.Error == nil {
+					t.Fatalf("expected protocol error, got result %#v", response.Result)
+				}
+				if response.Error.Code != -32602 {
+					t.Fatalf("error code = %d, want -32602 (error: %+v)", response.Error.Code, response.Error)
+				}
+				if tt.wantError != "" && response.Error.Message != tt.wantError {
+					t.Fatalf("error message = %q, want %q", response.Error.Message, tt.wantError)
+				}
+				if tt.wantErrorPrefix != "" && !strings.HasPrefix(response.Error.Message, tt.wantErrorPrefix) {
+					t.Fatalf("error message = %q, want prefix %q", response.Error.Message, tt.wantErrorPrefix)
+				}
+				if errBuf.Len() != 0 {
+					t.Fatalf("nothing was negotiated, so nothing should be logged; got stderr %q", errBuf.String())
+				}
+				return
+			}
+			if response.Error != nil {
+				t.Fatalf("unexpected protocol error: %+v", response.Error)
+			}
+			result, ok := response.Result.(map[string]interface{})
+			if !ok {
+				t.Fatalf("result type = %T, want map", response.Result)
+			}
+			if got := result["protocolVersion"]; got != tt.wantVersion {
+				t.Fatalf("protocolVersion = %v, want %q", got, tt.wantVersion)
+			}
+
+			// The negotiated version is reported on our own side of the
+			// wire, not only in the client's private log — see #3457's
+			// note on why the outage stayed invisible for seven occurrences.
+			sent, _ := tt.params.(map[string]interface{})
+			requested, _ := sent["protocolVersion"].(string)
+			wantLog := "requested=" + requested + " agreed=" + tt.wantVersion
+			if !strings.Contains(errBuf.String(), wantLog) {
+				t.Fatalf("stderr = %q, want it to record %q", errBuf.String(), wantLog)
+			}
+		})
+	}
+}
+
+// TestEverySupportedProtocolVersionIsEchoedVerbatim pins the half of the
+// negotiation contract that the fallback could otherwise mask: a version the
+// server genuinely supports must come back unchanged, never silently
+// upgraded to the newest one. Driven off supportedProtocolVersions itself so
+// that adding a revision cannot leave a gap here.
+func TestEverySupportedProtocolVersionIsEchoedVerbatim(t *testing.T) {
+	if len(supportedProtocolVersions) == 0 {
+		t.Fatal("supportedProtocolVersions is empty; negotiation has nothing to offer")
+	}
+	for _, version := range supportedProtocolVersions {
+		t.Run(version, func(t *testing.T) {
+			srv, _ := newTestServer(t)
+			var out bytes.Buffer
+			if err := srv.Serve(
+				strings.NewReader(rpcLine(t, 1, "initialize", map[string]interface{}{"protocolVersion": version})),
+				&out,
+				&bytes.Buffer{},
+			); err != nil {
+				t.Fatal(err)
+			}
+			var response rpcResponse
+			if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error != nil {
+				t.Fatalf("supported version %q errored: %+v", version, response.Error)
+			}
+			result, ok := response.Result.(map[string]interface{})
+			if !ok {
+				t.Fatalf("result type = %T, want map", response.Result)
+			}
+			if got := result["protocolVersion"]; got != version {
+				t.Fatalf("protocolVersion = %v, want %q echoed back verbatim", got, version)
+			}
+		})
+	}
+}
+
+// TestNegotiationIsLoggedOncePerSession keeps the new stderr line from
+// becoming per-request noise in a long stage's harness output if a client
+// re-initializes.
+func TestNegotiationIsLoggedOncePerSession(t *testing.T) {
+	srv, _ := newTestServer(t)
+	var in bytes.Buffer
+	in.WriteString(rpcLine(t, 1, "initialize", map[string]interface{}{"protocolVersion": "2025-11-25"}))
+	in.WriteString(rpcLine(t, 2, "initialize", map[string]interface{}{"protocolVersion": "2025-11-25"}))
+
+	var out, errBuf bytes.Buffer
+	if err := srv.Serve(&in, &out, &errBuf); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(errBuf.String(), "MCP protocol version negotiated"); got != 1 {
+		t.Fatalf("negotiation logged %d times, want exactly 1: %q", got, errBuf.String())
 	}
 }
 
@@ -279,5 +524,49 @@ func TestReadInputRefusesToTraverseANestedSymlinkedAncestor(t *testing.T) {
 	tool := NewToolset(Config{Workspace: ws, Inputs: map[string]string{"x": "link/nested/secret.txt"}})
 	if _, err := tool.ReadInput("x", 0, 0); err == nil {
 		t.Fatal("expected read_input to refuse to traverse a symlinked ancestor")
+	}
+}
+
+// #3462: a protocolVersion that is not a YYYY-MM-DD revision must still be
+// ANSWERED — refusing on a format assumption is the #3457 outage one
+// indirection removed, and would recur the day MCP publishes a revision that
+// isn't a bare date. But the session must say so, because "this client isn't
+// speaking MCP" and "this client wants a revision I lack" are different
+// problems with different fixes, and #3462 found them indistinguishable.
+func TestMalformedProtocolVersionIsNegotiatedButReported(t *testing.T) {
+	server, _ := newTestServer(t)
+	result, rpcErr := negotiateProtocolVersion(json.RawMessage(`{"protocolVersion":"not-a-version"}`))
+	if rpcErr != nil {
+		t.Fatalf("rpcErr = %+v, want nil: a malformed version must never fail the handshake", rpcErr)
+	}
+	if result.agreed != supportedProtocolVersions[0] {
+		t.Fatalf("agreed = %q, want %q", result.agreed, supportedProtocolVersions[0])
+	}
+	if !result.malformed {
+		t.Fatal("malformed = false, want true for \"not-a-version\"")
+	}
+	var stderr bytes.Buffer
+	server.logNegotiation(&stderr, result)
+	logged := stderr.String()
+	if !strings.Contains(logged, "WARNING") || !strings.Contains(logged, "not-a-version") {
+		t.Fatalf("negotiation log = %q, want a warning naming the requested value", logged)
+	}
+}
+
+// The complement, and the case that must NOT be noisy: an unknown but
+// well-formed revision is ordinary forward compatibility, not a broken client.
+func TestUnknownWellFormedVersionIsNotReportedMalformed(t *testing.T) {
+	server, _ := newTestServer(t)
+	result, rpcErr := negotiateProtocolVersion(json.RawMessage(`{"protocolVersion":"2026-11-25"}`))
+	if rpcErr != nil {
+		t.Fatalf("rpcErr = %+v, want nil", rpcErr)
+	}
+	if result.malformed {
+		t.Fatal("malformed = true, want false for a well-formed future revision")
+	}
+	var stderr bytes.Buffer
+	server.logNegotiation(&stderr, result)
+	if strings.Contains(stderr.String(), "WARNING") {
+		t.Fatalf("negotiation log = %q, want no warning for a well-formed unknown revision", stderr.String())
 	}
 }

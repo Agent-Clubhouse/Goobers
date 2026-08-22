@@ -642,9 +642,12 @@ func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, erro
 func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
 	sampler := s.activeSampler.Load()
 	if sampler == nil {
-		// No sampler configured (a one-shot construction). Walk once rather than
-		// refuse: this is not a request path, and refusing here would break the
-		// CLI surfaces that legitimately have no daemon to have warmed a cache.
+		if s.readModelReads && s.sources.ReadModel != nil {
+			counts, err := s.projectedActiveRunCounts(context.Background())
+			return counts, 0, err
+		}
+		// A one-shot construction without a projection pays for the authoritative
+		// answer once; long-lived projected services never enter this path.
 		runDirs, err := s.sources.Layout.RunDirs()
 		if err != nil {
 			return nil, 0, fmt.Errorf("enumerate run roots: %w", err)
@@ -678,10 +681,17 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 		readiness.MaxRunsPerHour = 10
 	}
 	if s.sources.Config != nil {
-		if override := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; override > 0 {
+		// #3439: comma-ok, not `> 0`. A zero override is a real, meaningful
+		// value here — the schema defines it as "stops it from starting" — so
+		// indexing without the ok is indistinguishable from an absent entry and
+		// would report the scheduler default for a workflow the scheduler has
+		// actually stopped. The effective readiness this surface reports has to
+		// match what the scheduler enforces, or the portal explains a paused
+		// workflow as running ten times an hour.
+		if override, ok := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; ok {
 			readiness.MaxRunsPerHour = int32(override)
 		}
-		if override := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; override > 0 {
+		if override, ok := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; ok {
 			readiness.MaxRunsPerDay = int32(override)
 		}
 	}

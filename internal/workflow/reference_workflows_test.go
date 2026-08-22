@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
@@ -144,7 +148,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	goobers := map[string]apiv1.GooberSpec{}
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead", "test-quality-analyst"} {
 		var g apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -156,7 +160,7 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 		goobers[g.Name] = g.Spec
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 			if err != nil {
@@ -174,6 +178,82 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 				if warnings := CheckWarnings(def); len(warnings) != 0 {
 					t.Fatalf("%s warnings = %v, want warning-clean reference config", file, warnings)
 				}
+			}
+		})
+	}
+}
+
+func TestReadOnlyWorkflowTasksDoNotMaterializeIssueWriter(t *testing.T) {
+	root := filepath.Join("..", "..")
+	cases := []struct {
+		path            string
+		task            string
+		command         []string
+		expectedOutputs []string
+	}{
+		{"reference-workflows/gaggles/goobers/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"reference-workflows/gaggles/goobers/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"config-examples/gaggles/acme-web/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"config-examples/gaggles/acme-web/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"config-examples/gaggles/acme-web-claude/workflows/backlog-curation.yaml", "sample-ready-pool", []string{"goobers", "backlog-health"}, []string{"backlog-health"}},
+		{"config-examples/gaggles/acme-web-claude/workflows/backlog-curation.yaml", "surface-duplicates", []string{"goobers", "backlog-dedupe"}, []string{"dedupe-candidates"}},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "gather-pr-context", []string{"goobers", "gather-pr-context"}, []string{"selectedNumber", "head", "base", "isBehindBase", "hasSubstantiveFindings", "hasFailingCI", "workspaceBranch"}},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "gather-issue-context", []string{"goobers", "gather-issue-context"}, nil},
+		{"reference-workflows/gaggles/goobers/workflows/pr-remediation.yaml", "validate-finding-responses", []string{"goobers", "respond-to-findings", "--check"}, nil},
+	}
+
+	t.Setenv("GOOBERS_TEST_ISSUE_WRITER", "writer-token-must-not-materialize")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: "issue-writer",
+		Env:  "GOOBERS_TEST_ISSUE_WRITER",
+	}})
+	if err != nil {
+		t.Fatalf("build credential resolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.GitHubIssuesWrite),
+		Ref:        "issue-writer",
+	}}, journal.NewRegistryScrubber())
+	if err != nil {
+		t.Fatalf("build credential injector: %v", err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.task+"/"+tc.path, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(root, tc.path))
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var workflow apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &workflow); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			var task *apiv1.Task
+			for i := range workflow.Spec.Tasks {
+				if workflow.Spec.Tasks[i].Name == tc.task {
+					task = &workflow.Spec.Tasks[i]
+					break
+				}
+			}
+			if task == nil {
+				t.Fatal("task not found")
+			}
+			if task.Run == nil || !slices.Equal(task.Run.Command, tc.command) {
+				t.Errorf("command = %v, want %v", task.Run, tc.command)
+			}
+			if !slices.Equal(task.ExpectedOutputs, tc.expectedOutputs) {
+				t.Errorf("expectedOutputs = %v, want %v", task.ExpectedOutputs, tc.expectedOutputs)
+			}
+			if containsString(task.Capabilities, string(capability.GitHubIssuesWrite)) {
+				t.Errorf("capabilities = %v, must not include issue-write authority", task.Capabilities)
+			}
+
+			set, err := injector.Materialize(context.Background(), task.Capabilities)
+			if err != nil {
+				t.Fatalf("materialize task credentials: %v", err)
+			}
+			if _, err := set.Token(context.Background(), string(capability.GitHubIssuesWrite)); !errors.Is(err, credentials.ErrUndeclaredCapability) {
+				t.Errorf("issue writer lookup error = %v, want ErrUndeclaredCapability", err)
 			}
 		})
 	}
@@ -290,7 +370,7 @@ func TestReferenceWorkflowsPolicyActionAuditCoversDeclaredVocabulary(t *testing.
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 	actions := map[string]bool{}
 
-	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead"} {
+	for _, name := range []string{"implementer", "reviewer", "curator", "nominator", "analyst", "config-author", "quality-researcher", "quality-lead", "test-quality-analyst"} {
 		var goober apiv1.Goober
 		raw, err := os.ReadFile(filepath.Join(root, "goobers", name, "goober.yaml"))
 		if err != nil {
@@ -304,7 +384,7 @@ func TestReferenceWorkflowsPolicyActionAuditCoversDeclaredVocabulary(t *testing.
 		}
 	}
 
-	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml"} {
+	for _, file := range []string{"implementation.yaml", "backlog-curation.yaml", "work-nomination.yaml", "tutor.yaml", "merge-review.yaml", "pr-remediation.yaml", "quality-sprint.yaml", "test-suite-quality.yaml"} {
 		var workflow apiv1.Workflow
 		raw, err := os.ReadFile(filepath.Join(root, "workflows", file))
 		if err != nil {
@@ -375,30 +455,77 @@ func TestReferenceWorkflowsRemediationRejectsOmittedPersonaActions(t *testing.T)
 
 func TestReferenceWorkflowsTelemetryQueriesDeclareResultFile(t *testing.T) {
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows")
-	for _, file := range []string{"work-nomination.yaml", "tutor.yaml"} {
-		t.Run(file, func(t *testing.T) {
-			wantResultFile := "telemetry-signals.json"
-			if file == "work-nomination.yaml" {
-				wantResultFile = "candidate-findings.json"
-			}
-			raw, err := os.ReadFile(filepath.Join(root, file))
+	tests := []struct {
+		file, task, resultFile string
+	}{
+		{"work-nomination.yaml", "gather-signals", "candidate-findings.json"},
+		{"tutor.yaml", "gather-signals", "telemetry-signals.json"},
+		{"test-suite-quality.yaml", "gather-recurring-failures", "recurring-failures.json"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(root, tc.file))
 			if err != nil {
-				t.Fatalf("read %s: %v", file, err)
+				t.Fatalf("read %s: %v", tc.file, err)
 			}
 			var w apiv1.Workflow
 			if err := yaml.Unmarshal(raw, &w); err != nil {
-				t.Fatalf("unmarshal %s: %v", file, err)
+				t.Fatalf("unmarshal %s: %v", tc.file, err)
 			}
 			for _, task := range w.Spec.Tasks {
-				if task.Name == "gather-signals" {
-					if got := task.Inputs["resultFile"]; got != wantResultFile {
-						t.Fatalf("gather-signals resultFile = %q, want %s", got, wantResultFile)
+				if task.Name == tc.task {
+					if got := task.Inputs["resultFile"]; got != tc.resultFile {
+						t.Fatalf("%s resultFile = %q, want %s", tc.task, got, tc.resultFile)
 					}
 					return
 				}
 			}
-			t.Fatal("gather-signals task not found")
+			t.Fatalf("%s task not found", tc.task)
 		})
+	}
+}
+
+func TestReferenceTestSuiteQualityUsesRecurringEvidenceBeforeNomination(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "test-suite-quality.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	tasks := make(map[string]apiv1.Task)
+	for _, task := range workflow.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+
+	gather := tasks["gather-recurring-failures"]
+	wantCommand := []string{
+		"goobers", "telemetry-query", "--window", "168h",
+		"--aggregate", "ci-check-failure",
+		"--threshold", "min-ci-check-failure-runs=2",
+		"--format", "candidate-findings",
+	}
+	if gather.Run == nil || !slices.Equal(gather.Run.Command, wantCommand) ||
+		gather.Next != "classify-flakes" ||
+		!containsString(gather.Capabilities, string(capability.TelemetryRead)) {
+		t.Fatalf("gather-recurring-failures = %+v, want bounded recurring-error telemetry query", gather)
+	}
+
+	classify := tasks["classify-flakes"]
+	if classify.Goober != "test-quality-analyst" ||
+		classify.Next != "nominate" ||
+		!containsString(classify.Capabilities, string(capability.JournalRead)) ||
+		containsString(classify.Capabilities, string(capability.GitHubIssuesWrite)) {
+		t.Fatalf("classify-flakes = %+v, want read-only journal-backed analyst", classify)
+	}
+
+	nominate := tasks["nominate"]
+	if nominate.InputsFrom["candidateFindings"] != "findingsRef" ||
+		!containsString(nominate.Capabilities, string(capability.GitHubIssuesWrite)) ||
+		nominate.Next != "" {
+		t.Fatalf("nominate = %+v, want terminal issue-only proposal stage", nominate)
 	}
 }
 
@@ -426,7 +553,7 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
-func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *testing.T) {
+func TestReferenceWorkflowsImplementationCheckpointsBeforeStrictIntegration(t *testing.T) {
 	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -455,8 +582,11 @@ func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *test
 	if !localCI.Run.SyncBase {
 		t.Fatal("local-ci syncBase = false, want true")
 	}
-	if localCI.TimeoutSeconds != 1500 {
-		t.Fatalf("local-ci timeoutSeconds = %d, want 1500", localCI.TimeoutSeconds)
+	// #3377: 2400s (40m), not the prior 1500s (25m) — `make ci` shells out to
+	// `go test -race -timeout 30m`, so the stage budget must clear that inner
+	// subprocess ceiling, not just typical-case duration.
+	if localCI.TimeoutSeconds != 2400 {
+		t.Fatalf("local-ci timeoutSeconds = %d, want 2400", localCI.TimeoutSeconds)
 	}
 	if localCI.Retry == nil || localCI.Retry.MaxAttempts != 1 {
 		t.Fatalf("local-ci retry = %+v, want maxAttempts 1", localCI.Retry)
@@ -464,10 +594,23 @@ func TestReferenceWorkflowsImplementationRunsStrictIntegrationBeforePush(t *test
 	if localCI.Next != "local-gate" {
 		t.Fatalf("local-ci next = %q, want local-gate", localCI.Next)
 	}
+	var pushBranch *apiv1.Task
+	for i := range w.Spec.Tasks {
+		if w.Spec.Tasks[i].Name == "push-branch" {
+			pushBranch = &w.Spec.Tasks[i]
+			break
+		}
+	}
+	if pushBranch == nil || pushBranch.Next != "local-ci" {
+		t.Fatalf("push-branch = %+v, want next local-ci", pushBranch)
+	}
 	for _, workflowGate := range w.Spec.Gates {
 		if workflowGate.Name == localCI.Next {
-			if got := workflowGate.Branches["pass"]; got != "push-branch" {
-				t.Fatalf("local-gate pass branch = %q, want push-branch", got)
+			if got := workflowGate.Branches["pass"]; got != "open-pr" {
+				t.Fatalf("local-gate pass branch = %q, want open-pr", got)
+			}
+			if got := workflowGate.Branches["infra"]; got != "local-ci" {
+				t.Fatalf("local-gate infra branch = %q, want local-ci", got)
 			}
 			return
 		}

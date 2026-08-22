@@ -16,7 +16,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4173",
+    command: "npm run build && node e2e/fixture-daemon.mjs",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: !process.env.CI,
   },

@@ -81,6 +81,24 @@ after materializing the instance below (see
 [`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
 for a full claude-code gaggle reference).
 
+### Check prerequisites
+
+The sample's CI command requires Node.js 20 or newer and npm. Confirm both are
+available on the same `PATH` Goobers will use before materializing the sample:
+
+```sh
+node --version
+npm --version
+```
+
+The first command must report `v20.0.0` or newer, and both commands must
+succeed. At run start, Goobers preflights the configured `npm` CI executable
+before any workflow stage executes. If npm is missing, the run fails before it
+claims or changes an issue with a `ciCommand executable "npm" not found` error;
+install Node.js 20+ and npm, then run the command again. The preflight checks
+that npm exists, not the Node.js major version, so do not skip the literal
+version checks above.
+
 ### Materialize the sample and the instance
 
 Copy the paired sample into a separate throwaway directory, then scaffold the

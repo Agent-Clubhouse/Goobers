@@ -143,25 +143,38 @@ func loadShippedPRRemediation(t *testing.T) *workflow.Machine {
 // validate-finding-responses, push-remediated, respond-to-findings) and for
 // `make ci`.
 type visitRecordingDeterministic struct {
-	t       *testing.T
-	rec     ArtifactRecorder
-	byTask  map[string]stubTaskResult
-	mu      *sync.Mutex
-	visited *[]string
+	t             *testing.T
+	rec           ArtifactRecorder
+	byTask        map[string]stubTaskResult
+	statusByVisit map[string][]apiv1.ResultStatus
+	visitCounts   map[string]int
+	mu            *sync.Mutex
+	visited       *[]string
 }
 
 func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, dr apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	_, stage, _ := strings.Cut(env.TaskID, ":")
 	v.mu.Lock()
 	*v.visited = append(*v.visited, stage)
+	if v.visitCounts == nil {
+		v.visitCounts = make(map[string]int)
+	}
+	visit := v.visitCounts[stage]
+	v.visitCounts[stage]++
+	statuses := v.statusByVisit[stage]
 	v.mu.Unlock()
+	if visit < len(statuses) {
+		return apiv1.ResultEnvelope{Status: statuses[visit]}, nil
+	}
 	return (&stubDeterministic{rec: v.rec, byTask: v.byTask}).Run(ctx, env, dr)
 }
 
 type remediationWalkOptions struct {
-	maxRepasses      int
-	validationStatus apiv1.ResultStatus
-	beforePushStatus apiv1.ResultStatus
+	maxRepasses                  int
+	validationStatus             apiv1.ResultStatus
+	beforePushStatus             apiv1.ResultStatus
+	guardBeforeImplementStatuses []apiv1.ResultStatus
+	pushPublished                string
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -181,6 +194,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 	}
 	if opts.beforePushStatus == "" {
 		opts.beforePushStatus = apiv1.ResultSuccess
+	}
+	if opts.pushPublished == "" {
+		opts.pushPublished = "true"
 	}
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -268,10 +284,13 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":validate-finding-responses": {status: opts.validationStatus},
 		runID + ":local-ci":                   {status: apiv1.ResultSuccess},
 		runID + ":push-remediated": {
-			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": "true"},
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"published": opts.pushPublished},
 		},
 		runID + ":respond-to-findings": {
-			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": true},
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"posted": opts.pushPublished == "true"},
+		},
+		runID + ":resolve-review-threads": {
+			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"unresolvedThreadCount": "0"},
 		},
 		runID + ":release-claim":                  {status: apiv1.ResultSuccess},
 		runID + ":release-escalated-claim":        {status: apiv1.ResultSuccess},
@@ -281,7 +300,15 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
-			return &visitRecordingDeterministic{t: t, rec: rec, byTask: byTask, mu: &mu, visited: &visited}, nil
+			return &visitRecordingDeterministic{
+				t: t, rec: rec, byTask: byTask,
+				statusByVisit: map[string][]apiv1.ResultStatus{
+					"guard-before-implement": opts.guardBeforeImplementStatuses,
+				},
+				visitCounts: make(map[string]int),
+				mu:          &mu,
+				visited:     &visited,
+			}, nil
 		},
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return goober, nil
@@ -331,6 +358,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	if res.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
+
 	want := []string{
 		"update-behind-pr",
 		"gather-pr-context",
@@ -350,6 +378,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"guard-before-push",
 		"push-remediated",
 		"respond-to-findings",
+		"resolve-review-threads",
 		"release-claim",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
@@ -369,6 +398,25 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 	}
 	if !goober.sawCIContext {
 		t.Error("implementer context is missing gather-ci-failures.artifact[0]")
+	}
+}
+
+func TestShippedPRRemediationReleasesClaimWhenPublicationIsSkipped(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-unpublished", goober, remediationWalkOptions{
+		pushPublished: "false",
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	if visited[len(visited)-1] != "release-claim" {
+		t.Fatalf("last stage = %q, want release-claim (visited: %v)", visited[len(visited)-1], visited)
+	}
+	for _, stage := range visited {
+		if stage == "resolve-review-threads" {
+			t.Fatalf("unpublished remediation reached %s (visited: %v)", stage, visited)
+		}
 	}
 }
 
@@ -469,6 +517,29 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	}
 	if visited[len(visited)-1] != "release-claim" {
 		t.Errorf("last stage = %q, want release-claim after the remediated branch was published", visited[len(visited)-1])
+	}
+}
+
+func TestShippedPRRemediationStopsBeforeRepassWhenPRCloses(t *testing.T) {
+	goober := &remediationGoober{t: t, verdicts: []apiv1.VerdictDecision{apiv1.VerdictNeedsChanges}}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-closed-before-repass", goober, remediationWalkOptions{
+		guardBeforeImplementStatuses: []apiv1.ResultStatus{apiv1.ResultSuccess, apiv1.ResultNoWork},
+	})
+
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	implements := 0
+	for _, stage := range visited {
+		if stage == "implement" {
+			implements++
+		}
+	}
+	if implements != 1 {
+		t.Fatalf("implement dispatched %d times, want the terminal recheck to skip the repass (visited: %v)", implements, visited)
+	}
+	if visited[len(visited)-1] != "guard-before-implement" {
+		t.Fatalf("last stage = %q, want guard-before-implement (visited: %v)", visited[len(visited)-1], visited)
 	}
 }
 
@@ -635,7 +706,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "gather-implement-context", "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out"}
+	want := []string{"query-backlog", "gather-implement-context", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
@@ -723,9 +794,9 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
-		"query-backlog", "gather-implement-context", "implement", "local-ci",
-		"push-branch", "open-pr", "ci-poll", "remediate-ci", "local-ci",
-		"push-branch", "open-pr", "ci-poll", "close-out",
+		"query-backlog", "gather-implement-context", "implement", "push-branch",
+		"local-ci", "open-pr", "ci-poll", "remediate-ci", "push-branch",
+		"local-ci", "open-pr", "ci-poll", "close-out",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)

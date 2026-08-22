@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -59,9 +61,12 @@ func TestBacklogQueryReadOnlyReportsProviderFailure(t *testing.T) {
 
 	previousProvider := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		// The 503 exists to make the list fail, not to exercise the retry
+		// ladder: spending the transient-retry budget keeps the assertion
+		// identical while dropping 1+2+4+8 = 15s of real backoff sleep.
 		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
 			provider.BaseURL = server.URL
-		})...)
+		}, providers.WithMaxTransientRetries(0))...)
 	}
 	t.Cleanup(func() { newGitHubProvider = previousProvider })
 
@@ -183,6 +188,7 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !strings.Contains(stdout, "claimed 7") {
 		t.Fatalf("stdout = %q, want a mention of the claimed item", stdout)
 	}
@@ -214,6 +220,228 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 	entry, ok := ledger.Lookup("7")
 	if !ok || entry.RunID != "run-1" {
 		t.Fatalf("ledger entry for item 7 = %+v, ok=%v, want held by run-1", entry, ok)
+	}
+}
+
+func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Raced item", "goobers:approved")
+	server.addComment(7, "goobers-claim: run=other-instance-run\n\nClaimed by another instance.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "losing-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("claim race: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "claim race lost for item 7 to run other-instance-run") {
+		t.Fatalf("stderr = %q, want detected-race warning", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("losing run retained ledger claim: %+v", entry)
+	}
+}
+
+// TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick locks in the #233
+// gate for list/scan pumps: a plain backlog-query (no --claim) that declares a
+// resultFile and finds nothing must emit ResultNoWork (noWork:true in the
+// declared file) so the runner short-circuits to a clean PhaseCompleted before
+// any downstream agentic stage runs. Without this, a scan-then-act workflow
+// invoked its model-backed stage every empty tick only to rediscover there was
+// nothing to act on — burning tokens on each poll.
+func TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	// No approved issues seeded -> empty eligible set on this tick.
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scan-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "scan.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("empty pump scan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "scan.json"))
+	if err != nil {
+		t.Fatalf("read scan.json: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal scan.json: %v", err)
+	}
+	if got["noWork"] != true {
+		t.Fatalf("scan.json = %v, want noWork:true so the runner short-circuits before the agentic router", got)
+	}
+}
+
+// TestBacklogQueryPlainScanWithWorkDoesNotGate guards the other side of the
+// gate: a plain scan that finds eligible items must NOT report ResultNoWork, so
+// the run proceeds to its downstream stage and actually does the work.
+// Over-gating here would silently stall any scan-then-act workflow whenever the
+// backlog was non-empty.
+func TestBacklogQueryPlainScanWithWorkDoesNotGate(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(9, "Unlaned work", "goobers:approved")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scan-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "scan.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", root)
+	if code != 0 {
+		t.Fatalf("scan with work: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "no work:") {
+		t.Fatalf("scan with an eligible item must not gate as no-work: stdout = %q", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "scan.json"))
+	if err != nil {
+		t.Fatalf("read scan.json: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal scan.json: %v", err)
+	}
+	if got["noWork"] == true {
+		t.Fatalf("scan.json = %v, want no noWork gate so the downstream router runs", got)
+	}
+}
+
+func TestBacklogQueryRequiresParentPublishedRecordForDecompositionChild(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Tracking parent", providers.LabelApproved, providers.LabelTracking)
+	server.addIssue(8, "Prepared child", "goobers", providers.LabelReady)
+	server.addIssue(9, "Published child", "goobers", providers.LabelReady)
+	const digest = "sha256:batch"
+	server.mu.Lock()
+	server.issues[8].body = decomposition.ChildBatchMarker("7", digest, "prepared")
+	server.issues[9].body = decomposition.ChildBatchMarker("7", digest, "published")
+	server.mu.Unlock()
+	server.addComment(7, decomposition.PublishedBatchRecord("7", digest, []string{"9"}))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-barrier")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", providers.LabelReady)
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile("claimed-item.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claimed providers.WorkItem
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != "9" {
+		t.Fatalf("claimed %s, want published child 9; prepared child 8 must remain ineligible", claimed.ID)
+	}
+}
+
+type decompositionBarrierProvider struct {
+	parent      providers.WorkItem
+	comments    []providers.Comment
+	commentsErr error
+}
+
+func (p decompositionBarrierProvider) ListWorkItems(context.Context, providers.ListWorkItemsRequest) ([]providers.WorkItem, error) {
+	return nil, nil
+}
+func (p decompositionBarrierProvider) GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error) {
+	return p.parent, nil
+}
+func (p decompositionBarrierProvider) ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return p.comments, p.commentsErr
+}
+func (p decompositionBarrierProvider) CreateWorkItem(context.Context, providers.CreateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
+	return providers.WorkItem{}, nil
+}
+func (p decompositionBarrierProvider) ClaimWorkItem(context.Context, providers.ClaimWorkItemRequest) (providers.ClaimResult, error) {
+	return providers.ClaimResult{}, nil
+}
+
+func TestDecompositionEligibilityBarrierFailsClosedOnProviderError(t *testing.T) {
+	const digest = "sha256:batch"
+	providerErr := errors.New("comments unavailable")
+	_, err := filterDecompositionEligibility(
+		context.Background(),
+		decompositionBarrierProvider{parent: providers.WorkItem{ID: "7"}, commentsErr: providerErr},
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		[]providers.WorkItem{{ID: "8", Body: decomposition.ChildBatchMarker("7", digest, "child")}},
+	)
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("error = %v, want provider failure", err)
+	}
+}
+
+func TestDecompositionEligibilityBarrierRejectsConflictingPublishedRecord(t *testing.T) {
+	const digest = "sha256:batch"
+	items, err := filterDecompositionEligibility(
+		context.Background(),
+		decompositionBarrierProvider{
+			parent: providers.WorkItem{ID: "7"},
+			comments: []providers.Comment{
+				{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})},
+				{Body: decomposition.PublishedBatchRecord("7", "sha256:other", []string{"9"})},
+			},
+		},
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+		[]providers.WorkItem{{ID: "8", Body: decomposition.ChildBatchMarker("7", digest, "child")}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("eligible items = %v, want conflicting batch to fail closed", items)
+	}
+}
+
+func TestDecompositionEligibilityBarrierRejectsMalformedChildMarkers(t *testing.T) {
+	const digest = "sha256:batch"
+	provider := decompositionBarrierProvider{
+		parent:   providers.WorkItem{ID: "7"},
+		comments: []providers.Comment{{Body: decomposition.PublishedBatchRecord("7", digest, []string{"8"})}},
+	}
+	for name, marker := range map[string]string{
+		"extra field":      decomposition.ChildBatchMarker("7", digest, "child") + " extra=value",
+		"reordered fields": decomposition.ChildBatchMarkerPrefix + " v1 digest=" + digest + " parent=7 key=child",
+		"duplicate field":  decomposition.ChildBatchMarkerPrefix + " v1 parent=7 digest=" + digest + " parent=7",
+	} {
+		t.Run(name, func(t *testing.T) {
+			items, err := filterDecompositionEligibility(
+				context.Background(),
+				provider,
+				providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
+				[]providers.WorkItem{{ID: "8", Body: marker}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("eligible items = %v, want malformed marker to fail closed", items)
+			}
+		})
 	}
 }
 

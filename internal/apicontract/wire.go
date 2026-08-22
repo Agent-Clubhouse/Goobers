@@ -189,6 +189,15 @@ func newWireFixtures() wireFixtures {
 		RetryCount:       2,
 		PolicyRetryCount: 1,
 		InfraRetryCount:  1,
+		Operator: readservice.OperatorRunSummary{
+			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
+			CurrentStage:      "review",
+			Liveness:          "terminal",
+			Trajectory:        "parked",
+			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+			NextTransition:    "",
+			PotentialBlockers: []string{},
+		},
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -277,7 +286,6 @@ func newWireFixtures() wireFixtures {
 					Provider:      apiv1.ProviderGitHub,
 					Project:       "Agent-Clubhouse/Goobers",
 					Labels:        []string{"goobers:ready"},
-					Query:         "is:issue",
 					ConnectionRef: "github",
 				},
 				GooberCount:    1,
@@ -565,6 +573,7 @@ func newWireFixtures() wireFixtures {
 				P50CopilotPremiumRequests: &p50PremiumRequests,
 				P95CopilotPremiumRequests: &p95PremiumRequests,
 				CostSamples:               4,
+				CostUSD:                   &modelCostUSD,
 				P50CostUSD:                &p50CostUSD,
 				P95CostUSD:                &p95CostUSD,
 				RetryWasteAttempts:        1,

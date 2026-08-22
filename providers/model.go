@@ -30,6 +30,7 @@ const (
 	LabelApproved   = "goobers:approved"
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
+	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
 	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"
@@ -346,6 +347,7 @@ type PullRequestNativeReview struct {
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
 	ID                int64              `json:"id"`
+	ThreadID          string             `json:"threadId"`
 	Author            string             `json:"author,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
@@ -362,6 +364,14 @@ type PullRequestInlineComment struct {
 	CreatedAt         *time.Time         `json:"createdAt,omitempty"`
 	URL               string             `json:"url,omitempty"`
 	Integrity         apiintegrity.Grade `json:"integrity,omitempty"`
+}
+
+// PullRequestReviewThreadReply requests a reply to one native review thread.
+type PullRequestReviewThreadReply struct {
+	Repository RepositoryRef
+	PullID     string
+	CommentID  int64
+	Body       string
 }
 
 // PullRequestReviewThreads is the review evidence attached to a pull request.
@@ -983,13 +993,16 @@ func (r ListWorkItemsRequest) NeedsOversizedCandidateScan() bool {
 // comment. Nil pointer fields are unchanged; a non-nil empty Assignee clears the
 // current assignment.
 type UpdateWorkItemRequest struct {
-	Repository   RepositoryRef `json:"repository"`
-	ID           string        `json:"id"`
-	Title        *string       `json:"title,omitempty"`
-	Body         *string       `json:"body,omitempty"`
-	Assignee     *string       `json:"assignee,omitempty"`
-	AddLabels    []string      `json:"addLabels,omitempty"`
-	RemoveLabels []string      `json:"removeLabels,omitempty"`
+	Repository RepositoryRef `json:"repository"`
+	ID         string        `json:"id"`
+	// ExpectedRevision, when set, rejects the edit if the item changed after
+	// the caller's immediately preceding read.
+	ExpectedRevision string   `json:"expectedRevision,omitempty"`
+	Title            *string  `json:"title,omitempty"`
+	Body             *string  `json:"body,omitempty"`
+	Assignee         *string  `json:"assignee,omitempty"`
+	AddLabels        []string `json:"addLabels,omitempty"`
+	RemoveLabels     []string `json:"removeLabels,omitempty"`
 	// Milestone, when set, assigns an existing provider milestone by number.
 	Milestone *int `json:"milestone,omitempty"`
 	// State, when set, opens or closes the item ("open" or "closed").
@@ -1053,6 +1066,15 @@ type AttachWorkItemChildRequest struct {
 	ChildID                string        `json:"childId"`
 	ExpectedParentRevision string        `json:"expectedParentRevision"`
 	ExpectedChildRevision  string        `json:"expectedChildRevision"`
+}
+
+// AttachWorkItemBlockerRequest describes a provider-native blocked-by link.
+type AttachWorkItemBlockerRequest struct {
+	Repository              RepositoryRef `json:"repository"`
+	ItemID                  string        `json:"itemId"`
+	BlockerID               string        `json:"blockerId"`
+	ExpectedItemRevision    string        `json:"expectedItemRevision"`
+	ExpectedBlockerRevision string        `json:"expectedBlockerRevision"`
 }
 
 // RevisionConflictError reports that a mutation's immediately observed item

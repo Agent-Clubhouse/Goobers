@@ -392,6 +392,7 @@ func TestGitHubAttachWorkItemChildGuardsRevisions(t *testing.T) {
 		if body["sub_issue_id"] != 80 {
 			t.Fatalf("sub_issue_id = %d, want 80", body["sub_issue_id"])
 		}
+
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{}`))
 	})
@@ -420,6 +421,66 @@ func TestGitHubAttachWorkItemChildGuardsRevisions(t *testing.T) {
 	}
 	if posts != 1 {
 		t.Fatalf("stale revision caused a mutation; posts = %d", posts)
+	}
+}
+
+func TestGitHubAttachWorkItemBlockerGuardsRevisionsAndLists(t *testing.T) {
+	const revision = "2026-08-03T12:00:00Z"
+	var posts int
+	mux := http.NewServeMux()
+	for id, databaseID := range map[string]int{"8": 80, "9": 90} {
+		id, databaseID := id, databaseID
+		number, err := strconv.Atoi(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.HandleFunc("/repos/acme/app/issues/"+id, func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, map[string]interface{}{
+				"id": databaseID, "number": number, "title": "issue " + id, "state": "open", "updated_at": revision,
+			})
+		})
+	}
+	mux.HandleFunc("/repos/acme/app/issues/8/dependencies/blocked_by", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(t, w, []map[string]interface{}{{
+				"id": 90, "number": 9, "title": "blocker", "state": "open", "updated_at": revision,
+			}})
+			return
+		}
+		posts++
+		var body map[string]int64
+		decodeJSON(t, r, &body)
+		if body["issue_id"] != 90 {
+			t.Fatalf("issue_id = %d, want 90", body["issue_id"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	blockers, err := provider.ListWorkItemBlockers(context.Background(), repo, "8")
+	if err != nil || len(blockers) != 1 || blockers[0].ID != "9" {
+		t.Fatalf("ListWorkItemBlockers = %#v, %v", blockers, err)
+	}
+	if err := provider.AttachWorkItemBlocker(context.Background(), AttachWorkItemBlockerRequest{
+		Repository: repo, ItemID: "8", BlockerID: "9",
+		ExpectedItemRevision: revision, ExpectedBlockerRevision: revision,
+	}); err != nil {
+		t.Fatalf("AttachWorkItemBlocker: %v", err)
+	}
+	err = provider.AttachWorkItemBlocker(context.Background(), AttachWorkItemBlockerRequest{
+		Repository: repo, ItemID: "8", BlockerID: "9",
+		ExpectedItemRevision: "stale", ExpectedBlockerRevision: revision,
+	})
+	var conflict *RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v, want RevisionConflictError", err)
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1", posts)
 	}
 }
 
@@ -505,15 +566,20 @@ func TestGitHubUpdateWorkItemEditsLabelsCloseComment(t *testing.T) {
 	m := newIssueMock()
 	rec := &recordingRecorder{}
 	p, repo := newIssueProvider(t, m, WithMutationRecorder(rec))
+	before, err := p.GetWorkItem(context.Background(), repo, "7")
+	if err != nil {
+		t.Fatal(err)
+	}
 	newTitle := "Fix API v2"
 	item, err := p.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
-		Repository:   repo,
-		ID:           "7",
-		Title:        &newTitle,
-		AddLabels:    []string{LabelReady},
-		RemoveLabels: []string{"route/backend"},
-		State:        "closed",
-		Comment:      "done and dusted",
+		Repository:       repo,
+		ID:               "7",
+		ExpectedRevision: before.Revision,
+		Title:            &newTitle,
+		AddLabels:        []string{LabelReady},
+		RemoveLabels:     []string{"route/backend"},
+		State:            "closed",
+		Comment:          "done and dusted",
 	})
 	if err != nil {
 		t.Fatalf("UpdateWorkItem: %v", err)
@@ -837,6 +903,13 @@ func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
 	}
 	if released.HasLabel(LabelClaimed) {
 		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+	commentCount := len(m.comments)
+	if _, err := p.ReleaseWorkItemClaim(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"}); err != nil {
+		t.Fatalf("retry release claim: %v", err)
+	}
+	if len(m.comments) != commentCount {
+		t.Fatalf("retry release posted duplicate comment: %d -> %d", commentCount, len(m.comments))
 	}
 
 	next, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})
@@ -1325,4 +1398,29 @@ func TestGitHubTokenSourceResolvesPerRequest(t *testing.T) {
 	if m.authSeen != "Bearer dynamic-token" {
 		t.Fatalf("expected token-source token in Authorization header, got %q", m.authSeen)
 	}
+}
+
+// TestAuthenticatedLoginConfigured (#3343): a configured login is returned
+// without any HTTP call — GitHub App installation tokens cannot call
+// GET /user, so the network path must not be touched when config declares
+// the identity. The failing client proves no request is attempted.
+func TestAuthenticatedLoginConfigured(t *testing.T) {
+	provider := NewGitHubProvider("installation-token",
+		WithConfiguredLogin("goobersbot[bot]"),
+		WithHTTPClient(failingHTTPClient{t: t}),
+	)
+	login, err := provider.AuthenticatedLogin(context.Background())
+	if err != nil {
+		t.Fatalf("AuthenticatedLogin = %v, want nil", err)
+	}
+	if login != "goobersbot[bot]" {
+		t.Fatalf("login = %q, want configured identity", login)
+	}
+}
+
+type failingHTTPClient struct{ t *testing.T }
+
+func (c failingHTTPClient) Do(*http.Request) (*http.Response, error) {
+	c.t.Fatal("configured login must not trigger any HTTP request")
+	return nil, nil
 }

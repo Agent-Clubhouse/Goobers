@@ -7,19 +7,25 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // runPollInterval bounds how often waitForRunTerminal re-reads a run's
@@ -40,8 +46,8 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run <gaggle>/<workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
@@ -72,6 +78,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
+	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -85,6 +92,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) {
+		pf(stderr, "error: --pr requires a positive pull request number\n")
+		return 2
+	}
+	target.PR = *pr
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
@@ -116,7 +128,11 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		return runDetachedTrigger(ctx, l, target.String(), root, stdout, stderr)
+		name := target.String()
+		if target.PR > 0 {
+			name += "#pr-" + strconv.Itoa(target.PR)
+		}
+		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
@@ -124,6 +140,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 type runTarget struct {
 	Gaggle   string
 	Workflow string
+	PR       int
 }
 
 func (t runTarget) String() string {
@@ -164,7 +181,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	}()
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	// DS6 for the one-shot path (#3512 review, finding 2): this command holds
+	// the instance lock, so the daemon — and with it every claim renewal — is
+	// stopped. On an engine-configured instance the setup-time reap plus
+	// Claim's expired-lease takeover would both fire on a live distributed
+	// run's stale-looking lease, so renewal must run before any
+	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
+	// recover-at-setup behavior.
+	claimRecovery := newOneShotClaimRecovery(l)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -178,13 +203,25 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			setup.Shutdown(context.Background())
 		}
 	}()
+	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	matches := 0
 	gaggle := target.Gaggle
+	subscribesToPullRequests := false
 	for _, e := range setup.Entries {
 		if e.Workflow == target.Workflow && (target.Gaggle == "" || e.Gaggle == target.Gaggle) {
 			matches++
-			gaggle = e.Gaggle
+			if matches == 1 {
+				gaggle = e.Gaggle
+			}
+			for _, signal := range e.Signals {
+				if signal == webhookhttp.SignalName("pull_request") {
+					subscribesToPullRequests = true
+				}
+			}
 		}
 	}
 	if matches == 0 {
@@ -193,6 +230,10 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		} else {
 			pf(stderr, "error: no workflow named %q in %s\n", target.Workflow, l.ConfigDir())
 		}
+		return 1
+	}
+	if target.PR > 0 && !subscribesToPullRequests {
+		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
 
@@ -213,10 +254,20 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		triggerCtx = context.WithoutCancel(ctx)
 	}
 	var runID string
-	if target.Gaggle != "" {
-		runID, err = sched.TriggerExact(triggerCtx, localscheduler.WorkflowIdentity{
-			Gaggle: target.Gaggle, Workflow: target.Workflow,
-		}, time.Now())
+	if target.Gaggle != "" || target.PR > 0 {
+		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
+		if target.PR > 0 {
+			if target.Gaggle != "" {
+				runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			} else {
+				runID, err = sched.TriggerSignal(triggerCtx, target.Workflow, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			}
+		} else {
+			runID, err = sched.TriggerExact(triggerCtx, identity, time.Now())
+		}
+
 	} else {
 		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
 	}
@@ -262,6 +313,164 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	return exitForPhase(phase)
 }
 
+func flagWasSet(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || arg == "-"+name || strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+type targetedPullRequestReader interface {
+	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
+}
+
+func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance.Config, stores credentials.StoreResolver, registrar credentials.SecretRegistrar, entry localscheduler.WorkflowEntry, number int) error {
+	if number <= 0 {
+		return errors.New("pull request number must be a positive integer")
+	}
+	if cfg == nil {
+		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
+	}
+	configured, ok := configuredRepoForProject(cfg, entry.RepoRef)
+	if !ok {
+		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
+	}
+	resolvedRepo := apiv1.RepoRef{
+		Provider: apiv1.Provider(configured.Provider),
+		BaseURL:  configured.BaseURL,
+		Owner:    configured.Owner,
+		Project:  configured.Project,
+		Name:     configured.Name,
+	}
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(resolvedRepo.Provider),
+		Owner:    resolvedRepo.Owner,
+		Project:  resolvedRepo.Project,
+		Name:     resolvedRepo.Name,
+		URL:      resolvedRepo.BaseURL,
+	}
+	repoDisplay := targetedRepoDisplay(resolvedRepo)
+
+	var provider providers.Provider
+	var err error
+	switch repo.Provider {
+	case providers.ProviderGitHub, providers.ProviderGitea:
+		owner := resolvedRepo.Owner
+		credentialCapability := capability.GitHubPRWrite
+		if repo.Provider == providers.ProviderGitea {
+			credentialCapability = capability.ProviderPRWrite
+		}
+		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		injector, buildErr := credentials.NewInjector(resolver, grants, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		set, buildErr := injector.Materialize(ctx, []string{string(credentialCapability)})
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		token, buildErr := set.Token(ctx, string(credentialCapability))
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
+	default:
+		provider, err = newProviderForStage(root, repo, true)
+	}
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
+	}
+	reader, ok := provider.(targetedPullRequestReader)
+	if !ok {
+		return fmt.Errorf("validate pull request #%d: provider %q does not support pull-request lookup", number, repo.Provider)
+	}
+	pr, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(number))
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
+	}
+	if pr.Number != number {
+		return fmt.Errorf("pull request #%d was not returned by the configured repository", number)
+	}
+	state := strings.TrimSpace(pr.State)
+	if !strings.EqualFold(state, "open") {
+		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
+	}
+	if !pullRequestURLMatchesRepository(resolvedRepo, pr.URL, number) {
+		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
+	}
+	return nil
+}
+
+func targetedRepoDisplay(repo apiv1.RepoRef) string {
+	if repo.Provider == apiv1.ProviderADO && repo.Project != "" {
+		return repo.Owner + "/" + repo.Project + "/" + repo.Name
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number int) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(parsed.EscapedPath(), func(r rune) bool { return r == '/' })
+	for i := range parts {
+		parts[i], err = url.PathUnescape(parts[i])
+		if err != nil {
+			return false
+		}
+	}
+	numberText := strconv.Itoa(number)
+	switch repo.Provider {
+	case apiv1.ProviderGitHub:
+		if !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderGitea:
+		baseURL, baseErr := url.Parse(strings.TrimSpace(repo.BaseURL))
+		if baseErr != nil || baseURL.Host == "" || !strings.EqualFold(parsed.Host, baseURL.Host) {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderADO:
+		host := strings.ToLower(parsed.Hostname())
+		visualStudioHost := strings.ToLower(repo.Owner) + ".visualstudio.com"
+		if host != "dev.azure.com" && host != visualStudioHost {
+			return false
+		}
+		for i := 1; i+3 < len(parts); i++ {
+			organizationMatches := host == visualStudioHost ||
+				(i >= 2 && strings.EqualFold(parts[i-2], repo.Owner))
+			if organizationMatches &&
+				strings.EqualFold(parts[i], "_git") &&
+				strings.EqualFold(strings.TrimSuffix(parts[i+1], ".git"), repo.Name) &&
+				strings.EqualFold(parts[i+2], "pullrequest") &&
+				parts[i+3] == numberText {
+				return repo.Project == "" || strings.EqualFold(parts[i-1], repo.Project)
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestPathMatchesRepository(parts []string, owner, name, number string) bool {
+	for i := 2; i+1 < len(parts); i++ {
+		if (strings.EqualFold(parts[i], "pull") || strings.EqualFold(parts[i], "pulls")) &&
+			parts[i+1] == number &&
+			strings.EqualFold(parts[i-2], owner) &&
+			strings.EqualFold(strings.TrimSuffix(parts[i-1], ".git"), name) {
+			return true
+		}
+	}
+	return false
+}
+
 // runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock
 // finds a live `goobers up` daemon already holding this instance's lock — it
 // no longer just reports that and gives up (#231's fix stopped there). It
@@ -272,7 +481,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 // perspective the two paths are otherwise indistinguishable except for which
 // process actually held the scheduler.
 func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait bool, stdout, stderr io.Writer) int {
-	requestID, err := writeTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow)
+	var (
+		requestID string
+		err       error
+	)
+	if target.PR > 0 {
+		requestID, err = writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
+	} else {
+		requestID, err = writeTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -319,7 +536,19 @@ func runFlagArgs(args []string) []string {
 			}
 			continue
 		}
+		if arg == "--pr" || arg == "-pr" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
 		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "--pr=") || strings.HasPrefix(arg, "-pr=") {
 			flags = append(flags, arg)
 			continue
 		}
@@ -709,8 +938,10 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
 				return phase, nil
 			}
-		} else {
+		} else if errors.Is(err, journal.ErrNotRunDirectory) {
 			progress.heartbeat(time.Now())
+		} else {
+			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
 		select {
@@ -728,6 +959,8 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
 				}
 				return phase, nil
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):

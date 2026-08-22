@@ -59,6 +59,9 @@ type Plan struct {
 	Parent        ParentRef     `json:"parent"`
 	Summary       string        `json:"summary"`
 	Children      []ChildPlan   `json:"children"`
+	// UnresolvedDecision names a product decision that must be made before a
+	// decomposition can be published.
+	UnresolvedDecision string `json:"unresolvedDecision,omitempty"`
 	// SingleReplacementReason is set only when the plan deliberately rewrites
 	// the parent into one smaller replacement instead of splitting it — the
 	// design doc's explicit exception to the at-least-two-children rule.
@@ -89,9 +92,16 @@ type ParentConflict struct {
 // was designed against parent content that has since changed, and must route
 // to park-for-human rather than back through design-slices' repass loop.
 type ValidationResult struct {
-	Valid    bool
-	Errors   []string
-	Conflict *ParentConflict
+	Valid              bool
+	Errors             []string
+	Conflict           *ParentConflict
+	UnresolvedDecision bool
+	SchemaInvalid      bool
+}
+
+// Repassable reports whether design-slices can safely correct this result.
+func (r ValidationResult) Repassable() bool {
+	return !r.Valid && !r.SchemaInvalid && r.Conflict == nil && !r.UnresolvedDecision
 }
 
 // disallowedChildLabels are publisher-owned trust/readiness/status markers —
@@ -110,7 +120,10 @@ const minChildBodyLength = 20
 // not recognize.
 func ValidatePlan(plan Plan, selection Selection, live LiveParentSnapshot) ValidationResult {
 	if !SupportedPlanSchemaVersion(plan.SchemaVersion) {
-		return ValidationResult{Errors: []string{fmt.Sprintf("unsupported or malformed plan schemaVersion %q", plan.SchemaVersion)}}
+		return ValidationResult{
+			Errors:        []string{fmt.Sprintf("unsupported or malformed plan schemaVersion %q", plan.SchemaVersion)},
+			SchemaInvalid: true,
+		}
 	}
 
 	var errs []string
@@ -129,9 +142,10 @@ func ValidatePlan(plan Plan, selection Selection, live LiveParentSnapshot) Valid
 	}
 
 	return ValidationResult{
-		Valid:    len(errs) == 0 && conflict == nil,
-		Errors:   errs,
-		Conflict: conflict,
+		Valid:              len(errs) == 0 && conflict == nil && strings.TrimSpace(plan.UnresolvedDecision) == "",
+		Errors:             errs,
+		Conflict:           conflict,
+		UnresolvedDecision: strings.TrimSpace(plan.UnresolvedDecision) != "",
 	}
 }
 

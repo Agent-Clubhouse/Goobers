@@ -10,6 +10,20 @@ import (
 // canonical graph a run started with.
 const PinnedWorkflowGraphInputName = "workflow-graph"
 
+// PinnedWorkflowDefinitionInputName is the immutable workflow Definition
+// snapshot used to reconstruct the exact compiled machine after process loss.
+const PinnedWorkflowDefinitionInputName = "workflow-definition"
+
+// PinnedGateGooberCapabilitiesInputName is the immutable snapshot of the
+// reviewer-goober capability map pinned into the run at start (#294): an
+// agentic gate's reviewer capabilities are instance policy, not part of the
+// pinned workflow definition, so post-start consumers (the daemon credential
+// plane, PR #3528) must read them from this snapshot rather than the
+// currently-served config — otherwise a config edit after run start would
+// change a live run's reviewer grants, contradicting WF-016's pinning
+// guarantee. The payload is a JSON map[gooberName][]capability.
+const PinnedGateGooberCapabilitiesInputName = "gate-goober-capabilities"
+
 // TriggerKind is how a run was started.
 type TriggerKind string
 
