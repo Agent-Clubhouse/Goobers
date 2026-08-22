@@ -1880,19 +1880,48 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
+		var injected *apiv1.ContextPointer
 		if gr.VerdictArtifact != nil {
 			pointer := apiv1.ContextPointer{
 				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 			}
+			injected = &pointer
 			if ws.parallel != nil {
 				ws.parallel.recordCurrentPointer(pointer)
 			} else {
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
+		if err := recordLearningInjection(ws.jr, g.Name, retryTarget, gr.Attempt, injected); err != nil {
+			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+			return gr, false, terminal, true, failErr
+		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
+}
+
+func recordLearningInjection(jr executionJournal, gate, target string, attempt int, pointer *apiv1.ContextPointer) error {
+	if jr == nil {
+		return nil
+	}
+	runner := map[string]any{
+		"kind":   "learning.episode.injected",
+		"gate":   gate,
+		"target": target,
+	}
+	if pointer != nil && pointer.Artifact != nil {
+		runner["source"] = pointer.Name
+		runner["sourcePath"] = pointer.Artifact.Path
+		runner["sourceDigest"] = pointer.Artifact.Digest
+	}
+	return jr.Append(journal.Event{
+		Type:    journal.EventRunnerAnnotation,
+		Stage:   target,
+		Attempt: attempt,
+		Runner:  runner,
+	})
 }
 
 // closeParallelForLoudExit journals the current branch's terminal settlement,

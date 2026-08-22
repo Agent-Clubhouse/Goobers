@@ -50,12 +50,12 @@ const (
 	FindingCreditAssignment FindingKind = "credit-assignment"
 )
 
-// JournalPointer names a flagged run whose journal a diagnosis step can
-// resolve for evidence. T2 only needs to name the run; T3 builds the
-// agentic read surface that actually resolves it (cross-run journal:read,
-// #121-extended).
+// JournalPointer names an exact event in a run journal that a diagnosis step
+// can resolve for evidence. Seq is optional for older projections that only
+// retained the run identifier.
 type JournalPointer struct {
 	RunID string `json:"runId"`
+	Seq   uint64 `json:"seq,omitempty"`
 }
 
 // CreditGoverningTargetTreatment is the required treatment when repo

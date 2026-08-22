@@ -95,7 +95,7 @@ func learningEffectiveVersion(id runIdentity) string {
 
 func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	for i, event := range events {
-		if event.Type != eventGateEvaluated || strings.EqualFold(event.Verdict, "pass") || event.Gate == "" {
+		if !isLearningFailure(event) {
 			continue
 		}
 		attempt := event.Attempt
@@ -104,13 +104,25 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 		}
 		nextAttempt := 0
 		for _, later := range events[i+1:] {
-			if later.Type == eventStageStarted && later.Stage == event.Target {
+			target := event.Target
+			if event.Type == eventStageFinished {
+				target = event.Stage
+			}
+			if later.Type == eventStageStarted && later.Stage == target {
 				nextAttempt = later.Attempt
 				break
 			}
 		}
 		code := ""
 		feedback := ""
+		gate := event.Gate
+		verdict := event.Verdict
+		stage := event.Target
+		if event.Type == eventStageFinished {
+			gate = event.Stage
+			verdict = event.Status
+			stage = event.Stage
+		}
 		if event.Runner != nil {
 			if value, ok := event.Runner["failureSignature"].(string); ok {
 				code = value
@@ -119,23 +131,34 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 				feedback = value
 			}
 		}
-		signature := normalizeLearningSignature(event.Gate, event.Verdict, code)
+		if code == "" && event.Error != nil {
+			code = event.Error.Code
+			if feedback == "" {
+				feedback = event.Error.Message
+			}
+		}
+		signature := normalizeLearningSignature(gate, verdict, code)
 		evidence, err := json.Marshal(map[string]any{
-			"runId": id.RunID, "seq": event.Seq, "gate": event.Gate,
-			"verdict": event.Verdict, "sourceAttempt": attempt,
+			"runId": id.RunID, "seq": event.Seq, "gate": gate,
+			"verdict": verdict, "sourceAttempt": attempt,
 			"nextAttempt": nextAttempt, "artifacts": event.Artifacts,
+			"error": event.Error,
 		})
 		if err != nil {
 			return fmt.Errorf("rollup: encode learning evidence: %w", err)
 		}
 		outcome := "escalated"
 		for _, later := range events[i+1:] {
-			if later.Type != eventGateEvaluated || later.Gate != event.Gate {
+			if !sameLearningSubject(event, later) {
 				continue
 			}
-			if strings.EqualFold(later.Verdict, "pass") {
+			laterOutcome := later.Verdict
+			if later.Type == eventStageFinished {
+				laterOutcome = later.Status
+			}
+			if isLearningPass(later) {
 				outcome = "fixed"
-			} else if normalizeLearningSignature(later.Gate, later.Verdict, runnerSignature(later)) == signature {
+			} else if normalizeLearningSignature(learningSubject(later), laterOutcome, runnerSignature(later)) == signature {
 				outcome = "repeated"
 			} else {
 				outcome = "changed-failure"
@@ -149,15 +172,48 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 			 classification, evidence_json, correction_feedback, outcome, occurred_at)
 			VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), NULLIF(?, ''),
 				NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)`,
-			id.RunID, event.Seq, id.Workflow, event.Target, event.Gate, attempt,
+			id.RunID, event.Seq, id.Workflow, stage, gate, attempt,
 			nextAttempt, id.WorkflowDigest, id.GooberDigest, learningEffectiveVersion(id),
 			signature, learningClassification(event), string(evidence), feedback,
 			outcome, formatTime(event.Time))
 		if err != nil {
 			return fmt.Errorf("rollup: insert learning episode %s/%d: %w", id.RunID, event.Seq, err)
 		}
+
 	}
 	return nil
+}
+
+func isLearningPass(event journalEvent) bool {
+	if event.Type == eventStageFinished {
+		return strings.EqualFold(event.Status, "success") || strings.EqualFold(event.Status, "no-work")
+	}
+	return strings.EqualFold(event.Verdict, "pass")
+}
+
+func isLearningFailure(event journalEvent) bool {
+	if event.Type == eventGateEvaluated {
+		return event.Gate != "" && !isLearningPass(event)
+	}
+	return event.Type == eventStageFinished && event.Stage != "" && !isLearningPass(event)
+}
+
+func learningSubject(event journalEvent) string {
+	if event.Type == eventStageFinished {
+		return event.Stage
+	}
+	return event.Gate
+}
+
+func sameLearningSubject(first, second journalEvent) bool {
+	if !isLearningResult(second) {
+		return false
+	}
+	return learningSubject(first) == learningSubject(second)
+}
+
+func isLearningResult(event journalEvent) bool {
+	return event.Type == eventGateEvaluated || event.Type == eventStageFinished
 }
 
 func runnerSignature(event journalEvent) string {
@@ -239,7 +295,7 @@ func (db *DB) LearningClusters(ctx context.Context, req LearningEpisodeRequest) 
 			grouped[episode.Signature] = cluster
 		}
 		cluster.Count++
-		cluster.Episodes = append(cluster.Episodes, JournalPointer{RunID: episode.RunID})
+		cluster.Episodes = append(cluster.Episodes, JournalPointer{RunID: episode.RunID, Seq: episode.SourceSeq})
 	}
 	out := make([]LearningCluster, 0, len(grouped))
 	for _, cluster := range grouped {
