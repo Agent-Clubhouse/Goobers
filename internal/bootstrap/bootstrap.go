@@ -1,9 +1,9 @@
-// Package bootstrap wires the Goobers engine components together from a
-// config-as-code directory: it loads the config (M12 configsync) and registers
-// the Workflow definitions into an engine.Registry (M7), and it carries the
-// engine worker registration seam (worker.go: EngineDeps, RegisterEngine,
+// Package bootstrap wires the Goobers engine components together: it carries
+// the engine worker registration seam (worker.go: EngineDeps, RegisterEngine,
 // DialTemporal) shared by cmd/goobers' engine-worker wiring and
-// internal/workerhost.
+// internal/workerhost, and RegisterGaggleWorkflows, the config-to-registry
+// step cmd/goobers engine-start uses to build an engine.Registry from a
+// loaded instance.ConfigSet.
 //
 // The tier-3 scheduler fork this package used to wire (internal/scheduler,
 // consumed by cmd/scheduler) was deleted per goobernetes-architecture.md D5/§4
@@ -16,56 +16,34 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/configsync"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-// Loaded is the typed, registered result of loading a config repo.
-type Loaded struct {
-	Manifest  *apiv1.Manifest
-	Registry  *engine.Registry
-	Gaggles   []apiv1.Gaggle
-	Goobers   []apiv1.Goober
-	Workflows []apiv1.Workflow
-}
-
-// LoadAndRegister loads the config-as-code directory at root and registers every
-// Workflow definition into a fresh engine.Registry. namespace is the target
-// Kubernetes namespace stamped onto objects (configsync default applies if "").
-// A config that fails validation returns an error.
-func LoadAndRegister(root, namespace string) (*Loaded, error) {
-	loader, err := configsync.NewLoader(namespace)
-	if err != nil {
-		return nil, fmt.Errorf("bootstrap: new loader: %w", err)
-	}
-	set, report, err := loader.Load(root)
-	if err != nil {
-		if report != nil && report.HasErrors() {
-			return nil, fmt.Errorf("bootstrap: invalid config at %s: %w", root, err)
+// RegisterGaggleWorkflows builds an engine.Registry from a loaded config set,
+// registering every workflow belonging to gaggle, with the instance's
+// explicit preview-feature acknowledgement applied. It also returns the
+// gaggle's configured repo. This is exactly what cmd/goobers engine-start
+// does before pinning a RunInput, extracted here so other callers (the
+// #2903 acceptance test included) build a registry through the same
+// production path rather than a parallel one nothing in production calls.
+func RegisterGaggleWorkflows(set *instance.ConfigSet, gaggle string) (*engine.Registry, apiv1.RepoRef, error) {
+	reg := engine.NewRegistryWithPreviewFeatures(set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations))
+	var project apiv1.RepoRef
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == gaggle {
+			project = set.Gaggles[i].Spec.Project
+			break
 		}
-		return nil, fmt.Errorf("bootstrap: load %s: %w", root, err)
 	}
-
-	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
-	out := &Loaded{
-		Manifest: set.Manifest,
-		Registry: engine.NewRegistryWithPreviewFeatures(allowPreview),
-	}
-	for _, obj := range set.Objects {
-		switch o := obj.(type) {
-		case *apiv1.Gaggle:
-			out.Gaggles = append(out.Gaggles, *o)
-		case *apiv1.Goober:
-			out.Goobers = append(out.Goobers, *o)
-		case *apiv1.Workflow:
-			out.Workflows = append(out.Workflows, *o)
-			if _, err := out.Registry.RegisterDefinition(workflow.Definition{
-				Name: o.Name, DSLVersion: o.DSLVersion, Spec: o.Spec,
-			}); err != nil {
-				return nil, fmt.Errorf("bootstrap: register workflow %q: %w", o.Name, err)
+	for i := range set.Workflows {
+		w := set.Workflows[i]
+		if w.Spec.Gaggle == gaggle {
+			if _, err := reg.Register(w.Name, w.Spec); err != nil {
+				return nil, apiv1.RepoRef{}, fmt.Errorf("register workflow %q: %w", w.Name, err)
 			}
 		}
 	}
-	return out, nil
+	return reg, project, nil
 }

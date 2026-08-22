@@ -6,16 +6,19 @@ package e2e
 // supported caller, hermetically (no live Temporal server), so it can run as
 // part of `make ci`.
 //
-// The run is built the same way cmd/goobers/enginestart.go builds one — a
-// Registry-pinned RunInput from a real config-as-code fixture — and its
-// journal is projected the same way cmd/goobers/engineproject.go projects
-// one: engine.ProjectCompletedRunForGaggle against the standard
-// projectionQuerier shape. The only substitution is the Temporal transport:
-// the SDK's in-process test workflow environment stands in for a live
-// server for the engine-start half. temporaltest.ProjectionQuerier (#2903) is
-// the connective piece: it adapts that same test environment to the
-// query shape the completed-run projection half expects, so both halves run
-// through their real, unmodified production code in one process.
+// The run is built exactly the way cmd/goobers/enginestart.go builds one —
+// loading the config-as-code fixture with instance.LoadConfigDir (the same
+// loader `loadConfigDirectory` resolves to) and then handing it to
+// bootstrap.RegisterGaggleWorkflows, the shared constructor engine-start
+// itself calls, for a Registry-pinned RunInput. Its journal is projected the
+// same way cmd/goobers/engineproject.go projects one: engine.
+// ProjectCompletedRunForGaggle against the standard projectionQuerier shape.
+// The only substitution is the Temporal transport: the SDK's in-process test
+// workflow environment stands in for a live server for the engine-start
+// half. temporaltest.ProjectionQuerier (#2903) is the connective piece: it
+// adapts that same test environment to the query shape the completed-run
+// projection half expects, so both halves run through their real,
+// unmodified production code in one process.
 
 import (
 	"context"
@@ -26,22 +29,31 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestEngineStartAndProjectRoundTrip(t *testing.T) {
-	loaded, err := bootstrap.LoadAndRegister("../fixtures/e2e/walking-skeleton", "")
+	set, _, err := instance.LoadConfigDir("../fixtures/e2e/walking-skeleton")
 	if err != nil {
-		t.Fatalf("bootstrap load: %v", err)
+		t.Fatalf("load config dir: %v", err)
 	}
-	gaggle := loaded.Gaggles[0]
-	workflowName := loaded.Workflows[0].Name
+	if len(set.Gaggles) == 0 || len(set.Workflows) == 0 {
+		t.Fatalf("expected gaggles + workflows in fixture, got %d gaggles, %d workflows", len(set.Gaggles), len(set.Workflows))
+	}
+	gaggle := set.Gaggles[0]
+	workflowName := set.Workflows[0].Name
 
-	in, err := loaded.Registry.StartInput(workflowName, engine.StartSpec{
+	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, gaggle.Name)
+	if err != nil {
+		t.Fatalf("register gaggle workflows: %v", err)
+	}
+
+	in, err := reg.StartInput(workflowName, engine.StartSpec{
 		RunID:       engine.RunID(gaggle.Name, workflowName, "engine-start-project-roundtrip"),
 		Gaggle:      gaggle.Name,
-		RepoRef:     gaggle.Spec.Project,
+		RepoRef:     project,
 		TriggerKind: "manual",
 	})
 	if err != nil {

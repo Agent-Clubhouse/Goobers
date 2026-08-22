@@ -8,10 +8,9 @@ import (
 
 	"go.temporal.io/sdk/client"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
@@ -79,22 +78,10 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	reg := engine.NewRegistryWithPreviewFeatures(set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations))
-	var project apiv1.RepoRef
-	for i := range set.Gaggles {
-		if set.Gaggles[i].Name == target {
-			project = set.Gaggles[i].Spec.Project
-			break
-		}
-	}
-	for i := range set.Workflows {
-		w := set.Workflows[i]
-		if w.Spec.Gaggle == target {
-			if _, err := reg.Register(w.Name, w.Spec); err != nil {
-				pf(stderr, "error: register workflow %q: %v\n", w.Name, err)
-				return 1
-			}
-		}
+	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, target)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	in, err := reg.StartInput(workflowName, engine.StartSpec{
 		RunID:           engine.RunID(target, workflowName, *dedupe),

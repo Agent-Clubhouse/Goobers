@@ -149,9 +149,7 @@ github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development
 github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
-github.com/goobers/goobers/internal/bootstrap.LoadAndRegister # Config-to-registry wiring for the tier-3 engine, exercised by the #2903 engine-start acceptance test (test/e2e/engine_start_project_test.go) and bootstrap tests.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by registry package tests.
-github.com/goobers/goobers/internal/engine.Registry.PreviewFeaturesEnabled # Registry preview-policy introspection retained for tier 3, exercised by bootstrap tests.
 github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
 github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
