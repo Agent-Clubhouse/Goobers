@@ -130,17 +130,22 @@ func appendStaticRealityWarnings(
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
-	appendZeroWorkflowBudgetWarnings(root, configDir, cfg, add)
+	appendZeroWorkflowBudgetWarnings(root, configDir, cfg, set, add)
 	return warnings
 }
 
 func appendZeroWorkflowBudgetWarnings(
 	root, configDir string,
 	cfg *instance.Config,
+	set *instance.ConfigSet,
 	add func(code validate.WarningCode, kind, name, file, path, message string),
 ) {
-	if cfg == nil {
+	if cfg == nil || set == nil {
 		return
+	}
+	knownWorkflows := make(map[string]bool, len(set.Workflows))
+	for _, workflow := range set.Workflows {
+		knownWorkflows[workflow.Name] = true
 	}
 	names := make([]string, 0)
 	for name, budget := range cfg.RunConditions.WorkflowBudgets {
@@ -154,16 +159,23 @@ func appendZeroWorkflowBudgetWarnings(
 		configFile = filepath.Join(root, "instance.yaml.example")
 	}
 	for _, name := range names {
+		message := fmt.Sprintf(
+			"runConditions.workflowBudgets[%q] is 0, which means no instance-level override; the workflow's own maxRunsPerHour (or the default of 10) applies. There is no workflow-budget field that pauses a workflow; remove the entry or set a positive value to limit it",
+			name,
+		)
+		if !knownWorkflows[name] {
+			message = fmt.Sprintf(
+				"runConditions.workflowBudgets[%q] is 0, but no configured workflow has that name, so the entry is inert and no budget or pause applies; remove the entry or configure a matching workflow",
+				name,
+			)
+		}
 		add(
 			validate.WarningZeroWorkflowBudget,
 			"Instance",
 			name,
 			configFile,
 			"/runConditions/workflowBudgets/"+name,
-			fmt.Sprintf(
-				"runConditions.workflowBudgets[%q] is 0, which means no instance-level override; the workflow's own maxRunsPerHour (or the default of 10) applies. There is no workflow-budget field that pauses a workflow; remove the entry or set a positive value to limit it",
-				name,
-			),
+			message,
 		)
 	}
 }

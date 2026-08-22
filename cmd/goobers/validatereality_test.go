@@ -248,6 +248,8 @@ func TestAppendZeroWorkflowBudgetWarnings(t *testing.T) {
 		RunConditions: instance.RunConditions{
 			WorkflowBudgets: map[string]int{"zeta": 0, "alpha": 0, "positive": 3},
 		},
+	}, &instance.ConfigSet{
+		Workflows: []apiv1.Workflow{{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}}},
 	}, add)
 
 	if len(got) != 2 {
@@ -260,10 +262,18 @@ func TestAppendZeroWorkflowBudgetWarnings(t *testing.T) {
 		name := strings.TrimPrefix(warning.warning.Scope, "Instance/")
 		if warning.warning.Code != validate.WarningZeroWorkflowBudget ||
 			warning.file != "/instance/instance.yaml" ||
-			warning.path != "/runConditions/workflowBudgets/"+name ||
-			!strings.Contains(warning.warning.Explanation, "no instance-level override") ||
-			!strings.Contains(warning.warning.Explanation, "There is no workflow-budget field that pauses") {
+			warning.path != "/runConditions/workflowBudgets/"+name {
 			t.Fatalf("unexpected warning = %+v", warning)
+		}
+		if name == "alpha" &&
+			(!strings.Contains(warning.warning.Explanation, "no instance-level override") ||
+				!strings.Contains(warning.warning.Explanation, "There is no workflow-budget field that pauses")) {
+			t.Fatalf("known workflow warning = %+v", warning)
+		}
+		if name == "zeta" &&
+			(!strings.Contains(warning.warning.Explanation, "no configured workflow has that name") ||
+				!strings.Contains(warning.warning.Explanation, "entry is inert")) {
+			t.Fatalf("unknown workflow warning = %+v", warning)
 		}
 	}
 }
@@ -282,8 +292,8 @@ runConditions:
 	}
 	for _, want := range []string{
 		`WARNING WF022 Instance/paused: runConditions.workflowBudgets["paused"] is 0`,
-		"no instance-level override",
-		"no workflow-budget field that pauses",
+		"no configured workflow has that name",
+		"entry is inert",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
