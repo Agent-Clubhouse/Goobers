@@ -15,7 +15,9 @@ package v30
 //
 // The computation is a forward fixed-point (gen/kill dataflow) over the
 // compiled machine's edges — gate branches (fail edges included) and parallel
-// fan-out edges are ordinary edges, and cycles converge at the fixed point. A
+// fan-out, fan-in (branch-terminal @join resolved to the join state, as
+// buildGraph resolves it), and mid-branch failure edges to the parallel's
+// onFailure route are all real edges, and cycles converge at the fixed point. A
 // consumer's requirement is the set of producers that can be the LAST
 // producer before it on some forward path, excluding the consumer itself
 // (gate-repass back-edges are attempt semantics, never repoFrom edges).
@@ -95,7 +97,42 @@ func reachingProducers(def Definition) (reaching map[string]map[string]bool, pro
 	for _, name := range states {
 		reaching[name] = map[string]bool{}
 	}
-	for changed := true; changed; {
+
+	// Machine.Outgoing returns a branch-terminal stage's RAW target ("@join").
+	// Resolve it to the owning parallel's join state with the same
+	// graphTarget/graphJoinTargets resolution buildGraph applies, so parallel
+	// fan-out/fan-in edges participate in the fixed-point: a producer inside a
+	// branch (e.g. update-behind-pr on a scratch workspace — legal per
+	// parallel rule 9, a producer per the §4 commit reading) must reach the
+	// post-join consumer, or its correct declaration is refused as a dead
+	// entry while the silent-loss under-declaration compiles clean.
+	joinTargets := graphJoinTargets(def)
+	// A branch failure hands the run to the parallel's onFailure route at ANY
+	// point in any branch, so every branch state has a real runtime edge to it
+	// — an already-ran producer in a sibling (or earlier in the failed branch
+	// itself) can be the last producer the failure-lane consumer sees. The
+	// parallel's own onFailure edge (Machine.Outgoing) only carries the
+	// PRE-parallel reaching set; these implicit edges carry the in-branch
+	// definitions.
+	failureTargets := branchFailureTargets(m)
+
+	changed := false
+	flow := func(out map[string]bool, target string) {
+		if !isStateName(target) {
+			return
+		}
+		in, defined := reaching[target]
+		if !defined {
+			return
+		}
+		for producer := range out {
+			if !in[producer] {
+				in[producer] = true
+				changed = true
+			}
+		}
+	}
+	for changed = true; changed; {
 		changed = false
 		for _, name := range states {
 			// A producer's out-set is itself (it kills upstream definitions —
@@ -108,23 +145,40 @@ func reachingProducers(def Definition) (reaching map[string]map[string]bool, pro
 				out = reaching[name]
 			}
 			for _, target := range m.Outgoing(name) {
-				if !isStateName(target) {
-					continue
-				}
-				in, defined := reaching[target]
-				if !defined {
-					continue
-				}
-				for producer := range out {
-					if !in[producer] {
-						in[producer] = true
-						changed = true
-					}
-				}
+				flow(out, graphTarget(name, target, joinTargets))
+			}
+			if onFailure, ok := failureTargets[name]; ok {
+				flow(out, onFailure)
 			}
 		}
 	}
 	return reaching, producers, true
+}
+
+// branchFailureTargets maps every state inside a parallel branch to that
+// parallel's onFailure state, when one is declared and is a state name
+// (@abort/@escalate end the run and consume nothing). These are the implicit
+// mid-branch failure edges the dataflow needs: buildGraph draws only the
+// control edge parallel→onFailure, but the definitions that can reach the
+// failure lane include everything committed inside the branches before the
+// failure.
+func branchFailureTargets(m *Machine) map[string]string {
+	byParallel := make(map[string]string, len(m.Def.Spec.Parallels))
+	for _, p := range m.Def.Spec.Parallels {
+		if p.OnFailure != "" && isStateName(p.OnFailure) {
+			byParallel[p.Name] = p.OnFailure
+		}
+	}
+	targets := map[string]string{}
+	if len(byParallel) == 0 {
+		return targets
+	}
+	for state, ref := range branchOwnership(m) {
+		if onFailure, ok := byParallel[ref.parallel]; ok {
+			targets[state] = onFailure
+		}
+	}
+	return targets
 }
 
 // requiredCoverage is a consumer's repoFrom requirement: its reaching set
