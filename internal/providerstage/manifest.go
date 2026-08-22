@@ -45,6 +45,7 @@ type CapabilityUse struct {
 	Consequence string
 
 	optional    bool
+	exact       bool
 	flag        string
 	flagValue   string
 	anyFlags    []string
@@ -58,6 +59,12 @@ type CapabilityUse struct {
 	// configs (the ed11ae81 class; see the package comment).
 	sinceDSL string
 	untilDSL string
+}
+
+// RequiresExactCapability reports whether a separately brokered credential
+// must be released by the exact declared capability, rather than a broader one.
+func (u CapabilityUse) RequiresExactCapability() bool {
+	return u.exact
 }
 
 // Command describes one built-in provider-chain command.
@@ -82,6 +89,10 @@ func required(cap capability.Capability, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence}
 }
 
+func requiredExact(cap capability.Capability, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, exact: true}
+}
+
 func optional(cap capability.Capability, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence, optional: true}
 }
@@ -99,8 +110,16 @@ func requiredWhenAnyFlag(cap capability.Capability, flags []string, consequence 
 	return CapabilityUse{Capability: cap, Consequence: consequence, anyFlags: flags}
 }
 
+func requiredExactWhenAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, exact: true, anyFlags: flags}
+}
+
 func requiredUnlessAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence, unlessFlags: flags}
+}
+
+func requiredExactUnlessAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
+	return CapabilityUse{Capability: cap, Consequence: consequence, exact: true, unlessFlags: flags}
 }
 
 var commands = map[string]Command{
@@ -114,7 +133,7 @@ var commands = map[string]Command{
 	"backlog-dedupe": {
 		ResultFile: "dedupe-candidates.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+			requiredExact(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
 		},
 	},
 	"backlog-assignment": {
@@ -127,13 +146,13 @@ var commands = map[string]Command{
 		ResultFile: "backlog-health.json",
 		Capabilities: []CapabilityUse{
 			requiredWhenAnyFlag(capability.GitHubIssuesWrite, []string{"feedback"}, "the write capability-scoped credential is not injected, so implementation feedback fails at runtime"),
-			requiredUnlessAnyFlag(capability.GitHubIssuesRead, []string{"feedback"}, "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
+			requiredExactUnlessAnyFlag(capability.GitHubIssuesRead, []string{"feedback"}, "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime"),
 		},
 	},
 	"backlog-query": {
 		ResultFile: "claimed-item.json",
 		Capabilities: []CapabilityUse{
-			requiredWhenAnyFlag(capability.GitHubIssuesRead, []string{"read-only"}, "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime"),
+			requiredExactWhenAnyFlag(capability.GitHubIssuesRead, []string{"read-only"}, "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime"),
 			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"read-only"}, "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime"),
 			optional(capability.GitHubPRWrite, "open pull-request filtering is disabled when its capability-scoped credential is not injected"),
 		},
@@ -155,7 +174,7 @@ var commands = map[string]Command{
 	"validate-plan": {
 		ResultFile: "plan-validation.json",
 		Capabilities: []CapabilityUse{
-			required(capability.GitHubIssuesRead, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
+			requiredExact(capability.GitHubIssuesRead, "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"),
 		},
 	},
 	"elect-lander": {
@@ -187,7 +206,7 @@ var commands = map[string]Command{
 		ResultFile: "remediation-brief.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"),
-			required(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
+			requiredExact(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"),
 		},
 	},
 	"gather-pr-context": {
