@@ -8595,7 +8595,7 @@ func TestRunnerInvokesExistingFixHandlerOnImplementNoWork(t *testing.T) {
 	runID := "run-existing-fix"
 	byTask := map[string]stubTaskResult{
 		runID + ":implement": {
-			status: apiv1.ResultNoWork,
+			status:  apiv1.ResultNoWork,
 			summary: "nothing to do",
 			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
 		},
