@@ -36,6 +36,31 @@ func TestDSLMatrixLookupAndOrder(t *testing.T) {
 	}
 }
 
+func TestCompareDSLVersions(t *testing.T) {
+	tests := []struct {
+		left, right string
+		order       int
+		ok          bool
+	}{
+		{"1.4", "2.0", -1, true},
+		{"2.0", "1.4", 1, true},
+		{"2.0", "2.0", 0, true},
+		{"1.4", "1.10", -1, true}, // numeric minor order, not lexical
+		{"3.0", "2.0", 1, true},
+		{"2.0", "", 0, false},
+		{"", "2.0", 0, false},
+		{"2.0.1", "2.0", 0, false},
+		{"v2.0", "2.0", 0, false},
+		{"-1.0", "2.0", 0, false},
+	}
+	for _, test := range tests {
+		order, ok := CompareDSLVersions(test.left, test.right)
+		if order != test.order || ok != test.ok {
+			t.Errorf("CompareDSLVersions(%q, %q) = (%d, %t), want (%d, %t)", test.left, test.right, order, ok, test.order, test.ok)
+		}
+	}
+}
+
 func TestNewestSupported(t *testing.T) {
 	// The live matrix: 2.0 is the only LevelSupported version, so anything that
 	// resolves an unpinned object (#3297) must land there — not on the
