@@ -580,6 +580,8 @@ spec:
                         admitted before execution; omitted preserves legacy non-nested behavior.
                       properties:
                         context:
+                          description: NestedContextPolicy selects the optional parent
+                            context visible to a child.
                           properties:
                             artifactNames:
                               items:
@@ -590,6 +592,8 @@ spec:
                                 type: string
                               type: array
                             mode:
+                              description: ContextMode controls which parent task
+                                context a child receives.
                               enum:
                               - fresh
                               - inherited
@@ -599,6 +603,8 @@ spec:
                           - mode
                           type: object
                         delegation:
+                          description: DelegationAuthority controls whether and how
+                            a child may delegate further.
                           enum:
                           - disabled
                           - coordinator-only
@@ -609,12 +615,16 @@ spec:
                           minimum: 0
                           type: integer
                         model:
+                          description: NestedModelPolicy constrains the model and
+                            reasoning effort used by a child.
                           properties:
                             allowlist:
                               items:
                                 type: string
                               type: array
                             maxReasoningEffort:
+                              description: ReasoningEffort is the portable reasoning-effort
+                                ceiling for a child.
                               enum:
                               - minimal
                               - low
