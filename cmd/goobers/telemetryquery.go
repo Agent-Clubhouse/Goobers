@@ -20,18 +20,23 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
 type candidateFindingsArtifact struct {
-	Schema   string           `json:"schema"`
-	Window   string           `json:"window"`
-	Since    time.Time        `json:"since"`
-	Findings []rollup.Finding `json:"findings"`
-	NoWork   bool             `json:"noWork,omitempty"`
-	Note     string           `json:"note,omitempty"`
+	Schema              string                        `json:"schema"`
+	Window              string                        `json:"window"`
+	Since               time.Time                     `json:"since"`
+	Findings            []rollup.Finding              `json:"findings"`
+	CausalCredit        []readmodel.CausalNodeCredit  `json:"causalCredit,omitempty"`
+	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
+	NoWork              bool                          `json:"noWork,omitempty"`
+	Note                string                        `json:"note,omitempty"`
 }
 
 const (
@@ -490,7 +495,10 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
 		return 1
 	}
-	result, err := detectCandidateFindingsWithCredit(db, creditStore, *window, since, queryGaggle, aggregates, learningActions, thresholds)
+	result, err := detectCandidateFindingsWithCausalCredit(
+		db, creditStore, *window, since, root, queryGaggle, *workflow,
+		aggregates, learningActions, thresholds,
+	)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -522,12 +530,14 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 	return "", nil
 }
 
-func detectCandidateFindingsWithCredit(
+func detectCandidateFindingsWithCausalCredit(
 	db *rollup.DB,
 	creditStore *readmodel.Store,
 	window time.Duration,
 	since time.Time,
+	root string,
 	gaggle string,
+	workflowName string,
 	aggregates telemetryAggregateValues,
 	learningActions telemetryLearningActionValues,
 	thresholds rollup.Thresholds,
@@ -542,6 +552,7 @@ func detectCandidateFindingsWithCredit(
 	if err != nil {
 		return candidateFindingsArtifact{}, err
 	}
+	correlationalValues := map[string]float64{}
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
 		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
 			Gaggle: gaggle, Since: since,
@@ -556,6 +567,10 @@ func detectCandidateFindingsWithCredit(
 			failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
 			if failureShare < thresholds.MinCreditFailureShare {
 				continue
+			}
+			node := credit.Kind + ":" + credit.Stage
+			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
+				correlationalValues[node] = failureShare
 			}
 			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
 				Gaggle: gaggle, Since: since,
@@ -610,7 +625,73 @@ func detectCandidateFindingsWithCredit(
 	if len(filtered) == 0 {
 		note = telemetryQueryNoFindingsNote
 	}
-	return newCandidateFindingsArtifact(window, since, filtered, note), nil
+	result := newCandidateFindingsArtifact(window, since, filtered, note)
+	if creditStore == nil {
+		return result, nil
+	}
+
+	graph, err := candidateWorkflowGraph(root, gaggle, workflowName)
+	if err != nil {
+		return candidateFindingsArtifact{}, err
+	}
+	result.CausalCredit, err = creditStore.CausalCredit(context.Background(), readmodel.CausalOptions{
+		Gaggle: gaggle, Workflow: workflowName, Since: since, WorkflowGraph: graph,
+	})
+	if err != nil {
+		return candidateFindingsArtifact{}, fmt.Errorf("query causal credit: %w", err)
+	}
+	causalByNode := make(map[string]readmodel.CausalNodeCredit, len(result.CausalCredit))
+	for _, estimate := range result.CausalCredit {
+		causalByNode[estimate.Node] = estimate
+	}
+	nodes := make([]string, 0, len(correlationalValues))
+	for node := range correlationalValues {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	for _, node := range nodes {
+		fallback := correlationalValues[node]
+		estimate, identified := causalByNode[node]
+		if identified && estimate.PromotionEligible && estimate.IntervalAvailable &&
+			estimate.Identification != readmodel.CausalUnidentifiable {
+			result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+				Node: node, Value: estimate.Effect, Lower: estimate.Lower, Upper: estimate.Upper,
+				Source: estimate.PromotionSource, Caveat: estimate.Caveat, PromotionEligible: true,
+			})
+			continue
+		}
+		caveat := "no identified causal intervention; correlational rollup retained"
+		if identified && estimate.Caveat != "" {
+			caveat = estimate.Caveat
+		}
+		result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+			Node: node, Value: fallback, Source: "correlational-fallback", Caveat: caveat,
+		})
+	}
+	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	return result, nil
+}
+
+func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {
+	if root == "" || workflowName == "" {
+		return nil, nil
+	}
+	definitions, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("load workflow graph: %w (report: %+v)", err, report)
+	}
+	for _, definition := range definitions.Workflows {
+		if definition.Spec.Gaggle != gaggle || definition.Name != workflowName {
+			continue
+		}
+		compiled, err := workflow.Compile(workflow.Definition{Spec: definition.Spec})
+		if err != nil {
+			return nil, fmt.Errorf("compile workflow graph %q: %w", workflowName, err)
+		}
+		graph := compiled.Graph()
+		return &graph, nil
+	}
+	return nil, nil
 }
 
 func creditAssignmentDedupeKey(credit readmodel.NodeCredit) string {
@@ -638,12 +719,13 @@ func newCandidateFindingsArtifact(window time.Duration, since time.Time, finding
 		findings = []rollup.Finding{}
 	}
 	return candidateFindingsArtifact{
-		Schema:   candidateFindingsSchemaVersion,
-		Window:   window.String(),
-		Since:    since,
-		Findings: findings,
-		NoWork:   len(findings) == 0,
-		Note:     note,
+		Schema:              candidateFindingsSchemaVersion,
+		Window:              window.String(),
+		Since:               since,
+		Findings:            findings,
+		PromotionCandidates: []readservice.PromotionSignal{},
+		NoWork:              len(findings) == 0,
+		Note:                note,
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -74,6 +75,54 @@ func TestTelemetryQueryEmitsSchemaValidatedCandidateFindings(t *testing.T) {
 	}
 }
 
+func TestCandidateFindingsPromotionCandidatesRejectFallbackSignals(t *testing.T) {
+	result := newCandidateFindingsArtifact(
+		24*time.Hour, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), nil, "",
+	)
+	fallback := readservice.PromotionSignal{
+		Node: "stage:implement", Value: 0.6, Source: "correlational-fallback",
+		Caveat: "no identified causal intervention", PromotionEligible: false,
+	}
+	result.PromotionSignals = []readservice.PromotionSignal{fallback}
+	result.PromotionCandidates = []readservice.PromotionSignal{fallback}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := validate.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validator.ValidateJSON(schemas.CandidateFindings, data); err == nil {
+		t.Fatal("correlational fallback unexpectedly crossed promotionCandidates boundary")
+	}
+}
+
+func TestCandidateFindingsCarriesEligibleCausalCandidate(t *testing.T) {
+	result := newCandidateFindingsArtifact(
+		24*time.Hour, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), nil, "",
+	)
+	result.CausalCredit = []readmodel.CausalNodeCredit{{
+		Node: "stage:implement", Effect: -0.2, Lower: -0.3, Upper: -0.1,
+		Identification: readmodel.CausalRandomized, Caveat: "randomized assignment",
+		TreatedBefore: 0, TreatedAfter: 10, ControlBefore: 0, ControlAfter: 10,
+		IntervalAvailable: true, PromotionEligible: true,
+		PromotionSource: string(readmodel.CausalRandomized),
+	}}
+	candidate := readservice.PromotionSignal{
+		Node: "stage:implement", Value: -0.2, Lower: -0.3, Upper: -0.1,
+		Source: string(readmodel.CausalRandomized), Caveat: "randomized assignment",
+		PromotionEligible: true,
+	}
+	result.PromotionSignals = []readservice.PromotionSignal{candidate}
+	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateCandidateFindings(t, data)
+}
+
 func TestTelemetryQueryAggregateFilter(t *testing.T) {
 	root := initDemo(t)
 	writeFixtureRunWithError(t, root)
@@ -119,12 +168,14 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 	thresholds.MinCreditRuns = 5
 	thresholds.MinCreditFailureShare = 0.4
 	thresholds.MaxFlaggedRuns = 2
-	result, err := detectCandidateFindingsWithCredit(
+	result, err := detectCandidateFindingsWithCausalCredit(
 		rollupDB,
 		creditStore,
 		24*time.Hour,
 		start.Add(-time.Minute),
+		"",
 		"core",
+		"",
 		telemetryAggregateValues{telemetryAggregateCreditAssignment},
 		nil,
 		thresholds,
@@ -158,6 +209,14 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 		!guardrails.RequiresHumanReview ||
 		guardrails.GoverningTargetTreatment != rollup.CreditGoverningTargetTreatment {
 		t.Fatalf("credit nomination guardrails = %+v", guardrails)
+	}
+	if len(result.PromotionSignals) != 1 || len(result.PromotionCandidates) != 0 {
+		t.Fatalf("promotion signals/candidates = %+v / %+v", result.PromotionSignals, result.PromotionCandidates)
+	}
+	if signal := result.PromotionSignals[0]; signal.Node != "gate:qualifying" ||
+		signal.Value != 0.6 || signal.Source != "correlational-fallback" ||
+		signal.PromotionEligible {
+		t.Fatalf("fallback signal = %+v, want preserved correlational value", signal)
 	}
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -290,11 +349,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
+	first, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
+	second, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}

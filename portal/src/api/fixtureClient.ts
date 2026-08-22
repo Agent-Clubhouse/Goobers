@@ -285,6 +285,9 @@ export class FixtureDaemonClient implements DaemonClient {
           (!request?.gaggle || item.gaggle === request.gaggle) &&
           (!request?.workflow || item.workflow === request.workflow),
       ),
+      causalCredit: stats.causalCredit,
+      promotionSignals: stats.promotionSignals,
+      promotionCandidates: stats.promotionCandidates,
       gaggles: stats.gaggles.filter(
         (item) => !request?.gaggle || item.gaggle === request.gaggle,
       ),

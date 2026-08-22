@@ -149,6 +149,7 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/learningClassification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
 	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/classification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
 	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/recommendedAction/enum", source: "internal/learning action vocabulary", want: learningActionVocabulary},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/causalCredit/properties/identification/enum", source: "internal/readmodel.CausalIdentification", want: goConsts("internal/readmodel/causal.go", "CausalIdentification")},
 	{schema: "notification-request.schema.json", path: "properties/severity/enum", source: "api/v1alpha1.NotificationSeverity", want: goConsts("api/v1alpha1/notification.go", "NotificationSeverity")},
 	{schema: "notification-receipt.schema.json", path: "properties/status/enum", source: "api/v1alpha1.NotificationDeliveryStatus", want: goConsts("api/v1alpha1/notification.go", "NotificationDeliveryStatus")},
 

@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -397,5 +400,123 @@ func TestLocalTelemetryUnavailable(t *testing.T) {
 	}
 	if _, err := service.TelemetryErrors(context.Background(), TelemetryErrorsRequest{}); !errors.Is(err, ErrTelemetryUnavailable) {
 		t.Fatalf("errors error = %v", err)
+	}
+}
+
+func TestLocalTelemetryStatsProjectsCausalAndFallbackIdentification(t *testing.T) {
+	ctx := context.Background()
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatalf("open read model: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	start := time.Date(2026, 8, 22, 4, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		seedLocalTelemetryRun(t, store, "control", "sha256:v1", start.Add(time.Duration(i)*time.Minute), false)
+		seedLocalTelemetryRun(t, store, "treatment", "sha256:v2", start.Add(time.Duration(20+i)*time.Minute), true)
+	}
+	seedLocalTelemetryOtherNode(t, store, start.Add(50*time.Minute))
+
+	service := &Local{
+		telemetry: &Telemetry{store: &fakeTelemetryStore{
+			stats: rollup.StatsResult{Runs: []rollup.RunStats{{Gaggle: "core", Workflow: "implementation", TotalRuns: 1}}},
+		}},
+		sources: LocalSources{ReadModel: store},
+	}
+	got, err := service.TelemetryStats(ctx, TelemetryStatsRequest{Gaggle: "core", Workflow: "implementation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CreditAssignment) != 2 {
+		t.Fatalf("credit assignment = %+v, want two nodes", got.CreditAssignment)
+	}
+	var implement, review *NodeCredit
+	for i := range got.CreditAssignment {
+		switch got.CreditAssignment[i].Stage {
+		case "implement":
+			implement = &got.CreditAssignment[i]
+		case "review":
+			review = &got.CreditAssignment[i]
+		}
+	}
+	if implement == nil || implement.Identification != "correlational-fallback" {
+		t.Fatalf("implement credit = %+v, want safe correlational fallback", implement)
+	}
+	if review == nil || review.Identification != "correlational-fallback" {
+		t.Fatalf("review credit = %+v, want correlational fallback", review)
+	}
+	if len(got.PromotionSignals) != 2 || len(got.PromotionCandidates) != 0 {
+		t.Fatalf("promotion signals/candidates = %+v / %+v", got.PromotionSignals, got.PromotionCandidates)
+	}
+	for _, signal := range got.PromotionSignals {
+		if signal.Source != "correlational-fallback" || signal.PromotionEligible {
+			t.Fatalf("fallback signal = %+v", signal)
+		}
+		if signal.Node == "stage:implement" && signal.Value != 1 {
+			t.Fatalf("implement fallback value = %v, want correlational failure share 1", signal.Value)
+		}
+	}
+}
+
+func TestEligiblePromotionSignalsExcludesFallbacks(t *testing.T) {
+	signals := []PromotionSignal{
+		{
+			Node: "stage:implement", Value: 0.6, Source: "correlational-fallback",
+			Caveat: "observational", PromotionEligible: false,
+		},
+		{
+			Node: "stage:review", Value: -0.2, Lower: -0.3, Upper: -0.1,
+			Source: string(readmodel.CausalRandomized), Caveat: "randomized",
+			PromotionEligible: true,
+		},
+	}
+	got := EligiblePromotionSignals(signals)
+	if len(got) != 1 || got[0].Node != "stage:review" {
+		t.Fatalf("eligible promotion signals = %+v", got)
+	}
+}
+
+func seedLocalTelemetryRun(t *testing.T, store *readmodel.Store, suffix, identity string, startedAt time.Time, failed bool) {
+	t.Helper()
+	phase := journal.PhaseCompleted
+	verdict, target := "pass", ""
+	if failed {
+		phase = journal.PhaseFailed
+		verdict, target = "fail", "@abort"
+	}
+	runID := "causal-" + suffix + "-" + startedAt.Format("150405.000000000")
+	finishedAt := startedAt.Add(time.Minute)
+	err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "core", Workflow: "implementation",
+			WorkflowVersion: 1, WorkflowDigest: "sha256:wf",
+			Phase: phase, Terminal: true, StartedAt: startedAt, FinishedAt: &finishedAt,
+			LastActivity: finishedAt, LastSeq: 1, OutcomeVerdict: verdict, OutcomeTarget: target,
+		},
+		Nodes: []readmodel.NodeRow{
+			{RunID: runID, Kind: "stage", Name: "implement", Identity: identity, Attempts: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed run %s: %v", runID, err)
+	}
+}
+
+func seedLocalTelemetryOtherNode(t *testing.T, store *readmodel.Store, startedAt time.Time) {
+	t.Helper()
+	finishedAt := startedAt.Add(time.Minute)
+	runID := "fallback-review"
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "core", Workflow: "implementation",
+			WorkflowVersion: 1, WorkflowDigest: "sha256:wf",
+			Phase: journal.PhaseFailed, Terminal: true, StartedAt: startedAt, FinishedAt: &finishedAt,
+			LastActivity: finishedAt, LastSeq: 1, OutcomeVerdict: "fail", OutcomeTarget: "@abort",
+		},
+		Nodes: []readmodel.NodeRow{
+			{RunID: runID, Kind: "stage", Name: "review", Identity: "sha256:review", Attempts: 1},
+		},
+	}); err != nil {
+		t.Fatalf("seed fallback run: %v", err)
 	}
 }

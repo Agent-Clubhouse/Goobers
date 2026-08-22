@@ -87,8 +87,16 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
 		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node_parent WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear node parents for %s: %w", p.Run.RunID, err)
+	}
 	for _, node := range p.Nodes {
 		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
+	for _, parent := range p.NodeParents {
+		if err := insertNodeParentRow(ctx, tx, parent); err != nil {
 			return err
 		}
 	}
@@ -257,9 +265,10 @@ func insertStageRow(
 func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_node (
-			run_id, kind, name, identity, attempts, retry_waste_attempts
-		) VALUES (?, ?, ?, ?, ?, ?)`,
-		node.RunID, node.Kind, node.Name, node.Identity, node.Attempts, node.RetryWasteAttempts,
+			run_id, kind, name, identity, randomized, arm, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity,
+		boolInt(node.Randomized), node.Arm, node.Attempts, node.RetryWasteAttempts,
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
@@ -279,6 +288,19 @@ func insertRemediationExampleRow(ctx context.Context, tx *sql.Tx, example Remedi
 	if err != nil {
 		return fmt.Errorf("readmodel: insert remediation example %s/%s/%d: %w",
 			example.RunID, example.Stage, example.Attempt, err)
+	}
+	return nil
+}
+
+func insertNodeParentRow(ctx context.Context, tx *sql.Tx, parent NodeParentRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node_parent (
+			run_id, kind, name, identity, parent_kind, parent_name
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		parent.RunID, parent.Kind, parent.Name, parent.Identity, parent.ParentKind, parent.ParentName,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node parent %s/%s: %w", parent.RunID, parent.Name, err)
 	}
 	return nil
 }

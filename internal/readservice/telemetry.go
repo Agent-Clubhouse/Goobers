@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 var (
@@ -45,29 +48,69 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles          []TelemetryGaggleStats `json:"gaggles"`
-	Runs             []TelemetryRunStats    `json:"runs"`
-	Stages           []TelemetryStageStats  `json:"stages"`
-	Usage            []TelemetryUsageStats  `json:"usage"`
-	Models           []TelemetryModelStats  `json:"models"`
-	CreditAssignment []NodeCredit           `json:"creditAssignment"`
-	Curation         TelemetryCurationStats `json:"curation"`
-	ReadyPool        TelemetryReadyPool     `json:"readyPool"`
+	Gaggles          []TelemetryGaggleStats       `json:"gaggles"`
+	Runs             []TelemetryRunStats          `json:"runs"`
+	Stages           []TelemetryStageStats        `json:"stages"`
+	Usage            []TelemetryUsageStats        `json:"usage"`
+	Models           []TelemetryModelStats        `json:"models"`
+	CreditAssignment []NodeCredit                 `json:"creditAssignment"`
+	CausalCredit     []readmodel.CausalNodeCredit `json:"causalCredit"`
+	PromotionSignals []PromotionSignal            `json:"promotionSignals,omitempty"`
+	// PromotionCandidates is the machine-filtered input for automated
+	// promotion. Correlational fallbacks remain visible in PromotionSignals
+	// but never cross this boundary.
+	PromotionCandidates []PromotionSignal      `json:"promotionCandidates,omitempty"`
+	Curation            TelemetryCurationStats `json:"curation"`
+	ReadyPool           TelemetryReadyPool     `json:"readyPool"`
+}
+
+// PromotionSignal is the bounded evidence interface for automated promotion.
+type PromotionSignal struct {
+	Node              string  `json:"node"`
+	Value             float64 `json:"value"`
+	Lower             float64 `json:"lower,omitempty"`
+	Upper             float64 `json:"upper,omitempty"`
+	Source            string  `json:"source"`
+	Caveat            string  `json:"caveat"`
+	PromotionEligible bool    `json:"promotionEligible"`
+}
+
+// EligiblePromotionSignals returns only identified causal signals with a
+// confidence interval. Promotion consumers must use this boundary instead of
+// interpreting fallback signals themselves.
+func EligiblePromotionSignals(signals []PromotionSignal) []PromotionSignal {
+	eligible := make([]PromotionSignal, 0, len(signals))
+	for _, signal := range signals {
+		if signal.PromotionEligible &&
+			signal.Source != "correlational-fallback" &&
+			!math.IsNaN(signal.Value) && !math.IsInf(signal.Value, 0) &&
+			!math.IsNaN(signal.Lower) && !math.IsInf(signal.Lower, 0) &&
+			!math.IsNaN(signal.Upper) && !math.IsInf(signal.Upper, 0) &&
+			signal.Lower <= signal.Value && signal.Value <= signal.Upper {
+			eligible = append(eligible, signal)
+		}
+	}
+	return eligible
 }
 
 // NodeCredit ranks one workflow node's accumulated contribution to adverse
 // outcomes over the requested telemetry window.
 type NodeCredit struct {
-	Gaggle             string  `json:"gaggle"`
-	Workflow           string  `json:"workflow"`
-	Kind               string  `json:"kind"`
-	Stage              string  `json:"stage"`
-	Identity           string  `json:"identity,omitempty"`
-	RoutedRuns         int     `json:"routedRuns"`
-	FailureRuns        int     `json:"failureRuns"`
-	FailureShare       float64 `json:"failureShare"`
-	EscalationRuns     int     `json:"escalationRuns"`
-	RetryWasteAttempts int     `json:"retryWasteAttempts"`
+	Gaggle             string   `json:"gaggle"`
+	Workflow           string   `json:"workflow"`
+	Kind               string   `json:"kind"`
+	Stage              string   `json:"stage"`
+	Identity           string   `json:"identity,omitempty"`
+	RoutedRuns         int      `json:"routedRuns"`
+	FailureRuns        int      `json:"failureRuns"`
+	FailureShare       float64  `json:"failureShare"`
+	EscalationRuns     int      `json:"escalationRuns"`
+	RetryWasteAttempts int      `json:"retryWasteAttempts"`
+	Effect             *float64 `json:"effect,omitempty"`
+	Lower              *float64 `json:"lower,omitempty"`
+	Upper              *float64 `json:"upper,omitempty"`
+	Identification     string   `json:"identification"`
+	Caveat             string   `json:"caveat,omitempty"`
 }
 
 // TelemetryCurationStats is the windowed action rollup for backlog curation.
@@ -679,8 +722,82 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 			RetryWasteAttempts: credit.RetryWasteAttempts,
 		})
 	}
+	causal, err := s.sources.ReadModel.CausalCredit(ctx, readmodel.CausalOptions{
+		Gaggle:        req.Gaggle,
+		Workflow:      req.Workflow,
+		Since:         req.Since,
+		Until:         req.Until,
+		WorkflowGraph: getWorkflowGraphForQuery(s.sources.Definitions, req.Gaggle, req.Workflow),
+	})
+	if err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	result.CausalCredit = causal
+	causalByNode := make(map[string]readmodel.CausalNodeCredit, len(causal))
+	for _, estimate := range causal {
+		causalByNode[estimate.Node] = estimate
+	}
+	result.PromotionSignals = make([]PromotionSignal, 0, len(result.CreditAssignment))
+	for i := range result.CreditAssignment {
+		credit := &result.CreditAssignment[i]
+		estimate, ok := causalByNode[credit.Kind+":"+credit.Stage]
+		if !ok || estimate.Identification == readmodel.CausalUnidentifiable {
+			credit.Identification = "correlational-fallback"
+			credit.Caveat = "no identified causal intervention; correlational rollup retained"
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: credit.FailureShare,
+				Source: "correlational-fallback", Caveat: credit.Caveat,
+			})
+			continue
+		}
+		credit.Identification = string(estimate.Identification)
+		credit.Caveat = estimate.Caveat
+		if estimate.IntervalAvailable && estimate.PromotionEligible {
+			credit.Effect = float64Ptr(estimate.Effect)
+			credit.Lower = float64Ptr(estimate.Lower)
+			credit.Upper = float64Ptr(estimate.Upper)
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: estimate.Effect,
+				Lower: estimate.Lower, Upper: estimate.Upper,
+				Source: estimate.PromotionSource, Caveat: estimate.Caveat,
+				PromotionEligible: true,
+			})
+		} else {
+			credit.Identification = "correlational-fallback"
+			credit.Caveat = "causal estimate has no promotion-eligible confidence interval; correlational rollup retained"
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: credit.FailureShare,
+				Source: "correlational-fallback", Caveat: credit.Caveat,
+			})
+		}
+	}
+	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
 	return result, nil
 }
+
+// getWorkflowGraphForQuery returns the compiled workflow graph for a given gaggle/workflow pair.
+// Returns nil if the workflow is not found or cannot be compiled.
+func getWorkflowGraphForQuery(definitions *instance.ConfigSet, gaggle, workflowName string) *workflow.Graph {
+	if definitions == nil || workflowName == "" {
+		return nil
+	}
+	for _, w := range definitions.Workflows {
+		if w.Spec.Gaggle == gaggle && w.Name == workflowName {
+			def := workflow.Definition{
+				Spec: w.Spec,
+			}
+			machine, err := workflow.Compile(def)
+			if err != nil {
+				return nil
+			}
+			graph := machine.Graph()
+			return &graph
+		}
+	}
+	return nil
+}
+
+func float64Ptr(value float64) *float64 { return &value }
 
 // TelemetryErrorSignatures implements TelemetryReader for the daemon's full local service.
 func (s *Local) TelemetryErrorSignatures(ctx context.Context, req TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error) {

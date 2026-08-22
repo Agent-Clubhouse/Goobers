@@ -608,8 +608,11 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           failureShare: 0.25,
           escalationRuns: 1,
           retryWasteAttempts: 2,
+          identification: "correlational-fallback",
+          caveat: "no identified causal intervention; correlational rollup retained",
         },
       ],
+      causalCredit: null,
       gaggles: [
         {
           gaggle: "core",
@@ -1004,6 +1007,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runEvents: {},
     telemetryStats: {
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
