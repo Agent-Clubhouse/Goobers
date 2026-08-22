@@ -6,14 +6,14 @@
 // algorithm are shared because they are definitionally version-invariant.
 // Everything that assigns meaning to YAML fields, including compilation,
 // validation, feature resolution, and execution-policy projection, belongs to
-// a versioned interpreter package such as v_current. A new DSL version copies
+// a versioned interpreter package such as v_next. A new DSL version copies
 // that interpreter forward rather than changing an older version in place.
 package workflow
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 )
 
 // Definition is a versioned snapshot pinned for a workflow run.
@@ -83,10 +83,13 @@ func BranchTarget(gate apiv1.Gate, outcome string) (target string, ok bool) {
 // only change across a MAJOR bump).
 //
 // Concretely: under DSL 1.4 a value like "foo.bar" is always a bare output key,
-// even when a stage named "foo" happens to exist.
+// even when a stage named "foo" happens to exist. DSL 1.4 is dropped (#3507);
+// every remaining live version (2.0, 3.0) supports stage-qualified inputs, but
+// the guard keeps naming the one version that did not, by its string, so a
+// re-introduced legacy interpreter cannot silently inherit the new meaning.
 func SupportsStageQualifiedInputs(m *Machine) bool {
 	if m == nil {
 		return false
 	}
-	return m.Def.DSLVersion != vcurrent.DSLVersion
+	return m.Def.DSLVersion != supportmatrix.CurrentDSLVersion
 }

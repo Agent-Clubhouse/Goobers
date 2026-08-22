@@ -49,6 +49,7 @@ import (
 // run` starts it directly at `implement`. It mirrors #29's skeletonMachine.
 const acceptanceWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: acceptance
 spec:

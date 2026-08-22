@@ -9,7 +9,6 @@ import (
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
@@ -92,39 +91,6 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 func noRunsOnProblems(Definition, *apiv1.GaggleRunsOn) []string { return nil }
 
 func noRepoHandoffProblems(Definition) []string { return nil }
-
-var currentInterpreter = versionedInterpreter{
-	compile:                         compileCurrent,
-	checkWarnings:                   vcurrent.CheckWarnings,
-	checkReachability:               vcurrent.CheckReachability,
-	checkSchedules:                  vcurrent.CheckSchedules,
-	checkTriggerFields:              vcurrent.CheckTriggerFields,
-	checkWorkflowAdmission:          vcurrent.CheckWorkflowAdmission,
-	checkPushBoundaries:             vcurrent.CheckPushBoundaries,
-	checkRunsOnOSTokens:             noRunsOnProblems,
-	checkRunsOnRestrictions:         noRunsOnProblems,
-	checkRunsOnPlacement:            preV30SurfaceProblems,
-	stagePlacements:                 preV30StagePlacements,
-	checkRepoHandoffs:               noRepoHandoffProblems,
-	checkGateParameters:             vcurrent.CheckGateParameters,
-	checkGateOutcomes:               vcurrent.CheckGateOutcomes,
-	checkStageRequiredInputs:        vcurrent.CheckStageRequiredInputs,
-	checkStageContracts:             vcurrent.CheckStageContracts,
-	checkStageContractWarnings:      vcurrent.CheckStageContractWarnings,
-	checkStageTimeoutCoherence:      vcurrent.CheckStageTimeoutCoherence,
-	checkSubprocessTimeoutCoherence: vcurrent.CheckSubprocessTimeoutCoherence,
-	checkPathSimulation:             vcurrent.CheckPathSimulation,
-	newFeatureRegistry:              newCurrentFeatureRegistry,
-	featuresAtDSLVersion:            vcurrent.FeaturesAtDSLVersion,
-	featuresForWorkflow:             vcurrent.FeaturesForWorkflow,
-	featuresForGaggle:               vcurrent.FeaturesForGaggle,
-	featuresForGoober:               vcurrent.FeaturesForGoober,
-	checkFeatureSupport:             vcurrent.CheckFeatureSupport,
-	checkWorkflowFeatureSupport:     vcurrent.CheckWorkflowFeatureSupport,
-	taskInvocationInputs:            vcurrent.TaskInvocationInputs,
-	taskLimits:                      vcurrent.TaskLimits,
-	gateLimits:                      vcurrent.GateLimits,
-}
 
 var nextInterpreter = versionedInterpreter{
 	compile:                         compileNext,
@@ -309,29 +275,6 @@ func refusePreV30Surface(def Definition, config compileConfig) error {
 	return fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 }
 
-func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
-	if err := refusePreV30Surface(def, config); err != nil {
-		return nil, err
-	}
-	var opts []vcurrent.Option
-	if config.goobersSet {
-		opts = append(opts, vcurrent.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
-	}
-	if config.knownChecksSet {
-		opts = append(opts, vcurrent.WithKnownChecks(config.knownChecks))
-	}
-	if config.knownHarnessesSet {
-		opts = append(opts, vcurrent.WithKnownHarnesses(config.knownHarnesses))
-	}
-	if config.previewFeaturesSet {
-		opts = append(opts, vcurrent.WithPreviewFeatures(config.allowPreviewFeatures))
-	}
-	if config.gaggleRequiredCapabilitiesSet {
-		opts = append(opts, vcurrent.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
-	}
-	return vcurrent.Compile(def, opts...)
-}
-
 func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	if err := refusePreV30Surface(def, config); err != nil {
 		return nil, err
@@ -391,7 +334,16 @@ func interpreterForMachine(machine *Machine) (*versionedInterpreter, error) {
 
 func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
+		// DSL 1.4 is dropped (#3507), so a missing pin can no longer default to
+		// it. For AUTHOR-FACING documents a missing dslVersion is now a hard
+		// error, enforced at the sole lifecycle checkpoint,
+		// api/validate.checkWorkflowDSLVersion (the §8.3 cutover) — every
+		// config-load path routes through it, so a real document never reaches
+		// the router unpinned. This router fallback exists only for a
+		// programmatically-constructed Definition with no pin; it resolves to
+		// the back-compat contract version (2.0) rather than fabricating an
+		// interpreter for a version the build no longer carries.
+		version = supportmatrix.NextDSLVersion
 	}
 
 	support, ok := supportmatrix.GetDSL().Lookup(version)
@@ -400,14 +352,12 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	}
 	if support.Level == supportmatrix.LevelUnsupported {
 		if support.Replacement != "" {
-			return nil, fmt.Errorf("DSL version %q is unsupported; migrate to %q", version, support.Replacement)
+			return nil, fmt.Errorf("DSL version %q is unsupported; migrate with `goobers fix --to %s`", version, support.Replacement)
 		}
 		return nil, fmt.Errorf("DSL version %q is unsupported", version)
 	}
 
 	switch version {
-	case vcurrent.DSLVersion:
-		return &currentInterpreter, nil
 	case vnext.DSLVersion:
 		return &nextInterpreter, nil
 	case v30.DSLVersion:

@@ -11,7 +11,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
@@ -22,12 +21,6 @@ func TestVersionedInterpreterFixturesCompileInOneBinary(t *testing.T) {
 		wantDigest   string
 		wantInterval string
 	}{
-		{
-			name:         "current",
-			path:         filepath.Join("v_current", "testdata", "golden", "runtime-policy.yaml"),
-			wantDigest:   "sha256:dfdf7dec7f2d1035d464b140bfe16f5c5a6f0f4058426d2dce9bae08af27846c",
-			wantInterval: "7s",
-		},
 		{
 			name:         "next",
 			path:         filepath.Join("v_next", "testdata", "golden", "runtime-policy.yaml"),
@@ -79,6 +72,10 @@ func TestVersionedInterpreterFixturesCompileInOneBinary(t *testing.T) {
 	}
 }
 
+// TestUnpinnedResolvesToBackCompatInterpreter: with DSL 1.4 dropped (#3507) an
+// unpinned definition routes to the 2.0 (v_next) interpreter — the back-compat
+// contract — so it and an explicitly 2.0-pinned definition compute the same
+// ci-poll interval default.
 func TestNextDefaultDoesNotAlterCurrentInterpreter(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Start: "poll",
@@ -107,8 +104,7 @@ func TestNextDefaultDoesNotAlterCurrentInterpreter(t *testing.T) {
 		version      string
 		wantInterval string
 	}{
-		{name: "unpinned", wantInterval: "30s"},
-		{name: "current", version: vcurrent.DSLVersion, wantInterval: "30s"},
+		{name: "unpinned", wantInterval: "10s"},
 		{name: "next", version: vnext.DSLVersion, wantInterval: "10s"},
 	}
 	for _, test := range tests {
@@ -143,7 +139,7 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 	for _, support := range feature.DSLVersions {
 		got[support.Version] = true
 	}
-	for _, version := range []string{vcurrent.DSLVersion, vnext.DSLVersion, v30.DSLVersion} {
+	for _, version := range []string{vnext.DSLVersion, v30.DSLVersion} {
 		if !got[version] {
 			t.Errorf("stage.ci-poll does not report DSL version %s", version)
 		}
@@ -151,9 +147,10 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 }
 
 // TestPreV30SurfaceRefusedOnEarlierVersions pins the router-owned version
-// gate: the 3.0-only fields must be refused on 1.4/2.0 documents — the frozen
-// interpreters never learn them (PO-D0) — and the gaggle runsOn floor must
-// refuse to pair with a pre-3.0 workflow (dsl-3.0.md open point 2).
+// gate: the 3.0-only fields must be refused on the 2.0 document — the frozen
+// interpreter never learns them (PO-D0) — and the gaggle runsOn floor must
+// refuse to pair with a pre-3.0 workflow (dsl-3.0.md open point 2). (1.4 is
+// dropped, #3507; a 1.4 document is refused earlier, at version resolution.)
 func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 	spec := func(mutate func(*apiv1.WorkflowSpec)) apiv1.WorkflowSpec {
 		s := apiv1.WorkflowSpec{
@@ -170,7 +167,7 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 		return s
 	}
 
-	for _, version := range []string{vcurrent.DSLVersion, vnext.DSLVersion} {
+	for _, version := range []string{vnext.DSLVersion} {
 		withRunsOn := spec(func(s *apiv1.WorkflowSpec) {
 			s.Tasks[0].RunsOn = &apiv1.RunsOn{OS: "linux"}
 		})
@@ -221,9 +218,13 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 }
 
 func TestNextFeatureRegistryDoesNotRevalidateWithCurrentInterpreter(t *testing.T) {
+	// A feature whose lifecycle metadata is intentionally incomplete: it would
+	// be rejected by a full registry validation, proving that
+	// newNextFeatureRegistryWith runs the SUPPLIED validate func rather than a
+	// global one.
 	input := []Feature{{ID: "rejected-by-current"}}
-	if _, err := vcurrent.NewFeatureRegistry(input); err == nil {
-		t.Fatal("test feature unexpectedly passed current validation")
+	if _, err := vnext.NewFeatureRegistry([]vnext.Feature{{ID: vnext.FeatureID("rejected-by-current")}}); err == nil {
+		t.Fatal("test feature unexpectedly passed registry validation")
 	}
 
 	const nextOnly FeatureID = "goober.spec.next-only"
@@ -270,7 +271,7 @@ func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
 	t.Cleanup(func() { nextInterpreter.featuresForGoober = original })
 
 	spec := apiv1.GooberSpec{}
-	current, err := FeaturesForGoober(Definition{DSLVersion: vcurrent.DSLVersion}, spec)
+	current, err := FeaturesForGoober(Definition{DSLVersion: v30.DSLVersion}, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,15 +280,15 @@ func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if slices.ContainsFunc(current, func(feature Feature) bool { return feature.ID == nextOnly }) {
-		t.Fatalf("DSL %s unexpectedly resolved %q", vcurrent.DSLVersion, nextOnly)
+		t.Fatalf("DSL %s unexpectedly resolved %q", v30.DSLVersion, nextOnly)
 	}
 	if !slices.ContainsFunc(next, func(feature Feature) bool { return feature.ID == nextOnly }) {
 		t.Fatalf("DSL %s did not resolve %q", vnext.DSLVersion, nextOnly)
 	}
 	if diagnostics := CheckGooberFeatureSupport(
-		Definition{DSLVersion: vcurrent.DSLVersion}, spec, false,
+		Definition{DSLVersion: v30.DSLVersion}, spec, false,
 	); len(diagnostics) != 0 {
-		t.Fatalf("DSL %s diagnostics = %+v, want none", vcurrent.DSLVersion, diagnostics)
+		t.Fatalf("DSL %s diagnostics = %+v, want none", v30.DSLVersion, diagnostics)
 	}
 	diagnostics := CheckGooberFeatureSupport(
 		Definition{DSLVersion: vnext.DSLVersion}, spec, false,

@@ -12,15 +12,16 @@ import (
 )
 
 // TestMigratedFixtureCompilesAtTargetVersion proves the acceptance criterion
-// from #866: `fix --to <next>` on a v_current workflow produces a diff that
-// makes it a valid v_next workflow. It migrates the real DVL-4/DVL-5 golden
-// fixture (the same one internal/workflow/v_current and .../v_next test
-// against) and compiles the result with the shared version-router Compile,
-// the same entry point `goobers up`/`run` use.
+// from #866: `fix --to 2.0` on a 1.4 workflow produces a diff that makes it a
+// valid 2.0 workflow. It migrates the DVL-4/DVL-5 golden fixtures (copied here
+// from the deleted internal/workflow/v_current package when DSL 1.4 was
+// dropped, #3507 — the 1.4→2.0 edge survives as the DVL030 recovery path) and
+// compiles the result with the shared version-router Compile, the same entry
+// point `goobers up`/`run` use.
 func TestMigratedFixtureCompilesAtTargetVersion(t *testing.T) {
 	for _, fixture := range []string{"gated", "linear", "runtime-policy"} {
 		t.Run(fixture, func(t *testing.T) {
-			source, err := os.ReadFile("../workflow/v_current/testdata/golden/" + fixture + ".yaml")
+			source, err := os.ReadFile("testdata/v1_4/" + fixture + ".yaml")
 			if err != nil {
 				t.Fatalf("read fixture: %v", err)
 			}

@@ -153,7 +153,7 @@ func TestReconstructStageOutputsIsNilWhenNothingFinished(t *testing.T) {
 
 func TestReconstructStageOutputsClearsContinueOnErrorFailure(t *testing.T) {
 	machine, err := workflow.Compile(workflow.Definition{
-		Name: "continue-on-error-outputs", Version: 1, DSLVersion: "1.4",
+		Name: "continue-on-error-outputs", Version: 1, DSLVersion: "2.0",
 		Spec: apiv1.WorkflowSpec{
 			Gaggle:   "goobers",
 			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},

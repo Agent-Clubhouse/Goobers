@@ -96,7 +96,7 @@ func TestRegisterInvalidRejected(t *testing.T) {
 func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
 	r := NewRegistryWithPreviewFeatures(true)
 	if _, err := r.RegisterDefinition(wf.Definition{
-		Name: "flow", DSLVersion: "1.4", Spec: linearSpec(),
+		Name: "flow", DSLVersion: "2.0", Spec: linearSpec(),
 	}); err != nil {
 		t.Fatalf("RegisterDefinition: %v", err)
 	}
@@ -104,15 +104,15 @@ func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("registered definition not found")
 	}
-	if def.DSLVersion != "1.4" {
-		t.Fatalf("definition dslVersion = %q, want 1.4", def.DSLVersion)
+	if def.DSLVersion != "2.0" {
+		t.Fatalf("definition dslVersion = %q, want 2.0", def.DSLVersion)
 	}
 	in, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
 	if err != nil {
 		t.Fatalf("StartInput: %v", err)
 	}
-	if in.DSLVersion != "1.4" {
-		t.Fatalf("run input dslVersion = %q, want 1.4", in.DSLVersion)
+	if in.DSLVersion != "2.0" {
+		t.Fatalf("run input dslVersion = %q, want 2.0", in.DSLVersion)
 	}
 }
 

@@ -106,6 +106,7 @@ func TestCheckRepositoryRejectsExceptionWhenWorkflowIsNoLongerShipped(t *testing
 	const path = "cmd/goobers/stage.go"
 	writeFixture(t, root, "reference-workflows/gaggles/goobers/workflows/example.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: replacement-workflow
 `)
@@ -141,6 +142,7 @@ func fixtureRepository(t *testing.T) string {
 	root := t.TempDir()
 	writeFixture(t, root, "reference-workflows/gaggles/goobers/workflows/example.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: renamed-workflow
 `)

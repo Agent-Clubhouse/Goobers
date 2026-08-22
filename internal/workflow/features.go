@@ -7,24 +7,28 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
+// The shared feature types are re-exported from the oldest live interpreter,
+// which is DSL 2.0 (v_next) now that 1.4 (v_current) is dropped (#3507). Newer
+// interpreters' feature values are converted into this canonical shape by the
+// featureForNext/v30 glue below.
+
 // FeatureID is the stable, author-facing name of a DSL capability.
-type FeatureID = vcurrent.FeatureID
+type FeatureID = vnext.FeatureID
 
 // SupportLevel describes the compatibility promise for a DSL feature.
-type SupportLevel = vcurrent.SupportLevel
+type SupportLevel = vnext.SupportLevel
 
 // SupportTransition records when a feature entered a support level.
-type SupportTransition = vcurrent.SupportTransition
+type SupportTransition = vnext.SupportTransition
 
 // Feature records a DSL feature's support metadata.
-type Feature = vcurrent.Feature
+type Feature = vnext.Feature
 
 // DSLFeatureSupport records a feature's support in one DSL version.
-type DSLFeatureSupport = vcurrent.DSLFeatureSupport
+type DSLFeatureSupport = vnext.DSLFeatureSupport
 
 // FeatureRegistry is an immutable feature-support lookup table.
 type FeatureRegistry struct {
@@ -32,17 +36,17 @@ type FeatureRegistry struct {
 }
 
 // FeatureDiagnostic describes one support-level finding.
-type FeatureDiagnostic = vcurrent.FeatureDiagnostic
+type FeatureDiagnostic = vnext.FeatureDiagnostic
 
 const (
 	// SupportPreview marks an unstable feature requiring acknowledgement.
-	SupportPreview = vcurrent.SupportPreview
+	SupportPreview = vnext.SupportPreview
 	// SupportGA marks a stable feature.
-	SupportGA = vcurrent.SupportGA
+	SupportGA = vnext.SupportGA
 	// SupportDeprecated marks a feature scheduled for removal.
-	SupportDeprecated = vcurrent.SupportDeprecated
+	SupportDeprecated = vnext.SupportDeprecated
 	// SupportRemoved marks a feature validation rejects.
-	SupportRemoved = vcurrent.SupportRemoved
+	SupportRemoved = vnext.SupportRemoved
 )
 
 // NewFeatureRegistry validates and copies feature entries for a pinned definition.
@@ -85,7 +89,9 @@ func LookupFeature(id FeatureID) (Feature, bool) {
 // AllFeatures returns a stable snapshot of features across registered DSL
 // interpreters.
 func AllFeatures() []Feature {
-	features := vcurrent.AllFeatures()
+	// v_next (DSL 2.0) is the oldest live interpreter and supplies the
+	// canonical Feature type, so its features are the base with no conversion.
+	features := vnext.AllFeatures()
 	byID := make(map[FeatureID]int, len(features))
 	for i, feature := range features {
 		byID[feature.ID] = i
@@ -98,9 +104,6 @@ func AllFeatures() []Feature {
 			return
 		}
 		features[i].DSLVersions = append(features[i].DSLVersions, converted.DSLVersions...)
-	}
-	for _, feature := range vnext.AllFeatures() {
-		merge(nextFeature(feature))
 	}
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
@@ -115,7 +118,7 @@ func AllFeatures() []Feature {
 func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
 	interpreter, err := interpreterForDefinition(Definition{DSLVersion: version})
 	if err != nil {
-		return vcurrent.FeaturesAtDSLVersion(features, version)
+		return vnext.FeaturesAtDSLVersion(features, version)
 	}
 	return interpreter.featuresAtDSLVersion(features, version)
 }
@@ -224,14 +227,6 @@ func CheckGooberFeatureSupport(def Definition, spec apiv1.GooberSpec, allowPrevi
 		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
 	}
 	return CheckFeatureSupport(def, features, allowPreview)
-}
-
-func newCurrentFeatureRegistry(features []Feature) (FeatureRegistry, error) {
-	validated, err := vcurrent.NewFeatureRegistry(features)
-	if err != nil {
-		return FeatureRegistry{}, err
-	}
-	return featureRegistry(validated.All()), nil
 }
 
 func newNextFeatureRegistry(features []Feature) (FeatureRegistry, error) {
