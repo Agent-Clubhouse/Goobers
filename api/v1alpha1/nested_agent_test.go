@@ -69,3 +69,57 @@ func TestAdmitChildIntersectsAuthorityAndRejectsWidening(t *testing.T) {
 		t.Fatal("privilege widening was admitted")
 	}
 }
+
+func TestAdmitChildPreservesParentCeilings(t *testing.T) {
+	parent := validParent()
+	parent.Delegation = DelegationBounded
+	parent.MaxDepth = 2
+	parent.Model = NestedModelPolicy{
+		Allowlist:          []string{"safe-model", "fallback-model"},
+		MaxReasoningEffort: ReasoningMedium,
+	}
+
+	policy := validNestedPolicy()
+	policy.Delegation = DelegationBounded
+	policy.MaxDepth = 3
+	policy.Model = NestedModelPolicy{
+		Allowlist:          []string{"safe-model", "unsafe-model"},
+		MaxReasoningEffort: ReasoningHigh,
+	}
+	if _, err := AdmitChild(parent, policy, "worker", "unsafe-model", "high"); err == nil {
+		t.Fatal("child widened parent model authority")
+	}
+	if _, err := AdmitChild(parent, policy, "worker", "safe-model", "high"); err == nil {
+		t.Fatal("child widened parent reasoning authority")
+	}
+	policy.MaxDepth = 1
+	child, err := AdmitChild(parent, policy, "worker", "safe-model", "medium")
+	if err != nil {
+		t.Fatalf("AdmitChild() error = %v", err)
+	}
+	if child.MaxDepth != 1 || len(child.Model.Allowlist) != 1 || child.Model.Allowlist[0] != "safe-model" ||
+		child.Model.MaxReasoningEffort != ReasoningMedium {
+		t.Fatalf("child authority = %+v, want parent-intersected authority", child)
+	}
+}
+
+func TestAdmitChildPreservesContentExclusions(t *testing.T) {
+	parent := validParent()
+	policy := validNestedPolicy()
+	policy.PlatformPolicy.ContentExclusions = nil
+	child, err := AdmitChild(parent, policy, "worker", "", "")
+	if err != nil {
+		t.Fatalf("AdmitChild() error = %v", err)
+	}
+	if len(child.PlatformPolicy.ContentExclusions) != 1 || child.PlatformPolicy.ContentExclusions[0] != "secrets" {
+		t.Fatalf("content exclusions = %v, want inherited parent exclusions", child.PlatformPolicy.ContentExclusions)
+	}
+}
+
+func TestAdmitChildRejectsUnsupportedProfile(t *testing.T) {
+	policy := validNestedPolicy()
+	policy.PermittedProfiles = []string{"unknown"}
+	if _, err := AdmitChild(validParent(), policy, "unknown", "", ""); err == nil {
+		t.Fatal("unknown profile was admitted")
+	}
+}

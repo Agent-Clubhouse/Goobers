@@ -3949,6 +3949,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		return apiv1.ResultEnvelope{}, nil, coded, nil
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
+	env.NestedAgentPolicy = t.NestedAgentPolicy
 	env.InstructionAddendum = instructionAddendum
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation

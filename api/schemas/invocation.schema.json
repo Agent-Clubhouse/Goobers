@@ -93,6 +93,10 @@
       }
     },
     "limits": { "$ref": "#/$defs/limits", "description": "Execution and agent-usage limits applied to this stage." },
+    "nestedAgentPolicy": {
+      "$ref": "workflow.schema.json#/$defs/task/properties/nestedAgentPolicy",
+      "description": "Admitted nested-agent authority carried in the mandatory execution envelope."
+    },
     "inputs": {
       "type": "object",
       "description": "The stage's static config from its definition. The stage's own config — not another stage's state. Unlike result.schema.json's outputs (scalar-bounded by schema), inputs is intentionally unconstrained: the anti-smuggling invariant here is convention-backed, not schema-enforced, because the runner deliberately routes a gate's subject-stage status/outputs through a gate's own inputs (internal/runner's flattening into env.Inputs before an automated/agentic gate evaluation, internal/gate.InputKeyStatus) — a small, scalar-only, one-directional bridge, not the general reach-through §2.4 forbids (#125)."

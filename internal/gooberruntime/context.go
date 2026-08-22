@@ -25,18 +25,19 @@ const (
 // GooberContext is the complete task or reviewer context delivered to the
 // harness.
 type GooberContext struct {
-	TaskID           string                 `json:"taskId"`
-	WorkflowID       string                 `json:"workflowId"`
-	RunID            string                 `json:"runId"`
-	Gaggle           string                 `json:"gaggle"`
-	Goal             string                 `json:"goal"`
-	Instructions     string                 `json:"instructions,omitempty"`
-	RepoRef          apiv1.RepoRef          `json:"repoRef"`
-	Item             *apiv1.BacklogItem     `json:"item,omitempty"`
-	Inputs           map[string]interface{} `json:"inputs,omitempty"`
-	ContextPointers  []apiv1.ContextPointer `json:"contextPointers,omitempty"`
-	MinimumIntegrity apiv1.Integrity        `json:"minimumIntegrity,omitempty"`
-	Limits           apiv1.Limits           `json:"limits,omitempty"`
+	TaskID            string                   `json:"taskId"`
+	WorkflowID        string                   `json:"workflowId"`
+	RunID             string                   `json:"runId"`
+	Gaggle            string                   `json:"gaggle"`
+	Goal              string                   `json:"goal"`
+	Instructions      string                   `json:"instructions,omitempty"`
+	RepoRef           apiv1.RepoRef            `json:"repoRef"`
+	Item              *apiv1.BacklogItem       `json:"item,omitempty"`
+	Inputs            map[string]interface{}   `json:"inputs,omitempty"`
+	ContextPointers   []apiv1.ContextPointer   `json:"contextPointers,omitempty"`
+	MinimumIntegrity  apiv1.Integrity          `json:"minimumIntegrity,omitempty"`
+	Limits            apiv1.Limits             `json:"limits,omitempty"`
+	NestedAgentPolicy *apiv1.NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
 }
 
 // InstructionResolver resolves the instruction markdown for an invocation.
@@ -152,6 +153,11 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 	if env.RepoRef.Name == "" {
 		return GooberContext{}, fmt.Errorf("repoRef.name is required")
 	}
+	if env.NestedAgentPolicy != nil {
+		if err := env.NestedAgentPolicy.Validate(); err != nil {
+			return GooberContext{}, err
+		}
+	}
 	if resolver == nil {
 		resolver = InputInstructionResolver{}
 	}
@@ -159,20 +165,43 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 	if err != nil {
 		return GooberContext{}, err
 	}
+	contextPointers := copyContextPointers(env.ContextPointers)
+	if env.NestedAgentPolicy != nil {
+		switch env.NestedAgentPolicy.Context.Mode {
+		case apiv1.ContextFresh:
+			contextPointers = nil
+		case apiv1.ContextExplicit:
+			contextPointers = selectContextPointers(contextPointers, env.NestedAgentPolicy.Context.ArtifactNames)
+		}
+	}
 	return GooberContext{
-		TaskID:           env.TaskID,
-		WorkflowID:       env.WorkflowID,
-		RunID:            env.RunID,
-		Gaggle:           env.Gaggle,
-		Goal:             env.Goal,
-		Instructions:     instructions,
-		RepoRef:          env.RepoRef,
-		Item:             env.Item,
-		Inputs:           copyInputs(env.Inputs),
-		ContextPointers:  copyContextPointers(env.ContextPointers),
-		MinimumIntegrity: env.MinimumIntegrity,
-		Limits:           env.Limits,
+		TaskID:            env.TaskID,
+		WorkflowID:        env.WorkflowID,
+		RunID:             env.RunID,
+		Gaggle:            env.Gaggle,
+		Goal:              env.Goal,
+		Instructions:      instructions,
+		RepoRef:           env.RepoRef,
+		Item:              env.Item,
+		Inputs:            copyInputs(env.Inputs),
+		ContextPointers:   contextPointers,
+		MinimumIntegrity:  env.MinimumIntegrity,
+		Limits:            env.Limits,
+		NestedAgentPolicy: env.NestedAgentPolicy,
 	}, nil
+}
+
+func selectContextPointers(pointers []apiv1.ContextPointer, names []string) []apiv1.ContextPointer {
+	selected := make([]apiv1.ContextPointer, 0, len(names))
+	for _, pointer := range pointers {
+		for _, name := range names {
+			if pointer.Name == name {
+				selected = append(selected, pointer)
+				break
+			}
+		}
+	}
+	return selected
 }
 
 func copyInputs(in map[string]interface{}) map[string]interface{} {

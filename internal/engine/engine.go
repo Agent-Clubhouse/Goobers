@@ -442,6 +442,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream, t.Goober)
 	env.MinimumIntegrity = t.MinimumIntegrity
+	env.NestedAgentPolicy = t.NestedAgentPolicy
 	// Both admission checks run before dispatch, matching the local runner.
 	// The engine resolves inputsFrom only against the immediately preceding
 	// task, so every such value is graded by that task's produced provenance;

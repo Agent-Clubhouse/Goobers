@@ -46,6 +46,12 @@ type NestedAgentPolicy struct {
 	PlatformPolicy    PlatformPolicy      `json:"platformPolicy" yaml:"platformPolicy"`
 }
 
+var supportedNestedAgentProfiles = map[string]struct{}{
+	"coordinator": {},
+	"reviewer":    {},
+	"worker":      {},
+}
+
 type NestedContextPolicy struct {
 	Mode             ContextMode `json:"mode" yaml:"mode"`
 	ArtifactNames    []string    `json:"artifactNames,omitempty" yaml:"artifactNames,omitempty"`
@@ -143,11 +149,24 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	if len(policy.Model.Allowlist) > 0 && !slices.Contains(policy.Model.Allowlist, model) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: model %q is not permitted", model)
 	}
+	if model == "" && len(policy.Model.Allowlist) > 0 {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: a model is required when an allowlist is declared")
+	}
+	if reasoning != "" && reasoningRank(reasoning) == 0 {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: unsupported reasoning effort %q", reasoning)
+	}
+	for _, permitted := range policy.PermittedProfiles {
+		if _, ok := supportedNestedAgentProfiles[permitted]; !ok {
+			return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: unsupported profile %q", permitted)
+		}
+	}
+	if !isDelegationAllowed(parent.Delegation, parent.MaxDepth, policy.Delegation, policy.MaxDepth) {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: child delegation exceeds parent authority")
+	}
 	if !isSubset(policy.PlatformPolicy.Capabilities, parent.PlatformPolicy.Capabilities) ||
 		!isSubset(policy.PlatformPolicy.Credentials, parent.PlatformPolicy.Credentials) ||
 		!isSubset(policy.PlatformPolicy.FilesystemRoots, parent.PlatformPolicy.FilesystemRoots) ||
-		!isSubset(policy.PlatformPolicy.NetworkEgress, parent.PlatformPolicy.NetworkEgress) ||
-		!isSubset(policy.PlatformPolicy.ContentExclusions, parent.PlatformPolicy.ContentExclusions) {
+		!isSubset(policy.PlatformPolicy.NetworkEgress, parent.PlatformPolicy.NetworkEgress) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: platform grants exceed parent authority")
 	}
 	if policy.PlatformPolicy.Sandbox != "" && policy.PlatformPolicy.Sandbox != parent.PlatformPolicy.Sandbox {
@@ -166,11 +185,53 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	child.Capabilities = intersection(parent.Capabilities, policy.PlatformPolicy.Capabilities)
 	child.PlatformPolicy = intersectPlatform(parent.PlatformPolicy, policy.PlatformPolicy)
 	child.Delegation = policy.Delegation
-	child.MaxDepth = policy.MaxDepth
+	child.MaxDepth = remainingDepth(parent, policy)
 	child.Context = policy.Context
-	child.Model = policy.Model
+	child.Model = intersectModel(parent.Model, policy.Model)
 	child.PeerMessaging = parent.PeerMessaging && policy.PeerMessaging
 	return child, nil
+}
+
+func isDelegationAllowed(parent DelegationAuthority, parentDepth int32, child DelegationAuthority, childDepth int32) bool {
+	switch parent {
+	case DelegationDisabled, DelegationCoordinator:
+		return child == DelegationDisabled
+	case DelegationBounded:
+		if child == DelegationDisabled || child == DelegationCoordinator {
+			return true
+		}
+		return child == DelegationBounded && childDepth < parentDepth
+	case "":
+		return child == DelegationDisabled
+	default:
+		return false
+	}
+}
+
+func remainingDepth(parent ChildExecutionPolicy, policy NestedAgentPolicy) int32 {
+	if policy.Delegation != DelegationBounded {
+		return 0
+	}
+	if parent.Delegation != DelegationBounded {
+		return 0
+	}
+	return policy.MaxDepth
+}
+
+func intersectModel(parent, requested NestedModelPolicy) NestedModelPolicy {
+	out := requested
+	if len(parent.Allowlist) > 0 {
+		if len(requested.Allowlist) == 0 {
+			out.Allowlist = append([]string(nil), parent.Allowlist...)
+		} else {
+			out.Allowlist = intersection(parent.Allowlist, requested.Allowlist)
+		}
+	}
+	if parent.MaxReasoningEffort != "" &&
+		(out.MaxReasoningEffort == "" || reasoningRank(string(parent.MaxReasoningEffort)) < reasoningRank(string(out.MaxReasoningEffort))) {
+		out.MaxReasoningEffort = parent.MaxReasoningEffort
+	}
+	return out
 }
 
 func intersection(a, b []string) []string {
@@ -198,7 +259,7 @@ func intersectPlatform(a, b PlatformPolicy) PlatformPolicy {
 	out.Credentials = intersection(a.Credentials, b.Credentials)
 	out.FilesystemRoots = intersection(a.FilesystemRoots, b.FilesystemRoots)
 	out.NetworkEgress = intersection(a.NetworkEgress, b.NetworkEgress)
-	out.ContentExclusions = intersection(a.ContentExclusions, b.ContentExclusions)
+	out.ContentExclusions = union(a.ContentExclusions, b.ContentExclusions)
 	if b.Sandbox != "" {
 		out.Sandbox = b.Sandbox
 	}
@@ -216,6 +277,16 @@ func intersectPlatform(a, b PlatformPolicy) PlatformPolicy {
 	}
 	if b.Budget.MaxCostUSD > 0 && (out.Budget.MaxCostUSD == 0 || b.Budget.MaxCostUSD < out.Budget.MaxCostUSD) {
 		out.Budget.MaxCostUSD = b.Budget.MaxCostUSD
+	}
+	return out
+}
+
+func union(a, b []string) []string {
+	out := append([]string(nil), a...)
+	for _, value := range b {
+		if !slices.Contains(out, value) {
+			out = append(out, value)
+		}
 	}
 	return out
 }

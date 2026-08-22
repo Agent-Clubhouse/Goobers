@@ -128,6 +128,10 @@ type InvocationEnvelope struct {
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+	// NestedAgentPolicy is the admitted child authority for agentic stages.
+	// It is carried in the mandatory execution envelope so adapters cannot
+	// implement nested-agent behavior from prompt text alone.
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
 }
 
 // AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
