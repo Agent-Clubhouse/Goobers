@@ -25,7 +25,7 @@ func TestDrainDaemonRunsReportsProgressUntilCleanCompletion(t *testing.T) {
 	})
 
 	var stdout bytes.Buffer
-	result := drainDaemonRuns(&sync.WaitGroup{}, func() { <-release }, registry, 0, nil, &stdout)
+	result := drainDaemonRuns(&sync.WaitGroup{}, func() { <-release }, registry, 0, nil, &stdout, nil)
 	if result.forced {
 		t.Fatal("clean drain reported forced")
 	}
@@ -63,7 +63,7 @@ func TestDrainDaemonRunsTimeoutAndRepeatedSignalShareHardPath(t *testing.T) {
 				force = tt.force()
 			}
 			var stdout bytes.Buffer
-			result := drainDaemonRuns(&sync.WaitGroup{}, func() { <-release }, registry, tt.timeout, force, &stdout)
+			result := drainDaemonRuns(&sync.WaitGroup{}, func() { <-release }, registry, tt.timeout, force, &stdout, nil)
 			if !result.forced || result.terminated != 1 {
 				t.Fatalf("result = %+v, want one forced run", result)
 			}

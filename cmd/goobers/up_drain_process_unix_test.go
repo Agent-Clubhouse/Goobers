@@ -119,7 +119,7 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 				force = tt.force()
 			}
 			var stdout bytes.Buffer
-			result := drainDaemonRuns(&runs, func() {}, registry, tt.timeout, force, &stdout)
+			result := drainDaemonRuns(&runs, func() {}, registry, tt.timeout, force, &stdout, nil)
 			if !result.forced || result.terminated != 1 {
 				t.Fatalf("drain result = %+v, want one forced run", result)
 			}
