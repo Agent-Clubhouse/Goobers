@@ -71,6 +71,7 @@
         "repaired",
         "runner.annotation",
         "runner.isolation.posture",
+        "runner.placement",
         "notification.requested",
         "notification.delivery.receipt",
         "parallel.started",

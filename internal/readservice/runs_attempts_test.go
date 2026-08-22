@@ -1,7 +1,9 @@
 package readservice
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -331,5 +333,132 @@ func TestStageAttemptsIdentifyLegacyFinishWithoutStart(t *testing.T) {
 		got.Attempts[0].Visit != 1 || got.Attempts[0].StartedSeq != 0 ||
 		got.Attempts[0].FinishedSeq == 0 {
 		t.Fatalf("legacy attempt = %+v", got.Attempts)
+	}
+}
+
+// TestStageAttemptsCarryPlacementProvenance: a runner.placement event journaled
+// on the stage-attempt path (goobernetes-architecture.md §7) surfaces as the
+// attempt's Placement, correlated per attempt — each attempt gets its OWN
+// placement, which is exactly the fresh-pod observer the smoke reads (§11
+// item 6).
+func TestStageAttemptsCarryPlacementProvenance(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-placement", machine.Def.Name, "goobers",
+		time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	emit := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuedAt := time.Date(2026, 8, 22, 12, 0, 30, 0, time.UTC)
+	podStartedAt := queuedAt.Add(9 * time.Second)
+
+	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	// The self attempt knows its own hostname and NOTHING about a cluster
+	// node: node stays absent rather than borrowing the hostname, which inside
+	// a pod would be the pod name (#3515 finding 4).
+	emit(journal.PlacementEvent("implement", 1, "", journal.Placement{
+		Runner: journal.PlacementRunnerSelf, OS: "linux", Host: "daemon-host",
+	}))
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultFailure),
+		Error:  &journal.ErrorDetail{Code: "attempt_1_failed"},
+	})
+	emit(journal.Event{
+		Type: journal.EventStageStarted, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptPolicy,
+	})
+	emit(journal.PlacementEvent("implement", 2, journal.AttemptPolicy, journal.Placement{
+		Runner: "linux-large", OS: "linux", Node: "aks-linux-0001",
+		Image: "ghcr.io/goobers/goobers-base:v0.2.0", Pod: "goobers-stage-implement-4x2vq",
+		Host: "goobers-stage-implement-4x2vq", QueuedAt: &queuedAt, PodStartedAt: &podStartedAt,
+	}))
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 2,
+		AttemptClass: journal.AttemptPolicy, Status: string(apiv1.ResultSuccess),
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.StageAttempts(context.Background(), "run-placement", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(got.Attempts))
+	}
+	first := got.Attempts[0].Placement
+	if first == nil || first.Runner != journal.PlacementRunnerSelf || first.Host != "daemon-host" || first.OS != "linux" {
+		t.Fatalf("attempt 1 placement = %+v, want self/host=daemon-host/linux", first)
+	}
+	if first.Node != "" {
+		t.Fatalf("attempt 1 placement claims node %q — a self attempt's hostname is not a cluster node", first.Node)
+	}
+	if first.Pod != "" || first.QueuedAt != nil || first.PodStartedAt != nil {
+		t.Fatalf("attempt 1 (self) placement carries pod/queue fields it cannot know: %+v", first)
+	}
+	second := got.Attempts[1].Placement
+	if second == nil || second.Runner != "linux-large" || second.Pod != "goobers-stage-implement-4x2vq" ||
+		second.Image != "ghcr.io/goobers/goobers-base:v0.2.0" || second.Node != "aks-linux-0001" ||
+		second.Host != "goobers-stage-implement-4x2vq" {
+		t.Fatalf("attempt 2 placement = %+v", second)
+	}
+	if second.QueuedAt == nil || !second.QueuedAt.Equal(queuedAt) ||
+		second.PodStartedAt == nil || !second.PodStartedAt.Equal(podStartedAt) {
+		t.Fatalf("attempt 2 dispatch timestamps = %v/%v, want %v/%v",
+			second.QueuedAt, second.PodStartedAt, queuedAt, podStartedAt)
+	}
+}
+
+// TestStageAttemptsWithoutPlacementReadExactlyAsToday is the zero-declaration
+// invariance half (architecture §11 item 1): every pre-upgrade journal — no
+// runner.placement events anywhere — must project attempts with a nil
+// Placement that the wire contract omits entirely.
+func TestStageAttemptsWithoutPlacementReadExactlyAsToday(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-no-placement", machine.Def.Name, "goobers",
+		time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC),
+		journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	emit := func(event journal.Event) {
+		t.Helper()
+		clock.advance(time.Second)
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1})
+	emit(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultSuccess),
+	})
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.StageAttempts(context.Background(), "run-no-placement", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(got.Attempts))
+	}
+	if got.Attempts[0].Placement != nil {
+		t.Fatalf("placement = %+v, want nil for a journal with no provenance", got.Attempts[0].Placement)
+	}
+	wire, err := json.Marshal(got.Attempts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(wire, []byte(`"placement"`)) {
+		t.Fatalf("wire shape gained a placement key for a provenance-free attempt: %s", wire)
 	}
 }

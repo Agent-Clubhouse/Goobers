@@ -432,7 +432,14 @@ type StageAttempt struct {
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
 	// span yet.
-	Model          string               `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Placement is the runner.* placement provenance journaled for this
+	// attempt (goobernetes-architecture.md §7) — which runner/node/OS/image/
+	// pod executed it and when it queued/started — when the executing
+	// substrate recorded it. Nil for every journal written before placement
+	// provenance existed: absent provenance must read exactly as today
+	// (zero-declaration invariance, architecture §11 item 1).
+	Placement      *journal.Placement   `json:"placement,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -2673,6 +2680,12 @@ func collectStageAttempts(
 			visits[event.Stage] = visit
 		case journal.EventStageStarted:
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+		case journal.EventRunnerPlacement:
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
+				if placement, ok := journal.PlacementFromEvent(event); ok {
+					attempts[i].Placement = &placement
+				}
+			}
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue

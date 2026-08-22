@@ -536,6 +536,79 @@ func TestProjectRunFailedRunStillProjects(t *testing.T) {
 	}
 }
 
+// TestProjectRunProjectsPlacementProvenance: a history carrying a
+// runner.placement op projects. Placement is excluded from CONFORMANCE
+// (goobernetes-architecture.md §7, D14), but projectable and
+// conformance-normative are different questions — span.recorded is the
+// standing precedent, also excluded from conformance and also projected.
+// Without runner.placement in projectableEventTypes, every repair/backfill
+// re-projection of a history carrying placement — the ops the engine emits
+// once #3529 lands — fails closed with ErrUnprojectable, and the engine
+// readiness this event shape claims is false at exactly the repair path that
+// needs it.
+func TestProjectRunProjectsPlacementProvenance(t *testing.T) {
+	spec := crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)
+	base := executeForProjection(t, projectionInput("proj-placement", spec), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+
+	// Insert the placement op immediately after the stage.started it describes,
+	// exactly where the local runner writes it.
+	proj := base
+	proj.Ops = nil
+	var inserted int
+	for _, op := range base.Ops {
+		proj.Ops = append(proj.Ops, op)
+		if op.Kind != opAppend || op.Event == nil || op.Event.Type != journal.EventStageStarted {
+			continue
+		}
+		placement := journal.PlacementEvent(op.Event.Stage, op.Event.Attempt, op.Event.AttemptClass, journal.Placement{
+			Runner: "linux-large",
+			Node:   "aks-linux-0001",
+			Host:   "goobers-stage-implement-4x2vq",
+			OS:     "linux",
+			Pod:    "goobers-stage-implement-4x2vq",
+		})
+		proj.Ops = append(proj.Ops, JournalOp{Kind: opAppend, Event: &placement, Time: op.Time})
+		inserted++
+	}
+	if inserted == 0 {
+		t.Fatal("fixture history has no stage.started to attach placement to")
+	}
+
+	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("ProjectRun rejected a history carrying placement provenance: %v", err)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var projected int
+	for _, event := range events {
+		if event.Type != journal.EventRunnerPlacement {
+			continue
+		}
+		projected++
+		if event.IsConformanceNormative() {
+			t.Errorf("projected placement reports conformance-normative: %+v", event)
+		}
+		placement, ok := journal.PlacementFromEvent(event)
+		if !ok || placement.Runner != "linux-large" || placement.Node != "aks-linux-0001" ||
+			placement.Host != "goobers-stage-implement-4x2vq" {
+			t.Errorf("projected placement payload = %+v ok=%t", placement, ok)
+		}
+	}
+	if projected != inserted {
+		t.Fatalf("projected %d runner.placement events, want %d", projected, inserted)
+	}
+}
+
 // scriptedErrors is an invoke.Deterministic that always fails dispatch.
 type scriptedErrors struct{ err error }
 
