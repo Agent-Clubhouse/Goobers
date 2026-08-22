@@ -1029,6 +1029,15 @@ type TokenRef struct {
 	// "<storeName>/<secretName>". The store name must match a secretStores
 	// entry; the secret name is interpreted by that store's resolver.
 	Store string `json:"store,omitempty" yaml:"store,omitempty"`
+	// GitHubCLI selects a specific login from the host's GitHub CLI credential
+	// store and verifies that login before the resolver admits work.
+	GitHubCLI *GitHubCLIRef `json:"githubCLI,omitempty" yaml:"githubCLI,omitempty"`
+}
+
+// GitHubCLIRef identifies one authenticated GitHub CLI account.
+type GitHubCLIRef struct {
+	Hostname string `json:"hostname" yaml:"hostname"`
+	User     string `json:"user" yaml:"user"`
 }
 
 // sourceCount reports how many of the ref's mutually-exclusive sources are set.
@@ -1044,6 +1053,9 @@ func (r TokenRef) sourceCount() int {
 		n++
 	}
 	if r.Store != "" {
+		n++
+	}
+	if r.GitHubCLI != nil {
 		n++
 	}
 	return n
@@ -1063,7 +1075,11 @@ func (r TokenRef) Configured() bool {
 // for stores rejects the ref with a diagnostic instead of silently reading
 // it as unconfigured.
 func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
-	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store}
+	var githubCLI *credentials.GitHubCLIRef
+	if r.GitHubCLI != nil {
+		githubCLI = &credentials.GitHubCLIRef{Hostname: r.GitHubCLI.Hostname, User: r.GitHubCLI.User}
+	}
+	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store, GitHubCLI: githubCLI}
 }
 
 // CredentialGrant sources either one stage capability or one named BYO MCP
@@ -1651,6 +1667,7 @@ func (c *Config) Validate() error {
 		c.RunConditions.validate,
 		c.Retention.validate,
 		func() error { return c.validateRepos(stores) },
+		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,

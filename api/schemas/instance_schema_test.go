@@ -80,6 +80,19 @@ repos:
     token:
       env: GOOBERS_GITHUB_TOKEN
 `},
+		{"github cli selected identity", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+selfIdentity: octocat
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      githubCLI:
+        hostname: github.com
+        user: octocat
+`},
 		{"temporal engine", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
