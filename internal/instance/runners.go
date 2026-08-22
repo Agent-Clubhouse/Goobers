@@ -99,6 +99,7 @@ type RunnerProvides struct {
 // published schema enum to exactly these consts.
 type RunnerOS string
 
+// The three schedulable operating systems of the runsOn/provides os enum.
 const (
 	RunnerOSLinux   RunnerOS = "linux"
 	RunnerOSWindows RunnerOS = "windows"
@@ -112,6 +113,7 @@ const (
 // registry guard pins the published schema enum to exactly these consts.
 type RunnerRestriction string
 
+// The closed v1 restriction effect list (goobernetes-restrictions.md §2).
 const (
 	RunnerRestrictionNetworkNone      RunnerRestriction = "network:none"
 	RunnerRestrictionNetworkAllowlist RunnerRestriction = "network:allowlist"
