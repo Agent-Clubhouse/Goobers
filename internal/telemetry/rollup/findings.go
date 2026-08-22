@@ -58,6 +58,19 @@ type JournalPointer struct {
 	RunID string `json:"runId"`
 }
 
+// CreditGoverningTargetTreatment is the required treatment when repo
+// inspection shows that a credit-assignment target governs its own evaluator.
+const CreditGoverningTargetTreatment = "label-goobers:needs-human-and-preserve-evaluator"
+
+// NominationGuardrails carries machine-readable requirements that the
+// work-nomination stage must satisfy before filing a credit-based issue.
+type NominationGuardrails struct {
+	DedupeKey                  string `json:"dedupe_key"`
+	RequiresUpstreamCauseCheck bool   `json:"requires_upstream_cause_check"`
+	RequiresHumanReview        bool   `json:"requires_human_review"`
+	GoverningTargetTreatment   string `json:"governing_target_treatment"`
+}
+
 // Finding is one detected candidate — Subject names what was flagged (a
 // stage, gate, or workflow name, or an error code), Metrics carries the
 // raw numbers a diagnosis step or a human reviewer needs to judge the
@@ -70,6 +83,9 @@ type Finding struct {
 	Metrics     map[string]float64 `json:"metrics"`
 	Threshold   float64            `json:"threshold"`
 	FlaggedRuns []JournalPointer   `json:"flagged_runs"`
+	// NominationGuardrails is required for credit-assignment findings and
+	// omitted for detection families that do not enter the self-healing loop.
+	NominationGuardrails *NominationGuardrails `json:"nomination_guardrails,omitempty"`
 }
 
 // Thresholds are the config-tunable detection knobs a telemetry-query

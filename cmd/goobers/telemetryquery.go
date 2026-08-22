@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -496,6 +497,9 @@ func detectCandidateFindingsWithCredit(
 	aggregates telemetryAggregateValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
+	if thresholds == (rollup.Thresholds{}) {
+		thresholds = rollup.DefaultThresholds()
+	}
 	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
@@ -543,6 +547,12 @@ func detectCandidateFindingsWithCredit(
 					"retryWasteAttempts": float64(credit.RetryWasteAttempts),
 				},
 				Threshold: thresholds.MinCreditFailureShare,
+				NominationGuardrails: &rollup.NominationGuardrails{
+					DedupeKey:                  creditAssignmentDedupeKey(credit),
+					RequiresUpstreamCauseCheck: true,
+					RequiresHumanReview:        creditTargetRequiresHumanReview(credit.Kind),
+					GoverningTargetTreatment:   rollup.CreditGoverningTargetTreatment,
+				},
 			})
 		}
 	}
@@ -562,6 +572,26 @@ func detectCandidateFindingsWithCredit(
 		note = telemetryQueryNoFindingsNote
 	}
 	return newCandidateFindingsArtifact(window, since, filtered, note), nil
+}
+
+func creditAssignmentDedupeKey(credit readmodel.NodeCredit) string {
+	canonical := strings.Join([]string{
+		credit.Gaggle,
+		credit.Workflow,
+		credit.Kind,
+		credit.Stage,
+		credit.Identity,
+	}, "\x00")
+	return fmt.Sprintf("credit-assignment:sha256:%x", sha256.Sum256([]byte(canonical)))
+}
+
+func creditTargetRequiresHumanReview(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "gate", "prompt", "workflow":
+		return true
+	default:
+		return false
+	}
 }
 
 func newCandidateFindingsArtifact(window time.Duration, since time.Time, findings []rollup.Finding, note string) candidateFindingsArtifact {

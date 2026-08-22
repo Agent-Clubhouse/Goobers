@@ -70,6 +70,54 @@
           "items": {
             "$ref": "#/$defs/journalPointer"
           }
+        },
+        "nomination_guardrails": {
+          "$ref": "#/$defs/nominationGuardrails",
+          "description": "Machine-readable checks required before a credit-assignment finding may become a nomination."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "credit-assignment"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["nomination_guardrails"]
+          }
+        }
+      ]
+    },
+    "nominationGuardrails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dedupe_key",
+        "requires_upstream_cause_check",
+        "requires_human_review",
+        "governing_target_treatment"
+      ],
+      "properties": {
+        "dedupe_key": {
+          "type": "string",
+          "pattern": "^credit-assignment:sha256:[0-9a-f]{64}$",
+          "description": "Stable node and fault-family key used to suppress duplicate nominations."
+        },
+        "requires_upstream_cause_check": {
+          "const": true,
+          "description": "The nominator must reject attribution when journal or repo evidence identifies an upstream cause."
+        },
+        "requires_human_review": {
+          "type": "boolean",
+          "description": "True when deterministic node classification identifies a governing gate, prompt, or workflow."
+        },
+        "governing_target_treatment": {
+          "const": "label-goobers:needs-human-and-preserve-evaluator",
+          "description": "If the target governs its evaluator, require human review and prohibit removing, weakening, or bypassing that evaluator."
         }
       }
     },

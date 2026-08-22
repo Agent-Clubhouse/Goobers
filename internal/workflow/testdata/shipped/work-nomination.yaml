@@ -30,8 +30,13 @@ spec:
     - name: nominate
       type: agentic
       goober: nominator
-      goal: Propose backlog items from the gathered signals and file them.
+      goal: >-
+        Propose backlog items from the gathered signals and file them. For
+        credit findings, require the machine-readable upstream-cause check,
+        dedupe by the exact nomination key, and apply the governing-target
+        treatment.
       capabilities:
+        - repo:read
         - telemetry:read
         - github:issues:write
         - agent:model
@@ -39,4 +44,9 @@ spec:
         - comment-on-issue
         - create-issue
         - label-issue
+      inputs:
+        maxNominationsPerRun: "5"
+        dedupeWindowDays: "14"
+        creditAssignmentMinRuns: "5"
+        creditAssignmentMinFailureShare: "0.3"
       # Terminal: no `next`.

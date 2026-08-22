@@ -55,9 +55,10 @@ spec:
       goal: >-
         Analyze the candidate-findings artifact and a read-only checkout for
         genuine coverage gaps, recurring failure or gate-noise patterns, and
-        high-confidence credit-assignment findings. For credit findings,
-        require the configured evidence floor and reject upstream-cause
-        correlation as sufficient proof.
+        high-confidence credit-assignment findings. For credit findings, honor
+        the artifact's machine-readable nomination_guardrails: require an
+        upstream-cause check, dedupe by its exact key, and apply its
+        governing-target treatment.
         Query existing goobers:nominated issues first and skip
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a

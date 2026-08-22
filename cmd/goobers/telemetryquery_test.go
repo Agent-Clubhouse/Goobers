@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -92,6 +95,73 @@ func TestTelemetryQueryAggregateFilter(t *testing.T) {
 	if len(got.Findings) != 1 || got.Findings[0].Kind != rollup.FindingErrorSignature {
 		t.Fatalf("findings = %+v, want only error-signature", got.Findings)
 	}
+}
+
+func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *testing.T) {
+	rollupDB, err := rollup.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rollupDB.Close() }()
+	creditStore, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = creditStore.Close() }()
+
+	start := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
+	seedCreditFindingRuns(t, creditStore, start, "gate", "qualifying", "sha256:qualifying", 5, 3)
+	seedCreditFindingRuns(t, creditStore, start.Add(10*time.Minute), "stage", "thin", "sha256:thin", 4, 4)
+	seedCreditFindingRuns(t, creditStore, start.Add(20*time.Minute), "stage", "low-share", "sha256:low-share", 5, 1)
+
+	thresholds := rollup.DefaultThresholds()
+	thresholds.MinCreditRuns = 5
+	thresholds.MinCreditFailureShare = 0.4
+	thresholds.MaxFlaggedRuns = 2
+	result, err := detectCandidateFindingsWithCredit(
+		rollupDB,
+		creditStore,
+		24*time.Hour,
+		start.Add(-time.Minute),
+		"core",
+		telemetryAggregateValues{telemetryAggregateCreditAssignment},
+		thresholds,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %+v, want only the threshold-clearing credit node", result.Findings)
+	}
+	finding := result.Findings[0]
+	if finding.Kind != rollup.FindingCreditAssignment ||
+		finding.Subject != "implementation/gate/qualifying/sha256:qualifying" {
+		t.Fatalf("credit finding = %+v", finding)
+	}
+	if finding.Metrics["routedRuns"] != 5 ||
+		finding.Metrics["failureRuns"] != 3 ||
+		finding.Metrics["failureShare"] != 0.6 ||
+		finding.Threshold != 0.4 {
+		t.Fatalf("credit metrics/threshold = %+v / %v", finding.Metrics, finding.Threshold)
+	}
+	if len(finding.FlaggedRuns) != 2 ||
+		finding.FlaggedRuns[0].RunID != "qualifying-04" ||
+		finding.FlaggedRuns[1].RunID != "qualifying-03" {
+		t.Fatalf("credit evidence = %+v, want newest two qualifying runs", finding.FlaggedRuns)
+	}
+	guardrails := finding.NominationGuardrails
+	if guardrails == nil ||
+		!strings.HasPrefix(guardrails.DedupeKey, "credit-assignment:sha256:") ||
+		!guardrails.RequiresUpstreamCauseCheck ||
+		!guardrails.RequiresHumanReview ||
+		guardrails.GoverningTargetTreatment != rollup.CreditGoverningTargetTreatment {
+		t.Fatalf("credit nomination guardrails = %+v", guardrails)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validateCandidateFindings(t, data)
 }
 
 func TestTelemetryQueryScopesFindingsToRunGaggle(t *testing.T) {
@@ -249,6 +319,28 @@ func TestCandidateFindingsValidationPrecedesWrite(t *testing.T) {
 	}
 }
 
+func TestCandidateFindingsRejectsCreditWithoutGuardrails(t *testing.T) {
+	result := newCandidateFindingsArtifact(
+		time.Hour,
+		time.Date(2026, time.August, 22, 0, 0, 0, 0, time.UTC),
+		[]rollup.Finding{{
+			Kind:        rollup.FindingCreditAssignment,
+			Subject:     "implementation/gate/review",
+			Metrics:     map[string]float64{"routedRuns": 5, "failureShare": 0.6},
+			Threshold:   0.3,
+			FlaggedRuns: []rollup.JournalPointer{{RunID: "run-credit"}},
+		}},
+		"",
+	)
+	var stdout, stderr strings.Builder
+	if code := writeCandidateFindingsArtifact(result, &stdout, &stderr); code != 1 {
+		t.Fatalf("code = %d, want schema validation failure; stderr = %q", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no invalid artifact", stdout.String())
+	}
+}
+
 func TestTelemetryQueryMissingRollupIsNoWork(t *testing.T) {
 	root := initDemo(t)
 	if err := os.Remove(instance.NewLayout(root).TelemetryDB()); err != nil {
@@ -359,5 +451,40 @@ func validateCandidateFindings(t *testing.T, data []byte) {
 	}
 	if err := validator.ValidateJSON(schemas.CandidateFindings, data); err != nil {
 		t.Fatalf("candidate findings schema validation: %v\n%s", err, data)
+	}
+}
+
+func seedCreditFindingRuns(
+	t *testing.T,
+	store *readmodel.Store,
+	start time.Time,
+	kind string,
+	nodeName string,
+	identity string,
+	routedRuns int,
+	failureRuns int,
+) {
+	t.Helper()
+	for i := 0; i < routedRuns; i++ {
+		startedAt := start.Add(time.Duration(i) * time.Minute)
+		finishedAt := startedAt.Add(time.Second)
+		verdict, target := "pass", journal.TargetComplete
+		if i >= routedRuns-failureRuns {
+			verdict, target = "fail", "@abort"
+		}
+		runID := fmt.Sprintf("%s-%02d", nodeName, i)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{
+			Run: readmodel.RunRow{
+				RunID: runID, Gaggle: "core", Workflow: "implementation",
+				Phase: journal.PhaseCompleted, Terminal: true,
+				StartedAt: startedAt, FinishedAt: &finishedAt, LastActivity: finishedAt,
+				LastSeq: 1, OutcomeVerdict: verdict, OutcomeTarget: target,
+			},
+			Nodes: []readmodel.NodeRow{{
+				RunID: runID, Kind: kind, Name: nodeName, Identity: identity, Attempts: 1,
+			}},
+		}); err != nil {
+			t.Fatalf("seed credit run %s: %v", runID, err)
+		}
 	}
 }
