@@ -1,6 +1,6 @@
 # Goobernetes smoke — the distributed-shape v1 exit
 
-Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
 This document specifies the **v1 exit criterion for Goobernetes** (decision record **D11**): a

@@ -1,6 +1,6 @@
 # Distributed state and coordination
 
-**Status:** Draft — Goobernetes v1 design. Encodes the PO decision record in
+**Status:** approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 
 **Scope:** the state and coordination layer of Goobernetes mode 3 — who owns instance state, how a

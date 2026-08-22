@@ -1,6 +1,6 @@
 # Goobernetes v1 — architecture
 
-Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 **Grounded against** `main` @ `21c645a6` and the spike-ladder evidence recorded on #2838.
 Where this document and the decision record disagree, the record wins.

@@ -1,6 +1,6 @@
 # Goobernetes restrictions — the effect-based isolation model
 
-Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
 This document defines the v1 restrictions model for all three execution modes: what a

@@ -1,6 +1,6 @@
 # Goobernetes deployment shape and the image contract
 
-Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
 This document owns two surfaces of Goobernetes v1 (mode 3, per decision record D1): the

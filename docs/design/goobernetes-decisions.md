@@ -1,6 +1,6 @@
 # Goobernetes v1 — decision record
 
-Status: **decided** (PO, 2026-08-22). This file is the authoritative record of the product-owner rulings
+Status: **approved** (PO, 2026-08-22). This file is the authoritative record of the product-owner rulings
 that scope Goobernetes v1 — the distributed "mode 3" execution model. The six Goobernetes design
 documents encode these decisions; where a design document and this record disagree, this record wins
 until amended by the PO. Each decision that overturns a prior ruling names it.

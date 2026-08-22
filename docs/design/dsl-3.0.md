@@ -1,6 +1,6 @@
 # DSL 3.0
 
-Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 
 DSL 3.0 is the workflow-language half of Goobernetes: the clean-break version that makes
