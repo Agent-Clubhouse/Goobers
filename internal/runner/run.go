@@ -3302,8 +3302,6 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 			select {
 			case <-stop:
 				return
-			case <-ctx.Done():
-				return
 			case <-ticker.Ticks():
 				if !progressed.Swap(false) {
 					continue
