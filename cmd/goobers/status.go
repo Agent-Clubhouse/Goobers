@@ -496,7 +496,7 @@ func statusConcurrencyText(workflow statusWorkflowSummary) string {
 	if workflow.DesiredRuns > 0 {
 		return fmt.Sprintf("%d/%d/%d", workflow.InFlight, workflow.DesiredRuns, workflow.MaxConcurrentRuns)
 	}
-	return fmt.Sprintf("%d/-/%d", workflow.InFlight, workflow.MaxConcurrentRuns)
+	return fmt.Sprintf("%d/%d", workflow.InFlight, workflow.MaxConcurrentRuns)
 }
 
 func formatSummaryAge(now, activity time.Time) string {
