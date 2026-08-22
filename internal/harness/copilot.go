@@ -17,7 +17,6 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -582,15 +581,6 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
-	out.AgentEvents = adapterAgentEvents(req, "copilot", journal.AgentStarted, nil)
-	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
-	defer func() {
-		lifecycle := journal.AgentCompleted
-		if runErr != nil {
-			lifecycle = journal.AgentFailed
-		}
-		out.AgentEvents = append(out.AgentEvents, adapterAgentEvents(req, "copilot", lifecycle, out.Metrics)...)
-	}()
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -763,6 +753,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "copilot", req.Model, resolution.Model,
+		requestedHarnessOption(req, "reasoningEffort"), harnessOptions["reasoningEffort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -830,7 +829,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
-		AgentTelemetryFidelity: journal.AgentFidelityPartial,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -852,7 +850,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
-			out.AgentEvents = append(out.AgentEvents, projectAgentEvents(native.data, req)...)
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
+			}
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema

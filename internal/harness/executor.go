@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -50,13 +51,93 @@ type SpanRecorder interface {
 	RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error)
 }
 
-// EventAppender is the optional journal seam an enforced-sandbox Executor
-// requires of its recorder — satisfied by (*internal/journal.Run).Append. It
-// records the runner.isolation.posture annotation for every enforced agentic
-// stage attempt (#1305); a recorder that cannot journal the posture fails the
-// enforced stage closed rather than running with an unauditable posture.
+// EventAppender is the journal seam used for enforced-sandbox annotations and
+// live nested-agent projection, satisfied by (*internal/journal.Run).Append.
 type EventAppender interface {
 	Append(ev journal.Event) error
+}
+
+type agentEventProjection struct {
+	ctx      context.Context
+	appender EventAppender
+	scrubber journal.Scrubber
+
+	mu      sync.Mutex
+	events  []journal.Event
+	emitted map[string]int
+}
+
+func newAgentEventProjection(ctx context.Context, appender EventAppender, scrubber journal.Scrubber) *agentEventProjection {
+	return &agentEventProjection{
+		ctx: ctx, appender: appender, scrubber: scrubber,
+		emitted: make(map[string]int),
+	}
+}
+
+func (p *agentEventProjection) Emit(event journal.Event) error {
+	clean, key, err := p.prepare(event)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.appender.Append(clean); err != nil {
+		return err
+	}
+	p.events = append(p.events, clean)
+	p.emitted[key]++
+	switch clean.Type {
+	case journal.EventAgentLifecycle:
+		telemetry.RecordNestedAgent(p.ctx, *clean.Agent)
+	case journal.EventAgentMessage:
+		telemetry.RecordNestedAgentMessage(p.ctx, *clean.PeerMessage)
+	}
+	return nil
+}
+
+func (p *agentEventProjection) Reconcile(events []journal.Event) error {
+	seen := make(map[string]int)
+	var reconcileErr error
+	for _, event := range events {
+		clean, key, err := p.prepare(event)
+		if err != nil {
+			reconcileErr = errors.Join(reconcileErr, err)
+			continue
+		}
+		occurrence := seen[key]
+		seen[key]++
+		p.mu.Lock()
+		emitted := p.emitted[key]
+		p.mu.Unlock()
+		if occurrence < emitted {
+			continue
+		}
+		if err := p.Emit(clean); err != nil {
+			reconcileErr = errors.Join(reconcileErr, err)
+		}
+	}
+	return reconcileErr
+}
+
+func (p *agentEventProjection) Events() []journal.Event {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]journal.Event(nil), p.events...)
+}
+
+func (p *agentEventProjection) prepare(event journal.Event) (journal.Event, string, error) {
+	clean, err := journal.ScrubAgentEvent(p.scrubber, event)
+	if err != nil {
+		return journal.Event{}, "", err
+	}
+	if err := journal.ValidateAgentEvent(clean); err != nil {
+		return journal.Event{}, "", err
+	}
+	raw, err := json.Marshal(clean)
+	if err != nil {
+		return journal.Event{}, "", fmt.Errorf("harness: marshal agent telemetry identity: %w", err)
+	}
+	return clean, string(raw), nil
 }
 
 // ArtifactRecorder persists stage output bytes into the run journal by content
@@ -374,8 +455,12 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		Credentials:           creds,
 		ContextPaths:          contextPaths,
 		Timeout:               invocationTimeout(env, e.timeout),
+		Attempt:               env.Attempt,
 		MaxTranscriptBytes:    e.transcriptLimit,
 		HarnessVersion:        e.harnessVersion,
+	}
+	if req.Attempt < 1 {
+		req.Attempt = 1
 	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -410,27 +495,22 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		}
 	}
 
+	appender, hasAppender := e.recorder.(EventAppender)
+	var agentProjection *agentEventProjection
+	if hasAppender {
+		agentProjection = newAgentEventProjection(ctx, appender, e.scrubber)
+		req.AgentEventSink = agentProjection.Emit
+	}
 	out, runErr := e.adapter.Run(ctx, req)
-	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
-	metrics := telemetry.MergeNestedAgentUsage(out.Metrics, out.AgentEvents)
-	telemetry.RecordNestedAgentUsage(ctx, metrics, nil)
-	invoke.ReportAgentUsage(ctx, metrics)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
-		appender, ok := e.recorder.(EventAppender)
-		if !ok {
+		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
 				"harness: structured agent telemetry requires a journal-backed recorder; %T cannot append events",
 				e.recorder,
 			))
 		} else {
-			for _, event := range out.AgentEvents {
-				if err := journal.ValidateAgentEvent(event); err != nil {
-					runErr = errors.Join(runErr, fmt.Errorf("harness: validate agent telemetry: %w", err))
-					continue
-				}
-				if err := appender.Append(event); err != nil {
-					runErr = errors.Join(runErr, fmt.Errorf("harness: journal agent telemetry: %w", err))
-				}
+			if err := agentProjection.Reconcile(out.AgentEvents); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("harness: journal agent telemetry: %w", err))
 			}
 			if out.AgentTelemetryFidelity != "" {
 				if out.AgentTelemetryFidelity != journal.AgentFidelityFull &&
@@ -444,6 +524,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 					Runner: map[string]any{
 						"kind":     "agent-telemetry-fidelity",
 						"fidelity": out.AgentTelemetryFidelity,
+						"detail":   string(e.scrubber.Scrub([]byte(out.AgentTelemetryDetail))),
 					},
 				}); err != nil {
 					runErr = errors.Join(runErr, fmt.Errorf("harness: journal agent telemetry fidelity: %w", err))
@@ -451,6 +532,14 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			}
 		}
 	}
+	agentEvents := out.AgentEvents
+	if agentProjection != nil {
+		agentEvents = agentProjection.Events()
+	}
+	metrics := telemetry.MergeNestedAgentUsage(out.Metrics, agentEvents)
+	out.Metrics = metrics
+	telemetry.RecordAgentUsage(ctx, metrics, out.ModelUsage)
+	invoke.ReportAgentUsage(ctx, metrics)
 	if out.InputInspectionReceiptsCollected {
 		appender, ok := e.recorder.(EventAppender)
 		if !ok {

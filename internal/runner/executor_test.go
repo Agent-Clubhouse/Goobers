@@ -78,6 +78,39 @@ func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }
 func (gateHeartbeatJournalStub) ObserveActivity()            {}
 func (gateHeartbeatJournalStub) RepairAppendBoundary() error { return nil }
 
+type attemptCapturingGoober struct {
+	attempt int
+}
+
+func (g *attemptCapturingGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *attemptCapturingGoober) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	g.attempt = env.Attempt
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func TestGateHeartbeatGooberPropagatesAttempt(t *testing.T) {
+	capturing := &attemptCapturingGoober{}
+	r := &Runner{
+		heartbeatInterval: StageHeartbeatInterval,
+		newHeartbeatTicker: func(time.Duration) heartbeatTicker {
+			return &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
+		},
+	}
+	goober := gateHeartbeatGoober{
+		goober: capturing, runner: r, journal: gateHeartbeatJournalStub{},
+		stage: "review", attempt: 3,
+	}
+	if _, err := goober.Review(context.Background(), apiv1.InvocationEnvelope{}); err != nil {
+		t.Fatal(err)
+	}
+	if capturing.attempt != 3 {
+		t.Fatalf("review attempt = %d, want 3", capturing.attempt)
+	}
+}
+
 func TestGateHeartbeatGooberComposesWithAssetGuard(t *testing.T) {
 	guardActive := false
 	invocation := &gooberInvocation{

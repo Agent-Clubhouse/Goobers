@@ -44,7 +44,7 @@ const (
 // attempt's recorded failure type (attemptFailureClass). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context) (stageActivityResult, error)) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error)) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -74,7 +74,7 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		}
 
 		startedAt := workflow.Now(ctx)
-		activityResult, err := dispatch(ctx)
+		activityResult, err := dispatch(ctx, int(attempt))
 		res := activityResult.ResultEnvelope
 		if temporal.IsCanceledError(err) || ctx.Err() != nil {
 			return apiv1.ResultEnvelope{}, err

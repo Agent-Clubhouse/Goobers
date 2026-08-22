@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -35,25 +36,26 @@ type AgentUsage struct {
 // AgentProvenance is invocation-local identity and the latest known state of a
 // nested agent. ParentID and DependsOn express the execution graph.
 type AgentProvenance struct {
-	Schema          string         `json:"schema"`
-	ID              string         `json:"id"`
-	ParentID        string         `json:"parentId,omitempty"`
-	RunID           string         `json:"runId"`
-	Stage           string         `json:"stage"`
-	Attempt         int            `json:"attempt"`
-	Plugin          string         `json:"plugin,omitempty"`
-	Objective       string         `json:"objective,omitempty"`
-	Coordinator     bool           `json:"coordinator,omitempty"`
-	Worker          bool           `json:"worker,omitempty"`
-	Leaf            bool           `json:"leaf,omitempty"`
-	RequestedModel  string         `json:"requestedModel,omitempty"`
-	ResolvedModel   string         `json:"resolvedModel,omitempty"`
-	ReasoningEffort string         `json:"reasoningEffort,omitempty"`
-	Lifecycle       AgentLifecycle `json:"lifecycle"`
-	StartedAt       time.Time      `json:"startedAt"`
-	UpdatedAt       time.Time      `json:"updatedAt"`
-	Budget          AgentUsage     `json:"budget,omitempty"`
-	Usage           AgentUsage     `json:"usage,omitempty"`
+	Schema                   string         `json:"schema"`
+	ID                       string         `json:"id"`
+	ParentID                 string         `json:"parentId,omitempty"`
+	RunID                    string         `json:"runId"`
+	Stage                    string         `json:"stage"`
+	Attempt                  int            `json:"attempt"`
+	Plugin                   string         `json:"plugin,omitempty"`
+	Objective                string         `json:"objective,omitempty"`
+	Coordinator              bool           `json:"coordinator,omitempty"`
+	Worker                   bool           `json:"worker,omitempty"`
+	Leaf                     bool           `json:"leaf,omitempty"`
+	RequestedModel           string         `json:"requestedModel,omitempty"`
+	ResolvedModel            string         `json:"resolvedModel,omitempty"`
+	RequestedReasoningEffort string         `json:"requestedReasoningEffort,omitempty"`
+	ResolvedReasoningEffort  string         `json:"resolvedReasoningEffort,omitempty"`
+	Lifecycle                AgentLifecycle `json:"lifecycle"`
+	StartedAt                time.Time      `json:"startedAt"`
+	UpdatedAt                time.Time      `json:"updatedAt"`
+	Budget                   AgentUsage     `json:"budget,omitempty"`
+	Usage                    AgentUsage     `json:"usage,omitempty"`
 	// UsageAggregated marks coordinator usage that already includes its
 	// descendants and must not be added to child totals.
 	UsageAggregated bool     `json:"usageAggregated,omitempty"`
@@ -87,13 +89,30 @@ func ValidateAgentEvent(event Event) error {
 	case EventAgentMessage:
 		if event.PeerMessage == nil || event.PeerMessage.ID == "" ||
 			event.PeerMessage.SenderID == "" || event.PeerMessage.RecipientID == "" ||
-			event.PeerMessage.Purpose == "" {
+			event.PeerMessage.Purpose == "" || event.PeerMessage.OccurredAt.IsZero() {
 			return fmt.Errorf("journal: invalid peer-message metadata")
 		}
 		return nil
 	default:
 		return fmt.Errorf("journal: unsupported nested-agent event %q", event.Type)
 	}
+}
+
+// ScrubAgentEvent applies the same byte-level policy used by the journal
+// boundary and returns a typed event safe for in-memory projection.
+func ScrubAgentEvent(scrubber Scrubber, event Event) (Event, error) {
+	if scrubber == nil {
+		scrubber = NewPatternScrubber()
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return Event{}, fmt.Errorf("journal: marshal nested-agent event for scrubbing: %w", err)
+	}
+	var scrubbed Event
+	if err := json.Unmarshal(scrubber.Scrub(raw), &scrubbed); err != nil {
+		return Event{}, fmt.Errorf("journal: decode scrubbed nested-agent event: %w", err)
+	}
+	return scrubbed, nil
 }
 
 // AgentTree returns the latest agent state keyed by invocation ID. It accepts
@@ -127,7 +146,15 @@ func ActiveAgentTree(events []Event) (map[string]AgentProvenance, error) {
 			break
 		}
 	}
-	return activeAgentTree(events, scopeRun, scopeStage, 0)
+	latestAttempt := 0
+	for _, event := range events {
+		if event.Type == EventAgentLifecycle && event.Agent != nil &&
+			event.Agent.RunID == scopeRun && event.Agent.Stage == scopeStage &&
+			event.Agent.Attempt > latestAttempt {
+			latestAttempt = event.Agent.Attempt
+		}
+	}
+	return activeAgentTree(events, scopeRun, scopeStage, latestAttempt)
 }
 
 // ActiveAgentTreeForStage reconstructs the active tree for one in-flight stage
@@ -139,7 +166,7 @@ func ActiveAgentTreeForStage(events []Event, runID, stage string, attempt int) (
 func activeAgentTree(events []Event, runID, stage string, attempt int) (map[string]AgentProvenance, error) {
 	scoped := make([]Event, 0, len(events))
 	for _, event := range events {
-		if event.Type != "" && event.Type != EventAgentLifecycle || event.Agent == nil ||
+		if event.Type != EventAgentLifecycle || event.Agent == nil ||
 			event.Agent.RunID != runID || event.Agent.Stage != stage ||
 			(attempt > 0 && event.Agent.Attempt != attempt) {
 			continue
@@ -159,6 +186,20 @@ func activeAgentTree(events []Event, runID, stage string, attempt int) (map[stri
 	return tree, nil
 }
 
+// ActiveAgentTree reads the current durable journal and reconstructs one
+// in-flight stage attempt without waiting for the run to finish.
+func (r *Reader) ActiveAgentTree(stage string, attempt int) (map[string]AgentProvenance, error) {
+	identity, err := r.Identity()
+	if err != nil {
+		return nil, err
+	}
+	events, err := r.Events()
+	if err != nil {
+		return nil, err
+	}
+	return ActiveAgentTreeForStage(events, identity.RunID, stage, attempt)
+}
+
 // RollupAgentUsage sums each finalized invocation once. Coordinator usage is
 // excluded only when the coordinator has children, because a coordinator-only
 // invocation is itself the measured agent.
@@ -173,23 +214,51 @@ func RollupAgentUsage(events []Event) AgentUsage {
 	return rollupAgentUsage(events, runID, stage)
 }
 
-// RollupAgentUsageForStage rolls up worker usage for one run and stage.
+// RollupAgentUsageForStage rolls up the latest attempt for one run and stage.
 func RollupAgentUsageForStage(events []Event, runID, stage string) AgentUsage {
 	return rollupAgentUsage(events, runID, stage)
 }
 
-func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
-	latest := make(map[string]AgentProvenance)
-	hasChildren := make(map[string]bool)
+// RollupAgentUsageForRun sums the independently deduplicated stage totals for
+// one run. Each stage first selects the latest attempt for each invocation.
+func RollupAgentUsageForRun(events []Event, runID string) AgentUsage {
+	stages := make(map[string]struct{})
 	for _, event := range events {
-		if event.Type != "" && event.Type != EventAgentLifecycle || event.Agent == nil ||
+		if event.Type == EventAgentLifecycle && event.Agent != nil &&
+			event.Agent.RunID == runID && event.Agent.Stage != "" {
+			stages[event.Agent.Stage] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(stages))
+	for stage := range stages {
+		names = append(names, stage)
+	}
+	sort.Strings(names)
+	var result AgentUsage
+	for _, stage := range names {
+		addAgentUsage(&result, rollupAgentUsage(events, runID, stage))
+	}
+	return result
+}
+
+func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
+	latestAttempt := 0
+	for _, event := range events {
+		if event.Type == EventAgentLifecycle && event.Agent != nil &&
+			(runID == "" || event.Agent.RunID == runID) &&
+			(stage == "" || event.Agent.Stage == stage) &&
+			event.Agent.Attempt > latestAttempt {
+			latestAttempt = event.Agent.Attempt
+		}
+	}
+	latest := make(map[string]AgentProvenance)
+	for _, event := range events {
+		if event.Type != EventAgentLifecycle || event.Agent == nil ||
 			event.Agent.ID == "" ||
+			event.Agent.Attempt != latestAttempt ||
 			(runID != "" && event.Agent.RunID != runID) ||
 			(stage != "" && event.Agent.Stage != stage) {
 			continue
-		}
-		if event.Agent.ParentID != "" {
-			hasChildren[event.Agent.ParentID] = true
 		}
 		current, ok := latest[event.Agent.ID]
 		if !ok || newerAgentEvent(event.Agent, &current) {
@@ -203,17 +272,23 @@ func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 			latest[event.Agent.ID] = current
 		}
 	}
-	// Exclude a coordinator only when its own projected child edge proves that
-	// its usage is an aggregate. A coordinator without children may have done
-	// real work and must remain billable.
+	hasChildren := make(map[string]bool)
+	for _, agent := range latest {
+		parent, ok := latest[agent.ParentID]
+		if agent.ParentID != "" && ok && parent.Attempt == agent.Attempt {
+			hasChildren[agent.ParentID] = true
+		}
+	}
+	// Exclude a coordinator only when an explicit aggregate marker or a
+	// same-attempt child edge proves its usage overlaps descendant usage.
 	for id, agent := range latest {
-		legacyAggregate := agent.Coordinator && !agent.Worker && !agent.Leaf && len(latest) > 1
-		if agent.Coordinator && (agent.UsageAggregated || hasChildren[id] || legacyAggregate) {
+		if agent.Coordinator && (agent.UsageAggregated || hasChildren[id]) {
 			delete(latest, id)
 			continue
 		}
 		switch agent.Lifecycle {
-		case AgentStarted, AgentWaiting, AgentResumed:
+		case AgentCompleted, AgentFailed, AgentCancelled:
+		default:
 			delete(latest, id)
 		}
 	}
@@ -224,25 +299,7 @@ func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		u := latest[key].Usage
-		if u.InputTokens != nil {
-			if result.InputTokens == nil {
-				result.InputTokens = new(int64)
-			}
-			*result.InputTokens += *u.InputTokens
-		}
-		if u.OutputTokens != nil {
-			if result.OutputTokens == nil {
-				result.OutputTokens = new(int64)
-			}
-			*result.OutputTokens += *u.OutputTokens
-		}
-		if u.CostUSD != nil {
-			if result.CostUSD == nil {
-				result.CostUSD = new(float64)
-			}
-			*result.CostUSD += *u.CostUSD
-		}
+		addAgentUsage(&result, latest[key].Usage)
 	}
 	return result
 }
@@ -257,6 +314,20 @@ func validateAgent(agent AgentProvenance) error {
 	default:
 		return fmt.Errorf("journal: invalid nested-agent lifecycle %q", agent.Lifecycle)
 	}
+	if agent.StartedAt.IsZero() || agent.UpdatedAt.IsZero() || agent.UpdatedAt.Before(agent.StartedAt) {
+		return fmt.Errorf("journal: invalid nested-agent timestamps for %q", agent.ID)
+	}
+	switch agent.Fidelity {
+	case "", AgentFidelityFull, AgentFidelityPartial, AgentFidelityNone:
+	default:
+		return fmt.Errorf("journal: invalid nested-agent fidelity %q", agent.Fidelity)
+	}
+	if err := validateAgentUsage(agent.Budget); err != nil {
+		return fmt.Errorf("journal: invalid nested-agent budget for %q: %w", agent.ID, err)
+	}
+	if err := validateAgentUsage(agent.Usage); err != nil {
+		return fmt.Errorf("journal: invalid nested-agent usage for %q: %w", agent.ID, err)
+	}
 	return nil
 }
 
@@ -267,8 +338,7 @@ func newerAgentEvent(candidate *AgentProvenance, current *AgentProvenance) bool 
 	if candidate.UpdatedAt.After(current.UpdatedAt) {
 		return true
 	}
-	return candidate.UpdatedAt.Equal(current.UpdatedAt) && candidate.Lifecycle != "" &&
-		current.Lifecycle == ""
+	return candidate.UpdatedAt.Equal(current.UpdatedAt)
 }
 
 func mergeAgentUsage(dst *AgentUsage, src AgentUsage) {
@@ -281,4 +351,38 @@ func mergeAgentUsage(dst *AgentUsage, src AgentUsage) {
 	if dst.CostUSD == nil {
 		dst.CostUSD = src.CostUSD
 	}
+}
+
+func addAgentUsage(dst *AgentUsage, src AgentUsage) {
+	if src.InputTokens != nil {
+		if dst.InputTokens == nil {
+			dst.InputTokens = new(int64)
+		}
+		*dst.InputTokens += *src.InputTokens
+	}
+	if src.OutputTokens != nil {
+		if dst.OutputTokens == nil {
+			dst.OutputTokens = new(int64)
+		}
+		*dst.OutputTokens += *src.OutputTokens
+	}
+	if src.CostUSD != nil {
+		if dst.CostUSD == nil {
+			dst.CostUSD = new(float64)
+		}
+		*dst.CostUSD += *src.CostUSD
+	}
+}
+
+func validateAgentUsage(usage AgentUsage) error {
+	if usage.InputTokens != nil && *usage.InputTokens < 0 {
+		return fmt.Errorf("negative input tokens")
+	}
+	if usage.OutputTokens != nil && *usage.OutputTokens < 0 {
+		return fmt.Errorf("negative output tokens")
+	}
+	if usage.CostUSD != nil && *usage.CostUSD < 0 {
+		return fmt.Errorf("negative cost")
+	}
+	return nil
 }

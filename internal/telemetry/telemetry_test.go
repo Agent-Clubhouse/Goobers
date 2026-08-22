@@ -977,7 +977,14 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.agent.lifecycle",
 		"goobers.agent.requested_model",
 		"goobers.agent.resolved_model",
-		"goobers.agent.reasoning_effort",
+		"goobers.agent.requested_reasoning_effort",
+		"goobers.agent.resolved_reasoning_effort",
+		"goobers.agent.fidelity",
+		"goobers.agent.plugin",
+		"goobers.agent.message.id",
+		"goobers.agent.message.sender_id",
+		"goobers.agent.message.recipient_id",
+		"goobers.agent.message.purpose",
 	}
 	got := AllAttributes()
 	if len(got) != len(want) {
