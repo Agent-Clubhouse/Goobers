@@ -187,6 +187,7 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 			maxOpenPRs: 0,
 		},
 	}
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			set := &instance.ConfigSet{
@@ -222,7 +223,71 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 					t.Errorf("warning missing %q: %s", want, warning.warning.Explanation)
 				}
 			}
+
 		})
+	}
+}
+
+func TestAppendZeroWorkflowBudgetWarnings(t *testing.T) {
+	report := &validate.Report{}
+	var got []realityWarning
+	add := func(code validate.WarningCode, kind, name, file, path, message string) {
+		report.Issues = append(report.Issues, validate.Issue{
+			Code: code, Severity: validate.Warning, Kind: kind, Name: name, Message: message,
+		})
+		got = append(got, realityWarning{
+			warning: validate.CodedWarning{
+				Code: code, Severity: validate.Warning, Scope: kind + "/" + name, Explanation: message,
+			},
+			file: file,
+			path: path,
+		})
+	}
+
+	appendZeroWorkflowBudgetWarnings("/instance", "/instance/config", &instance.Config{
+		RunConditions: instance.RunConditions{
+			WorkflowBudgets: map[string]int{"zeta": 0, "alpha": 0, "positive": 3},
+		},
+	}, add)
+
+	if len(got) != 2 {
+		t.Fatalf("warnings = %+v, want two zero-budget warnings", got)
+	}
+	if got[0].warning.Scope != "Instance/alpha" || got[1].warning.Scope != "Instance/zeta" {
+		t.Fatalf("warnings are not sorted = %+v", got)
+	}
+	for _, warning := range got {
+		name := strings.TrimPrefix(warning.warning.Scope, "Instance/")
+		if warning.warning.Code != validate.WarningZeroWorkflowBudget ||
+			warning.file != "/instance/instance.yaml" ||
+			warning.path != "/runConditions/workflowBudgets/"+name ||
+			!strings.Contains(warning.warning.Explanation, "no instance-level override") ||
+			!strings.Contains(warning.warning.Explanation, "There is no workflow-budget field that pauses") {
+			t.Fatalf("unexpected warning = %+v", warning)
+		}
+	}
+}
+
+func TestValidateWarnsOnZeroWorkflowBudget(t *testing.T) {
+	root := initDeterministicDemo(t)
+	appendToFile(t, filepath.Join(root, "instance.yaml"), `
+runConditions:
+  workflowBudgets:
+    paused: 0
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		`WARNING WF022 Instance/paused: runConditions.workflowBudgets["paused"] is 0`,
+		"no instance-level override",
+		"no workflow-budget field that pauses",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

@@ -143,6 +143,9 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningZeroWorkflowBudget identifies an instance workflow budget whose
+	// explicit zero is treated as no override rather than pausing the workflow.
+	WarningZeroWorkflowBudget WarningCode = "WF022"
 )
 
 const (

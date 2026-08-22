@@ -44,7 +44,8 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Static checks (no network): capability, readiness, and gate cross-checks.
+// Static checks (no network): capability, readiness, gate, and run-condition
+// cross-checks.
 // -----------------------------------------------------------------------------
 
 // proberFamilies mirrors internal/toolchain.DefaultVerifier's registered probe
@@ -129,7 +130,42 @@ func appendStaticRealityWarnings(
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
+	appendZeroWorkflowBudgetWarnings(root, configDir, cfg, add)
 	return warnings
+}
+
+func appendZeroWorkflowBudgetWarnings(
+	root, configDir string,
+	cfg *instance.Config,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil {
+		return
+	}
+	names := make([]string, 0)
+	for name, budget := range cfg.RunConditions.WorkflowBudgets {
+		if budget == 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	configFile := filepath.Join(root, "instance.yaml")
+	if filepath.Clean(configDir) == filepath.Clean(root) {
+		configFile = filepath.Join(root, "instance.yaml.example")
+	}
+	for _, name := range names {
+		add(
+			validate.WarningZeroWorkflowBudget,
+			"Instance",
+			name,
+			configFile,
+			"/runConditions/workflowBudgets/"+name,
+			fmt.Sprintf(
+				"runConditions.workflowBudgets[%q] is 0, which means no instance-level override; the workflow's own maxRunsPerHour (or the default of 10) applies. There is no workflow-budget field that pauses a workflow; remove the entry or set a positive value to limit it",
+				name,
+			),
+		)
+	}
 }
 
 // appendUnclaimedCapabilityWarnings cross-checks every gaggle's whole-gaggle

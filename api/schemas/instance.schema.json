@@ -541,7 +541,7 @@
         "workflowBudgets": {
           "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
           "type": "object",
-          "additionalProperties": { "type": "integer", "minimum": 0, "description": "Maximum runs per hour for the named workflow. Zero stops it from starting." }
+          "additionalProperties": { "type": "integer", "minimum": 0, "description": "Maximum runs per hour for the named workflow. Zero means no instance-level override, so the workflow's own value (or the default of 10) applies." }
         },
         "workflowDailyBudgets": {
           "description": "Per-workflow runs-per-DAY ceiling, keyed by workflow name — the daily twin of workflowBudgets, applied in addition to it.",

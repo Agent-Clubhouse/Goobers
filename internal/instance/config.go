@@ -1066,7 +1066,10 @@ type RunConditions struct {
 	// MaxConcurrentRuns/MaxRunsPerHour. This is the opposite convention from
 	// a workflow's own spec.readiness.maxRunsPerHour, where zero/omitted
 	// falls back to a default of 10 rather than meaning unlimited (#3360).
-	MaxParallelRuns int            `json:"maxParallelRuns,omitempty" yaml:"maxParallelRuns,omitempty"`
+	MaxParallelRuns int `json:"maxParallelRuns,omitempty" yaml:"maxParallelRuns,omitempty"`
+	// WorkflowBudgets overrides a named workflow's runs-per-hour budget. A
+	// zero entry is not a pause: it means no instance-level override, so the
+	// workflow's own value (or the default of 10) applies.
 	WorkflowBudgets map[string]int `json:"workflowBudgets,omitempty" yaml:"workflowBudgets,omitempty"`
 	// WorkflowDailyBudgets overrides a named workflow's runs-per-day budget
 	// (#340), mirroring WorkflowBudgets' per-hour override.
