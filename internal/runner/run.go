@@ -773,6 +773,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		inputs["item"] = b
 		inputIntegrity["item"] = in.Item.Integrity
 	}
+	// Pin the reviewer-goober capability map (#294) alongside the definition:
+	// an agentic gate's reviewer grants are instance policy, not part of the
+	// workflow definition, so post-start consumers (the daemon credential
+	// plane, PR #3528) read them from this snapshot via
+	// PinnedGateGooberCapabilities rather than the currently-served config.
+	if len(r.cfg.GateGooberCapabilities) > 0 {
+		gateCaps, err := json.Marshal(r.cfg.GateGooberCapabilities)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: marshal pinned gate-goober capabilities: %w", err)
+		}
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = gateCaps
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
+	}
 
 	// registrar/scrubber are fresh per run (never shared — a run's secrets
 	// have no business outliving it in an in-memory registry). Chaining the

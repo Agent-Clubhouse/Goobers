@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -818,5 +819,47 @@ func TestProjectionScrubsVerdictBeforeHistoryAndPointerAddressing(t *testing.T) 
 	}
 	if strings.Contains(string(data), secret) || !strings.Contains(string(data), journal.Redacted) {
 		t.Fatalf("projected verdict was not scrubbed: %s", data)
+	}
+}
+
+// TestProjectionPinsGateGooberCapabilities is the PR #3528 finding-1 producer
+// half on the engine tier: the reviewer-goober capability map pinned into the
+// run input at start (#294) survives into the projected journal as the
+// trusted gate-goober-capabilities input, where the daemon credential plane
+// reads it back through runner.PinnedGateGooberCapabilities — the run's pin,
+// not the currently-served config, decides an agentic gate's reviewer grants.
+func TestProjectionPinsGateGooberCapabilities(t *testing.T) {
+	spec := crSpec("implement",
+		[]apiv1.Task{crTask("implement", "review")},
+		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
+	in := projectionInput("proj-gate-caps", spec)
+	in.GateGooberCapabilities = map[string][]string{"reviewer": {"github:issues:write"}}
+	proj := executeForProjection(t, in, &Activities{
+		Det:        &scriptedStages{},
+		Auto:       gate.NewAutomatedEvaluator(),
+		Workspaces: testWorkspaces(t),
+	}, false)
+	if len(proj.GateGooberCapabilities) == 0 {
+		t.Fatal("projection carries no pinned gate-goober capabilities")
+	}
+
+	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
+	if err != nil {
+		t.Fatalf("ProjectRun: %v", err)
+	}
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := rd.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, found, err := runner.PinnedGateGooberCapabilities(rd, identity)
+	if err != nil || !found {
+		t.Fatalf("PinnedGateGooberCapabilities = (%v, %t, %v), want the projected pin", pinned, found, err)
+	}
+	if got := pinned["reviewer"]; len(got) != 1 || got[0] != "github:issues:write" {
+		t.Fatalf("pinned reviewer capabilities = %v, want [github:issues:write]", got)
 	}
 }

@@ -66,7 +66,10 @@ type credentialPlaneDefinitions struct {
 	// Scopes maps gaggle name to its credential scope.
 	Scopes map[string]credentialGaggleScope
 	// Goobers maps goober name to its resolved spec, for goober-scoped
-	// injector construction and reviewer-gate capability lookup.
+	// injector construction and BYO MCP credential-key lookup. NOT for
+	// reviewer-gate capabilities: those resolve from the run's pinned
+	// gate-goober state (PinnedGateGooberCapabilities), never this live
+	// snapshot — see stageCredentialProfile.
 	Goobers map[string]apiv1.GooberSpec
 }
 
@@ -107,6 +110,9 @@ type daemonCredentialService struct {
 	// pinnedMachine overrides pinned-definition reconstruction in tests; nil
 	// uses runner.PinnedWorkflowMachine (full WF-016 digest verification).
 	pinnedMachine func(reader *journal.Reader, identity journal.RunIdentity) (*workflow.Machine, error)
+	// pinnedGateCapabilities overrides pinned gate-goober capability loading
+	// in tests; nil uses runner.PinnedGateGooberCapabilities.
+	pinnedGateCapabilities func(reader *journal.Reader, identity journal.RunIdentity) (map[string][]string, bool, error)
 }
 
 func newDaemonCredentialService(
@@ -184,7 +190,16 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 			fmt.Sprintf("the run's pinned workflow definition could not be verified: %v", err))
 	}
 
-	profile, err := stageCredentialProfile(machine, *defs, request.Stage)
+	// The pinned gate-goober state is loaded lazily — only an agentic
+	// reviewer gate needs it — from the same journal the workflow pin came
+	// from, mirroring how the task path reaches the pinned workflow.
+	loadGateCapabilities := s.pinnedGateCapabilities
+	if loadGateCapabilities == nil {
+		loadGateCapabilities = runner.PinnedGateGooberCapabilities
+	}
+	profile, err := stageCredentialProfile(machine, *defs, request.Stage, func() (map[string][]string, bool, error) {
+		return loadGateCapabilities(reader, identity)
+	})
 	if err != nil {
 		return httpapi.CredentialResolveResponse{}, err
 	}
@@ -333,16 +348,25 @@ type stageProfile struct {
 	implicitKeys []string
 }
 
-// stageCredentialProfile derives the profile from the PINNED machine:
-//   - a task's declared stage-level capabilities (agentic tasks additionally
-//     scope to their goober; deterministic tasks are runner-owned);
-//   - an agentic reviewer gate's capabilities, sourced from the reviewer
-//     goober's own declaration (#294) exactly as the engine pins at start;
+// stageCredentialProfile derives the profile from the run's PINNED state:
+//   - a task's declared stage-level capabilities, from the pinned workflow
+//     definition (agentic tasks additionally scope to their goober;
+//     deterministic tasks are runner-owned);
+//   - an agentic reviewer gate's capabilities, from the run's pinned
+//     gate-goober state (#294) — the same GateGooberCapabilities the engine
+//     pinned into the run input at start, loaded via loadGateCapabilities.
+//     Reviewer capabilities are NOT part of the pinned workflow spec, so
+//     reading them from the live config snapshot would let a config edit
+//     after run start change a live run's reviewer grants (PR #3528). A run
+//     carrying no such pin fails closed rather than falling back to live
+//     defs. The live snapshot is consulted only for the reviewer goober's
+//     invocation-internal BYO MCP credential keys (the task path's own
+//     behavior for its goober);
 //   - an automated or human gate declares nothing and can resolve nothing.
 //
 // An unknown stage is a typed 404: a pod cannot probe another workflow's
 // stage names into grants.
-func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefinitions, stage string) (stageProfile, error) {
+func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefinitions, stage string, loadGateCapabilities func() (map[string][]string, bool, error)) (stageProfile, error) {
 	if task, ok := machine.Task(stage); ok {
 		profile := stageProfile{
 			goober:       task.Goober,
@@ -363,14 +387,26 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 			return stageProfile{goober: "", capabilities: nil}, nil
 		}
 		reviewer := gate.Agentic.Goober
+		pinnedCapabilities, pinned, err := loadGateCapabilities()
+		if err != nil {
+			return stageProfile{}, credentialPlaneError(http.StatusConflict, "run_pin_unverifiable",
+				fmt.Sprintf("the run's pinned gate-goober capabilities could not be verified: %v", err))
+		}
+		if !pinned {
+			return stageProfile{}, credentialPlaneError(http.StatusConflict, "gate_pin_missing",
+				fmt.Sprintf("the run carries no pinned gate-goober capabilities; refusing to resolve gate %q from the currently-served configuration", stage))
+		}
 		spec, ok := defs.Goobers[reviewer]
 		if !ok {
 			return stageProfile{}, credentialPlaneError(http.StatusConflict, "goober_unavailable",
 				fmt.Sprintf("reviewer goober %q for gate %q is no longer configured", reviewer, stage))
 		}
+		// A reviewer absent from the pinned map declared no capabilities at
+		// run start and resolves nothing — the same fail-closed stance the
+		// runner's gate envelope takes on an unmapped goober (#294).
 		return stageProfile{
 			goober:       reviewer,
-			capabilities: append([]string(nil), spec.Capabilities...),
+			capabilities: append([]string(nil), pinnedCapabilities[reviewer]...),
 			implicitKeys: mcpconfig.BYOCredentialKeys(spec.MCPServers),
 		}, nil
 	}

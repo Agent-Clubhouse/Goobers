@@ -76,12 +76,23 @@ func compileCredentialPlaneMachine(t *testing.T, spec apiv1.WorkflowSpec) *workf
 
 // writePinnedRun scaffolds a run journal whose pinned workflow-definition
 // snapshot reconstructs machine — the WF-016 pin the plane verifies stages
-// against.
-func writePinnedRun(t *testing.T, layout instance.Layout, gaggle, runID string, machine *workflow.Machine) {
+// against — and whose pinned gate-goober capability state is gateCaps, the
+// reviewer grants the starter pins into the run at start (#294). nil gateCaps
+// scaffolds a journal with NO gate pin (a pre-pin run), which the plane's
+// gate path must refuse rather than fall back to live config.
+func writePinnedRun(t *testing.T, layout instance.Layout, gaggle, runID string, machine *workflow.Machine, gateCaps map[string][]string) {
 	t.Helper()
 	definition, err := json.Marshal(machine.Def)
 	if err != nil {
 		t.Fatal(err)
+	}
+	inputs := map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition}
+	if gateCaps != nil {
+		pinned, err := json.Marshal(gateCaps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = pinned
 	}
 	run, err := journal.Create(
 		layout.ForGaggle(gaggle).RunsDir(),
@@ -93,7 +104,7 @@ func writePinnedRun(t *testing.T, layout instance.Layout, gaggle, runID string, 
 			Gaggle:          gaggle,
 			Trigger:         journal.Trigger{Kind: journal.TriggerManual},
 		},
-		map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition},
+		inputs,
 	)
 	if err != nil {
 		t.Fatalf("create pinned run fixture: %v", err)
@@ -108,6 +119,19 @@ func credentialPlaneGoobers() map[string]apiv1.GooberSpec {
 		"dev":      {Gaggle: "web", Capabilities: []string{"repo:push", "github:issues:write"}},
 		"reviewer": {Gaggle: "web", Capabilities: []string{"github:issues:write"}},
 	}
+}
+
+// credentialPlaneGateCaps derives the pinned reviewer capability map exactly
+// as the wiring does (cmd/goobers/runnerwiring.go, internal/bootstrap): every
+// goober with a non-empty declaration.
+func credentialPlaneGateCaps(goobers map[string]apiv1.GooberSpec) map[string][]string {
+	caps := make(map[string][]string, len(goobers))
+	for name, spec := range goobers {
+		if len(spec.Capabilities) > 0 {
+			caps[name] = append([]string(nil), spec.Capabilities...)
+		}
+	}
+	return caps
 }
 
 // newCredentialPlaneFixture wires a service over a temp instance: a shared
@@ -125,7 +149,7 @@ func newCredentialPlaneFixture(t *testing.T, machine *workflow.Machine) (*daemon
 	t.Cleanup(func() { _ = log.Close() })
 
 	const runID = "run-credential-plane"
-	writePinnedRun(t, layout, "web", runID, machine)
+	writePinnedRun(t, layout, "web", runID, machine, credentialPlaneGateCaps(credentialPlaneGoobers()))
 
 	expires := time.Now().Add(50 * time.Minute).UTC().Truncate(time.Second)
 	service := newDaemonCredentialService(layout, &instance.Config{}, nil, shared, log)
@@ -353,6 +377,116 @@ func TestCredentialPlaneResolvesGateReviewerScope(t *testing.T) {
 	planeErr := planeErrorOf(t, err)
 	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
 		t.Fatalf("reviewer repo:push refusal = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
+	}
+}
+
+// TestCredentialPlaneGateReviewerCapabilitiesComeFromTheRunPin is the PR
+// #3528 finding-1 reproduction: an agentic gate's reviewer capabilities must
+// resolve from the RUN'S PINNED gate-goober state (the GateGooberCapabilities
+// the engine pins into the run input at start), never from the live config
+// snapshot — a config edit after run start (CredentialPlane.Replace) widening
+// the reviewer's declaration must not widen a live run's reviewer grants,
+// while a run started after the edit resolves the new set.
+func TestCredentialPlaneGateReviewerCapabilitiesComeFromTheRunPin(t *testing.T) {
+	machine := compileCredentialPlaneMachine(t, credentialPlaneSpec())
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+
+	// The config edit AFTER run start: the reviewer's declaration is widened
+	// to repo:push and the live snapshot swapped, exactly as a config reload
+	// does.
+	widened := credentialPlaneGoobers()
+	widened["reviewer"] = apiv1.GooberSpec{Gaggle: "web", Capabilities: []string{"github:issues:write", "repo:push"}}
+	service.Replace(credentialPlaneDefinitions{
+		Scopes:  map[string]credentialGaggleScope{"web": {Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}}},
+		Goobers: widened,
+	})
+
+	// The live run resolves the PINNED set: exactly issues:write, no
+	// repo:push — the edit did not change a live run's reviewer grants.
+	response, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "review",
+	})
+	if err != nil {
+		t.Fatalf("Resolve gate on the pinned run: %v", err)
+	}
+	if len(response.Credentials) != 1 || response.Credentials[0].Capability != "github:issues:write" {
+		t.Fatalf("pinned-run gate credentials = %+v, want exactly the pinned issues:write", response.Credentials)
+	}
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "review", Capabilities: []string{"repo:push"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("widened-live-config repo:push on the pinned run = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
+	}
+
+	// A FRESH run started under the edited config pins — and resolves — the
+	// new set.
+	const freshRunID = "run-credential-plane-fresh"
+	writePinnedRun(t, service.layout, "web", freshRunID, machine, credentialPlaneGateCaps(widened))
+	response, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: freshRunID, Stage: "review",
+	})
+	if err != nil {
+		t.Fatalf("Resolve gate on the fresh run: %v", err)
+	}
+	byCapability := map[string]bool{}
+	for _, credential := range response.Credentials {
+		byCapability[credential.Capability] = true
+	}
+	if len(byCapability) != 2 || !byCapability["github:issues:write"] || !byCapability["repo:push"] {
+		t.Fatalf("fresh-run gate credentials = %+v, want the widened issues:write and repo:push", response.Credentials)
+	}
+}
+
+// TestCredentialPlaneGateFailsClosedWithoutPinnedGateCapabilities: a run
+// journal carrying no pinned gate-goober state (created before the pin
+// existed) must refuse gate resolution with a typed 409 rather than fall back
+// to the live config — while the task path, whose capabilities live in the
+// pinned workflow definition itself, keeps resolving. An unverifiable pin is
+// the same fail-closed refusal as an unverifiable workflow pin.
+func TestCredentialPlaneGateFailsClosedWithoutPinnedGateCapabilities(t *testing.T) {
+	machine := compileCredentialPlaneMachine(t, credentialPlaneSpec())
+	service, shared, _ := newCredentialPlaneFixture(t, machine)
+
+	const pinlessRunID = "run-without-gate-pin"
+	writePinnedRun(t, service.layout, "web", pinlessRunID, machine, nil)
+
+	_, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinlessRunID, Stage: "review",
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusConflict || planeErr.Code != "gate_pin_missing" {
+		t.Fatalf("pin-less gate refusal = %d %s, want 409 gate_pin_missing", planeErr.Status, planeErr.Code)
+	}
+	// The refusal happened before any resolution: nothing was minted.
+	if got := shared.Scrub([]byte(credentialPlaneTestSecret)); string(got) != credentialPlaneTestSecret {
+		t.Fatal("a refused gate resolve minted a value")
+	}
+
+	// The task path is untouched: its capabilities come from the pinned
+	// workflow definition, so the same pin-less run still resolves them.
+	response, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinlessRunID, Stage: "implement",
+	})
+	if err != nil {
+		t.Fatalf("Resolve task on the pin-less run: %v", err)
+	}
+	if len(response.Credentials) != 2 {
+		t.Fatalf("task credentials on the pin-less run = %+v, want both declared capabilities", response.Credentials)
+	}
+
+	// An unverifiable pin (untrusted integrity, unreadable snapshot) is the
+	// same fail-closed refusal.
+	service.pinnedGateCapabilities = func(*journal.Reader, journal.RunIdentity) (map[string][]string, bool, error) {
+		return nil, false, errors.New("integrity mismatch")
+	}
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinlessRunID, Stage: "review",
+	})
+	planeErr = planeErrorOf(t, err)
+	if planeErr.Status != http.StatusConflict || planeErr.Code != "run_pin_unverifiable" {
+		t.Fatalf("unverifiable gate pin refusal = %d %s, want 409 run_pin_unverifiable", planeErr.Status, planeErr.Code)
 	}
 }
 
