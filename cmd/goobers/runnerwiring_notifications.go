@@ -776,7 +776,7 @@ func buildExistingFixHandler(l instance.Layout, cfg *instance.Config, resolver c
 		_, err := updater.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository:   repoRef,
 			ID:           o.ItemID,
-			RemoveLabels: []string{providers.LabelReady, "goobers:critical"},
+			RemoveLabels: []string{providers.LabelReady, providers.LabelCritical},
 		})
 		return err
 	}

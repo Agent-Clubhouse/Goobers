@@ -3249,10 +3249,11 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 // escFakeCommenter, which only keeps the last) — buildBlockedHandler's
 // multi-item fallback path needs every call visible.
 type blockedHandlerFakeCommenter struct {
-	calls    []providers.UpdateWorkItemRequest
-	comments []providers.Comment
-	nextID   int
-	listErr  error
+	calls     []providers.UpdateWorkItemRequest
+	comments  []providers.Comment
+	nextID    int
+	listErr   error
+	updateErr error
 }
 
 func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
@@ -3264,6 +3265,9 @@ func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ provider
 
 func (f *blockedHandlerFakeCommenter) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	f.calls = append(f.calls, req)
+	if f.updateErr != nil {
+		return providers.WorkItem{}, f.updateErr
+	}
 	if req.Comment != "" {
 		f.nextID++
 		f.comments = append(f.comments, providers.Comment{
@@ -4088,6 +4092,98 @@ func TestBuildBlockedHandlerNoClaimIsANoop(t *testing.T) {
 func TestBuildFailedHandlerNilForRepoLessInstance(t *testing.T) {
 	if h := buildFailedHandler(instance.NewLayout(t.TempDir()), &instance.Config{}, nil, nil); h != nil {
 		t.Fatalf("expected a nil handler for no repos, got %+v", h)
+	}
+}
+
+func TestBuildExistingFixHandlerNilForRepoLessInstance(t *testing.T) {
+	if h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), &instance.Config{}, nil, nil); h != nil {
+		t.Fatalf("expected a nil handler for no repos, got %+v", h)
+	}
+}
+
+func TestBuildExistingFixHandlerNoItemIDIsANoop(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %+v, want none when item id is missing", fake.calls)
+	}
+}
+
+func TestBuildExistingFixHandlerRemovesReadyAndCriticalLabels(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		ItemID:  "463",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(fake.calls))
+	}
+	call := fake.calls[0]
+	if call.ID != "463" {
+		t.Fatalf("request ID = %q, want 463", call.ID)
+	}
+	wantRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if call.Repository != wantRepo {
+		t.Fatalf("request repository = %+v, want %+v", call.Repository, wantRepo)
+	}
+	if !slices.Equal(call.RemoveLabels, []string{providers.LabelReady, providers.LabelCritical}) {
+		t.Fatalf("RemoveLabels = %v, want [%s %s]", call.RemoveLabels, providers.LabelReady, providers.LabelCritical)
+	}
+}
+
+func TestBuildExistingFixHandlerPropagatesUpdateFailure(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{updateErr: errors.New("provider unavailable")}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildExistingFixHandler(instance.NewLayout(t.TempDir()), cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if h == nil {
+		t.Fatal("expected a non-nil handler for a repo-backed instance")
+	}
+
+	if err := h(context.Background(), runner.ExistingFixOutcome{
+		ItemID:  "463",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+	}); err == nil {
+		t.Fatal("want update error")
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("calls = %d, want 1 update attempt", len(fake.calls))
 	}
 }
 
