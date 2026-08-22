@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -257,6 +258,68 @@ func TestClaimRoutesValidateAndDispatch(t *testing.T) {
 	}
 	if len(claims.requests) != before {
 		t.Fatalf("invalid requests reached the claim service")
+	}
+}
+
+// TestClaimRoutesCapLeaseSeconds pins the LeaseSeconds ceiling at the route:
+// an at-cap lease dispatches, while over-cap and duration-overflow-range
+// values are refused as a 400 before any service sees them — a ten-year (or
+// negative-overflowed) lease would defeat lease-based liveness, and the
+// overflow used to surface as a 500 write_failed.
+func TestClaimRoutesCapLeaseSeconds(t *testing.T) {
+	claims := &fakeClaimService{response: ClaimResponse{Ok: true}}
+	handler := writePlaneHandler(t, nil, AllowAll, WithClaimService(claims))
+
+	atCap := fmt.Sprintf(`{"gaggle":"g","provider":"github","itemId":"42","runId":"run-1","leaseSeconds":%d}`, MaxClaimLeaseSeconds)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, atCap))
+	if response.Code != http.StatusOK {
+		t.Fatalf("at-cap acquire status = %d, body = %s", response.Code, response.Body)
+	}
+	if len(claims.requests) != 1 || claims.requests[0].LeaseSeconds != MaxClaimLeaseSeconds {
+		t.Fatalf("claims service saw %+v", claims.requests)
+	}
+
+	for _, lease := range []string{fmt.Sprintf("%d", MaxClaimLeaseSeconds+1), "10000000000"} {
+		body := fmt.Sprintf(`{"gaggle":"g","provider":"github","itemId":"42","runId":"run-1","leaseSeconds":%s}`, lease)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimAcquirePath, body))
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("leaseSeconds %s: status = %d, want 400", lease, response.Code)
+		}
+	}
+	if len(claims.requests) != 1 {
+		t.Fatalf("over-cap leases reached the claim service: %+v", claims.requests)
+	}
+}
+
+// TestTriggerRouteCapsRequestIDLength pins the delivery-id byte cap: the
+// dedupe record is bounded by entry count, not bytes, so requestId gets the
+// same 256-byte/400 bound the webhook handler puts on delivery ids.
+func TestTriggerRouteCapsRequestIDLength(t *testing.T) {
+	triggers := &fakeTriggerService{response: TriggerResponse{RunID: "run-9"}}
+	handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(triggers))
+
+	atCap := strings.Repeat("d", MaxTriggerRequestIDBytes)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+		fmt.Sprintf(`{"workflow":"impl","requestId":%q}`, atCap)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("at-cap requestId status = %d, body = %s", response.Code, response.Body)
+	}
+	if len(triggers.requests) != 1 || triggers.requests[0].RequestID != atCap {
+		t.Fatalf("trigger service saw %+v", triggers.requests)
+	}
+
+	over := strings.Repeat("d", MaxTriggerRequestIDBytes+1)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+		fmt.Sprintf(`{"workflow":"impl","requestId":%q}`, over)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("over-cap requestId status = %d, want 400", response.Code)
+	}
+	if len(triggers.requests) != 1 {
+		t.Fatalf("over-cap requestId reached the trigger service")
 	}
 }
 

@@ -61,6 +61,13 @@ func (s *daemonClaimService) leaseDuration(request httpapi.ClaimRequest) (time.D
 	if request.LeaseSeconds < 0 {
 		return 0, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_lease", "leaseSeconds must not be negative", nil)
 	}
+	// The route already refuses over-cap leases; the service repeats the check
+	// so no other assembly can mint an unbounded (or, past ~9.3e9 seconds, a
+	// negative-overflow) lease — a 400, never a 500 write_failed.
+	if request.LeaseSeconds > httpapi.MaxClaimLeaseSeconds {
+		return 0, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_lease",
+			fmt.Sprintf("leaseSeconds must not exceed %d", httpapi.MaxClaimLeaseSeconds), nil)
+	}
 	if request.LeaseSeconds == 0 {
 		return DefaultClaimLease, nil
 	}
@@ -286,7 +293,10 @@ func (s *daemonTriggerService) triggerer() workflowTriggerer {
 // Trigger validates, dedupes, and mints. A redelivered RequestID whose
 // original delivery minted a run answers that run without minting a second
 // one; a delivery that failed does not poison its RequestID, so the caller
-// may retry it.
+// may retry it. The dedupe is an atomic test-and-set BEFORE dispatch (the
+// webhook handler's seen() discipline): the first delivery of a RequestID
+// reserves it under the lock, so a concurrent duplicate gets the Duplicate
+// response instead of racing the check-then-record window into a second mint.
 func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
 	dispatch := s.triggerer()
 	if dispatch == nil {
@@ -296,7 +306,7 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	}
 	requestID := strings.TrimSpace(request.RequestID)
 	if requestID != "" {
-		if runID, duplicate := s.recorded(requestID); duplicate {
+		if runID, duplicate := s.reserve(requestID); duplicate {
 			return httpapi.TriggerResponse{RunID: runID, Duplicate: true}, nil
 		}
 	}
@@ -311,33 +321,64 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
 	}
 	if err != nil {
+		if requestID != "" {
+			s.releaseReservation(requestID)
+		}
 		return httpapi.TriggerResponse{}, triggerPlaneError(err)
 	}
 	if requestID != "" {
-		s.record(requestID, runID)
+		s.completeReservation(requestID, runID)
 	}
 	return httpapi.TriggerResponse{RunID: runID}, nil
 }
 
-func (s *daemonTriggerService) recorded(requestID string) (string, bool) {
+// reserve atomically claims requestID for the calling delivery. The winner
+// (duplicate=false) must completeReservation with the minted run, or
+// releaseReservation on mint failure so the delivery stays retryable. A
+// duplicate reports the recorded run — empty while the winning delivery is
+// still minting, which is still authoritatively "this delivery was already
+// accepted".
+func (s *daemonTriggerService) reserve(requestID string) (runID string, duplicate bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	runID, duplicate := s.seen[requestID]
-	return runID, duplicate
-}
-
-func (s *daemonTriggerService) record(requestID, runID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.seen[requestID]; exists {
-		return
+	if runID, exists := s.seen[requestID]; exists {
+		return runID, true
 	}
-	s.seen[requestID] = runID
+	s.seen[requestID] = ""
 	s.order = append(s.order, requestID)
 	if len(s.order) > maxTriggerDedupeRecords {
 		oldest := s.order[0]
 		s.order = s.order[1:]
 		delete(s.seen, oldest)
+	}
+	return "", false
+}
+
+// completeReservation fixes the minted run onto the reservation (unless the
+// bounded record already evicted it).
+func (s *daemonTriggerService) completeReservation(requestID, runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.seen[requestID]; exists {
+		s.seen[requestID] = runID
+	}
+}
+
+// releaseReservation drops a reservation whose mint failed, keeping the
+// RequestID retryable. Only an unfulfilled reservation is dropped: a recorded
+// mint (or an entry the bounded record replaced) is left alone.
+func (s *daemonTriggerService) releaseReservation(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if runID, exists := s.seen[requestID]; !exists || runID != "" {
+		return
+	}
+	delete(s.seen, requestID)
+	for i, id := range s.order {
+		if id == requestID {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
 	}
 }
 

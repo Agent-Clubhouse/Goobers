@@ -75,11 +75,20 @@ func newStateOwner() *stateOwner {
 }
 
 // stamp returns the stamp to embed in the next write of fileName under
-// schedulerDir. The first write claims ownership: whatever generation the
-// file carries is superseded by generation+1 under this owner's token. Every
-// later write verifies the on-disk stamp is still ours and fails with
-// *StateOwnershipError when a second daemon has claimed the file since. A nil
-// owner (guard-less test writers) writes the zero stamp and checks nothing.
+// schedulerDir. It commits nothing: the caller must confirm the guarded write
+// actually landed by calling commit with the returned stamp — claiming the
+// generation before the write lands would let a transient first-write failure
+// (ENOSPC, EIO) leave the in-memory claim ahead of the file and poison every
+// later write with a false ErrStateSeized until restart.
+//
+// The first committed write claims ownership: whatever generation the file
+// carries is superseded by generation+1 under this owner's token. Every later
+// write verifies the on-disk stamp is still ours and fails with
+// *StateOwnershipError when a second daemon has claimed the file since. A
+// zero on-disk stamp is claimable by anyone — including the current owner,
+// whose next write reclaims a file an operator deleted or truncated instead
+// of wedging on the guard. A nil owner (guard-less test writers) writes the
+// zero stamp and checks nothing.
 func (o *stateOwner) stamp(schedulerDir, fileName string) (ownershipStamp, error) {
 	if o == nil {
 		return ownershipStamp{}, nil
@@ -93,8 +102,12 @@ func (o *stateOwner) stamp(schedulerDir, fileName string) (ownershipStamp, error
 	defer o.mu.Unlock()
 	generation, held := o.claimed[fileName]
 	if !held {
-		generation = current.Generation + 1
-		o.claimed[fileName] = generation
+		return ownershipStamp{Owner: o.token, Generation: current.Generation + 1}, nil
+	}
+	if current == (ownershipStamp{}) {
+		// The file lost its stamp under us (deleted or reset by an operator).
+		// Nothing else owns it, so the current owner reclaims it rather than
+		// tripping the tripwire until restart.
 		return ownershipStamp{Owner: o.token, Generation: generation}, nil
 	}
 	if current.Owner != o.token || current.Generation != generation {
@@ -107,6 +120,18 @@ func (o *stateOwner) stamp(schedulerDir, fileName string) (ownershipStamp, error
 		}
 	}
 	return ownershipStamp{Owner: o.token, Generation: generation}, nil
+}
+
+// commit records that the guarded write carrying stamp landed: only now does
+// the claimed generation become the expectation later writes are verified
+// against. A nil owner (or the nil-owner zero stamp) commits nothing.
+func (o *stateOwner) commit(fileName string, stamp ownershipStamp) {
+	if o == nil || stamp.Owner == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.claimed[fileName] = stamp.Generation
 }
 
 // readOwnershipStamp reads just the stamp fields from a guarded JSON state

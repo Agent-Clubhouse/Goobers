@@ -35,13 +35,25 @@ type ClaimRequest struct {
 	Workflow string `json:"workflow,omitempty"`
 	// LeaseSeconds bounds the lease for acquire/renew. Zero takes the
 	// instance default; negative is refused (a non-positive lease would be
-	// expired at write, silently admitting a second claimant — the #235 rule).
+	// expired at write, silently admitting a second claimant — the #235 rule);
+	// values above MaxClaimLeaseSeconds are refused (an effectively-unexpiring
+	// lease defeats lease-based liveness).
 	LeaseSeconds int `json:"leaseSeconds,omitempty"`
 	// Outcome is settle-only: how the run concluded its work on the item
 	// (e.g. "completed", "abandoned"), recorded with the settle's journal
 	// event. Refused on the other operations.
 	Outcome string `json:"outcome,omitempty"`
 }
+
+// MaxClaimLeaseSeconds is the ceiling on ClaimRequest.LeaseSeconds: four
+// times the daemon's default claim lease (30 minutes — cmd/goobers
+// DefaultClaimLease, whose 4× multiple this must track). Every CLI claimant
+// is bounded by that default; an API caller gets generous room for a slow
+// stage but can never hold an item for years, which would defeat lease-based
+// liveness. The cap also keeps the seconds→time.Duration conversion far from
+// the ~9.3e9-second overflow that flips a duration negative — over-cap and
+// overflow-range values alike are a 400, never a 500.
+const MaxClaimLeaseSeconds = 4 * 30 * 60
 
 // ClaimResponse reports the ledger's decision for one claims-plane call.
 type ClaimResponse struct {
@@ -79,8 +91,16 @@ type TriggerRequest struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
+// MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
+// same 256-byte bound the webhook handler puts on GitHub delivery ids
+// (internal/webhook maxHeaderBytes). The dedupe record is bounded by entry
+// count, not bytes, so unbounded ids would let 10k retained entries grow to
+// gigabytes.
+const MaxTriggerRequestIDBytes = 256
+
 // TriggerResponse reports the minted run, or the original run when RequestID
-// deduplicated a redelivery.
+// deduplicated a redelivery (the run id may still be empty when the
+// deduplicated delivery is concurrent with the winning delivery's mint).
 type TriggerResponse struct {
 	RunID string `json:"runId,omitempty"`
 	// Duplicate marks a response answered from the dedupe record rather than
@@ -211,6 +231,11 @@ func registerClaimRoute(
 			writeError(w, http.StatusBadRequest, "invalid_request", "leaseSeconds must not be negative")
 			return
 		}
+		if input.LeaseSeconds > MaxClaimLeaseSeconds {
+			writeError(w, http.StatusBadRequest, "invalid_lease",
+				fmt.Sprintf("leaseSeconds must not exceed %d", MaxClaimLeaseSeconds))
+			return
+		}
 		if input.Outcome != "" && !settle {
 			writeError(w, http.StatusBadRequest, "invalid_request", "outcome is only valid for settle")
 			return
@@ -254,6 +279,11 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		}
 		if strings.TrimSpace(input.Workflow) == "" {
 			writeError(w, http.StatusBadRequest, "invalid_request", "workflow is required")
+			return
+		}
+		if len(input.RequestID) > MaxTriggerRequestIDBytes {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
 		}
 		response, err := triggers.Trigger(request.Context(), input)

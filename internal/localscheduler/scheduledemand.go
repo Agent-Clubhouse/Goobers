@@ -89,5 +89,8 @@ func writeScheduleDemandState(schedulerDir string, owner *stateOwner, outstandin
 	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, scheduleDemandStateFileName), data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist schedule demand: %w", err)
 	}
+	// Only a landed write commits the claimed generation: a failed write must
+	// stay retryable rather than poisoning later writes with ErrStateSeized.
+	owner.commit(scheduleDemandStateFileName, stamp)
 	return nil
 }

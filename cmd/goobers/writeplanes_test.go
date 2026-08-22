@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,6 +211,64 @@ func TestClaimsPlaneSettleReleasesExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestClaimsPlaneLeaseBounds pins the LeaseSeconds ceiling: at-cap leases are
+// honored, over-cap and duration-overflow values are a named 400 (never a 500
+// write_failed), and the zero-value default path is unchanged.
+func TestClaimsPlaneLeaseBounds(t *testing.T) {
+	service, _ := newClaimServiceFixture(t)
+	ctx := context.Background()
+
+	// The API cap tracks the effective default lease: 4× DefaultClaimLease.
+	if want := int(4 * DefaultClaimLease / time.Second); httpapi.MaxClaimLeaseSeconds != want {
+		t.Fatalf("MaxClaimLeaseSeconds = %d, want %d (4× DefaultClaimLease)", httpapi.MaxClaimLeaseSeconds, want)
+	}
+
+	// At the cap: accepted, and the expiry honors the requested lease.
+	atCap := claimPlaneRequest("run-cap")
+	atCap.LeaseSeconds = httpapi.MaxClaimLeaseSeconds
+	before := time.Now()
+	response, err := service.Acquire(ctx, atCap)
+	if err != nil || !response.Ok || response.ExpiresAt == nil {
+		t.Fatalf("at-cap acquire = %+v, err = %v", response, err)
+	}
+	wantLease := time.Duration(httpapi.MaxClaimLeaseSeconds) * time.Second
+	if d := response.ExpiresAt.Sub(before); d < wantLease-time.Minute || d > wantLease+time.Minute {
+		t.Fatalf("at-cap lease = %v, want ~%v", d, wantLease)
+	}
+
+	// Over-cap — and, on 64-bit ints, a value past the time.Duration overflow
+	// range — is refused as a 400 with a named validation error.
+	overflows := []int{httpapi.MaxClaimLeaseSeconds + 1}
+	if strconv.IntSize == 64 {
+		tenBillion := int64(10_000_000_000)
+		overflows = append(overflows, int(tenBillion))
+	}
+	for _, lease := range overflows {
+		bad := claimPlaneRequest("run-over")
+		bad.LeaseSeconds = lease
+		_, err := service.Acquire(ctx, bad)
+		var planeErr *httpapi.InterventionError
+		if !errors.As(err, &planeErr) || planeErr.Status != http.StatusBadRequest || planeErr.Code != "invalid_lease" {
+			t.Fatalf("leaseSeconds %d: err = %#v, want 400 invalid_lease", lease, err)
+		}
+		if _, err := service.Renew(ctx, bad); !errors.As(err, &planeErr) || planeErr.Status != http.StatusBadRequest {
+			t.Fatalf("renew with leaseSeconds %d: err = %#v, want 400 invalid_lease", lease, err)
+		}
+	}
+
+	// The default path is unchanged: zero takes DefaultClaimLease.
+	def := claimPlaneRequest("run-default")
+	def.ItemID = "43"
+	before = time.Now()
+	response, err = service.Acquire(ctx, def)
+	if err != nil || !response.Ok || response.ExpiresAt == nil {
+		t.Fatalf("default acquire = %+v, err = %v", response, err)
+	}
+	if d := response.ExpiresAt.Sub(before); d < DefaultClaimLease-time.Minute || d > DefaultClaimLease+time.Minute {
+		t.Fatalf("default lease = %v, want ~%v", d, DefaultClaimLease)
+	}
+}
+
 type stubTriggerer struct {
 	mu    sync.Mutex
 	mints int
@@ -231,6 +291,90 @@ func (s *stubTriggerer) Trigger(context.Context, string, time.Time) (string, err
 
 func (s *stubTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
 	return s.mint()
+}
+
+// barrierTriggerer blocks the FIRST mint inside the dispatch seam until
+// released, so a test can deliver a duplicate while the winning delivery's
+// mint is deterministically still in flight. Later mints pass straight
+// through: a broken dedupe lets the duplicate reach the seam, which must
+// surface as a second mint rather than a deadlock.
+type barrierTriggerer struct {
+	entered chan struct{}
+	release chan struct{}
+	mints   atomic.Int32
+}
+
+func (b *barrierTriggerer) mint() (string, error) {
+	n := b.mints.Add(1)
+	if n == 1 {
+		close(b.entered)
+		<-b.release
+	}
+	return fmt.Sprintf("run-%d", n), nil
+}
+
+func (b *barrierTriggerer) Trigger(context.Context, string, time.Time) (string, error) {
+	return b.mint()
+}
+
+func (b *barrierTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
+	return b.mint()
+}
+
+// TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce is the check-then-
+// record regression: the dedupe must reserve the RequestID atomically BEFORE
+// dispatch (the webhook handler's seen() discipline). Two concurrent
+// deliveries of one RequestID — the winner held inside the dispatch seam by a
+// barrier — must produce exactly one mint; the concurrent duplicate gets the
+// Duplicate response instead of racing the recorded()/record() window into a
+// second run.
+func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
+	barrier := &barrierTriggerer{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	releaseBarrier := func() { releaseOnce.Do(func() { close(barrier.release) }) }
+	defer releaseBarrier()
+
+	service := newDaemonTriggerService()
+	service.dispatch = barrier
+	ctx := context.Background()
+	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery-race"}
+
+	var first httpapi.TriggerResponse
+	var firstErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		first, firstErr = service.Trigger(ctx, request)
+	}()
+	<-barrier.entered
+
+	// The winning delivery is now inside the dispatch seam, mid-mint. The
+	// concurrent duplicate must be answered from the reservation, not minted.
+	second, err := service.Trigger(ctx, request)
+	if err != nil {
+		t.Fatalf("concurrent duplicate: %v", err)
+	}
+	if !second.Duplicate {
+		t.Fatalf("concurrent duplicate = %+v, want Duplicate=true", second)
+	}
+	if second.RunID != "" && second.RunID != "run-1" {
+		t.Fatalf("concurrent duplicate run = %q", second.RunID)
+	}
+
+	releaseBarrier()
+	<-done
+	if firstErr != nil || first.RunID != "run-1" || first.Duplicate {
+		t.Fatalf("winning delivery = %+v, err = %v", first, firstErr)
+	}
+	if mints := barrier.mints.Load(); mints != 1 {
+		t.Fatalf("mints = %d, want exactly one", mints)
+	}
+
+	// A later redelivery answers the recorded run.
+	replay, err := service.Trigger(ctx, request)
+	if err != nil || !replay.Duplicate || replay.RunID != "run-1" {
+		t.Fatalf("redelivery = %+v, err = %v", replay, err)
+	}
 }
 
 // TestTriggerPlaneDedupesRedeliveredRequests is the trigger dedupe test: a
@@ -380,6 +524,85 @@ func TestEscalationDenyJournalsResolutionAndStaysTerminal(t *testing.T) {
 	var interventionErr *httpapi.InterventionError
 	if !errors.As(err, &interventionErr) || interventionErr.Code != "idempotency_key_reused" {
 		t.Fatalf("key reuse error = %#v, want idempotency_key_reused", err)
+	}
+}
+
+// TestEscalationDenyConcurrentSameKeyAppendsOnce is the stale-snapshot
+// regression: AcceptDenyEscalation's replay scan runs on a journal snapshot
+// taken before the active-intervention slot is acquired, so two concurrent
+// same-key denies could both pass the scan and both append
+// escalation.resolution. The race is modeled deterministically: both denies
+// resolve the run before either appends (the interleave the probe reproduced
+// under scheduling pressure), then serialize through the slot — the second
+// must detect the first's marker under the slot and replay it instead of
+// appending a second event.
+func TestEscalationDenyConcurrentSameKeyAppendsOnce(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorAgentic)
+	service, runDir := newInterventionServiceTestRun(t, machine, "run-deny-race", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	})
+	input := httpapi.InterventionRequest{
+		RunID:          "run-deny-race",
+		IdempotencyKey: "deny-race-1",
+		Actor:          "operator",
+		Rationale:      "not shippable",
+	}
+
+	// Both deliveries snapshot the journal before either appends.
+	staleA, err := service.resolve("run-deny-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleB, err := service.resolve("run-deny-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.denyEscalation(staleA, input)
+	if err != nil {
+		t.Fatalf("first deny: %v", err)
+	}
+	second, err := service.denyEscalation(staleB, input)
+	if err != nil {
+		t.Fatalf("racing deny with a stale snapshot: %v", err)
+	}
+	if second != first {
+		t.Fatalf("racing deny = %+v, want the first result %+v replayed", second, first)
+	}
+
+	// A full-path replay still answers the recorded result.
+	adapter := newEscalationResolutionAdapter(service)
+	ctx := context.Background()
+	replay, err := adapter.AcceptResolve(ctx, ctx, httpapi.EscalationResolutionRequest{
+		RunID:          "run-deny-race",
+		IdempotencyKey: "deny-race-1",
+		Actor:          "operator",
+		Resolution:     httpapi.EscalationResolutionDeny,
+		Rationale:      "not shippable",
+	})
+	if err != nil || replay != first {
+		t.Fatalf("replay = %+v, err = %v, want %+v", replay, err, first)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolutions := 0
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == escalationResolutionMarker {
+			resolutions++
+		}
+	}
+	if resolutions != 1 {
+		t.Fatalf("resolution events = %d, want exactly one", resolutions)
 	}
 }
 

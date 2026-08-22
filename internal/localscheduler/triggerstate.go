@@ -94,5 +94,8 @@ func writeTriggerEvaluations(schedulerDir string, owner *stateOwner, evaluations
 	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, triggerEvaluationsFileName), data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist trigger evaluations: %w", err)
 	}
+	// Only a landed write commits the claimed generation: a failed write must
+	// stay retryable rather than poisoning later writes with ErrStateSeized.
+	owner.commit(triggerEvaluationsFileName, stamp)
 	return nil
 }
