@@ -88,6 +88,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.limits.maxTokens` | 1.4 | ga | deprecated | dev |
 | `task.minimumIntegrity` | 1.4 | ga | deprecated | dev |
 | `task.name` | 1.4 | ga | deprecated | dev |
+| `task.nestedAgentPolicy` | 1.4 | ga | deprecated | dev |
 | `task.next` | 1.4 | ga | deprecated | dev |
 | `task.onTimeout.fail` | 1.4 | ga | deprecated | dev |
 | `task.onTimeout.salvage` | 1.4 | ga | deprecated | dev |
@@ -241,6 +242,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.limits.maxTokens` | 2.0 | ga | supported | dev |
 | `task.minimumIntegrity` | 2.0 | ga | supported | dev |
 | `task.name` | 2.0 | ga | supported | dev |
+| `task.nestedAgentPolicy` | 2.0 | ga | supported | dev |
 | `task.next` | 2.0 | ga | supported | dev |
 | `task.onTimeout.fail` | 2.0 | ga | supported | dev |
 | `task.onTimeout.salvage` | 2.0 | ga | supported | dev |
@@ -420,6 +422,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.limits.maxTokens` | 3.0 | ga | preview | dev |
 | `task.minimumIntegrity` | 3.0 | ga | preview | dev |
 | `task.name` | 3.0 | ga | preview | dev |
+| `task.nestedAgentPolicy` | 3.0 | ga | preview | dev |
 | `task.next` | 3.0 | ga | preview | dev |
 | `task.onTimeout.fail` | 3.0 | ga | preview | dev |
 | `task.onTimeout.salvage` | 3.0 | ga | preview | dev |

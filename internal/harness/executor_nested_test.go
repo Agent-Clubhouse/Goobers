@@ -147,11 +147,17 @@ func TestExecutorNestedRunUsesEffectiveChildLaunchPath(t *testing.T) {
 			if req.Timeout != 30*time.Second {
 				return fmt.Errorf("timeout = %v, want 30s", req.Timeout)
 			}
-			if token, err := req.Credentials.Token(ctx, "repo:read"); err != nil || token != "nested-read-token" {
-				return fmt.Errorf("repo:read token = %q, %v", token, err)
+			token, err := req.Credentials.Token(ctx, "repo:read")
+			if err != nil {
+				return fmt.Errorf("repo:read credential: %w", err)
 			}
-			if _, err := req.Credentials.Token(ctx, "repo:push"); !errors.Is(err, credentials.ErrUndeclaredCapability) {
-				return fmt.Errorf("repo:push credential error = %v, want undeclared", err)
+			if token != "nested-read-token" {
+				return fmt.Errorf("repo:read token = %q, want nested-read-token", token)
+			}
+			if _, err := req.Credentials.Token(ctx, "repo:push"); err == nil {
+				return errors.New("repo:push credential was unexpectedly granted")
+			} else if !errors.Is(err, credentials.ErrUndeclaredCapability) {
+				return fmt.Errorf("repo:push credential: %w", err)
 			}
 			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},

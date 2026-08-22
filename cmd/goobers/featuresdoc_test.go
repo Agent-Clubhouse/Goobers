@@ -173,6 +173,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.MinimumIntegrity":     {"task.minimumIntegrity"},
 		"Task.ContextFrom":          {"task.contextFrom"},
 		"Task.PolicyActions":        {"task.policyActions"},
+		"Task.NestedAgentPolicy":    {"task.nestedAgentPolicy"},
 		"Task.Retry":                {"task.retry"},
 		"Task.TimeoutSeconds":       {"task.timeoutSeconds"},
 		"Task.Limits":               {"task.limits"},

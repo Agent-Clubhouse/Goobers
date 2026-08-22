@@ -47,6 +47,7 @@ type GooberContext struct {
 	EnvelopeSections map[string]interface{} `json:"envelopeSections,omitempty"`
 }
 
+// ExecutionEnvelope carries mandatory execution authority to a nested agent.
 type ExecutionEnvelope struct {
 	RunID              string               `json:"runId"`
 	StageID            string               `json:"stageId"`

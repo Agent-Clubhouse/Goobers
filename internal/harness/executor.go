@@ -428,6 +428,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		MaxTranscriptBytes:       e.transcriptLimit,
 		HarnessVersion:           e.harnessVersion,
 	}
+	if nestedAdapter != nil {
+		if err := validateNestedExecution(req); err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
+		}
+	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
 		// posture with no usable platform sandbox must block the stage, never
@@ -858,20 +863,4 @@ func mediaTypeFor(path string) string {
 		return "application/json"
 	}
 	return "application/octet-stream"
-}
-
-func nestedCapabilitiesSubset(values, authority []string) bool {
-	for _, value := range values {
-		found := false
-		for _, allowed := range authority {
-			if value == allowed {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }

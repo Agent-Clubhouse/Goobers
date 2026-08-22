@@ -527,8 +527,9 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Goober: "coder", Inputs: map[string]string{"x": "y", "fieldOrder": "number:asc"},
 				Capabilities: []string{"repo:push"}, MinimumIntegrity: apiv1.IntegrityMaintainer,
 				ContextFrom: []string{"claim"}, PolicyActions: []string{"claim-item"},
-				Retry:          &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
-				TimeoutSeconds: 30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
+				NestedAgentPolicy: nestedFeaturePolicy(),
+				Retry:             &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+				TimeoutSeconds:    30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
 				OnTimeout: apiv1.TaskOnTimeoutFail, ExpectedOutputs: []string{"result"}, Next: "agent-salvage",
 			},
 			{
@@ -753,6 +754,18 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	}
 }
 
+func nestedFeaturePolicy() *apiv1.NestedAgentPolicy {
+	return &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		PermittedProfiles: []string{"worker"},
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextFresh},
+		PlatformPolicy: apiv1.PlatformPolicy{
+			Sandbox: "workspace", Cancellation: "stage-context", CompletionContract: "result",
+		},
+	}
+}
+
 func automatedFeatureGate(check, next string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
@@ -826,6 +839,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.minimumIntegrity",
 		"task.contextFrom",
 		"task.policyActions",
+		"task.nestedAgentPolicy",
 		"task.retry",
 		"task.retry.maxAttempts",
 		"task.retry.backoff",

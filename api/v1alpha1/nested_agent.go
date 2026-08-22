@@ -8,32 +8,45 @@ import (
 // NestedAgentPolicyVersion is the portable nested-agent policy contract.
 const NestedAgentPolicyVersion = "v1alpha1"
 
+// DelegationAuthority controls whether and how a child may delegate further.
 // +kubebuilder:validation:Enum=disabled;coordinator-only;bounded
 type DelegationAuthority string
 
 const (
-	DelegationDisabled    DelegationAuthority = "disabled"
+	// DelegationDisabled prevents the child from delegating.
+	DelegationDisabled DelegationAuthority = "disabled"
+	// DelegationCoordinator permits orchestration without recursive delegation.
 	DelegationCoordinator DelegationAuthority = "coordinator-only"
-	DelegationBounded     DelegationAuthority = "bounded"
+	// DelegationBounded permits delegation up to the admitted depth.
+	DelegationBounded DelegationAuthority = "bounded"
 )
 
+// ContextMode controls which parent task context a child receives.
 // +kubebuilder:validation:Enum=fresh;inherited;explicit
 type ContextMode string
 
 const (
-	ContextFresh     ContextMode = "fresh"
+	// ContextFresh omits optional parent task and conversation context.
+	ContextFresh ContextMode = "fresh"
+	// ContextInherited preserves the available parent task context.
 	ContextInherited ContextMode = "inherited"
-	ContextExplicit  ContextMode = "explicit"
+	// ContextExplicit includes only selected artifacts and envelope sections.
+	ContextExplicit ContextMode = "explicit"
 )
 
+// ReasoningEffort is the portable reasoning-effort ceiling for a child.
 // +kubebuilder:validation:Enum=minimal;low;medium;high
 type ReasoningEffort string
 
 const (
+	// ReasoningMinimal is the lowest supported reasoning effort.
 	ReasoningMinimal ReasoningEffort = "minimal"
-	ReasoningLow     ReasoningEffort = "low"
-	ReasoningMedium  ReasoningEffort = "medium"
-	ReasoningHigh    ReasoningEffort = "high"
+	// ReasoningLow permits low reasoning effort.
+	ReasoningLow ReasoningEffort = "low"
+	// ReasoningMedium permits medium reasoning effort.
+	ReasoningMedium ReasoningEffort = "medium"
+	// ReasoningHigh permits high reasoning effort.
+	ReasoningHigh ReasoningEffort = "high"
 )
 
 // NestedAgentPolicy describes authority granted to children of an agentic stage.
@@ -58,12 +71,14 @@ var supportedNestedAgentProfiles = map[string]struct{}{
 	"worker":      {},
 }
 
+// NestedContextPolicy selects the optional parent context visible to a child.
 type NestedContextPolicy struct {
 	Mode             ContextMode `json:"mode" yaml:"mode"`
 	ArtifactNames    []string    `json:"artifactNames,omitempty" yaml:"artifactNames,omitempty"`
 	EnvelopeSections []string    `json:"envelopeSections,omitempty" yaml:"envelopeSections,omitempty"`
 }
 
+// NestedModelPolicy constrains the model and reasoning effort used by a child.
 type NestedModelPolicy struct {
 	Allowlist          []string        `json:"allowlist,omitempty" yaml:"allowlist,omitempty"`
 	MaxReasoningEffort ReasoningEffort `json:"maxReasoningEffort,omitempty" yaml:"maxReasoningEffort,omitempty"`
