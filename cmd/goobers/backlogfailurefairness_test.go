@@ -163,7 +163,7 @@ func TestTerminalFailureStreakResetsAtSuccessAndWindow(t *testing.T) {
 		t.Fatalf("streak after successful attempt = %d, want 0", got)
 	}
 
-	seedRun("old-failure", journal.PhaseFailed, now.Add(-backlogFailureWindow-time.Minute))
+	seedRun("old-failure", journal.PhaseFailed, base.Add(-backlogFailureWindow-time.Minute))
 	if got := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 {
 		t.Fatalf("streak after out-of-window failure = %d, want 0", got)
 	}
