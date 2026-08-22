@@ -477,17 +477,6 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 	return "", nil
 }
 
-func detectCandidateFindings(
-	db *rollup.DB,
-	window time.Duration,
-	since time.Time,
-	gaggle string,
-	aggregates telemetryAggregateValues,
-	thresholds rollup.Thresholds,
-) (candidateFindingsArtifact, error) {
-	return detectCandidateFindingsWithCredit(db, nil, window, since, gaggle, aggregates, thresholds)
-}
-
 func detectCandidateFindingsWithCredit(
 	db *rollup.DB,
 	creditStore *readmodel.Store,

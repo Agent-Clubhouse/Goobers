@@ -274,11 +274,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindings(db, 24*time.Hour, since, "", aggregates, thresholds)
+	first, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindings(db, 24*time.Hour, since, "", aggregates, thresholds)
+	second, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
