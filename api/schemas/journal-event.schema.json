@@ -78,6 +78,8 @@
         "branch.started",
         "branch.finished",
         "parallel.finished",
+        "agent.lifecycle",
+        "agent.message",
         "init.completed",
         "trigger.fired",
         "tick.skipped",
@@ -310,6 +312,16 @@
       "$ref": "notification-receipt.schema.json",
       "x-conformance": "excluded"
     },
+    "agent": {
+      "description": "Versioned nested-agent provenance projected by a structured adapter.",
+      "$ref": "#/$defs/agentProvenance",
+      "x-conformance": "excluded"
+    },
+    "peerMessage": {
+      "description": "Orchestration-relevant peer metadata; raw message content is never retained.",
+      "$ref": "#/$defs/peerMessage",
+      "x-conformance": "excluded"
+    },
     "workflow": {
       "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, poll.shed, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
       "type": "string",
@@ -387,6 +399,58 @@
           "type": "string",
           "x-conformance": "excluded"
         }
+      }
+    },
+    "agentProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "runId", "stage", "attempt", "lifecycle", "startedAt", "updatedAt"],
+      "properties": {
+        "schema": { "const": "goobers.dev/journal/agent/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "parentId": { "type": "string", "minLength": 1 },
+        "runId": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "plugin": { "type": "string" },
+        "objective": { "type": "string" },
+        "coordinator": { "type": "boolean" },
+        "worker": { "type": "boolean" },
+        "leaf": { "type": "boolean" },
+        "requestedModel": { "type": "string" },
+        "resolvedModel": { "type": "string" },
+        "reasoningEffort": { "type": "string" },
+        "lifecycle": { "type": "string", "enum": ["started", "waiting", "resumed", "completed", "failed", "cancelled"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "budget": { "$ref": "#/$defs/agentUsage" },
+        "usage": { "$ref": "#/$defs/agentUsage" },
+        "results": { "type": "array", "items": { "$ref": "#/$defs/ref" } },
+        "dependsOn": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fidelity": { "type": "string" }
+      }
+    },
+    "agentUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": { "type": "integer" },
+        "outputTokens": { "type": "integer" },
+        "costUsd": { "type": "number" }
+      }
+    },
+    "peerMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "senderId", "recipientId", "occurredAt", "purpose"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "senderId": { "type": "string", "minLength": 1 },
+        "recipientId": { "type": "string", "minLength": 1 },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "purpose": { "type": "string", "minLength": 1 },
+        "artifact": { "$ref": "#/$defs/ref" },
+        "contentHash": { "type": "string" }
       }
     },
     "errorDetail": {

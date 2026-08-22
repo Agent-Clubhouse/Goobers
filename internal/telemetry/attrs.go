@@ -5,6 +5,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // RecordAgentProvenance annotates the active task or gate span. Empty values
@@ -14,6 +16,20 @@ func RecordAgentProvenance(ctx context.Context, model, harnessVersion string) {
 		attribute.String(AttrModel, model),
 		attribute.String(AttrHarnessVersion, harnessVersion),
 	)
+}
+
+// RecordNestedAgent projects structured adapter provenance onto a span without
+// retaining assignment or peer-message content in telemetry.
+func RecordNestedAgent(ctx context.Context, agent journal.AgentProvenance) {
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrAgentID, agent.ID),
+		attribute.String(AttrAgentLifecycle, string(agent.Lifecycle)),
+	}
+	attrs = appendOptionalString(attrs, AttrAgentParentID, agent.ParentID)
+	attrs = appendOptionalString(attrs, AttrAgentRequestedModel, agent.RequestedModel)
+	attrs = appendOptionalString(attrs, AttrAgentResolvedModel, agent.ResolvedModel)
+	attrs = appendOptionalString(attrs, AttrAgentReasoningEffort, agent.ReasoningEffort)
+	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 }
 
 func runAttributeSet(a RunAttributes) []attribute.KeyValue {

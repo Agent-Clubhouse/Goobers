@@ -41,6 +41,12 @@ const (
 	AttrStorageOperation       = "goobers.storage.operation"
 	AttrUnmeasuredWorktrees    = "goobers.storage.unmeasured_worktrees"
 	AttrErrorMessage           = "goobers.error.message"
+	AttrAgentID               = "goobers.agent.id"
+	AttrAgentParentID         = "goobers.agent.parent_id"
+	AttrAgentLifecycle         = "goobers.agent.lifecycle"
+	AttrAgentRequestedModel    = "goobers.agent.requested_model"
+	AttrAgentResolvedModel     = "goobers.agent.resolved_model"
+	AttrAgentReasoningEffort   = "goobers.agent.reasoning_effort"
 )
 
 // AllAttributes returns every canonical attribute in declaration order.
@@ -76,6 +82,12 @@ func AllAttributes() []Attribute {
 		AttrStorageOperation,
 		AttrUnmeasuredWorktrees,
 		AttrErrorMessage,
+		AttrAgentID,
+		AttrAgentParentID,
+		AttrAgentLifecycle,
+		AttrAgentRequestedModel,
+		AttrAgentResolvedModel,
+		AttrAgentReasoningEffort,
 	}
 }
 
