@@ -14,6 +14,7 @@
   ],
   "properties": {
     "taskId": { "type": "string", "minLength": 1, "description": "Stage instance identifier within this run." },
+    "attempt": { "type": "integer", "minimum": 1, "description": "Stage attempt number used for retry-safe provenance. Omitted only by legacy callers, which default to attempt 1." },
     "workflowId": { "type": "string", "minLength": 1, "description": "Workflow definition identifier being executed." },
     "runId": { "type": "string", "minLength": 1, "description": "Run identifier, also used as the run's OpenTelemetry trace ID." },
     "triggerRef": {

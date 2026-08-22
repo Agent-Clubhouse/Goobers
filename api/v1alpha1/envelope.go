@@ -44,7 +44,8 @@ const StageContractVersion = "v1alpha9"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
-	// Attempt is the scheduler attempt number for this stage.
+	// Attempt identifies the scheduler attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
 	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`

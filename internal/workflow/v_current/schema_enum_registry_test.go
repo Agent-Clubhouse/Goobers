@@ -139,6 +139,7 @@ var constBackedEnums = []enumRule{
 	{schema: "journal-event.schema.json", path: "properties/attemptClass/enum", source: "internal/journal.AttemptClass", want: goConsts("internal/journal/event.go", "AttemptClass")},
 	{schema: "journal-event.schema.json", path: "properties/branchStatus/enum", source: "internal/journal.BranchStatus", want: goConsts("internal/journal/event.go", "BranchStatus")},
 	{schema: "journal-event.schema.json", path: "properties/completeness/items/properties/status/enum", source: "internal/journal.BranchStatus", want: goConsts("internal/journal/event.go", "BranchStatus")},
+	{schema: "journal-event.schema.json", path: "$defs/agentProvenance/properties/lifecycle/enum", source: "internal/journal.AgentLifecycle", want: goConsts("internal/journal/agent.go", "AgentLifecycle")},
 	{schema: "journal-run.schema.json", path: "properties/trigger/properties/kind/enum", source: "internal/journal.TriggerKind", want: goConsts("internal/journal/identity.go", "TriggerKind")},
 
 	// --- api/v1alpha1 envelope types ---
@@ -226,6 +227,7 @@ var constBackedEnums = []enumRule{
 // anything. Each value is the reason it is not const-backed.
 var notConstBackedEnums = map[string]string{
 	"explain.schema.json\x00properties/stability/enum":                                              "lifecycle values are drawn from two sources with no shared Go type: only \"ga\" has a const (untyped schemas.StabilityGA), and preview/deprecated/removed come from the DSL feature registry; internal/authoring.Explanation.Stability is a plain string",
+	"journal-event.schema.json\x00$defs/agentProvenance/properties/fidelity/enum":                   "adapter fidelity values are untyped journal constants because AgentProvenance.Fidelity remains an open string for forward-compatible readers",
 	"journal-schema.schema.json\x00properties/version/enum":                                         "structural domain combining the stable schema version with the in-progress migration sentinel",
 	"workflow.schema.json\x00$defs/task/properties/onTimeout/enum":                                  "backing consts TaskOnTimeoutFail/Salvage are untyped string constants — no named enum type to bind",
 	"workflow.schema.json\x00$defs/gate/properties/human/properties/onTimeout/enum":                 "human-gate timeout actions are schema-only string literals; no Go const source",

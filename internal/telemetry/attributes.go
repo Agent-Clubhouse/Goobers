@@ -11,36 +11,49 @@ type Attribute string
 
 // The canonical span attribute registry. Add new Goobers attributes here first.
 const (
-	AttrRunID                  = "goobers.run.id"
-	AttrGaggle                 = "goobers.gaggle"
-	AttrWorkflow               = "goobers.workflow"
-	AttrWorkflowVersion        = "goobers.workflow.version"
-	AttrWorkflowDigest         = "goobers.workflow.digest"
-	AttrGooberDigest           = "goobers.goober.digest"
-	AttrGoober                 = "goobers.goober"
-	AttrModel                  = "goobers.model"
-	AttrHarnessVersion         = "goobers.harness.version"
-	AttrStage                  = "goobers.stage"
-	AttrBranch                 = "goobers.branch"
-	AttrStageType              = "goobers.stage.type"
-	AttrAttemptNumber          = "goobers.attempt.n"
-	AttrAttemptKind            = "goobers.attempt.kind"
-	AttrItemID                 = "goobers.item.id"
-	AttrItemURL                = "goobers.item.url"
-	AttrOutcome                = "goobers.outcome"
-	AttrErrorCode              = "goobers.error.code"
-	AttrGateDecision           = "goobers.gate.decision"
-	AttrGateRepassNumber       = "goobers.gate.repass.n"
-	AttrErrorType              = string(semconv.ErrorTypeKey)
-	AttrGenAIResponseModel     = string(semconv.GenAIResponseModelKey)
-	AttrGenAIUsageInputTokens  = string(semconv.GenAIUsageInputTokensKey)
-	AttrGenAIUsageOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
-	AttrCopilotPremiumRequests = "goobers.usage.copilot_premium_requests"
-	AttrUsageCostUSD           = "goobers.usage.cost_usd"
-	AttrWorktreeID             = "goobers.worktree.id"
-	AttrStorageOperation       = "goobers.storage.operation"
-	AttrUnmeasuredWorktrees    = "goobers.storage.unmeasured_worktrees"
-	AttrErrorMessage           = "goobers.error.message"
+	AttrRunID                         = "goobers.run.id"
+	AttrGaggle                        = "goobers.gaggle"
+	AttrWorkflow                      = "goobers.workflow"
+	AttrWorkflowVersion               = "goobers.workflow.version"
+	AttrWorkflowDigest                = "goobers.workflow.digest"
+	AttrGooberDigest                  = "goobers.goober.digest"
+	AttrGoober                        = "goobers.goober"
+	AttrModel                         = "goobers.model"
+	AttrHarnessVersion                = "goobers.harness.version"
+	AttrStage                         = "goobers.stage"
+	AttrBranch                        = "goobers.branch"
+	AttrStageType                     = "goobers.stage.type"
+	AttrAttemptNumber                 = "goobers.attempt.n"
+	AttrAttemptKind                   = "goobers.attempt.kind"
+	AttrItemID                        = "goobers.item.id"
+	AttrItemURL                       = "goobers.item.url"
+	AttrOutcome                       = "goobers.outcome"
+	AttrErrorCode                     = "goobers.error.code"
+	AttrGateDecision                  = "goobers.gate.decision"
+	AttrGateRepassNumber              = "goobers.gate.repass.n"
+	AttrErrorType                     = string(semconv.ErrorTypeKey)
+	AttrGenAIResponseModel            = string(semconv.GenAIResponseModelKey)
+	AttrGenAIUsageInputTokens         = string(semconv.GenAIUsageInputTokensKey)
+	AttrGenAIUsageOutputTokens        = string(semconv.GenAIUsageOutputTokensKey)
+	AttrCopilotPremiumRequests        = "goobers.usage.copilot_premium_requests"
+	AttrUsageCostUSD                  = "goobers.usage.cost_usd"
+	AttrWorktreeID                    = "goobers.worktree.id"
+	AttrStorageOperation              = "goobers.storage.operation"
+	AttrUnmeasuredWorktrees           = "goobers.storage.unmeasured_worktrees"
+	AttrErrorMessage                  = "goobers.error.message"
+	AttrAgentID                       = "goobers.agent.id"
+	AttrAgentParentID                 = "goobers.agent.parent_id"
+	AttrAgentLifecycle                = "goobers.agent.lifecycle"
+	AttrAgentRequestedModel           = "goobers.agent.requested_model"
+	AttrAgentResolvedModel            = "goobers.agent.resolved_model"
+	AttrAgentRequestedReasoningEffort = "goobers.agent.requested_reasoning_effort"
+	AttrAgentResolvedReasoningEffort  = "goobers.agent.resolved_reasoning_effort"
+	AttrAgentFidelity                 = "goobers.agent.fidelity"
+	AttrAgentPlugin                   = "goobers.agent.plugin"
+	AttrAgentMessageID                = "goobers.agent.message.id"
+	AttrAgentMessageSenderID          = "goobers.agent.message.sender_id"
+	AttrAgentMessageRecipientID       = "goobers.agent.message.recipient_id"
+	AttrAgentMessagePurpose           = "goobers.agent.message.purpose"
 )
 
 // AllAttributes returns every canonical attribute in declaration order.
@@ -76,6 +89,19 @@ func AllAttributes() []Attribute {
 		AttrStorageOperation,
 		AttrUnmeasuredWorktrees,
 		AttrErrorMessage,
+		AttrAgentID,
+		AttrAgentParentID,
+		AttrAgentLifecycle,
+		AttrAgentRequestedModel,
+		AttrAgentResolvedModel,
+		AttrAgentRequestedReasoningEffort,
+		AttrAgentResolvedReasoningEffort,
+		AttrAgentFidelity,
+		AttrAgentPlugin,
+		AttrAgentMessageID,
+		AttrAgentMessageSenderID,
+		AttrAgentMessageRecipientID,
+		AttrAgentMessagePurpose,
 	}
 }
 
