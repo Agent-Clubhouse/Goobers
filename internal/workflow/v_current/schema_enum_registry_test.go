@@ -192,6 +192,16 @@ var constBackedEnums = []enumRule{
 	// --- runners inventory (#3508, Goobernetes D3/D7/D8) ---
 	{schema: "instance.schema.json", path: "$defs/runnerProvides/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
 	{schema: "instance.schema.json", path: "$defs/runnerEntry/properties/restrictions/items/enum", source: "internal/instance.RunnerRestriction", want: goConsts("internal/instance/runners.go", "RunnerRestriction")},
+
+	// --- DSL 3.0 runsOn surface (#3505, dsl-3.0.md §2) ---
+	// The stage/gaggle os enum and the instance provides.os enum quote the
+	// same D2 vocabulary; both bind to internal/instance.RunnerOS. The
+	// restriction effect lists bind to the shared internal/runnercap
+	// vocabulary that the instance consts mirror (TestRunnerRestrictionsMatchSharedVocabulary).
+	{schema: "workflow.schema.json", path: "$defs/task/properties/runsOn/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/runsOn/properties/restrictions/items/enum", source: "internal/runnercap.Restriction", want: goConsts("internal/runnercap/runnercap.go", "Restriction")},
+	{schema: "gaggle.schema.json", path: "properties/spec/properties/runsOn/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
+	{schema: "gaggle.schema.json", path: "properties/spec/properties/runsOn/properties/restrictions/items/enum", source: "internal/runnercap.Restriction", want: goConsts("internal/runnercap/runnercap.go", "Restriction")},
 }
 
 // notConstBackedEnums documents every schema enum that has no named Go const

@@ -79,6 +79,99 @@ func (c Claimed) Has(cap string) bool {
 	return ok
 }
 
+// Restriction is one isolation effect from the closed v1 effect list
+// (Goobernetes decision record D7, docs/design/goobernetes-restrictions.md
+// §2). Restrictions name effects, never mechanisms; growing this set is a
+// product decision recorded there, not a config-side addition. This is the
+// single vocabulary shared by the instance runners: inventory
+// (internal/instance) and the DSL 3.0 runsOn.restrictions surface
+// (internal/workflow/v_3_0), which cannot import each other's packages.
+type Restriction string
+
+// The closed v1 restriction effect list.
+const (
+	RestrictionNetworkNone      Restriction = "network:none"
+	RestrictionNetworkAllowlist Restriction = "network:allowlist"
+	RestrictionFSReadonly       Restriction = "fs:readonly-except-workspace"
+	RestrictionTmpEphemeral     Restriction = "tmp:ephemeral"
+	RestrictionEnvDefaultDeny   Restriction = "env:default-deny"
+)
+
+// knownRestrictions is the closed-list membership check, in stable order.
+var knownRestrictions = []Restriction{
+	RestrictionEnvDefaultDeny,
+	RestrictionFSReadonly,
+	RestrictionNetworkAllowlist,
+	RestrictionNetworkNone,
+	RestrictionTmpEphemeral,
+}
+
+// KnownRestrictions returns the closed v1 restriction effect list, sorted for
+// stable diagnostics.
+func KnownRestrictions() []Restriction {
+	return append([]Restriction(nil), knownRestrictions...)
+}
+
+// KnownRestriction reports whether s is a member of the closed effect list.
+func KnownRestriction(s string) bool {
+	for _, r := range knownRestrictions {
+		if string(r) == s {
+			return true
+		}
+	}
+	return false
+}
+
+// SuggestRestriction returns the closest known restriction to a token that is
+// not one (edit distance at most 3 — restriction effects are longer than
+// credential capability names, so the internal/capability threshold of 2
+// would miss plausible typos like "network:allow-list"). ok is false when s
+// is already known or nothing is plausibly close.
+func SuggestRestriction(s string) (Restriction, bool) {
+	if KnownRestriction(s) {
+		return "", false
+	}
+	bestDistance := -1
+	var best Restriction
+	for _, candidate := range knownRestrictions {
+		distance := editDistance(s, string(candidate))
+		if bestDistance == -1 || distance < bestDistance {
+			bestDistance = distance
+			best = candidate
+		}
+	}
+	if bestDistance > 3 {
+		return "", false
+	}
+	return best, true
+}
+
+// editDistance is the Levenshtein distance between a and b (mirrors
+// internal/capability's; duplicated because this package stays stdlib-only).
+func editDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(
+				current[j-1]+1,
+				previous[j]+1,
+				previous[j-1]+cost,
+			)
+		}
+		previous = current
+	}
+	return previous[len(b)]
+}
+
 // Missing returns the required capabilities the runner does not claim, in the
 // order they first appear in required and de-duplicated, so a diagnostic lists
 // each gap once and stably. An empty result means every requirement is met (and
