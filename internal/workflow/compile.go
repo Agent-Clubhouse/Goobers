@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
@@ -23,6 +24,7 @@ type versionedInterpreter struct {
 	checkRunsOnOSTokens             func(Definition, *apiv1.GaggleRunsOn) []string
 	checkRunsOnRestrictions         func(Definition, *apiv1.GaggleRunsOn) []string
 	checkRunsOnPlacement            func(Definition, *apiv1.GaggleRunsOn) []string
+	stagePlacements                 func(Definition, apiv1.GaggleSpec, map[string]apiv1.GooberSpec) []runnersolve.StageRequirement
 	checkRepoHandoffs               func(Definition) []string
 	checkGateParameters             func(Definition) []string
 	checkGateOutcomes               func(Definition) []string
@@ -102,6 +104,7 @@ var currentInterpreter = versionedInterpreter{
 	checkRunsOnOSTokens:             noRunsOnProblems,
 	checkRunsOnRestrictions:         noRunsOnProblems,
 	checkRunsOnPlacement:            preV30SurfaceProblems,
+	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
 	checkGateParameters:             vcurrent.CheckGateParameters,
 	checkGateOutcomes:               vcurrent.CheckGateOutcomes,
@@ -134,6 +137,7 @@ var nextInterpreter = versionedInterpreter{
 	checkRunsOnOSTokens:             noRunsOnProblems,
 	checkRunsOnRestrictions:         noRunsOnProblems,
 	checkRunsOnPlacement:            preV30SurfaceProblems,
+	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
 	checkGateParameters:             vnext.CheckGateParameters,
 	checkGateOutcomes:               vnext.CheckGateOutcomes,
@@ -168,6 +172,7 @@ var v30Interpreter = versionedInterpreter{
 	checkRunsOnOSTokens:             v30.CheckRunsOnOSTokens,
 	checkRunsOnRestrictions:         v30.CheckRunsOnRestrictions,
 	checkRunsOnPlacement:            v30.CheckRunsOnPlacement,
+	stagePlacements:                 v30StagePlacements,
 	checkRepoHandoffs:               v30.CheckRepoHandoffs,
 	checkGateParameters:             v30.CheckGateParameters,
 	checkGateOutcomes:               v30.CheckGateOutcomes,

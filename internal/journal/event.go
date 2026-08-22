@@ -107,6 +107,13 @@ const (
 	// EventWorkflowStarved records a workflow crossing the scheduler's
 	// consecutive shared-pool skip threshold.
 	EventWorkflowStarved EventType = "workflow.starved"
+	// EventWorkflowRefused records a workflow the startup constraint solve
+	// marked unplaceable on the instance's declared runners: inventory
+	// (dsl-3.0.md §5 checkpoint 3, #2860): the daemon starts, every other
+	// workflow serves, and this workflow's runs are refused with the Reason
+	// diagnostic. Instance-journal only; written when the scheduler learns
+	// the configuration (start and each accepted reload).
+	EventWorkflowRefused EventType = "workflow.refused"
 	// EventProviderQuotaReset records a provider budget window expiring and
 	// polling admission reopening.
 	EventProviderQuotaReset EventType = "provider.quota.reset"

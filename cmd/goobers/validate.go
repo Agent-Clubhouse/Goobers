@@ -60,8 +60,13 @@ var templateMarkers = []string{"your-org", "your-repo"}
 
 const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
-	"path \".\"). --source-tree validates a checked-in config source tree\n" +
-	"using instance.yaml.example and the path itself as config/. " +
+	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
+	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
+	"stage, and warnings otherwise. --source-tree validates a checked-in\n" +
+	"config source tree using instance.yaml.example and the path itself as\n" +
+	"config/; because the tree carries no real instance.yaml, its placement\n" +
+	"solve runs against the example inventory and is advisory-only\n" +
+	"(warnings, never errors). " +
 	"--strict treats config warnings as validation errors. " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
@@ -82,7 +87,13 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 	var output bytes.Buffer
 	// Startup runs the same single validation engine, in its non-spawning
-	// discovery mode — see validateOptions.deferModelDiscovery (#3336).
+	// discovery mode — see validateOptions.deferModelDiscovery (#3336) — and
+	// in startup-preflight mode, where placement findings (RNR001/RNR003)
+	// stay warnings: at boot their consequence is a per-workflow refusal
+	// (checkpoint 3, #2860 — the daemon starts and every other workflow
+	// serves), so failing the whole boot on them would be the boot-kill that
+	// ruling removed. Operator-invoked `goobers validate` keeps them as
+	// errors (checkpoint 1, the #3497 fix).
 	code := runValidateAsDeferring("validate", []string{root}, &output, &output, true)
 	if skip {
 		if code == 0 {
@@ -110,15 +121,22 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 }
 
 // runValidateAsDeferring is runValidateAs with the validation engine's one
-// internal, non-CLI knob: deferModelDiscovery — the daemon's startup preflight
-// mode (#3336). Model discovery spawns the Copilot CLI, and in a memory-capped
-// pod the spawned children can OOM the daemon before the discovery timeout
-// fires — so the startup pass accepts models unverified (the same degradation
-// as an unreachable CLI) instead of spawning. Interactive `goobers validate`
-// keeps discovery live; this is a survival knob for the in-process caller, not
-// a second, weaker validation path (#252's single-engine rule still holds —
-// same engine, one documented divergence).
-func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer, deferModelDiscovery bool) int {
+// internal, non-CLI knob: startupPreflight — the daemon's startup preflight
+// mode. It bundles exactly two documented divergences from interactive
+// `goobers validate` (#252's single-engine rule still holds — same engine,
+// each divergence named):
+//
+//   - deferModelDiscovery (#3336): model discovery spawns the Copilot CLI,
+//     and in a memory-capped pod the spawned children can OOM the daemon
+//     before the discovery timeout fires — so the startup pass accepts
+//     models unverified (the same degradation as an unreachable CLI)
+//     instead of spawning.
+//   - placement findings stay warnings (#2860 checkpoint 3): RNR001/RNR003
+//     are validate-time errors on a declared inventory (checkpoint 1, the
+//     #3497 fix), but at boot their consequence is a per-workflow refusal —
+//     the daemon starts and every other workflow serves — so the preflight
+//     must not turn them back into a boot-kill.
+func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer, startupPreflight bool) int {
 	fs := newCLIFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
@@ -155,7 +173,8 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 		checkHarness:        *checkHarness,
 		checkRepos:          *checkRepos,
 		strict:              *strict,
-		deferModelDiscovery: deferModelDiscovery,
+		deferModelDiscovery: startupPreflight,
+		startupPreflight:    startupPreflight,
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
@@ -179,6 +198,10 @@ type validateOptions struct {
 	// deferModelDiscovery is set only by the daemon's startup preflight —
 	// see runValidateAsDeferring (#3336). Never set from a CLI flag.
 	deferModelDiscovery bool
+	// startupPreflight marks the daemon's boot-time validation pass: same
+	// engine, placement findings advisory (see runValidateAsDeferring).
+	// Never set from a CLI flag.
+	startupPreflight bool
 }
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
@@ -205,8 +228,23 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 
 	cfg, err := instance.LoadConfig(configFile)
 	if err != nil {
+		// RNR002 (dsl-3.0.md §5): a runner entry with a non-self host and no
+		// engine: block fails first at load like every malformed-inventory
+		// error; attribute its stable code so an exit-code- or code-gated
+		// pipeline can name the condition (acceptance §9 item 8).
+		code := "INSTANCE001"
+		var engineMissing *instance.RunnerEngineMissingError
+		if errors.As(err, &engineMissing) {
+			code = string(validate.RunnerEngineMissing)
+			pf(stdout, "%s\n", validate.CodedWarning{
+				Code:        validate.RunnerEngineMissing,
+				Severity:    validate.Error,
+				Scope:       "Instance/instance.yaml",
+				Explanation: engineMissing.Error(),
+			}.String())
+		}
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
-		diagnostics.add(diagnosticFile(root, configFile), "/", "INSTANCE001", string(validate.Error), err.Error())
+		diagnostics.add(diagnosticFile(root, configFile), "/", code, string(validate.Error), err.Error())
 		return 1
 	}
 
@@ -306,17 +344,33 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	printValidationWarnings(stdout, skillWarnings)
 
-	// Static reality cross-checks (2026-08-08 cold-start audit): a
-	// requiredCapabilities token no runner claims (CAP003), an unenforceable
-	// maxOpenPRs cap (PRCAP001), and an automated gate completion branch a
-	// failed stage can never complete through (WF018). Appended to the report
-	// like the harness/skill warnings above, so --strict and the JSON report
-	// treat them as ordinary config warnings.
-	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, report)
+	// Static reality cross-checks (2026-08-08 cold-start audit; dsl-3.0.md §5
+	// checkpoint 1): the per-stage placement solve against the resolved
+	// runner inventory (RNR001/RNR003 — ERROR when a runners: inventory is
+	// declared, the #3497 fix; RNR004 always advisory), a
+	// requiredCapabilities token no runner claims (CAP003, 2.0 documents on
+	// inventory-less instances), an unenforceable maxOpenPRs cap (PRCAP001),
+	// and an automated gate completion branch a failed stage can never
+	// complete through (WF018). Warnings append to the report like the
+	// harness/skill warnings above (--strict and the JSON report treat them
+	// as ordinary config warnings); error-severity placement findings fail
+	// validation below. --source-tree solves against instance.yaml.example
+	// (the tree carries no real inventory), so its findings are advisory-only
+	// warnings by definition — see appendStaticRealityWarnings.
+	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, goobers, report,
+		options.sourceTree || options.startupPreflight)
+	placementErrors := 0
 	for _, finding := range staticRealityWarnings {
 		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
 			string(finding.warning.Severity), finding.warning.Explanation)
 		pln(stdout, finding.warning.String())
+		if finding.warning.Severity == validate.Error {
+			placementErrors++
+		}
+	}
+	if placementErrors > 0 {
+		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
+		return 1
 	}
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has

@@ -28,19 +28,23 @@ package v30
 //
 // Derived tags use the "harness:<name>"/"shell" spelling from the design
 // record. These are system-derived facts, not author-declared tokens, so they
-// do not pass through the runnercap author-token grammar; how a runner
-// advertises them is the constraint-solve work's contract (#3506 onward).
+// do not pass through the runnercap author-token grammar; the spellings are
+// owned by internal/runnercap (the leaf both the deriving and the matching
+// side import), and how each runner kind satisfies them is the shared
+// solver's contract (internal/runnersolve, #3506).
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 // DerivedShellTag is the derived requirement of a stage that shells out.
-const DerivedShellTag = "shell"
+const DerivedShellTag = runnercap.DerivedShellTag
 
 // DerivedHarnessTagPrefix prefixes the derived requirement of an agentic
 // stage: DerivedHarnessTagPrefix + the goober's harness name.
-const DerivedHarnessTagPrefix = "harness:"
+const DerivedHarnessTagPrefix = runnercap.DerivedHarnessTagPrefix
 
 // DerivedCapabilities returns the placement requirements task carries by
 // construction (D7), independent of any declared runsOn. goobers supplies the

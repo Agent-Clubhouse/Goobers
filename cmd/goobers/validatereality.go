@@ -40,6 +40,9 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/runnersolve"
+	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -92,25 +95,36 @@ type realityWarning struct {
 }
 
 // appendStaticRealityWarnings runs the static cross-file reality checks —
-// instance.yaml runner claims vs config requiredCapabilities, and gate
-// completion-branch reachability — appending each finding to report (so
-// --strict and the JSON report see it like any other config warning) and
-// returning the findings with their file/path attribution for the
-// diagnostics collector.
+// the per-stage placement solve against the resolved runner inventory
+// (RNR001/RNR003/RNR004, the shared solver of dsl-3.0.md §5 checkpoint 1),
+// the legacy instance.yaml runner claims vs config requiredCapabilities
+// cross-check (CAP003), and gate completion-branch reachability — appending
+// each finding to report (so --strict and the JSON report see it like any
+// other config finding) and returning the findings with their file/path
+// attribution for the diagnostics collector. Placement findings carry ERROR
+// severity when a runners: inventory is declared (the #3497 fix; the caller
+// fails validation on them) unless advisory is set, which happens for two
+// callers: `goobers validate --source-tree` has no real instance.yaml (it
+// substitutes instance.yaml.example, so its solve is advisory by
+// definition), and the daemon's startup preflight, where the finding's
+// consequence is a per-workflow refusal rather than a dead config
+// (checkpoint 3, #2860 — see runStartupConfigPreflight).
 func appendStaticRealityWarnings(
 	root, configDir string,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
 	report *validate.Report,
+	advisory bool,
 ) []realityWarning {
 	if set == nil || report == nil {
 		return nil
 	}
 	var warnings []realityWarning
-	add := func(code validate.WarningCode, kind, name, file, path, message string) {
+	addSeverity := func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string) {
 		report.Issues = append(report.Issues, validate.Issue{
 			Code:     code,
-			Severity: validate.Warning,
+			Severity: severity,
 			Kind:     kind,
 			Name:     name,
 			Message:  message,
@@ -118,7 +132,7 @@ func appendStaticRealityWarnings(
 		warnings = append(warnings, realityWarning{
 			warning: validate.CodedWarning{
 				Code:        code,
-				Severity:    validate.Warning,
+				Severity:    severity,
 				Scope:       kind + "/" + name,
 				Explanation: message,
 			},
@@ -126,40 +140,156 @@ func appendStaticRealityWarnings(
 			path: path,
 		})
 	}
+	add := func(code validate.WarningCode, kind, name, file, path, message string) {
+		addSeverity(code, validate.Warning, kind, name, file, path, message)
+	}
+	appendPlacementFindings(root, configDir, cfg, set, goobers, advisory, addSeverity)
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
 	return warnings
 }
 
+// appendPlacementFindings is checkpoint 1 of the three-checkpoint admission
+// (dsl-3.0.md §5, decision record D4): the full per-stage constraint solve —
+// stages × runners over os, quantities, capabilities, and restrictions —
+// run by the SAME implementation the daemon's boot pass and the scheduler's
+// per-run admit consume (internal/runnersolve; the CAP003/scheduler mirror
+// lesson: a second implementation diverges into configs that validate but
+// never schedule).
+//
+// Severity: RNR001/RNR003 are errors iff a runners: inventory is declared
+// (closing the #3497 exit-0 trap for declared inventories) and warnings
+// otherwise; RNR004 is always a warning (local-mode resource minimums are
+// advisory, dsl-3.0.md D4). Workflow scope mirrors the daemon: with a
+// declared inventory every workflow is solved; on an inventory-less
+// instance only 3.0 documents are solved here — 2.0 documents keep CAP003's
+// frozen per-gaggle warning below (frozen interpreter, frozen severity), so
+// a zero-declaration instance's validation output is byte-identical for
+// them.
+func appendPlacementFindings(
+	root, configDir string,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	advisory bool,
+	add func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string),
+) {
+	if cfg == nil {
+		return
+	}
+	inventoryDeclared := len(cfg.Runners) > 0
+	unsatSeverity := validate.Warning
+	if inventoryDeclared && !advisory {
+		unsatSeverity = validate.Error
+	}
+	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners(runnersolve.HostOS())}
+	gaggleSpecs := make(map[string]apiv1.GaggleSpec, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
+	}
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		if !inventoryDeclared && wf.DSLVersion != supportmatrix.V3DSLVersion {
+			continue
+		}
+		requirements, err := workflow.StagePlacements(workflow.Definition{
+			Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+		}, gaggleSpecs[wf.Spec.Gaggle], goobers)
+		if err != nil {
+			// An unresolvable dslVersion has already failed validation in the
+			// compile pass; nothing to solve here.
+			continue
+		}
+		source, _ := set.WorkflowSource(wf.Spec.Gaggle, wf.Name)
+		file := configSourceDiagnosticFile(root, configDir, source)
+		taskIndex := make(map[string]int, len(wf.Spec.Tasks))
+		for ti := range wf.Spec.Tasks {
+			taskIndex[wf.Spec.Tasks[ti].Name] = ti
+		}
+		pathFor := func(stage string) string {
+			if ti, ok := taskIndex[stage]; ok {
+				return fmt.Sprintf("/spec/tasks/%d/runsOn", ti)
+			}
+			return "/spec/tasks"
+		}
+		result := runnersolve.Solve(inventory, requirements)
+		for _, placement := range result.Stages {
+			for _, note := range placement.Advisories {
+				add(validate.RunnerQuantityAdvisory, validate.Warning, "Workflow", wf.Name,
+					file, pathFor(placement.Stage), note.Diagnostic)
+			}
+			if placement.Unsat == nil {
+				continue
+			}
+			code := validate.RunnerStageUnsatisfiable
+			remedy := "declare the requirement on a runner that provides it, or relax the stage's runsOn"
+			if placement.Unsat.Kind == runnersolve.UnsatQuantity {
+				code = validate.RunnerQuantityUnsatisfiable
+				remedy = "raise a runner's declared ceiling or lower the stage minimum"
+			}
+			message := placement.Unsat.Diagnostic
+			if inventoryDeclared {
+				message += "; no run of this workflow can be scheduled on the declared inventory (" + remedy + ")"
+			} else {
+				message += "; advisory on this inventory-less instance — the local runner admits runs against its claimed capabilities at schedule time (declare a runners: inventory to enforce placement here)"
+			}
+			add(code, unsatSeverity, "Workflow", wf.Name, file, pathFor(placement.Stage), message)
+		}
+	}
+}
+
 // appendUnclaimedCapabilityWarnings cross-checks every gaggle's whole-gaggle
 // runner-capability union (gaggle spec.requiredCapabilities plus every bound
-// workflow stage's requiredCapabilities — instance.RequiredCapabilities, the
-// exact union the daemon's own startup check validates) against the instance
+// pre-3.0 workflow stage's requiredCapabilities) against the instance
 // runner's claimed set, using the scheduler's own matching primitive
 // (runnercap.NewClaimed/Missing: exact string set membership, never a
 // version range) so this check can never disagree with schedule-time
 // matching. An unclaimed token today validates clean and then refuses every
-// run: the scheduler's admit check skips the workflow each tick and
-// `goobers up` fails closed at startup (RRQ-1/#1101) — the cold-start
-// dotnet #7 / swift `swift@9.9` + `totally-made-up-toolchain@42` probes.
+// run: the scheduler's admit check skips the workflow each tick
+// (RRQ-1/#1101) — the cold-start dotnet #7 / swift `swift@9.9` +
+// `totally-made-up-toolchain@42` probes.
+//
+// Scope, per dsl-3.0.md §5: CAP003 keeps its shipped meaning for 2.0
+// documents on inventory-less instances ONLY (frozen interpreter, frozen
+// severity — zero-declaration invariance). With a declared runners:
+// inventory this whole-gaggle self-claims union would both mis-warn about
+// capabilities another runner provides and duplicate the solver's findings,
+// so the per-stage placement solve (appendPlacementFindings, RNR001 at
+// error severity) replaces it entirely there; 3.0 documents and a gaggle
+// declaring a runsOn floor are likewise the solver's, on every instance
+// shape.
 func appendUnclaimedCapabilityWarnings(
 	root, configDir string,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
 	add func(code validate.WarningCode, kind, name, file, path, message string),
 ) {
-	if cfg == nil {
+	if cfg == nil || len(cfg.Runners) > 0 {
 		return
+	}
+	pre30Workflows := make([]apiv1.Workflow, 0, len(set.Workflows))
+	for i := range set.Workflows {
+		if set.Workflows[i].DSLVersion != supportmatrix.V3DSLVersion {
+			pre30Workflows = append(pre30Workflows, set.Workflows[i])
+		}
 	}
 	claimed := runnercap.NewClaimed(cfg.SelfRunnerCapabilities())
 	for i := range set.Gaggles {
 		gaggle := set.Gaggles[i]
-		required := instance.RequiredCapabilities(gaggle, set.Workflows)
+		if gaggle.Spec.RunsOn != nil {
+			// A runsOn floor pairs only with 3.0 workflows (the compile-time
+			// rule of dsl-3.0.md open point 2); its solve lives in RNR001.
+			continue
+		}
+		required := instance.RequiredCapabilities(gaggle, pre30Workflows)
 		for _, token := range claimed.Missing(required) {
+			// The consequence clause matches the shipped behavior after #2936
+			// (#2860's ruling): the daemon starts, and each affected run is
+			// refused at schedule time — no boot-kill to warn about.
 			message := fmt.Sprintf(
 				"requires runner capability %q, but runner.capabilities in instance.yaml does not claim it, "+
-					"so the scheduler would refuse to place every run of this gaggle and `goobers up` fails at startup; "+
+					"so the scheduler refuses to place every run of this gaggle at schedule time; "+
 					"add %q to runner.capabilities (schedule-time matching is an exact string match)",
 				token, token)
 			if family := capabilityTokenFamily(token); !proberFamilies[family] {

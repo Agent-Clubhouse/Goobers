@@ -49,6 +49,18 @@ const (
 // the name of the implicit entry a legacy singular runner: block maps to.
 const RunnerHostSelfName = "self"
 
+// RunnerEngineMissingError is the RNR002 condition (dsl-3.0.md §5): a runner
+// entry with a non-self host on an instance that declares no engine:
+// connection config — the inventory can never dispatch a stage to that
+// runner. It fails first at config load like every other malformed-inventory
+// error; the type exists so `goobers validate` can attribute the stable
+// RNR002 code to it (errors.As through LoadConfig's %w chain).
+type RunnerEngineMissingError struct {
+	message string
+}
+
+func (e *RunnerEngineMissingError) Error() string { return e.message }
+
 // RunnerEntry is one declared runner in the runners: inventory (decision
 // record D3, dsl-3.0.md §3): a name, where stages placed on it execute
 // (host), what it claims to provide, and the restriction effects it enforces.
@@ -321,12 +333,14 @@ func (r RunnerEntry) validate(i int, seen map[string]bool, engineConfigured bool
 	// A non-self runner dispatches through the engine connection, so an
 	// inventory that declares one without engine: config can never execute a
 	// stage on it. This is the condition the coded RNR002 validation surfaces
-	// (dsl-3.0.md §5, arriving with the constraint-solve work); until then it
-	// fails first here like every other malformed-instance.yaml error.
+	// (dsl-3.0.md §5): it fails first here like every other
+	// malformed-instance.yaml error, and the typed error lets `goobers
+	// validate` attribute the stable code.
 	if kind != RunnerHostSelf && !engineConfigured {
-		return fmt.Errorf("runners[%d] (%s): host %q is not %q and the instance declares no engine: block — "+
-			"a remote runner dispatches through the engine connection (engine.hostPort/namespace/taskQueue), "+
-			"so declare engine: or make this runner host %q", i, r.Name, r.Host, RunnerHostSelfName, RunnerHostSelfName)
+		return &RunnerEngineMissingError{message: fmt.Sprintf(
+			"runners[%d] (%s): host %q is not %q and the instance declares no engine: block — "+
+				"a remote runner dispatches through the engine connection (engine.hostPort/namespace/taskQueue), "+
+				"so declare engine: or make this runner host %q", i, r.Name, r.Host, RunnerHostSelfName, RunnerHostSelfName)}
 	}
 	if err := r.Provides.validate(i, r.Name); err != nil {
 		return err

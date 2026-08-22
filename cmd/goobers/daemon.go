@@ -209,8 +209,17 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	//
 	// So: one unsatisfiable stage no longer takes the whole instance down, and
 	// every OTHER gaggle keeps running.
-	if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
+	//
+	// Zero-declaration instances only: with a declared runners: inventory
+	// this whole-gaggle self-claims union would mis-warn about capabilities
+	// another declared runner provides, so the per-workflow constraint solve
+	// (placementRefusals, checkpoint 3 of dsl-3.0.md §5) replaces it there —
+	// same never-fatal posture, per-workflow diagnostics, journaled as
+	// workflow.refused.
+	if len(cfg.Runners) == 0 {
+		if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
+		}
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
 	// capability its gaggle's connected provider does not declare — a
@@ -708,6 +717,20 @@ func buildSchedulerDefinitions(
 		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
 	}
 
+	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
+	// declared inventory; an unsatisfiable workflow is marked refused with a
+	// named diagnostic — journaled and refused per-run by the scheduler —
+	// while the daemon and every other workflow keep serving. nil on a
+	// zero-declaration instance (see placementrefusal.go).
+	refusals, err := placementRefusals(cfg, set, goobers, machines)
+	if err != nil {
+		return nil, err
+	}
+	for identity, diagnostic := range refusals {
+		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
+			identity.Workflow, identity.Gaggle, diagnostic)
+	}
+
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -817,6 +840,9 @@ func buildSchedulerDefinitions(
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
+			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
+			// above found this workflow unplaceable on the declared inventory.
+			PlacementRefusal: refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}

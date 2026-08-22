@@ -28,6 +28,7 @@ package runnercap
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // tokenPattern bounds a well-formed capability token: it must start with an
@@ -77,6 +78,32 @@ func NewClaimed(caps []string) Claimed {
 func (c Claimed) Has(cap string) bool {
 	_, ok := c[cap]
 	return ok
+}
+
+// Derived-requirement vocabulary (dsl-3.0.md D7, decision record D2): the
+// placement tags a stage carries by construction rather than by declaration —
+// "harness:<name>" for agentic stages (from the goober's harness: field) and
+// "shell" for sh/make stages. This leaf package owns the spellings so the
+// deriving side (internal/workflow/v_3_0) and the matching side
+// (internal/runnersolve) cannot drift. Note "harness:<name>" deliberately
+// fails ValidToken: it is a system-derived fact, not an author token, so a
+// runner cannot claim it in provides.capabilities — how a non-self runner
+// image advertises a harness is the dispatcher/image contract's to define
+// (#3513, decision record D8); in v1 only the self runner satisfies harness
+// tags (implicitly — the daemon host runs every configured harness through
+// the local execution path, preflight-verified at startup).
+const (
+	// DerivedShellTag is the derived requirement of a stage that shells out.
+	DerivedShellTag = "shell"
+	// DerivedHarnessTagPrefix prefixes the derived requirement of an agentic
+	// stage: DerivedHarnessTagPrefix + the goober's harness name.
+	DerivedHarnessTagPrefix = "harness:"
+)
+
+// DerivedTag reports whether s is a member of the derived-requirement
+// namespace ("shell", or any "harness:"-prefixed tag).
+func DerivedTag(s string) bool {
+	return s == DerivedShellTag || strings.HasPrefix(s, DerivedHarnessTagPrefix)
 }
 
 // Restriction is one isolation effect from the closed v1 effect list

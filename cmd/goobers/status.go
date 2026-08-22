@@ -51,6 +51,25 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
 }
 
+// refusedWorkflowStatusLines surfaces the workflows the startup constraint
+// solve refused (#2860, dsl-3.0.md §5 checkpoint 3): the daemon is up and
+// every other workflow serves, so these lines are the operator's only
+// standing signal that a workflow can never run on the declared inventory.
+func refusedWorkflowStatusLines(status readservice.SchedulerStatus) string {
+	if len(status.RefusedWorkflows) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	for _, refusal := range status.RefusedWorkflows {
+		scope := refusal.Workflow
+		if refusal.Gaggle != "" {
+			scope = refusal.Gaggle + "/" + refusal.Workflow
+		}
+		fmt.Fprintf(&text, "Workflow %s refused (unplaceable on the declared runners: inventory): %s\n", scope, refusal.Reason)
+	}
+	return text.String()
+}
+
 type statusPRLabelCounts struct {
 	blockedOnSibling int
 	mergeEscalated   int
@@ -205,7 +224,12 @@ type statusJSONOutput struct {
 	Warnings      []validate.CodedWarning          `json:"warnings"`
 	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
 	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	Summary       *statusFleetSummary              `json:"summary,omitempty"`
+	// RefusedWorkflows are the workflows the startup constraint solve marked
+	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
+	// checkpoint 3) — the scripting-side counterpart of the text renderer's
+	// refusedWorkflowStatusLines; omitted on zero-declaration instances.
+	RefusedWorkflows []readservice.WorkflowRefusalStatus `json:"refusedWorkflows,omitempty"`
+	Summary          *statusFleetSummary                 `json:"summary,omitempty"`
 	// ParkedBacklog reports items that left the ready pool on a park
 	// disposition (#3355); omitted when the provider snapshot is unavailable,
 	// the same posture as timeToFirstPR.
@@ -755,6 +779,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if err == nil {
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
+			text.WriteString(refusedWorkflowStatusLines(status))
 		}
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
@@ -825,6 +850,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
+		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -833,18 +859,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			}
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
+				refusedWorkflows = status.RefusedWorkflows
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
 			}
 		}
 		output := statusJSONOutput{
-			Warnings:      warnings,
-			TimeToFirstPR: timeToFirstPR,
-			DaemonRestart: daemonRestart,
-			Summary:       fleetSummary,
-			ParkedBacklog: parked,
-			Runs:          statusJSONSummaries(runs),
+			Warnings:         warnings,
+			TimeToFirstPR:    timeToFirstPR,
+			DaemonRestart:    daemonRestart,
+			RefusedWorkflows: refusedWorkflows,
+			Summary:          fleetSummary,
+			ParkedBacklog:    parked,
+			Runs:             statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
