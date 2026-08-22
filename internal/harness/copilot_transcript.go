@@ -141,6 +141,10 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			}
 			return transcriptCapture{}, false
 		}
+		if isNormalizedAgentRecord(line) {
+			_, _ = buf.Write(append(append([]byte(nil), line...), '\n'))
+			converted = true
+		}
 		events := convertCopilotSessionEvent(native)
 		if native.Type == "session.shutdown" {
 			if usage, models, ok := copilotUsageMetrics(native.Data); ok {

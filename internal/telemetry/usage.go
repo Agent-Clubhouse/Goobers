@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 
+	"github.com/goobers/goobers/internal/journal"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -41,6 +42,7 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 	if len(metrics) == 0 && len(modelUsage) == 0 {
 		return
 	}
+
 	attrs := make([]attribute.KeyValue, 0, 4)
 	if value, ok := metrics[AttrGenAIUsageInputTokens]; ok {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageInputTokens, int64(value)))
@@ -71,6 +73,35 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 	}
 	for _, usage := range measured {
 		span.AddEvent(GenAIModelUsageEventName, trace.WithAttributes(modelUsageAttributes(usage)...))
+	}
+}
+
+// RecordNestedAgentUsage fills measures that are absent from the adapter's
+// aggregate with finalized child usage. Adapter-reported canonical measures
+// remain authoritative, preventing coordinator usage from being counted twice.
+func RecordNestedAgentUsage(ctx context.Context, metrics map[string]float64, events []journal.Event) {
+	usage := journal.RollupAgentUsage(events)
+	nested := make(map[string]float64)
+	if usage.InputTokens != nil {
+		nested[AttrGenAIUsageInputTokens] = float64(*usage.InputTokens)
+	}
+	if usage.OutputTokens != nil {
+		nested[AttrGenAIUsageOutputTokens] = float64(*usage.OutputTokens)
+	}
+	if usage.CostUSD != nil {
+		nested[AttrUsageCostUSD] = *usage.CostUSD
+	}
+	merged := make(map[string]float64, len(metrics)+len(nested))
+	for name, value := range metrics {
+		merged[name] = value
+	}
+	for name, value := range nested {
+		if _, exists := merged[name]; !exists {
+			merged[name] = value
+		}
+	}
+	if len(nested) > 0 {
+		RecordAgentUsage(ctx, merged, nil)
 	}
 }
 

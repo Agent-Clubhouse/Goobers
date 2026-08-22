@@ -424,6 +424,8 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		// visible — the session otherwise proceeds silently without those
 		// tools, and the resulting stage failure wears an unrelated costume.
 		out.MCPServerFailures = claudeMCPServerFailures(req, native)
+		out.AgentEvents = projectAgentEvents(native.data, req)
+		out.AgentTelemetryFidelity = agentEventsFidelity(out.AgentEvents)
 	}
 	if runErr != nil {
 		return out, runErr
