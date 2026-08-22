@@ -399,7 +399,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
+	// The live journal writer (DS4) authors engine-run journals from events
+	// emitted as they happen; the projection reconciler below is thereby the
+	// repair/verify path (DS5), never the authority, for live-authored runs.
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog)
+	if err != nil {
+		pf(stderr, "error: initialize live journal writer: %v\n", err)
+		return 1
+	}
+	if liveJournals != nil {
+		defer liveJournals.Close()
+	}
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -515,6 +526,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
 	)
+	if liveJournals != nil {
+		// The journal plane (§8): remote stage pods emit their run's journal
+		// events here; the daemon's own in-process emitters use the writer
+		// directly and never pass through HTTP.
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithJournalService(liveJournals))
+	}
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}

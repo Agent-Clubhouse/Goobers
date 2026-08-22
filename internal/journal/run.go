@@ -691,6 +691,39 @@ func (r *Run) RecordStageArtifactWithIntegrity(stage string, attempt int, class 
 	}, data, 0)
 }
 
+// RecordStageArtifactAnnotated is RecordStageArtifactWithIntegrity with
+// caller-supplied runner.* annotations stamped on the artifact.recorded
+// event. The Runner map is the sanctioned non-normative namespace, so the
+// annotations never enter the conformance view — the live journal writer's
+// idempotency key (livejournal.EmitKeyRunnerField) rides here.
+func (r *Run) RecordStageArtifactAnnotated(stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
+		Runner: copyRunnerMeta(runnerMeta),
+	}, data, 0)
+}
+
+// RecordArtifactAnnotated is RecordArtifactWithIntegrity with caller-supplied
+// runner.* annotations on the artifact.recorded event.
+func (r *Run) RecordArtifactAnnotated(name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Name: name, Integrity: integrity, Runner: copyRunnerMeta(runnerMeta),
+	}, data, 0)
+}
+
+// copyRunnerMeta isolates the recorded event from later caller mutation of
+// the annotation map. nil in, nil out.
+func copyRunnerMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	copied := make(map[string]any, len(meta))
+	for k, v := range meta {
+		copied[k] = v
+	}
+	return copied
+}
+
 // RecordBranchStageArtifact is RecordStageArtifact with explicit
 // parallel-branch attribution.
 func (r *Run) RecordBranchStageArtifact(branch int, stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
@@ -760,6 +793,15 @@ func (r *Run) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) 
 	return r.recordSpan(0, stage, name, dataSchema, data)
 }
 
+// RecordSpanAnnotated is RecordSpanWithSchema with caller-supplied runner.*
+// annotations on the span.recorded event (the live journal writer's
+// idempotency key).
+func (r *Run) RecordSpanAnnotated(stage, name, dataSchema string, data []byte, runnerMeta map[string]any) (Ref, error) {
+	return r.recordSpanEvent(Event{
+		Type: EventSpanRecorded, Stage: stage, Name: name, DataSchema: dataSchema, Runner: copyRunnerMeta(runnerMeta),
+	}, data)
+}
+
 // RecordBranchSpanWithSchema is RecordSpanWithSchema for a stage running
 // inside a parallel branch, attributing the resulting span.recorded event to
 // that branch — the same branch-attribution seam RecordBranchArtifact et al.
@@ -769,6 +811,10 @@ func (r *Run) RecordBranchSpanWithSchema(branch int, stage, name, dataSchema str
 }
 
 func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte) (Ref, error) {
+	return r.recordSpanEvent(Event{Type: EventSpanRecorded, Branch: branch, Stage: stage, Name: name, DataSchema: dataSchema}, data)
+}
+
+func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -782,9 +828,10 @@ func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte
 	}
 	ref, err := writeContentScrubbed(r.dir, relPath, scrubbed, digest)
 	if err != nil {
-		return Ref{}, fmt.Errorf("journal: record span %q: %w", name, err)
+		return Ref{}, fmt.Errorf("journal: record span %q: %w", ev.Name, err)
 	}
-	if err := r.append(Event{Type: EventSpanRecorded, Branch: branch, Stage: stage, Name: name, DataSchema: dataSchema, Ref: &ref}); err != nil {
+	ev.Ref = &ref
+	if err := r.append(ev); err != nil {
 		return Ref{}, err
 	}
 	if err := r.checkpoint(); err != nil {

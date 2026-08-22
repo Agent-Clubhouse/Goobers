@@ -160,11 +160,11 @@ Advanced operator commands:
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [--branch <name>] [--target <tag>] [--health-ticks <n>] [--health-timeout <duration>] [path]
                                 stage and request a supervised binary update
-  goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] <workflow> [path]
+  goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] [--live-journal] <workflow> [path]
                                 dispatch one run onto the tier-3 engine (experimental)
   goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
                                 write a completed engine run's journal into the instance (experimental)
-  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>]
+  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>]
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
@@ -822,6 +822,12 @@ Usage: goobers engine-start [flags] <workflow> [path]
 
 Dispatch one run onto the tier-3 engine (experimental). The run id is
 derived from gaggle, workflow, and --dedupe-key.
+
+--live-journal pins live journal authorship into the run: workers emit
+journal events through the daemon's journal plane as they happen, so the
+run is visible mid-flight; without it the journal is projected from
+history at close, as before. Requires the daemon's write API to be
+reachable from every worker serving the run (worker --daemon-api).
 
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
@@ -2075,6 +2081,10 @@ Flags:
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
+  --daemon-api <url>         daemon write API base URL; wires live journal
+                             emission through the journal plane, with the
+                             per-run bearer from $GOOBERS_POD_TOKEN when
+                             set (default $GOOBERS_DAEMON_API)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

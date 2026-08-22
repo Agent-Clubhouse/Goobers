@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
@@ -49,7 +50,11 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"  --drain-timeout <dur>      graceful-drain bound after a shutdown signal\n" +
 	"                             (default 30s)\n" +
 	"  --work-root <dir>          root for stage workspaces (default: a\n" +
-	"                             goobers-worker dir under the OS temp dir)\n\n" +
+	"                             goobers-worker dir under the OS temp dir)\n" +
+	"  --daemon-api <url>         daemon write API base URL; wires live journal\n" +
+	"                             emission through the journal plane, with the\n" +
+	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
+	"                             set (default $GOOBERS_DAEMON_API)\n\n" +
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
@@ -84,6 +89,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
+	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -157,6 +163,18 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// auth and cannot clone a private repo.
 		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+	}
+
+	if *daemonAPI != "" {
+		// The remote half of the DS4 emission seam: journal events for a
+		// LiveJournal-pinned run flow to the daemon's journal plane. The
+		// per-run pod bearer (internal/podauth) rides GOOBERS_POD_TOKEN;
+		// empty is the loopback/no-auth posture.
+		engineRuntime.deps.Journal = &livejournal.HTTPEmitter{
+			BaseURL: *daemonAPI,
+			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+		}
+		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
 	}
 
 	host, err := workerhost.New(workerhost.Config{

@@ -84,13 +84,13 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key"
+            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal"
             ;;
         engine-project)
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --daemon-api --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"

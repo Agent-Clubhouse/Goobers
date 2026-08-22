@@ -348,8 +348,15 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 // decodeWriteRequest decodes exactly one JSON object into target with unknown
 // fields refused, bounded by the shared mutation body cap.
 func decodeWriteRequest(request *http.Request, target any) error {
+	return decodeWriteRequestBounded(request, target, maxInterventionBody)
+}
+
+// decodeWriteRequestBounded is decodeWriteRequest with an explicit body cap —
+// the journal plane's batches carry artifact bytes inline and get a larger
+// bound than operator mutations.
+func decodeWriteRequestBounded(request *http.Request, target any, maxBytes int64) error {
 	defer func() { _ = request.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxInterventionBody))
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		if errors.Is(err, io.EOF) {

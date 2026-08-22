@@ -73,27 +73,64 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			policyAttempts++
 		}
 
+		// Projection parity with runTask's attempt journaling: stage.started
+		// and the context manifest are committed before the executor runs
+		// (the local runner's own order — both stamped with the pre-dispatch
+		// time), then emitted live (DS4) so the attempt is visible before it
+		// executes, not minutes after it closes. Lazy run-branch provenance
+		// and the attempt's own outcome event follow the dispatch.
+		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
-		activityResult, err := dispatch(ctx)
-		res := activityResult.ResultEnvelope
-		if temporal.IsCanceledError(err) || ctx.Err() != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		// Projection parity with runTask's attempt journaling: stage.started,
-		// the context manifest committed before the executor ran (both stamped
-		// with the pre-dispatch time), lazy run-branch provenance, then the
-		// attempt's own outcome event.
 		rec.stageStarted(startedAt, t.Name, int(attempt), class)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
-		rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
-		if err == nil {
-			res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
-			rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
-			rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
-			rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
-			return res, nil
+		var res apiv1.ResultEnvelope
+		var err error
+		emitErr := rec.emitPending(ctx)
+		if emitErr == nil {
+			var activityResult stageActivityResult
+			activityResult, err = dispatch(ctx)
+			res = activityResult.ResultEnvelope
+			if temporal.IsCanceledError(err) || ctx.Err() != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if err == nil {
+				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
+				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
+				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
+				emitErr = rec.emitPending(ctx)
+				if emitErr == nil {
+					return res, nil
+				}
+			}
+		}
+		if emitErr != nil {
+			// §8 failure policy: a journal emission that exhausted its bounded
+			// budget fails the attempt as attemptClass infra — never the work
+			// budget (#3361). The attempt's un-journaled ops are rolled back
+			// first (an effect that cannot be journaled did not happen; the
+			// same fail-closed stance the projection takes), so the projection
+			// and the live journal agree the attempt produced only its
+			// infra-classed failure record.
+			rec.rollbackUnemitted(mark)
+			rec.emitFailure(ctx, t.Name, int(attempt), emitErr)
+			lastErr = emitErr
+			infrastructureFailures++
+			nextRetryClass = journal.AttemptInfra
+			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
+				return apiv1.ResultEnvelope{}, fmt.Errorf(
+					"engine: journal stage %q: %w (attempt %d/%d)",
+					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
+			}
+			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
+				if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
+					return apiv1.ResultEnvelope{}, serr
+				}
+			}
+			continue
 		}
 		lastErr = err
 		failureClass, cerr := attemptFailureClass(err)

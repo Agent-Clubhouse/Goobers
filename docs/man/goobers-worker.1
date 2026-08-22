@@ -38,6 +38,10 @@ Flags:
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
+  --daemon-api <url>         daemon write API base URL; wires live journal
+                             emission through the journal plane, with the
+                             per-run bearer from $GOOBERS_POD_TOKEN when
+                             set (default $GOOBERS_DAEMON_API)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

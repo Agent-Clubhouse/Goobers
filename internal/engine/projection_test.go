@@ -29,6 +29,9 @@ type completedRunFake struct {
 	projection JournalProjection
 	executions []*workflowpb.WorkflowExecutionInfo
 	queries    int
+	// onQuery, when set, runs at the top of each QueryWorkflow — a hook for
+	// interleaving concurrent work with the reconciler's mid-pass query.
+	onQuery func()
 }
 
 type projectionValue struct {
@@ -52,6 +55,9 @@ func (f *completedRunFake) ListWorkflow(_ context.Context, _ *workflowservice.Li
 
 func (f *completedRunFake) QueryWorkflow(_ context.Context, _, _, _ string, _ ...interface{}) (converter.EncodedValue, error) {
 	f.queries++
+	if f.onQuery != nil {
+		f.onQuery()
+	}
 	return projectionValue{projection: f.projection}, nil
 }
 

@@ -17,6 +17,11 @@ import (
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
 	"Dispatch one run onto the tier-3 engine (experimental). The run id is\n" +
 	"derived from gaggle, workflow, and --dedupe-key.\n\n" +
+	"--live-journal pins live journal authorship into the run: workers emit\n" +
+	"journal events through the daemon's journal plane as they happen, so the\n" +
+	"run is visible mid-flight; without it the journal is projected from\n" +
+	"history at close, as before. Requires the daemon's write API to be\n" +
+	"reachable from every worker serving the run (worker --daemon-api).\n\n" +
 	"Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.\n"
 
 func runEngineStart(args []string, stdout, stderr io.Writer) int {
@@ -27,6 +32,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	taskQueue := fs.String("task-queue", "", "task queue to dispatch onto")
 	dedupe := fs.String("dedupe-key", "", "dedupe key used to derive the run id")
+	liveJournal := fs.Bool("live-journal", false, "author the run journal live through the daemon's journal plane (DS4)")
 	fs.Usage = helpUsage(stderr, "engine-start")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -102,6 +108,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		RepoRef:         project,
 		TriggerKind:     "manual",
 		BranchNamespace: branchNamespacesByGaggle(set)[target],
+		LiveJournal:     *liveJournal,
 	})
 	if err != nil {
 		pf(stderr, "error: pin workflow %q: %v\n", workflowName, err)
