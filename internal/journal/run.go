@@ -20,6 +20,10 @@ var ErrClosed = errors.New("journal: run is closed")
 // older terminal event than the source currently records.
 var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 
+// ErrImmutableSourceLockMissing means a continuation source cannot be locked
+// without creating a file inside the source journal.
+var ErrImmutableSourceLockMissing = errors.New("immutable source journal lock is missing")
+
 // Run is a writer over a single run journal. It owns the append handle to
 // events.jsonl and enforces the durability contract: every Append scrubs, writes
 // a single line, and fsyncs before returning, so a completed event is never lost
@@ -63,6 +67,15 @@ type Run struct {
 // Create uses a fresh run id, and in-process resume closes its writer first.
 func acquireRunLock(dir string) (*journalLock, error) {
 	return acquireJournalLock(dir, "run")
+}
+
+func acquireExistingRunLock(dir string) (*journalLock, error) {
+	path := filepath.Join(dir, fileLock)
+	lock, err := acquireExistingJournalLockPath(path, dir, "run")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s", ErrImmutableSourceLockMissing, path)
+	}
+	return lock, err
 }
 
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
@@ -342,12 +355,18 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 		return nil, errors.New("journal: continuation target is required")
 	}
 	sourceDir := filepath.Join(runsDir, req.SourceRunID)
-	sourceLock, err := acquireRunLock(sourceDir)
+	// Refuse legacy journals before taking their run lock. Lock acquisition can
+	// create .lock, and OpenRead may migrate, so either operation would mutate a
+	// source whose bytes must remain immutable.
+	if _, err := OpenReadOnly(sourceDir); err != nil {
+		return nil, fmt.Errorf("journal: inspect continuation source: %w", err)
+	}
+	sourceLock, err := acquireExistingRunLock(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("journal: lock continuation source: %w", err)
 	}
 	defer releaseRunLock(sourceLock)
-	reader, err := OpenRead(sourceDir)
+	reader, err := OpenReadOnly(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("journal: open continuation source: %w", err)
 	}

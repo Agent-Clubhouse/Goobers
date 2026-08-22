@@ -2,10 +2,13 @@ package journal
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -30,11 +33,8 @@ func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}
-	sourcePath := filepath.Join(root, sourceID, fileEvents)
-	before, err := os.ReadFile(sourcePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sourceDir := filepath.Join(root, sourceID)
+	before := snapshotJournalTree(t, sourceDir)
 	sourceReader, err := OpenRead(filepath.Join(root, sourceID))
 	if err != nil {
 		t.Fatal(err)
@@ -75,11 +75,8 @@ func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
 	if err := validator.ValidateJSON("journal-run.schema.json", runJSON); err != nil {
 		t.Fatalf("continuation run.yaml fails schema validation: %v\n%s", err, runJSON)
 	}
-	after, err := os.ReadFile(sourcePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
+	after := snapshotJournalTree(t, sourceDir)
+	if !reflect.DeepEqual(after, before) {
 		t.Fatal("source journal changed while creating continuation")
 	}
 
@@ -144,4 +141,96 @@ func TestCreateContinuationRejectsNonTerminalAndStaleSource(t *testing.T) {
 	if _, err := CreateContinuation(root, req); !errors.Is(err, ErrTerminalGenerationChanged) {
 		t.Fatalf("stale error = %v, want ErrTerminalGenerationChanged", err)
 	}
+}
+
+func TestCreateContinuationRejectsLegacySourceWithoutMutation(t *testing.T) {
+	sourceDir := copyLegacyJournalFixture(t)
+	root := filepath.Dir(sourceDir)
+	before := snapshotJournalTree(t, sourceDir)
+	restore := SetLockTimeoutForTest(100*time.Millisecond, 5*time.Millisecond)
+	t.Cleanup(restore)
+
+	continuationID := "1af7651916cd43dd8448eb211c80319c"
+	_, err := CreateContinuation(root, ContinuationRequest{
+		RunID:               continuationID,
+		SourceRunID:         legacyFixtureRunID,
+		ExpectedTerminalSeq: 2,
+		Operator:            "operator@example.test",
+		Target:              "implement",
+	})
+	if !errors.Is(err, ErrJournalMigrationRequired) {
+		t.Fatalf("CreateContinuation error = %v, want ErrJournalMigrationRequired", err)
+	}
+	after := snapshotJournalTree(t, sourceDir)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("legacy source journal changed while refusing continuation:\nbefore: %v\nafter:  %v", before, after)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, continuationID)); !os.IsNotExist(statErr) {
+		t.Fatalf("continuation directory exists after legacy-source refusal: %v", statErr)
+	}
+}
+
+func TestCreateContinuationRejectsMissingSourceLockWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	sourceID := "0af7651916cd43dd8448eb211c80319c"
+	source, err := Create(root, RunIdentity{
+		RunID: sourceID, Workflow: "wf", Gaggle: "g",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRunFinished, Status: string(PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	terminalSeq := source.Seq()
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sourceDir := filepath.Join(root, sourceID)
+	if err := os.Remove(filepath.Join(sourceDir, fileLock)); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotJournalTree(t, sourceDir)
+
+	_, err = CreateContinuation(root, ContinuationRequest{
+		RunID:               "1af7651916cd43dd8448eb211c80319c",
+		SourceRunID:         sourceID,
+		ExpectedTerminalSeq: terminalSeq,
+		Operator:            "operator@example.test",
+		Target:              "implement",
+	})
+	if !errors.Is(err, ErrImmutableSourceLockMissing) {
+		t.Fatalf("CreateContinuation error = %v, want ErrImmutableSourceLockMissing", err)
+	}
+	after := snapshotJournalTree(t, sourceDir)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("source journal changed while refusing missing lock:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func snapshotJournalTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			snapshot[relative+string(filepath.Separator)] = ""
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snapshot[relative] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatalf("snapshot journal tree: %v", err)
+	}
+	return snapshot
 }
