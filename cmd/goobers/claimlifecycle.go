@@ -170,16 +170,15 @@ func recoverClaims(
 				continue
 			}
 			update, ok := terminalUpdates[entry.RunID]
-			if !ok {
-				continue
+			if ok {
+				if _, alreadyRecorded := recorded[entry.RunID]; alreadyRecorded {
+					continue
+				}
+				if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
+					return err
+				}
+				recorded[entry.RunID] = struct{}{}
 			}
-			if _, ok := recorded[entry.RunID]; ok {
-				continue
-			}
-			if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
-				return err
-			}
-			recorded[entry.RunID] = struct{}{}
 		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {

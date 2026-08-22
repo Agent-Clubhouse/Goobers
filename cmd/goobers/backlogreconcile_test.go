@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
@@ -42,6 +43,7 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	server.addIssue(22, "Bot-active stale item", "goobers:approved", providers.LabelReady, providers.LabelStale)
 
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	newStaleTerminalRun(t, layoutFor(root), "historical-run", "default-implement", journal.PhaseCompleted, "local-ci")
 	server.mu.Lock()
 	server.issues[13].body = "- [ ] #14"
 	server.issues[15].body = "- [x] #16"
@@ -59,6 +61,12 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "7"},
+		"historical-run", "default-implement", time.Hour,
+	); err != nil || !ok {
+		t.Fatalf("seed terminal orphan claim: ok=%v err=%v", ok, err)
 	}
 	claimKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "8"}
 	if ok, _, err := ledger.ClaimScoped(claimKey, "live-run", "implementation", time.Hour); err != nil || !ok {
