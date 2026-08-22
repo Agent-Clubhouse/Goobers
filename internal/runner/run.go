@@ -3302,8 +3302,29 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 			select {
 			case <-stop:
 				return
-			case <-ctx.Done():
-				return
+			// Deliberately NOT selecting on ctx.Done() (#3455). A graceful
+			// drain cancels this context and then waits up to the full
+			// termination grace period for the stage to finish — so the stage
+			// keeps running, sometimes for many minutes, while the heartbeat
+			// that proves it is alive would stop at the instant of
+			// cancellation. Observed on a live rollout: seven minutes of
+			// journal silence on a 60-second cadence while `go test -race`
+			// burned two cores and 1,523 processes in the same container.
+			//
+			// That silence is not cosmetic. The drain's own progress line
+			// tells the operator to "send SIGINT/SIGTERM again to force
+			// shutdown", and a second signal kills the very stage the grace
+			// period exists to protect. The heartbeat going quiet is caused by
+			// the shutdown, and the instinctive response to it accelerates the
+			// shutdown. A staleness-based watcher makes the same mistake
+			// automatically.
+			//
+			// The stop channel is the correct and sufficient terminator: it is
+			// closed by stageHeartbeat.Stop, which finishTaskDispatch calls on
+			// every path once the stage actually ends — including when the
+			// stage ends *because* of the cancellation. So this keeps
+			// reporting for exactly as long as there is something alive to
+			// report on, and no longer.
 			case <-ticker.Ticks():
 				if !progressed.Swap(false) {
 					continue

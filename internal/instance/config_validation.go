@@ -464,6 +464,83 @@ func (c *Config) validateDaemonIdentity(stores map[string]bool) error {
 	if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
 		return fmt.Errorf("daemonIdentity: %w", err)
 	}
+	if err := c.validateDaemonIdentityOwnerCoverage(); err != nil {
+		return err
+	}
+	return c.validateDaemonIdentitySameAppInstallations()
+}
+
+// validateDaemonIdentityOwnerCoverage rejects a single-installation GitHub App
+// daemon identity on an instance whose GitHub repos span more than one owner
+// (#3414, F1 of the multi-owner design).
+//
+// A GitHub App installation belongs to exactly one owner, so a single
+// installationId can mint for at most one of them. Every such config is already
+// runtime-fatal — it fails with a 422 at the first cross-owner mint (#3341) —
+// which means rejecting it at load can only hit configs that never worked. That
+// is why this is an error rather than a warning: it is strictly-better
+// enforcement, and it converts a confusing mid-run failure into a startup
+// message.
+//
+// The uncovered owners cannot be named individually, because an installationId
+// is opaque and config alone cannot say which owner it belongs to. So the
+// message names every owner in play and states the arithmetic.
+func (c *Config) validateDaemonIdentityOwnerCoverage() error {
+	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.InstallationID == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var owners []string
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if repo.Provider != "github" || repo.Owner == "" {
+			continue
+		}
+		if !seen[repo.Owner] {
+			seen[repo.Owner] = true
+			owners = append(owners, repo.Owner)
+		}
+	}
+	if len(owners) < 2 {
+		return nil
+	}
+	sort.Strings(owners)
+	return fmt.Errorf(
+		"daemonIdentity: kind %q with a single installationId cannot cover repos across %d owners (%s) — "+
+			"a GitHub App installation belongs to exactly one owner, so at most one of these can mint and "+
+			"the rest fail at first use; configure a per-owner installation binding or split the instance",
+		GitHubAuthApp, len(owners), strings.Join(owners, ", "))
+}
+
+// validateDaemonIdentitySameAppInstallations rejects a repo that authenticates
+// as the SAME GitHub App as the daemon identity but declares a different
+// installationId (#3414).
+//
+// GitHub allows one installation per (App, owner) pair, so if both halves of
+// the config name the same App and disagree on the installation, one of them is
+// wrong. This deliberately does not presume which: the message reports the
+// disagreement and leaves the choice to the operator, because either half could
+// be the stale one.
+func (c *Config) validateDaemonIdentitySameAppInstallations() error {
+	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.AppID == "" || c.DaemonIdentity.InstallationID == "" {
+		return nil
+	}
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if repo.Provider != "github" || repo.Auth == nil || repo.Auth.Kind != GitHubAuthApp {
+			continue
+		}
+		if repo.Auth.AppID != c.DaemonIdentity.AppID {
+			continue
+		}
+		if repo.Auth.InstallationID == "" || repo.Auth.InstallationID == c.DaemonIdentity.InstallationID {
+			continue
+		}
+		return fmt.Errorf(
+			"repos[%d] (%s/%s): auth.installationId %q disagrees with daemonIdentity.installationId %q for the same appId %q — "+
+				"GitHub allows one installation per App per owner, so one of these is wrong",
+			i, repo.Owner, repo.Name, repo.Auth.InstallationID, c.DaemonIdentity.InstallationID, c.DaemonIdentity.AppID)
+	}
 	return nil
 }
 

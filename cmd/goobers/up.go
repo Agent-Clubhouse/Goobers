@@ -1206,7 +1206,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
-	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout)
+	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
+		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
@@ -1236,6 +1237,10 @@ func drainDaemonRuns(
 	timeout time.Duration,
 	force <-chan struct{},
 	stdout io.Writer,
+	// listParked reports non-terminal runs the drain is NOT holding (#3453).
+	// Nil disables the report, which keeps callers that have no layout — and
+	// every existing test — unchanged.
+	listParked func(active []trackedRun) []parkedRun,
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
@@ -1244,6 +1249,30 @@ func drainDaemonRuns(
 		close(done)
 	}()
 
+	// #3453: a gate-paused run is not held by the drain — Start returns on a
+	// pause, releasing both the WaitGroup and the registry entry — so it is
+	// invisible to ActiveRuns(). Reporting only the held population let the
+	// drain print "no in-flight runs remain" while a non-terminal run sat
+	// there. Naming them does not make the drain wait (since #3426 they are
+	// recovered automatically at next boot via the pinned definition); it
+	// stops "safe to restart" from being something the operator has to infer
+	// from a message that is silent about what it cannot see.
+	reportParked := func(prefix string, active []trackedRun) {
+		if listParked == nil {
+			return
+		}
+		parked := listParked(active)
+		if len(parked) == 0 {
+			return
+		}
+		ids := make([]string, len(parked))
+		for i, run := range parked {
+			ids[i] = run.Workflow + "/" + run.RunID
+		}
+		pf(stdout, "%s: %d run(s) parked at a gate and NOT held by this drain [%s]; "+
+			"they are not waited for and resume at next boot\n",
+			prefix, len(ids), strings.Join(ids, ", "))
+	}
 	printProgress := func(prefix string) {
 		active := runners.ActiveRuns()
 		ids := make([]string, len(active))
@@ -1252,10 +1281,12 @@ func drainDaemonRuns(
 		}
 		if len(ids) == 0 {
 			pf(stdout, "%s: no in-flight runs remain; waiting for scheduler shutdown\n", prefix)
+			reportParked(prefix, active)
 			return
 		}
 		pf(stdout, "%s: %d run(s) remaining [%s]; send SIGINT/SIGTERM again to force shutdown\n",
 			prefix, len(ids), strings.Join(ids, ", "))
+		reportParked(prefix, active)
 	}
 	printProgress("shutting down: draining")
 

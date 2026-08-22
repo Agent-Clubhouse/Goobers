@@ -426,6 +426,16 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			Runner: map[string]any{
 				"kind":     "goobers-io-input-inspection-receipts",
 				"receipts": out.InputInspectionReceipts,
+				// This annotation is only emitted when collection was
+				// configured, so `receipts: null` already means "the agent
+				// made no inspection call" rather than "collection was off".
+				// That distinction was implicit in the emission rule and
+				// invisible to anyone reading the journal: on 2026-08-22 a
+				// null here was read as a lost MCP toolset by three separate
+				// readers, and disproving it took hand-reading the harness
+				// CLI's own log inside the pod. State the count outright so
+				// the journal answers it without that knowledge.
+				"inspectionCalls": len(out.InputInspectionReceipts),
 			},
 		}); err != nil {
 			runErr = errors.Join(runErr, fmt.Errorf(

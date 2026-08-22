@@ -823,6 +823,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
 	out.InputInspectionReceiptsCollected = receiptsCollected
+	// #3456: name a registered-but-unusable MCP server instead of letting its
+	// tools go silently missing. The claude adapter reads this from a
+	// structured system/init event; Copilot has no transcript equivalent, so
+	// this reads the CLI's own run log — available because the confinement
+	// already pins --log-dir into the workspace. Unconfined runs have no
+	// run-scoped log directory, so the diagnostic stays nil rather than
+	// guessing from a shared one.
+	if confinement != nil {
+		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
+	}
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
