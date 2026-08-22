@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -189,6 +190,35 @@ func TestFinalizeTerminalBranchIsIdempotent(t *testing.T) {
 	}
 	if events := terminalBranchCleanupEvents(t, runsDir, runID); len(events) != 1 {
 		t.Fatalf("cleanup events = %d, want 1", len(events))
+	}
+}
+
+func TestFinalizeTerminalBranchPreservesRemediableValidationFailure(t *testing.T) {
+	runsDir, runID, jr := newTerminalBranchJournal(t, true, false)
+	if err := jr.Append(journal.Event{
+		Type:      journal.EventGateEvaluated,
+		Gate:      "local-gate",
+		Verdict:   gate.OutcomeInfra,
+		Target:    "park-escalated",
+		Escalated: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	deleteBranch := func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+		calls++
+		return providers.DeleteBranchResult{Deleted: true}, nil
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("delete calls = %d, want 0", calls)
+	}
+	events := terminalBranchCleanupEvents(t, runsDir, runID)
+	if len(events) != 1 || events[0].Runner["reason"] != "remediable-validation-failure" {
+		t.Fatalf("cleanup events = %+v, want preserved remediable validation branch", events)
 	}
 }
 

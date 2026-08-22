@@ -144,6 +144,26 @@ func (m SupportMatrix) Versions() []Version {
 	return versions
 }
 
+// NewestSupported returns the newest DSL version the matrix declares
+// LevelSupported, using Versions()'s numeric major/minor order. Callers that
+// must pick a version for an object with no pin of its own (a workflow-less
+// gaggle or goober, #3297) derive it from here rather than from
+// CurrentDSLVersion: the transitional default is deprecated, and resolving an
+// unpinned object there would fail validation the moment it turns unsupported
+// — with no dslVersion field on those specs for the author to act on. ok is
+// false when no version is currently LevelSupported, a state
+// ValidateSupportPolicy never produces but one a caller must not paper over
+// with a guess.
+func (m SupportMatrix) NewestSupported() (version string, ok bool) {
+	versions := m.Versions()
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versions[i].Level == LevelSupported {
+			return versions[i].Version, true
+		}
+	}
+	return "", false
+}
+
 // GetDSL returns a copy of the compiled-in DSL SupportMatrix.
 func GetDSL() SupportMatrix {
 	out := make(SupportMatrix, len(dslVersions))

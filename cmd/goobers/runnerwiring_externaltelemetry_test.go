@@ -62,7 +62,7 @@ func TestExternalTelemetryFakeFixtureWorkflowRunsThroughLocalRunner(t *testing.T
 	if err != nil {
 		t.Fatalf("load fixture workflow: %v (report: %+v)", err, report)
 	}
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
 	if err != nil {
 		t.Fatalf("compile fixture workflow: %v", err)
 	}

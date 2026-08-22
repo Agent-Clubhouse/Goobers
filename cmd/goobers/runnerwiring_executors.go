@@ -119,7 +119,7 @@ var copilotModelLister harness.CopilotModelLister
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
@@ -132,6 +132,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		ExtraEnvAllowlist: envPassthrough,
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
+		DeferDiscovery:    deferModelDiscovery,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -186,6 +187,13 @@ type deterministicExecutorInput struct {
 	SecretRegistrar     runner.SecretRegistrar
 	Diagnostics         bool
 	DiagnosticsMaxBytes int64
+	// ScratchDir, when set, is wired onto the ShellExecutor's own field of the
+	// same name (#3342) — the same already-writable scratch directory
+	// (runner.Config.ScratchDir, under the instance's workcopies root) the
+	// runner uses for scratch-mode workspaces, reused here so the built-in
+	// error file never depends on the OS default temp directory being
+	// writable under a read-only-root deployment.
+	ScratchDir string
 }
 
 func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Deterministic, error) {
@@ -199,6 +207,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 		return nil, err
 	}
 	shell.InstanceRoot = input.InstanceRoot
+	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
 	if input.ProjectConfigured && input.ConfiguredProject.LargeRepo {
 		shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}

@@ -824,6 +824,42 @@ func TestRenderStatusAnswersLivenessAndPRTrajectory(t *testing.T) {
 	}
 }
 
+// TestRenderStatusSeparatesReaderLimitationsFromRunBlockers pins the operator-facing
+// half of #3346: a healthy run whose marker this invocation could not verify must not
+// print a `blockers:` line at all, and the limitation must be labelled as the reader's.
+func TestRenderStatusSeparatesReaderLimitationsFromRunBlockers(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 3, 15, 0, 0, time.UTC)
+	heartbeat := now.Add(-10 * time.Second)
+	age := int64(10_000)
+	limitation := "provider claim marker verification unavailable: no credential in " +
+		"GOOBERS_CRED_GITHUB_ISSUES_READ env var"
+	runs := []runSummary{{
+		RunID: "run-healthy", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Hour), LastActivityAt: heartbeat,
+		Operator: readservice.OperatorRunSummary{
+			Issue:                  &readservice.OperatorIssue{Number: "3346"},
+			CurrentStage:           "implementation",
+			LastHeartbeatAt:        &heartbeat,
+			HeartbeatAgeMillis:     &age,
+			Liveness:               "recent",
+			Trajectory:             "implementing",
+			Claim:                  readservice.OperatorClaim{LeaseStatus: "active", ProviderMarker: "unavailable"},
+			NextTransition:         "finish implementation",
+			PotentialBlockers:      []string{},
+			DiagnosticsLimitations: []string{limitation},
+		},
+	}}
+	var stdout strings.Builder
+	renderStatus(&stdout, runs, now)
+	got := stdout.String()
+	if strings.Contains(got, "blockers: ") {
+		t.Fatalf("status = %q, want no run blockers line for a reader-side limitation", got)
+	}
+	if !strings.Contains(got, "diagnostics limited (not a run blocker): "+limitation) {
+		t.Fatalf("status = %q, want the labelled diagnostics line", got)
+	}
+}
+
 func TestTruncateStatusCellPreservesUTF8(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

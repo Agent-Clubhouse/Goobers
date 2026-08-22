@@ -52,6 +52,7 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 	cfg := mcpio.Config{
 		Workspace:    req.Workspace,
 		ArtifactFile: artifactFile,
+		ReceiptFile:  goobersIOReceiptFile(),
 		Inputs:       req.ContextPaths,
 		RunID:        req.Envelope.RunID,
 		WorkflowID:   req.Envelope.WorkflowID,
@@ -62,6 +63,9 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
 	if err != nil {
 		return "", fmt.Errorf("write goobers-io config: %w", err)
+	}
+	if err := mcpio.ResetInputInspectionReceipts(req.Workspace, cfg.ReceiptFile); err != nil {
+		return "", fmt.Errorf("reset goobers-io input inspection receipts: %w", err)
 	}
 
 	server := struct {
@@ -81,3 +85,50 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 	}
 	return string(data), nil
 }
+
+// claudeMCPServerFailures compares the MCP servers this invocation registered
+// (goobers-io when GoobersIORegistered, plus every declared req.MCPServers
+// entry) against the connection report the claude CLI emitted in its
+// system/init event, and returns the ones that were not usable (#3356). A
+// registered server whose subprocess fails to start is otherwise a fully
+// silent loss: the CLI proceeds without its tools, the agent sees them as
+// simply nonexistent, and the eventual stage failure (e.g. an agent-authored
+// MISSING_REQUIRED_TOOLS block) says nothing about the cause. Returns nil
+// when no init report was observed at all (CLI died before init, older CLI
+// shape) — absence of the report is never treated as proof of absence of the
+// servers.
+func claudeMCPServerFailures(req RunRequest, capture transcriptCapture) []MCPServerFailure {
+	if !capture.mcpServersReported {
+		return nil
+	}
+	var registered []string
+	if req.GoobersIORegistered {
+		registered = append(registered, goobersIOServerName)
+	}
+	for _, server := range req.MCPServers {
+		if server.Name != "" {
+			registered = append(registered, server.Name)
+		}
+	}
+	var failures []MCPServerFailure
+	seen := make(map[string]struct{}, len(registered))
+	for _, name := range registered {
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		status, ok := capture.mcpServerStatus[name]
+		switch {
+		case !ok:
+			failures = append(failures, MCPServerFailure{Server: name, Status: "absent"})
+		case status != claudeMCPStatusConnected:
+			failures = append(failures, MCPServerFailure{Server: name, Status: status})
+		}
+	}
+	return failures
+}
+
+// claudeMCPStatusConnected is the status the claude CLI reports in its
+// system/init mcp_servers entry for a server whose subprocess started and
+// completed the MCP handshake.
+const claudeMCPStatusConnected = "connected"

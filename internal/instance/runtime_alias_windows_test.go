@@ -30,8 +30,8 @@ func TestCreateLegacyRuntimeAliasCreatesJunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(root, "legacy & (runs) %!^")
-	if err := createLegacyRuntimeAlias(alias, target); err != nil {
-		t.Fatalf("createLegacyRuntimeAlias: %v", err)
+	if err := CreateLegacyRuntimeAlias(alias, target); err != nil {
+		t.Fatalf("CreateLegacyRuntimeAlias: %v", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(alias, "run.yaml")); err != nil {

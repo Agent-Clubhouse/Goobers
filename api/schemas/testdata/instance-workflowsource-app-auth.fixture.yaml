@@ -1,0 +1,133 @@
+# FIXTURE — sanitized copy of a real cloud deployment's instance.yaml.
+#
+# Contributed as a test fixture for #3274. Every identifier is replaced with an
+# example value; the SHAPE is what matters and the shape is real. This exercises
+# the three-way combination a synthetic fixture usually misses:
+#
+#   per-repo App auth  x  daemonIdentity App auth  x  workflowSource App auth
+#
+# all in one document, with two DIFFERENT installation IDs because the repos live
+# in different accounts.
+#
+# Sanitized deliberately: the source repository is PUBLIC, and the original
+# carries a tenant id, an App client id, real installation ids and a Key Vault
+# name. Those are not secrets, but they are this deployment's identifiers, and
+# the established boundary is that the product repo carries collateral for how to
+# self-host and never a particular instance's identity.
+#
+#
+# THIS FILE BELONGS TO INFRA, NOT THE CONFIG REPO. `workflowSource` materializes
+# only the definitions tree (manifest + gaggles + goobers + workflows);
+# instance.yaml lives at the instance root and the daemon needs it before it can
+# read anything from git. Putting it in the config repo would hand the
+# config-repo write grant control over credential resolution, which is the exact
+# thing the two-repo split exists to prevent.
+#
+# No secret VALUES here — every credential is a reference (CFG-009, SEC-010).
+# Files resolve from the Key Vault CSI mount at /mnt/secrets.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+
+# --- Target repositories -----------------------------------------------------
+#
+# App auth, not PATs. Installation tokens expire in about an hour and the
+# private key never leaves the process — stages only ever see minted tokens.
+# Two installations because the repos live in different accounts: the org one
+# for example-org, the personal one for example-user. `auth` is declared per
+# repository, so each entry carries its own installationId.
+#
+# `kind: github-app` FORBIDS a `token:` ref on the same repository — they are
+# mutually exclusive, not layered.
+repos:
+  - provider: github
+    owner: example-org
+    name: example-app
+    auth:
+      kind: github-app
+      appId: "Iv1EXAMPLECLIENTID000" # client ID; GitHub accepts it as JWT issuer
+      installationId: "10000001" # example-org
+      privateKey:
+        file: /mnt/secrets/github-app-private-key.pem
+  - provider: github
+    owner: example-user
+    name: example-site
+    auth:
+      kind: github-app
+      appId: "Iv1EXAMPLECLIENTID000"
+      installationId: "10000002" # example-user — a DIFFERENT installation
+      privateKey:
+        file: /mnt/secrets/github-app-private-key.pem
+
+# --- The daemon's own identity ----------------------------------------------
+#
+# Backs the whole standard daemon-mutation capability set (repo:push,
+# github:issues:write, github:pr:write, github:pr:review, github:branch:delete,
+# github:pr:merge) without declaring each one individually.
+#
+# `slug` is not cosmetic: installation tokens cannot self-report a login (there
+# is no GET /user equivalent), so PR attribution falls back to a branch-prefix
+# heuristic without it. We have that heuristic via branchNamespace, so this is
+# belt-and-braces — but it is free and more direct.
+# NOTE (#3414): this instance's repos span two owners, and a GitHub App
+# installation belongs to exactly one owner — so a single `installationId`
+# here could mint for example-org and would fail with a 422 on the first
+# example-user operation. The daemon identity backs the whole daemon-mutation
+# set instance-wide, so it needs coverage for every owner it acts on. Until
+# per-owner installation bindings exist (#3415), a cross-owner instance must
+# use a PAT for its daemon identity; App auth per repository (above) and for
+# workflowSource (below) is unaffected, because each of those names its own
+# installation for its own owner.
+daemonIdentity:
+  kind: pat
+  token:
+    file: /mnt/secrets/daemon-pat
+
+# --- Model access ------------------------------------------------------------
+#
+# Stays a PAT: the "Copilot Requests" grant is personal-account-only and cannot
+# move to the App. This is the ONE credential still on the procurement list.
+#
+# DELIVERED TWICE, DELIBERATELY — do not "clean up" the duplication. The harness
+# sign-in preflight reads ambient process env and never consults the credential
+# resolver (internal/harness/copilot.go:445-465), so the file ref alone fails
+# daemon startup. The env half is injected from the CSI-synced k8s Secret
+# (see cluster/goobers-system/secrets/secretproviderclass.yaml).
+credentials:
+  - capability: agent:model
+    token:
+      file: /mnt/secrets/copilot-token
+
+# --- Where the workforce is defined -----------------------------------------
+#
+# Built against the shape locked for #3274 ($defs.repoAuth reuse). Until that
+# ships there is no `auth:` here and this needs a static PAT — which is why
+# #3274 was ruled pre-tag: instance 2 runs the TAGGED IMAGE, so the binary
+# either has it or the deployment launches with a static root-of-trust
+# credential regardless of what lands afterwards.
+workflowSource:
+  kind: git
+  url: https://github.com/example-org/example-config
+  ref: main
+  auth:
+    kind: github-app
+    appId: "Iv1EXAMPLECLIENTID000"
+    installationId: "10000001"
+    privateKey:
+      file: /mnt/secrets/github-app-private-key.pem
+
+# --- This runner -------------------------------------------------------------
+runner:
+  capabilities:
+    - os=linux
+
+# --- Tier-3 engine -----------------------------------------------------------
+#
+# Per-stage routing (#2921) appends the OS: a stage declaring os=windows goes to
+# goobers-engine-windows, which the Windows worker Deployment serves.
+engine:
+  hostPort: temporal-frontend.goobers-temporal:7233
+  namespace: default
+  taskQueue: goobers-engine
+
+telemetry:
+  enabled: true

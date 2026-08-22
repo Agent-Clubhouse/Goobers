@@ -359,6 +359,132 @@ func TestDecorateOperatorClaimsVerifiesEveryRunningClaim(t *testing.T) {
 	}
 }
 
+// TestDecorateOperatorClaimsKeepsReaderCredentialGapOutOfRunBlockers pins the
+// #3346 shape exactly: two healthy running runs, claims ACTIVE, markers really
+// on the provider — but the status invocation itself has no credential to check
+// them. That must surface as a diagnostics limitation, never as the runs' own
+// blockers, and it must not disturb the rest of the operator projection.
+func TestDecorateOperatorClaimsKeepsReaderCredentialGapOutOfRunBlockers(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []struct{ id, itemID string }{{"run-a", "3344"}, {"run-b", "3345"}} {
+		ok, _, err := ledger.ClaimScoped(
+			localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: run.itemID},
+			run.id, "implementation", time.Hour,
+		)
+		if err != nil || !ok {
+			t.Fatalf("claim %s = %v, %v", run.id, ok, err)
+		}
+	}
+	credentialGap := errors.New(
+		"no credential in GOOBERS_CRED_GITHUB_ISSUES_READ env var — this subcommand " +
+			`must run as a stage declaring capabilities: ["github:issues:read"]`,
+	)
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(context.Context, string, string) (providers.WorkItem, error) {
+			return providers.WorkItem{}, credentialGap
+		},
+	}}
+	runs := []RunSummary{
+		{
+			ID: "run-a", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             &OperatorIssue{Number: "3344"},
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+		{
+			ID: "run-b", Gaggle: "goobers", Phase: journal.PhaseRunning,
+			Operator: OperatorRunSummary{
+				Issue:             &OperatorIssue{Number: "3345"},
+				Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+				PotentialBlockers: []string{},
+			},
+		},
+	}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	for i := range runs {
+		got := runs[i].Operator
+		if len(got.PotentialBlockers) != 0 {
+			t.Fatalf("run %s blockers = %+v, want none: a reader credential gap is not a run blocker",
+				runs[i].ID, got.PotentialBlockers)
+		}
+		if len(got.DiagnosticsLimitations) != 1 ||
+			got.DiagnosticsLimitations[0] != "provider claim marker verification unavailable: "+credentialGap.Error() {
+			t.Fatalf("run %s diagnostics = %+v", runs[i].ID, got.DiagnosticsLimitations)
+		}
+		// The lease is still reported as live and the marker as merely
+		// unverified — the run's own state must read healthy.
+		if got.Claim.LeaseStatus != "active" || got.Claim.ProviderMarker != "unavailable" {
+			t.Fatalf("run %s claim = %+v", runs[i].ID, got.Claim)
+		}
+	}
+}
+
+// TestDecorateOperatorClaimsReportsRealMarkerDriftAsBlocker guards the other
+// direction of the #3346 split: genuine claim drift the reader *did* observe
+// stays a run blocker and produces no diagnostics limitation.
+func TestDecorateOperatorClaimsReportsRealMarkerDriftAsBlocker(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 20, 3, 15, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "3344"},
+		"run-a", "implementation", time.Hour,
+	)
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	service := &Local{sources: LocalSources{
+		Layout: layout,
+		WorkItemLookup: func(context.Context, string, string) (providers.WorkItem, error) {
+			return providers.WorkItem{}, nil
+		},
+	}}
+	runs := []RunSummary{{
+		ID: "run-a", Gaggle: "goobers", Phase: journal.PhaseRunning,
+		Operator: OperatorRunSummary{
+			Issue:             &OperatorIssue{Number: "3344"},
+			Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "recorded"},
+			PotentialBlockers: []string{},
+		},
+	}}
+	if err := service.decorateOperatorClaims(context.Background(), runs, now); err != nil {
+		t.Fatal(err)
+	}
+	got := runs[0].Operator
+	if len(got.PotentialBlockers) != 1 ||
+		got.PotentialBlockers[0] != "active claim lease has no provider marker" {
+		t.Fatalf("blockers = %+v, want the observed drift", got.PotentialBlockers)
+	}
+	if len(got.DiagnosticsLimitations) != 0 {
+		t.Fatalf("diagnostics = %+v, want none when the reader could see the item", got.DiagnosticsLimitations)
+	}
+}
+
 func TestParseProviderQuotaResumeTime(t *testing.T) {
 	resetAt := time.Date(2026, 7, 17, 4, 0, 0, 0, time.UTC)
 	reason := localscheduler.ReasonProviderQuota + ": resumes at " + resetAt.Format(time.RFC3339)

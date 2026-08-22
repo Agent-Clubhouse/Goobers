@@ -27,8 +27,8 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, or report daemon health with --daemon
+  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
+                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
@@ -77,8 +77,8 @@ Usage:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, or report daemon health with --daemon
+  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
+                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
@@ -129,8 +129,8 @@ Core commands:
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
   goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, or report daemon health with --daemon
+  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
+                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
   goobers stats [--since <duration>] [--json] [path]
                                 show the instance lifetime summary card
   goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
@@ -423,6 +423,11 @@ Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
 persist the paginated ready-transition ledger for telemetry rollups.
+The ledger resumes from a durable per-repo/label event cursor; a full history
+scan runs only on the first cycle or an integrity mismatch, bounded by the
+transitionScanMaxPages input. Below the transitionScanQuotaFloor fraction of
+the provider rate-limit window the scan defers to the next cycle rather than
+spending the shared credential to zero.
 --feedback instead de-readies items whose consecutive failed/escalated
 implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
@@ -1324,6 +1329,10 @@ Usage: goobers push-branch [path]
 Push the worktree's checked-out branch to origin, authenticated via the
 configured repository credential — never the host's ambient git
 credentials, and never persisted to .git/config.
+A push rejected as a ref race (non-fast-forward, "failed to push some
+refs") fetches the remote tip, rebases the local branch onto it, and
+retries up to 2 more times before failing, so a fully-validated diff is
+not discarded because a concurrent writer advanced the branch (#3366).
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 
@@ -1804,13 +1813,22 @@ and agentic-stage durations (default path "."). Exit codes: 0 = OK,
 2 = usage/IO error.
 
 ### status
-Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+It lists parked backlog items too — open issues carrying a park disposition without
+goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
+With --agents, list only the agentic stages in flight right now, by role and run id.
+The --agents answer comes from the runner's own journals, never from a process table,
+so it can never match the process asking (no `ps | grep` self-match), and it drops the
+invoking run when it is itself a stage. It needs no credentials and makes no provider
+calls, so it is safe to run from inside a container during a deploy window. Combine it
+with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
+--watch are refused because the probe reports only the live moment.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry

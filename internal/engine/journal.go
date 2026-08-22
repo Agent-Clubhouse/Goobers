@@ -99,6 +99,9 @@ type JournalProjection struct {
 	// Graph is the pinned canonical workflow graph JSON — the
 	// journal.PinnedWorkflowGraphInputName input snapshot.
 	Graph json.RawMessage `json:"graph,omitempty"`
+	// Definition is the pinned workflow definition used for crash-safe local
+	// reconstruction of this projection.
+	Definition json.RawMessage `json:"definition,omitempty"`
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
@@ -130,6 +133,10 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow graph: %w", err)
 	}
+	definition, err := json.Marshal(m.Def)
+	if err != nil {
+		return nil, fmt.Errorf("engine: marshal pinned workflow definition: %w", err)
+	}
 	runControls := in.RunControls
 	if runControls.MaxRepasses == 0 && in.MaxRepasses > 0 {
 		runControls.MaxRepasses = int32(in.MaxRepasses)
@@ -150,8 +157,9 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				RunControls:     &runControls,
 				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
-			Item:  in.Item,
-			Graph: graph,
+			Item:       in.Item,
+			Graph:      graph,
+			Definition: definition,
 		},
 		usesRepo: runner.MachineUsesRepo(m),
 		branchRef: &journal.ExternalRef{

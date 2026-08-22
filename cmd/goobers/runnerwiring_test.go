@@ -431,7 +431,7 @@ func TestBuildEnvCapabilities(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers")
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "")
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -667,6 +667,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				map[string]apiv1.GooberSpec{"coder": tc.spec},
 				nil,
 				nil,
+				false,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -689,6 +690,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		},
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -739,6 +741,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		},
 		[]string{"COPILOT_HOME"},
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -835,6 +838,64 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("buildDeterministicExecutor returned nil")
+	}
+}
+
+// TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile is the
+// wiring-level regression test for #3342: a deployment with a read-only root
+// filesystem and nothing writable at the OS default temp directory (no
+// TMPDIR, no /tmp) previously failed every goobers-CLI stage's built-in
+// error file creation with "open /tmp/goobers-builtin-error-…: read-only
+// file system". buildDeterministicExecutor now wires ScratchDir onto the
+// ShellExecutor, which this confirms end-to-end by running a stub "goobers"
+// command that echoes GOOBERS_BUILTIN_ERROR_FILE back and asserting it was
+// created under the configured ScratchDir, not the OS default temp dir.
+func TestBuildDeterministicExecutorWiresScratchDirToBuiltinErrorFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchDir := filepath.Join(t.TempDir(), "scratch")
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := runnerWiringArtifactRecorder{}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           &instance.Config{},
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		SelfBin:          stub,
+		ArtifactRecorder: rec,
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+		ScratchDir:       scratchDir,
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+
+	result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Command: []string{"goobers", "some-subcommand"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	if !strings.HasPrefix(builtinErrorFile, scratchDir+string(filepath.Separator)) {
+		t.Fatalf("builtin error file %q was not created under the configured ScratchDir %q — still depends on the OS default temp directory", builtinErrorFile, scratchDir)
+	}
+	if _, err := os.Stat(scratchDir); err != nil {
+		t.Fatalf("ScratchDir was not created: %v", err)
 	}
 }
 
@@ -1839,7 +1900,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1886,6 +1947,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		journal.NewRegistryScrubber(),
 		nil,
 		localscheduler.NewProviderQuotaState(),
+		nil,
 		nil,
 		nil,
 	)
@@ -2302,7 +2364,7 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 	prev := newDaemonIdentityGitHubAppTokenSource
 	mints := 0
 	var gotRepoName string
-	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
 		gotRepoName = gaggleRepoName
 		return func(context.Context) (string, error) {
 			mints++
@@ -2959,9 +3021,13 @@ type blockedHandlerFakeCommenter struct {
 	calls    []providers.UpdateWorkItemRequest
 	comments []providers.Comment
 	nextID   int
+	listErr  error
 }
 
 func (f *blockedHandlerFakeCommenter) ListComments(_ context.Context, _ providers.RepositoryRef, _ string) ([]providers.Comment, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return append([]providers.Comment(nil), f.comments...), nil
 }
 
@@ -3976,6 +4042,40 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	}
 	if !slices.Contains(labelCall.RemoveLabels, providers.LabelReady) {
 		t.Fatalf("RemoveLabels = %v, want %s", labelCall.RemoveLabels, providers.LabelReady)
+	}
+}
+
+func TestBuildFailedHandlerSkipsUpsertWhenStreakReadFails(t *testing.T) {
+	fake := &blockedHandlerFakeCommenter{listErr: errors.New("provider unavailable")}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("463", "run-streak-read-error", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
+	}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if err := h(context.Background(), runner.FailedOutcome{
+		RunID:   "run-streak-read-error",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+	}); err == nil {
+		t.Fatal("want streak read error")
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("calls = %d, want 0 when streak count cannot be read", len(fake.calls))
 	}
 }
 

@@ -22,18 +22,20 @@ import (
 // here.
 //
 // Returns the resolved revision (the tracked ref's commit sha) on success.
-func SyncGitWorkflowSource(ctx context.Context, root string, source WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, warnings []string, err error) {
-	revision, _, warnings, err = SyncGitWorkflowSourceIfChanged(ctx, root, source, "", registrar, stores)
+// appTokens is the installation-token minting source for auth kind github-app
+// (#3274), nil for every other source shape — see NewWorkflowGitSource.
+func SyncGitWorkflowSource(ctx context.Context, root string, source WorkflowSource, appTokens GitTokenSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, warnings []string, err error) {
+	revision, _, warnings, err = SyncGitWorkflowSourceIfChanged(ctx, root, source, "", appTokens, registrar, stores)
 	return revision, warnings, err
 }
 
 // SyncGitWorkflowSourceIfChanged resolves the tracked Git ref and installs its
 // definitions only when it differs from currentRevision.
-func SyncGitWorkflowSourceIfChanged(ctx context.Context, root string, source WorkflowSource, currentRevision string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, changed bool, warnings []string, err error) {
+func SyncGitWorkflowSourceIfChanged(ctx context.Context, root string, source WorkflowSource, currentRevision string, appTokens GitTokenSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, changed bool, warnings []string, err error) {
 	if source.Kind != WorkflowSourceKindGit {
 		return "", false, nil, fmt.Errorf("sync workflow source: kind %q is not %q", source.Kind, WorkflowSourceKindGit)
 	}
-	gitSource, err := NewWorkflowGitSource(root, source, registrar, stores)
+	gitSource, err := NewWorkflowGitSource(root, source, appTokens, registrar, stores)
 	if err != nil {
 		return "", false, nil, err
 	}

@@ -216,7 +216,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -252,6 +252,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		}
 	}
 
+	// Shared with the ShellExecutor's built-in error file (#3342): the same
+	// already-writable scratch directory under the instance's workcopies root
+	// that scratch-mode deterministic commands use below, so the built-in
+	// error file never falls back to the OS default temp directory — which a
+	// read-only-root deployment may not have mounted anything writable at.
+	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
+
 	rc := runner.Config{
 		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
@@ -260,6 +267,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
+				ScratchDir: deterministicScratchDir,
 			})
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
@@ -279,7 +287,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
 		BranchNamespaces: branchNamespaces,
-		ScratchDir:       filepath.Join(l.WorkcopiesDir(), "scratch"),
+		ScratchDir:       deterministicScratchDir,
 		RunsDir:          l.RunsDir(),
 		RepoCloneURL:     repoCloneURL,
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
@@ -613,7 +621,7 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string, deferModelDiscovery bool) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
@@ -622,13 +630,20 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	// goober declares spec.Model — so the launcher override must apply here too,
 	// or admission probes the wrong runtime (bare copilot on a wrapper-only
 	// host, or a divergent bare install beside the wrapper).
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "")
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	resolvedGoobers, warnings, err := admitGooberHarnessConfigs(adapterRegistry, goobers)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// Gaggle-level runner requirements feed push-boundary admission (#2861):
+	// each stage's effective requirement set is its gaggle's
+	// RequiredCapabilities union its own.
+	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
@@ -641,6 +656,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
+			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}

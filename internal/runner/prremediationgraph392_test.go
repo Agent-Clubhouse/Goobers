@@ -706,7 +706,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "gather-implement-context", "implement", "local-ci", "push-branch", "open-pr", "ci-poll", "close-out"}
+	want := []string{"query-backlog", "gather-implement-context", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
@@ -794,9 +794,9 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
-		"query-backlog", "gather-implement-context", "implement", "local-ci",
-		"push-branch", "open-pr", "ci-poll", "remediate-ci", "local-ci",
-		"push-branch", "open-pr", "ci-poll", "close-out",
+		"query-backlog", "gather-implement-context", "implement", "push-branch",
+		"local-ci", "open-pr", "ci-poll", "remediate-ci", "push-branch",
+		"local-ci", "open-pr", "ci-poll", "close-out",
 	}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)

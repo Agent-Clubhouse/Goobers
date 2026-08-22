@@ -11,92 +11,100 @@ import (
 )
 
 type versionedInterpreter struct {
-	compile                     func(Definition, compileConfig) (*Machine, error)
-	checkWarnings               func(Definition) []string
-	checkReachability           func(Definition) []string
-	checkSchedules              func(Definition) []string
-	checkTriggerFields          func(Definition) []string
-	checkWorkflowAdmission      func(Definition, map[string]apiv1.GooberSpec) []string
-	checkGateParameters         func(Definition) []string
-	checkGateOutcomes           func(Definition) []string
-	checkStageRequiredInputs    func(Definition) []string
-	checkStageContracts         func(Definition) []string
-	checkStageContractWarnings  func(Definition) []string
-	checkStageTimeoutCoherence  func(Definition) []string
-	checkPathSimulation         func(Definition) []string
-	newFeatureRegistry          func([]Feature) (FeatureRegistry, error)
-	featuresAtDSLVersion        func([]Feature, string) ([]Feature, error)
-	featuresForWorkflow         func(Definition) ([]Feature, error)
-	featuresForGaggle           func(apiv1.GaggleSpec) ([]Feature, error)
-	featuresForGoober           func(apiv1.GooberSpec) ([]Feature, error)
-	checkFeatureSupport         func([]Feature, bool) []FeatureDiagnostic
-	checkWorkflowFeatureSupport func(Definition, bool) []FeatureDiagnostic
-	taskInvocationInputs        func(*Machine, apiv1.Task) map[string]string
-	taskLimits                  func(apiv1.Task) apiv1.Limits
-	gateLimits                  func(apiv1.Gate) apiv1.Limits
+	compile                         func(Definition, compileConfig) (*Machine, error)
+	checkWarnings                   func(Definition) []string
+	checkReachability               func(Definition) []string
+	checkSchedules                  func(Definition) []string
+	checkTriggerFields              func(Definition) []string
+	checkWorkflowAdmission          func(Definition, map[string]apiv1.GooberSpec) []string
+	checkPushBoundaries             func(Definition, []string) []string
+	checkGateParameters             func(Definition) []string
+	checkGateOutcomes               func(Definition) []string
+	checkStageRequiredInputs        func(Definition) []string
+	checkStageContracts             func(Definition) []string
+	checkStageContractWarnings      func(Definition) []string
+	checkStageTimeoutCoherence      func(Definition) []string
+	checkSubprocessTimeoutCoherence func(Definition) []string
+	checkPathSimulation             func(Definition) []string
+	newFeatureRegistry              func([]Feature) (FeatureRegistry, error)
+	featuresAtDSLVersion            func([]Feature, string) ([]Feature, error)
+	featuresForWorkflow             func(Definition) ([]Feature, error)
+	featuresForGaggle               func(apiv1.GaggleSpec) ([]Feature, error)
+	featuresForGoober               func(apiv1.GooberSpec) ([]Feature, error)
+	checkFeatureSupport             func([]Feature, bool) []FeatureDiagnostic
+	checkWorkflowFeatureSupport     func(Definition, bool) []FeatureDiagnostic
+	taskInvocationInputs            func(*Machine, apiv1.Task) map[string]string
+	taskLimits                      func(apiv1.Task) apiv1.Limits
+	gateLimits                      func(apiv1.Gate) apiv1.Limits
 }
 
 var currentInterpreter = versionedInterpreter{
-	compile:                     compileCurrent,
-	checkWarnings:               vcurrent.CheckWarnings,
-	checkReachability:           vcurrent.CheckReachability,
-	checkSchedules:              vcurrent.CheckSchedules,
-	checkTriggerFields:          vcurrent.CheckTriggerFields,
-	checkWorkflowAdmission:      vcurrent.CheckWorkflowAdmission,
-	checkGateParameters:         vcurrent.CheckGateParameters,
-	checkGateOutcomes:           vcurrent.CheckGateOutcomes,
-	checkStageRequiredInputs:    vcurrent.CheckStageRequiredInputs,
-	checkStageContracts:         vcurrent.CheckStageContracts,
-	checkStageContractWarnings:  vcurrent.CheckStageContractWarnings,
-	checkStageTimeoutCoherence:  vcurrent.CheckStageTimeoutCoherence,
-	checkPathSimulation:         vcurrent.CheckPathSimulation,
-	newFeatureRegistry:          newCurrentFeatureRegistry,
-	featuresAtDSLVersion:        vcurrent.FeaturesAtDSLVersion,
-	featuresForWorkflow:         vcurrent.FeaturesForWorkflow,
-	featuresForGaggle:           vcurrent.FeaturesForGaggle,
-	featuresForGoober:           vcurrent.FeaturesForGoober,
-	checkFeatureSupport:         vcurrent.CheckFeatureSupport,
-	checkWorkflowFeatureSupport: vcurrent.CheckWorkflowFeatureSupport,
-	taskInvocationInputs:        vcurrent.TaskInvocationInputs,
-	taskLimits:                  vcurrent.TaskLimits,
-	gateLimits:                  vcurrent.GateLimits,
+	compile:                         compileCurrent,
+	checkWarnings:                   vcurrent.CheckWarnings,
+	checkReachability:               vcurrent.CheckReachability,
+	checkSchedules:                  vcurrent.CheckSchedules,
+	checkTriggerFields:              vcurrent.CheckTriggerFields,
+	checkWorkflowAdmission:          vcurrent.CheckWorkflowAdmission,
+	checkPushBoundaries:             vcurrent.CheckPushBoundaries,
+	checkGateParameters:             vcurrent.CheckGateParameters,
+	checkGateOutcomes:               vcurrent.CheckGateOutcomes,
+	checkStageRequiredInputs:        vcurrent.CheckStageRequiredInputs,
+	checkStageContracts:             vcurrent.CheckStageContracts,
+	checkStageContractWarnings:      vcurrent.CheckStageContractWarnings,
+	checkStageTimeoutCoherence:      vcurrent.CheckStageTimeoutCoherence,
+	checkSubprocessTimeoutCoherence: vcurrent.CheckSubprocessTimeoutCoherence,
+	checkPathSimulation:             vcurrent.CheckPathSimulation,
+	newFeatureRegistry:              newCurrentFeatureRegistry,
+	featuresAtDSLVersion:            vcurrent.FeaturesAtDSLVersion,
+	featuresForWorkflow:             vcurrent.FeaturesForWorkflow,
+	featuresForGaggle:               vcurrent.FeaturesForGaggle,
+	featuresForGoober:               vcurrent.FeaturesForGoober,
+	checkFeatureSupport:             vcurrent.CheckFeatureSupport,
+	checkWorkflowFeatureSupport:     vcurrent.CheckWorkflowFeatureSupport,
+	taskInvocationInputs:            vcurrent.TaskInvocationInputs,
+	taskLimits:                      vcurrent.TaskLimits,
+	gateLimits:                      vcurrent.GateLimits,
 }
 
 var nextInterpreter = versionedInterpreter{
-	compile:                     compileNext,
-	checkWarnings:               vnext.CheckWarnings,
-	checkReachability:           vnext.CheckReachability,
-	checkSchedules:              vnext.CheckSchedules,
-	checkTriggerFields:          vnext.CheckTriggerFields,
-	checkWorkflowAdmission:      vnext.CheckWorkflowAdmission,
-	checkGateParameters:         vnext.CheckGateParameters,
-	checkGateOutcomes:           vnext.CheckGateOutcomes,
-	checkStageRequiredInputs:    vnext.CheckStageRequiredInputs,
-	checkStageContracts:         vnext.CheckStageContracts,
-	checkStageContractWarnings:  vnext.CheckStageContractWarnings,
-	checkStageTimeoutCoherence:  vnext.CheckStageTimeoutCoherence,
-	checkPathSimulation:         vnext.CheckPathSimulation,
-	newFeatureRegistry:          newNextFeatureRegistry,
-	featuresAtDSLVersion:        nextFeaturesAtDSLVersion,
-	featuresForWorkflow:         featuresForNextWorkflow,
-	featuresForGaggle:           featuresForNextGaggle,
-	featuresForGoober:           featuresForNextGoober,
-	checkFeatureSupport:         checkNextFeatureSupport,
-	checkWorkflowFeatureSupport: checkNextWorkflowFeatureSupport,
-	taskInvocationInputs:        vnext.TaskInvocationInputs,
-	taskLimits:                  vnext.TaskLimits,
-	gateLimits:                  vnext.GateLimits,
+	compile:                         compileNext,
+	checkWarnings:                   vnext.CheckWarnings,
+	checkReachability:               vnext.CheckReachability,
+	checkSchedules:                  vnext.CheckSchedules,
+	checkTriggerFields:              vnext.CheckTriggerFields,
+	checkWorkflowAdmission:          vnext.CheckWorkflowAdmission,
+	checkPushBoundaries:             vnext.CheckPushBoundaries,
+	checkGateParameters:             vnext.CheckGateParameters,
+	checkGateOutcomes:               vnext.CheckGateOutcomes,
+	checkStageRequiredInputs:        vnext.CheckStageRequiredInputs,
+	checkStageContracts:             vnext.CheckStageContracts,
+	checkStageContractWarnings:      vnext.CheckStageContractWarnings,
+	checkStageTimeoutCoherence:      vnext.CheckStageTimeoutCoherence,
+	checkSubprocessTimeoutCoherence: vnext.CheckSubprocessTimeoutCoherence,
+	checkPathSimulation:             vnext.CheckPathSimulation,
+	newFeatureRegistry:              newNextFeatureRegistry,
+	featuresAtDSLVersion:            nextFeaturesAtDSLVersion,
+	featuresForWorkflow:             featuresForNextWorkflow,
+	featuresForGaggle:               featuresForNextGaggle,
+	featuresForGoober:               featuresForNextGoober,
+	checkFeatureSupport:             checkNextFeatureSupport,
+	checkWorkflowFeatureSupport:     checkNextWorkflowFeatureSupport,
+	taskInvocationInputs:            vnext.TaskInvocationInputs,
+	taskLimits:                      vnext.TaskLimits,
+	gateLimits:                      vnext.GateLimits,
 }
 
 type compileConfig struct {
-	goobers              map[string]apiv1.GooberSpec
-	goobersSet           bool
-	knownChecks          []string
-	knownChecksSet       bool
-	knownHarnesses       []string
-	knownHarnessesSet    bool
-	allowPreviewFeatures bool
-	previewFeaturesSet   bool
+	goobers                       map[string]apiv1.GooberSpec
+	goobersSet                    bool
+	knownChecks                   []string
+	knownChecksSet                bool
+	knownHarnesses                []string
+	knownHarnessesSet             bool
+	allowPreviewFeatures          bool
+	previewFeaturesSet            bool
+	gaggleRequiredCapabilities    []string
+	gaggleRequiredCapabilitiesSet bool
 }
 
 // Option customizes compilation.
@@ -123,6 +131,17 @@ func WithKnownHarnesses(names []string) Option {
 	return func(config *compileConfig) {
 		config.knownHarnesses = names
 		config.knownHarnessesSet = true
+	}
+}
+
+// WithGaggleRequiredCapabilities supplies the workflow's gaggle-level runner
+// capability requirements (GaggleSpec.RequiredCapabilities) so push-boundary
+// admission (#2861) evaluates each stage's effective requirement set —
+// gaggle-level tokens union stage-level ones.
+func WithGaggleRequiredCapabilities(caps []string) Option {
+	return func(config *compileConfig) {
+		config.gaggleRequiredCapabilities = caps
+		config.gaggleRequiredCapabilitiesSet = true
 	}
 }
 
@@ -178,6 +197,9 @@ func compileCurrent(def Definition, config compileConfig) (*Machine, error) {
 	if config.previewFeaturesSet {
 		opts = append(opts, vcurrent.WithPreviewFeatures(config.allowPreviewFeatures))
 	}
+	if config.gaggleRequiredCapabilitiesSet {
+		opts = append(opts, vcurrent.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
+	}
 	return vcurrent.Compile(def, opts...)
 }
 
@@ -194,6 +216,9 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	}
 	if config.previewFeaturesSet {
 		opts = append(opts, vnext.WithPreviewFeatures(config.allowPreviewFeatures))
+	}
+	if config.gaggleRequiredCapabilitiesSet {
+		opts = append(opts, vnext.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
 	}
 	return vnext.Compile(def, opts...)
 }

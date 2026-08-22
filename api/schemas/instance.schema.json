@@ -251,6 +251,10 @@
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`. The key only ever signs short-lived App JWTs in this process; stages receive minted installation tokens, never the key, so an env name that stages can see is refused.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
         }
       },
       "allOf": [
@@ -343,7 +347,21 @@
           "$ref": "#/$defs/tokenRef"
         },
         "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier for kind `github-app` (see repos[].auth.appId)." },
-        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId)." },
+        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId). Covers ONE owner, so it is valid only when every GitHub repo in this instance shares a single owner; use `installations` otherwise. Mutually exclusive with `installations`." },
+        "installations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-owner installation bindings for kind `github-app`: one App, one key, one slug, one installation per owner. Required when the instance's repos span more than one GitHub owner — an App installation belongs to exactly one owner, so a single `installationId` mints tokens that fail with a 422 on the first repo in any other owner. Every owner appearing in `repos[]` must be bound. Mutually exclusive with `installationId`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "installationId"],
+            "properties": {
+              "owner": { "type": "string", "minLength": 1, "description": "GitHub owner this installation covers; matches a repos[].owner value." },
+              "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID of the App on that owner." }
+            }
+          }
+        },
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`.",
           "$ref": "#/$defs/tokenRef"
@@ -361,7 +379,13 @@
         },
         {
           "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
-          "then": { "required": ["appId", "installationId", "privateKey"] }
+          "then": {
+            "required": ["appId", "privateKey"],
+            "oneOf": [
+              { "required": ["installationId"] },
+              { "required": ["installations"] }
+            ]
+          }
         }
       ]
     },
@@ -412,11 +436,15 @@
       "properties": {
         "kind": { "type": "string", "enum": ["local-dir", "git"], "description": "How the workflow tree is obtained. `local-dir` accepts only path; `git` accepts exactly one of path or url." },
         "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
-        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref." },
+        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
         "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
         "token": {
           "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
           "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "GitHub App installation-token minting for a REMOTE git source: kind `github-app` with appId, installationId, and privateKey, the same shape repos[].auth uses. Mutually exclusive with token — exactly one identity mechanism per source; short-lived minted tokens replace the static ref, and the private key is refused any env name stages can see.",
+          "$ref": "#/$defs/repoAuth"
         }
       },
       "allOf": [
@@ -528,7 +556,7 @@
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted leaves concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1."
+          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted MEANS UNLIMITED — concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1. Note this is the opposite of a workflow's own readiness.maxRunsPerHour, where zero/omitted falls back to a default of 10 rather than unlimited."
         },
         "workflowBudgets": {
           "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
@@ -583,7 +611,7 @@
               "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
               "examples": ["http://127.0.0.1:4317"]
             },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Acceptable for a loopback collector; GOOBERS_OTLP_INSECURE overrides it." },
+            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
             "headers": {
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",

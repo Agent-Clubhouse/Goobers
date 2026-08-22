@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
@@ -47,6 +48,7 @@ func writeRaw(workspace, relPath, content string) error {
 type fakeRecorder struct {
 	spans     []recordedSpan
 	artifacts []recordedArtifact
+	events    []journal.Event
 	dir       string
 	runsDir   string
 	err       error
@@ -66,6 +68,87 @@ type recordedArtifact struct {
 type metricsFakeAdapter struct {
 	FakeAdapter
 	metrics map[string]float64
+}
+
+type receiptFakeAdapter struct {
+	FakeAdapter
+	receipts []mcpio.InputInspectionReceipt
+}
+
+func (f *receiptFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.InputInspectionReceipts = append([]mcpio.InputInspectionReceipt(nil), f.receipts...)
+	out.InputInspectionReceiptsCollected = true
+	return out, err
+}
+
+type mcpFailureFakeAdapter struct {
+	FakeAdapter
+	failures []MCPServerFailure
+}
+
+func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.MCPServerFailures = append([]MCPServerFailure(nil), f.failures...)
+	return out, err
+}
+
+// TestExecutorJournalsMCPServerUnavailable pins #3356's detection contract:
+// when an adapter reports that a registered MCP server was not connected at
+// invocation, the executor must journal a loud runner.annotation naming the
+// lost servers — next to whatever the stage goes on to report — while leaving
+// the run's own outcome untouched (strictly additive: nothing that worked
+// before changes).
+func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &mcpFailureFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		failures: []MCPServerFailure{{Server: "goobers-io", Status: "failed"}},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("annotation must not change the run outcome, got status %q", result.Status)
+	}
+	var annotation *journal.Event
+	for i := range rec.events {
+		if rec.events[i].Type == journal.EventRunnerAnnotation && rec.events[i].Runner["kind"] == "mcp-server-unavailable" {
+			annotation = &rec.events[i]
+			break
+		}
+	}
+	if annotation == nil {
+		t.Fatalf("events = %+v, want an mcp-server-unavailable annotation", rec.events)
+	}
+	if annotation.Stage != "implement" {
+		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
+	}
+	servers, ok := annotation.Runner["servers"].([]map[string]string)
+	if !ok || len(servers) != 1 || servers[0]["server"] != "goobers-io" || servers[0]["status"] != "failed" {
+		t.Fatalf("annotation servers = %#v", annotation.Runner["servers"])
+	}
+	detail, _ := annotation.Runner["detail"].(string)
+	if !strings.Contains(detail, "unavailable") {
+		t.Fatalf("annotation detail = %q, want it to name the tool loss", detail)
+	}
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
@@ -88,6 +171,14 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 	}
 	f.artifacts = append(f.artifacts, recordedArtifact{name: name, data: append([]byte(nil), data...)})
 	return journal.Ref{Path: "artifacts/fake/" + name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+}
+
+func (f *fakeRecorder) Append(event journal.Event) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, event)
+	return nil
 }
 
 func (f *fakeRecorder) Dir() string { return f.dir }
@@ -188,6 +279,44 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 	if events[1].Role != "assistant" || events[1].Content != "implementing... done" {
 		t.Fatalf("final output event = %#v", events[1])
+	}
+}
+
+func TestExecutorJournalsGoobersIOInputInspectionReceipts(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &receiptFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		receipts: []mcpio.InputInspectionReceipt{
+			{Tool: "list_inputs", Success: true},
+			{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{42}, Success: true},
+		},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %+v, want one receipt annotation", rec.events)
+	}
+	event := rec.events[0]
+	if event.Type != journal.EventRunnerAnnotation || event.Stage != "implement" ||
+		event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+		t.Fatalf("receipt annotation = %+v", event)
 	}
 }
 

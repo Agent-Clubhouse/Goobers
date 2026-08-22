@@ -376,6 +376,66 @@ func TestEvaluatorUsesPerGateRepassBudget(t *testing.T) {
 	}
 }
 
+func TestEvaluatorSeparatesInfrastructureAndPolicyRepassBudgets(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "local-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+		Branches: map[string]string{
+			OutcomePass:       "open-pr",
+			OutcomeFail:       "implement",
+			OutcomeInfra:      "local-ci",
+			wf.BranchEscalate: "park-escalated",
+		},
+	}
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeInfra, OutcomeInfra, OutcomeInfra, OutcomeFail, OutcomeInfra}},
+		MaxRepasses: 1,
+		IsReentry:   func(target string) bool { return target == "local-ci" || target == "implement" },
+	}
+	env := apiv1.InvocationEnvelope{Inputs: map[string]interface{}{InputKeyStatus: "failure"}}
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "timeout", Retryable: true},
+	}
+
+	for attempt := 1; attempt <= DefaultMaxInfrastructureRepasses; attempt++ {
+		result, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+		if err != nil {
+			t.Fatalf("infrastructure evaluation %d: %v", attempt, err)
+		}
+		if result.Target != "local-ci" || result.Attempt != attempt || result.Escalated {
+			t.Fatalf("infrastructure evaluation %d = %+v, want bounded retry to local-ci", attempt, result)
+		}
+	}
+	exhausted, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exhausted.Escalated || exhausted.Target != "park-escalated" ||
+		exhausted.Attempt != DefaultMaxInfrastructureRepasses+1 {
+		t.Fatalf("exhausted infrastructure evaluation = %+v", exhausted)
+	}
+	if got := ev.RepassAttempts["local-ci"]; got != 0 {
+		t.Fatalf("policy repasses for local-ci = %d, want 0", got)
+	}
+
+	policy, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Escalated || policy.Target != "implement" || policy.Attempt != 1 {
+		t.Fatalf("first policy repass after infrastructure retries = %+v", policy)
+	}
+	restarted, err := ev.Evaluate(context.Background(), g, env, "local-ci", subject, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Escalated || restarted.Target != "local-ci" || restarted.Attempt != 1 {
+		t.Fatalf("infrastructure budget after policy remediation = %+v, want fresh retry budget", restarted)
+	}
+}
+
 func TestEvaluatorRoutesRepassEscalationThroughControlBranch(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "review",
@@ -702,6 +762,46 @@ func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
 	})
 }
 
+func TestEvaluatorEscalatesCachedInvalidNeedsHumanVerdict(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Branches: map[string]string{
+			string(apiv1.VerdictPass): wf.TerminalComplete,
+			string(apiv1.VerdictFail): "human",
+			wf.BranchEscalate:         "remediation",
+		},
+	}
+	run := newTestJournal(t)
+	cached := &apiv1.Verdict{
+		Decision:    apiv1.VerdictFail,
+		Rationale:   "The approach needs a policy decision.",
+		SourceRunID: "run-original",
+	}
+	ev := &Evaluator{
+		Journal:       run,
+		CachedVerdict: cached,
+		IsNeedsHumanTarget: func(target string) bool {
+			return target == "human"
+		},
+	}
+
+	result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "review", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Target != "remediation" || !result.Escalated || !result.CacheHit {
+		t.Fatalf("result = %+v, want escalated cached verdict to remediation", result)
+	}
+	if result.Verdict != cached || result.VerdictArtifact == nil {
+		t.Fatalf("result = %+v, want cached verdict and preserved artifact", result)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Target != "remediation" || !events[0].Escalated {
+		t.Fatalf("gate events = %+v, want one escalated remediation event", events)
+	}
+}
+
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:
 // when the implement stage commits nothing (an empty diff — e.g. it produced
 // no change on an over-scope probe), the reviewer gate must synthesize `fail`
@@ -1013,6 +1113,80 @@ func TestEvaluatorRequiresConfiguredDependency(t *testing.T) {
 	agenticGate := apiv1.Gate{Name: "g", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "r"}, Branches: map[string]string{"pass": ""}}
 	if _, err := (&Evaluator{}).Evaluate(context.Background(), agenticGate, apiv1.InvocationEnvelope{}, "s", apiv1.ResultEnvelope{}, "", false); err == nil {
 		t.Fatal("want error when Reviewer is not configured")
+	}
+}
+
+// TestEscalateUninspectedRemediationRoutesToEscalateBranch covers #3375's
+// terminal half: the runner's own rejection budget is spent, so the gate must
+// resolve to its escalate control branch — carrying the validation cause and a
+// reason distinct from both repass exhaustion and #316's identical-diff guard —
+// without ever invoking the reviewer for the attempt it already refused.
+func TestEscalateUninspectedRemediationRoutesToEscalateBranch(t *testing.T) {
+	run := newTestJournal(t)
+	g := apiv1.Gate{
+		Name: "review", Evaluator: apiv1.EvaluatorAgentic, Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+		Branches: map[string]string{
+			"pass": "local-ci", "needs-changes": "remediate", wf.BranchEscalate: "park-needs-human",
+		},
+	}
+	ev := &Evaluator{
+		Journal:     run,
+		Attempts:    map[string]int{"review": 2},
+		RepassCause: &RepassCause{Kind: "stage-failure", Gate: "local-gate", Outcome: "fail", Stage: "local-ci"},
+	}
+	got, err := ev.EscalateUninspectedRemediation(g, &apiv1.ErrorInfo{
+		Code:    ReasonRemediationEvidenceNotInspected,
+		Message: "local-ci.artifact[0] was never read",
+	}, 3, "sha256:abcd")
+	if err != nil {
+		t.Fatalf("EscalateUninspectedRemediation: %v", err)
+	}
+	if got.Target != "park-needs-human" || !got.Escalated {
+		t.Fatalf("result = %+v, want the gate's escalate control branch", got)
+	}
+	if got.Reason != ReasonRemediationEvidenceNotInspected {
+		t.Fatalf("reason = %q, want %q", got.Reason, ReasonRemediationEvidenceNotInspected)
+	}
+	if got.DuplicateDiff {
+		t.Fatal("result reported DuplicateDiff, want the evidence-rejection cause instead")
+	}
+	if got.RepassCause == nil || got.RepassCause.Stage != "local-ci" {
+		t.Fatalf("repass cause = %+v, want the triggering stage failure preserved", got.RepassCause)
+	}
+	if got.Verdict == nil || got.Verdict.Decision != apiv1.VerdictNeedsChanges ||
+		!strings.Contains(got.Verdict.Rationale, "3 consecutive") ||
+		!strings.Contains(got.Verdict.Rationale, "local-ci.artifact[0] was never read") {
+		t.Fatalf("verdict = %+v, want a synthesized needs-changes carrying the count and cause", got.Verdict)
+	}
+	if got.VerdictArtifact == nil {
+		t.Fatal("verdict artifact = nil, want the synthesized rationale journaled")
+	}
+
+	events := readGateEvents(t, run)
+	if len(events) != 1 {
+		t.Fatalf("journaled %d gate events, want exactly one escalation", len(events))
+	}
+	if !events[0].Escalated || events[0].Target != "park-needs-human" {
+		t.Fatalf("journaled event = %+v, want escalated=true targeting park-needs-human", events[0])
+	}
+	if events[0].Runner["reason"] != ReasonRemediationEvidenceNotInspected {
+		t.Fatalf("journaled reason = %v, want %q", events[0].Runner["reason"], ReasonRemediationEvidenceNotInspected)
+	}
+	if events[0].Runner["diffDigest"] != "sha256:abcd" {
+		t.Fatalf("journaled diffDigest = %v, want the rejected attempt's digest", events[0].Runner["diffDigest"])
+	}
+
+	// A gate with no escalate branch still escalates, via the reserved target.
+	bare := apiv1.Gate{Name: "review", Evaluator: apiv1.EvaluatorAgentic, Branches: map[string]string{"pass": "local-ci"}}
+	fallback, err := (&Evaluator{}).EscalateUninspectedRemediation(bare, nil, 3, "")
+	if err != nil {
+		t.Fatalf("EscalateUninspectedRemediation without escalate branch: %v", err)
+	}
+	if fallback.Target != wf.TargetEscalate || !fallback.Escalated {
+		t.Fatalf("fallback result = %+v, want the reserved @escalate target", fallback)
+	}
+	if fallback.Verdict == nil || !strings.Contains(fallback.Verdict.Rationale, "3 consecutive") {
+		t.Fatalf("fallback verdict = %+v, want the rejection count even with no cause supplied", fallback.Verdict)
 	}
 }
 

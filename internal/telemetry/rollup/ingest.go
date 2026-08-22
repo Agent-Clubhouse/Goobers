@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -475,8 +476,35 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 			runsRoots = append(runsRoots, filepath.Join(instanceRoot, "gaggles", gaggle.Name(), "runs"))
 		}
 	}
+	seenRoots := make(map[string]bool, len(runsRoots))
 	for _, runsRoot := range runsRoots {
-		dirs, err := runDirs(runsRoot)
+		canonical, err := canonicalRunsRoot(runsRoot)
+		if err != nil {
+			return err
+		}
+		if seenRoots[canonical] {
+			// instanceRoot/runs commonly symlinks to one of the
+			// gaggles/<gaggle>/runs roots (documented compat layout); without
+			// this dedup the same run directory is scanned — and its CI check
+			// failures inserted — twice, colliding on the failures table's
+			// (run_id, seq, check_name) primary key and aborting the whole
+			// migration transaction.
+			continue
+		}
+		seenRoots[canonical] = true
+
+		// Scan through canonical, not runsRoot: runsRoots lists
+		// instanceRoot/runs (the compat alias) before the gaggle roots, so
+		// the alias would otherwise win the dedup and every runDir below
+		// would be reached through it. internal/journal's artifact reader
+		// resolves the run directory with filepath.EvalSymlinks too (its own
+		// containment check), which cannot see past a Windows junction any
+		// more than canonicalRunsRoot's own resolution can — so a runDir
+		// under the alias fails there with "journal: resolve run directory:
+		// ...The system cannot find the path specified" on Windows, even
+		// though the dedup itself picked the right, single scan. Reading
+		// through the already-resolved real path sidesteps that entirely.
+		dirs, err := runDirs(canonical)
 		if err != nil {
 			return err
 		}
@@ -495,6 +523,28 @@ func backfillCICheckFailures(ctx context.Context, tx *sql.Tx, instanceRoot strin
 		}
 	}
 	return nil
+}
+
+// canonicalRunsRoot resolves a scan root to a key that's stable across
+// symlink aliasing, so two roots pointing at the same physical directory
+// (e.g. the legacy instanceRoot/runs -> gaggles/<gaggle>/runs compat alias)
+// dedupe to one scan. It goes through instance.ResolveRuntimeAlias rather
+// than filepath.EvalSymlinks directly because that alias is a plain symlink
+// off Windows but a directory junction on Windows (CreateLegacyRuntimeAlias),
+// and Go 1.23+'s EvalSymlinks walks straight past a junction instead of
+// resolving it — only ResolveRuntimeAlias's per-platform reparse-point
+// handling gets the real target on both. A root that doesn't exist yet can't
+// alias anything real, so it resolves to its own cleaned path rather than
+// erroring.
+func canonicalRunsRoot(root string) (string, error) {
+	resolved, err := instance.ResolveRuntimeAlias(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return filepath.Clean(root), nil
+		}
+		return "", fmt.Errorf("rollup: resolve runs root %s: %w", root, err)
+	}
+	return resolved, nil
 }
 
 // Runner-namespace keys carrying a stage failure's typed cause. The producer

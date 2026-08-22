@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -295,7 +296,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		root = fs.Arg(0)
 	}
 
+	// The shipped image runs the daemon as its container's pid 1, which makes
+	// it the kernel's reparent target for every stage descendant that outlives
+	// its parent — and a Go program waits for nothing but its own exec.Cmd
+	// children, so those descendants would stay zombies for the life of the pod
+	// (#3398). Install the missing init half before any stage can start. It is
+	// pid-1-guarded, so a local `goobers up` is untouched and stays silent.
+	if proc.StartOrphanReaper(ctx) {
+		pf(stdout, "startup: running as container init (pid 1); reaping orphaned stage descendants\n")
+	}
+
 	l := instance.NewLayout(root)
+	pf(stdout, "startup: validating instance configuration\n")
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
@@ -303,6 +315,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	pf(stdout, "startup: instance configuration valid\n")
 	startupConfig, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
@@ -354,16 +367,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	setupOptions := []schedulerSetupOption{
+		withDesktopNotifications(notifications, stderr),
+		withStartupProgress(func(message string) {
+			pf(stdout, "startup: %s\n", message)
+		}),
+	}
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
 	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: scheduler initialized\n")
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -778,6 +798,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	// #3274: a github-app workflowSource mints installation tokens instead of
+	// reading a static token ref. The minter is built once here — the
+	// composition root, since internal/instance cannot import
+	// internal/githubapp — and shared by the apply sweep and the reconcile
+	// loop below, so both draw on one near-expiry-refreshing token cache.
+	var workflowSourceAppTokens instance.GitTokenSource
+	if source := setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
+		minted, mintErr := newWorkflowSourceAppTokenSource(*source, setup.SharedRegistry, setup.SecretStores)
+		if mintErr != nil {
+			pf(stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
+			return 1
+		}
+		workflowSourceAppTokens = minted
+	}
 	var sourceReconcileMu sync.Mutex
 	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
@@ -785,7 +819,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
 			if syncErr != nil {
 				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
 				return resp
@@ -1016,6 +1050,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					root,
 					*source,
 					sourceRevision,
+					workflowSourceAppTokens,
 					setup.SharedRegistry,
 					setup.SecretStores,
 				)
@@ -1171,7 +1206,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
-	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout)
+	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
+		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
@@ -1201,6 +1237,10 @@ func drainDaemonRuns(
 	timeout time.Duration,
 	force <-chan struct{},
 	stdout io.Writer,
+	// listParked reports non-terminal runs the drain is NOT holding (#3453).
+	// Nil disables the report, which keeps callers that have no layout — and
+	// every existing test — unchanged.
+	listParked func(active []trackedRun) []parkedRun,
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
@@ -1209,6 +1249,30 @@ func drainDaemonRuns(
 		close(done)
 	}()
 
+	// #3453: a gate-paused run is not held by the drain — Start returns on a
+	// pause, releasing both the WaitGroup and the registry entry — so it is
+	// invisible to ActiveRuns(). Reporting only the held population let the
+	// drain print "no in-flight runs remain" while a non-terminal run sat
+	// there. Naming them does not make the drain wait (since #3426 they are
+	// recovered automatically at next boot via the pinned definition); it
+	// stops "safe to restart" from being something the operator has to infer
+	// from a message that is silent about what it cannot see.
+	reportParked := func(prefix string, active []trackedRun) {
+		if listParked == nil {
+			return
+		}
+		parked := listParked(active)
+		if len(parked) == 0 {
+			return
+		}
+		ids := make([]string, len(parked))
+		for i, run := range parked {
+			ids[i] = run.Workflow + "/" + run.RunID
+		}
+		pf(stdout, "%s: %d run(s) parked at a gate and NOT held by this drain [%s]; "+
+			"they are not waited for and resume at next boot\n",
+			prefix, len(ids), strings.Join(ids, ", "))
+	}
 	printProgress := func(prefix string) {
 		active := runners.ActiveRuns()
 		ids := make([]string, len(active))
@@ -1217,10 +1281,12 @@ func drainDaemonRuns(
 		}
 		if len(ids) == 0 {
 			pf(stdout, "%s: no in-flight runs remain; waiting for scheduler shutdown\n", prefix)
+			reportParked(prefix, active)
 			return
 		}
 		pf(stdout, "%s: %d run(s) remaining [%s]; send SIGINT/SIGTERM again to force shutdown\n",
 			prefix, len(ids), strings.Join(ids, ", "))
+		reportParked(prefix, active)
 	}
 	printProgress("shutting down: draining")
 

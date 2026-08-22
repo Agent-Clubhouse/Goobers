@@ -120,6 +120,14 @@ test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
 		$(GO) test -tags=integration -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
 
+## envtest-assets: Print the provisioned KUBEBUILDER_ASSETS path (downloads on first use).
+# Single-sources the pinned control-plane version for CI, which exports the path
+# into the integration job's environment rather than running a second whole-tree
+# pass. Prints the path and nothing else so it is safe to capture.
+.PHONY: envtest-assets
+envtest-assets:
+	@$(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path
+
 ## test-e2e: Run the walking-skeleton E2E harness scaffold.
 .PHONY: test-e2e
 test-e2e:
@@ -314,6 +322,18 @@ cover: test
 # Excludes generated/cmd-mains/embed from the denominator (see test/coveragegate).
 .PHONY: cover-check
 cover-check: test
+	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
+
+## cover-gate: Enforce COVERAGE_THRESHOLD against an ALREADY-WRITTEN coverage.out.
+# Same gate as cover-check, minus the `test` prerequisite. CI uses this from the
+# unit-macos job, which runs the whole-tree suite unsharded and therefore already
+# emits a complete profile — so the threshold is enforced without paying for a
+# second full run, and the number stays single-sourced here rather than being
+# duplicated into the workflow. Refuses a missing profile rather than passing
+# vacuously: an absent file must red the gate, never silently skip it.
+.PHONY: cover-gate
+cover-gate:
+	@test -s coverage.out || { echo "cover-gate: coverage.out is missing or empty; the unit suite did not emit a profile" >&2; exit 1; }
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
 ## verify-fast: Run the pre-push format, vet, and Go build tier.

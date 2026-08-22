@@ -79,7 +79,13 @@ spec:
       capabilities:
         - provider:pr:write
       run:
+        # `command` is a schema-required placeholder: kind=ci-poll dispatches
+        # to CIPollExecutor and never shells out (the C+D2 wave's
+        # unknown-subcommand admission would rightly reject a real shell-out
+        # to "ci-poll", which is not a CLI command).
         command: ["goobers", "ci-poll", "--wait"]
+      inputs:
+        kind: "ci-poll"
       next: ci-gate
   gates:
     - name: review

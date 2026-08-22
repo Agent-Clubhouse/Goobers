@@ -277,6 +277,12 @@ func hasReconciledMetadataLabel(item providers.WorkItem) bool {
 	return item.HasLabel(providers.LabelClaimed) ||
 		item.HasLabel(providers.LabelStale) ||
 		item.HasLabel(providers.LabelTracking) ||
+		// #3355: an issue carrying ONLY the block marker still needs
+		// inspecting, because that marker is exactly the one nothing else can
+		// clear. Without this clause the item is never selected and the
+		// blocked-on-sibling check below is unreachable — a check that runs on
+		// no input is indistinguishable from one that was never written.
+		item.HasLabel(blockedOnSiblingLabel) ||
 		(item.HasLabel(providers.LabelReady) && itemHasParkLabel(item))
 }
 
@@ -326,6 +332,20 @@ func inspectBacklogMetadata(
 		correction.reasons = append(correction.reasons,
 			"removed `goobers:ready` because it cannot coexist with a park disposition "+
 				"(`goobers:needs-human`, `goobers:blocked-on-sibling`, or `goobers:needs-remediation`)")
+	}
+	// #3355: an issue parked on siblings that have all since closed can never
+	// shed the label on its own -- the only unpark path iterates pull requests
+	// and fires only on a bot PR merging. Clearing it here is fail-closed by
+	// design: see staleBlockedOnSiblingMarker.
+	if item.HasLabel(blockedOnSiblingLabel) {
+		resolved, err := staleBlockedOnSiblingMarker(ctx, provider, repo, item)
+		if err != nil {
+			return correction, botLogin, fmt.Errorf("inspect blocked-on-sibling blockers: %w", err)
+		}
+		if resolved {
+			correction.removeLabels = append(correction.removeLabels, blockedOnSiblingLabel)
+			correction.reasons = append(correction.reasons, blockedOnSiblingResolvedReason)
+		}
 	}
 	if item.HasLabel(providers.LabelStale) {
 		reason := ""

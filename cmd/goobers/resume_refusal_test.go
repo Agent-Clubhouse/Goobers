@@ -53,11 +53,12 @@ func newStuckRunWithDigest(t *testing.T, l instance.Layout, runID, workflowName,
 	}
 }
 
-// TestResumeScanFailsDigestMismatchedRunAndReleasesClaim is #520's
+// TestResumeScanFailsUnrecoverablePinnedRunAndReleasesClaim is #520's
 // end-to-end acceptance scenario, the exact live failure: a daemon restart
 // after a workflow-YAML change finds an in-flight run pinned to the old
-// digest. The WF-016 refusal is correct and must stand (the run is never
-// walked) — but per the maintainer ruling it must land the run at the
+// digest without a historical workflow-definition snapshot. The pinned
+// definition refusal is correct and must stand (the run is never walked) —
+// but per the maintainer ruling it must land the run at the
 // canonical FAILED terminal (not aborted — nobody chose to stop it),
 // release its claim through the same startup path #526 wired, journal the
 // canonical phase (not a raw "error: ..." string) to the instance log, and
@@ -65,7 +66,7 @@ func newStuckRunWithDigest(t *testing.T, l instance.Layout, runID, workflowName,
 // journal event. Before #520 the run stayed phase=running forever and the
 // claim leaked for its full lease (10 leaked claims in one config-only
 // restart, per the issue).
-func TestResumeScanFailsDigestMismatchedRunAndReleasesClaim(t *testing.T) {
+func TestResumeScanFailsUnrecoverablePinnedRunAndReleasesClaim(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 	const runID = "stuck-stale-digest"
@@ -146,11 +147,11 @@ func TestResumeScanFailsDigestMismatchedRunAndReleasesClaim(t *testing.T) {
 	// string #520 exists to prevent) — refuseResume threads FailureCode onto
 	// the Result the same way taskOutcome/failTerminal do for a business
 	// failure, so this path gets the same visibility fix.
-	wantStatus := string(journal.PhaseFailed) + " (resume_refused_digest_mismatch)"
+	wantStatus := string(journal.PhaseFailed) + " (resume_refused_pinned_definition)"
 	if finished.Status != wantStatus {
 		t.Fatalf("instance-log status = %q, want %q — the canonical phase enriched with its cause, never a raw \"error: ...\" string", finished.Status, wantStatus)
 	}
-	if finished.Error == nil || finished.Error.Code != "resume_refused_digest_mismatch" {
-		t.Fatalf("instance-log run.finished error = %+v, want code resume_refused_digest_mismatch", finished.Error)
+	if finished.Error == nil || finished.Error.Code != "resume_refused_pinned_definition" {
+		t.Fatalf("instance-log run.finished error = %+v, want code resume_refused_pinned_definition", finished.Error)
 	}
 }

@@ -1,0 +1,477 @@
+[
+  {
+    "command": "apply-verdict",
+    "resultFile": "verdict-result.json",
+    "capabilities": [
+      {
+        "capability": "provider:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so pull-request routing fails at runtime"
+      },
+      {
+        "capability": "github:pr:review",
+        "consequence": "the capability-scoped credential is not injected, so native review publication fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "backlog-assignment",
+    "resultFile": "backlog-assignment.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so backlog assignment fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "backlog-dedupe",
+    "resultFile": "dedupe-candidates.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "backlog-health",
+    "resultFile": "backlog-health.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the write capability-scoped credential is not injected, so implementation feedback fails at runtime",
+        "anyFlags": [
+          "feedback"
+        ]
+      },
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime",
+        "unlessFlags": [
+          "feedback"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "backlog-query",
+    "resultFile": "claimed-item.json",
+    "claimMutationFlags": [
+      "claim",
+      "reconcile",
+      "release"
+    ],
+    "capabilities": [
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime",
+        "anyFlags": [
+          "read-only"
+        ]
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the write capability-scoped credential is not injected, so backlog query and mutation operations fail at runtime",
+        "unlessFlags": [
+          "read-only"
+        ]
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "open pull-request filtering is disabled when its capability-scoped credential is not injected",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "command": "check-issue-staleness",
+    "resultFile": "issue-staleness-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so polling and labeling the pull request fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so the pinned originating issue lookup fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "elect-lander",
+    "resultFile": "election.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so landing-candidate inspection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-ci-failures",
+    "resultFile": "remediation-brief.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so CI failure collection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-implement-context",
+    "resultFile": "implementation-context.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so implementation context collection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-issue-context",
+    "resultFile": "remediation-brief.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so pull-request context lookup fails at runtime"
+      },
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-pr-context",
+    "resultFile": "remediation-brief.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so remediation pull-request selection fails at runtime"
+      },
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so remediation branch preparation fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-review-threads",
+    "resultFile": "remediation-brief.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so review-thread collection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "gather-sibling-context",
+    "resultFile": "sibling-context.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so sibling pull-request collection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "issue-close-out",
+    "resultFile": "issue-close-out-result.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so issue close-out fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "merge-pr",
+    "resultFile": "merge-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:merge",
+        "consequence": "the capability-scoped credential is not injected, so pull-request merge fails at runtime"
+      },
+      {
+        "capability": "github:branch:delete",
+        "consequence": "the capability-scoped credential is not injected, so merged-branch cleanup fails at runtime"
+      },
+      {
+        "capability": "ado:pr:complete",
+        "consequence": "the capability-scoped credential is not injected, so Azure DevOps pull-request completion fails at runtime",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "command": "merge-queue-poll",
+    "resultFile": "queue-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:merge",
+        "consequence": "the capability-scoped credential is not injected, so merge-queue polling fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so eviction remediation fails at runtime"
+      },
+      {
+        "capability": "github:branch:delete",
+        "consequence": "the capability-scoped credential is not injected, so queue-merged branch cleanup fails at runtime"
+      },
+      {
+        "capability": "ado:pr:complete",
+        "consequence": "the capability-scoped credential is not injected, so Azure DevOps queue completion fails at runtime",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "command": "open-pr",
+    "resultFile": "pr-result.json",
+    "capabilities": [
+      {
+        "capability": "provider:pr:write",
+        "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "post-merge",
+    "resultFile": "post-merge-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"
+      }
+    ]
+  },
+  {
+    "command": "pr-claim",
+    "resultFile": "pr-remediation-lifecycle.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"
+      }
+    ]
+  },
+  {
+    "command": "pr-select",
+    "resultFile": "selected-pr.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so pull-request selection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "publish-batch",
+    "resultFile": "published-batch.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "push-branch",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so branch publication fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "push-remediated",
+    "resultFile": "push-remediated-result.json",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so remediated branch publication fails at runtime"
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so remediated pull-request refresh fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so remediation label cleanup fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "rebase-pr",
+    "resultFile": "rebase-result.json",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so rebased branch publication fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so rebase outcome routing fails at runtime"
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so trusted sibling-overlap handoff inspection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "reconcile-branches",
+    "capabilities": [
+      {
+        "capability": "github:branch:delete",
+        "consequence": "the capability-scoped credential is not injected, so stale branch reconciliation fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "reconcile-post-merge",
+    "resultFile": "reconcile-post-merge-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so late merge inspection fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so late merge issue reconciliation fails at runtime"
+      },
+      {
+        "capability": "github:branch:delete",
+        "consequence": "the capability-scoped credential is not injected, so late merge branch cleanup fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "record-merge-refusal",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so merge-refusal recording fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "remediation-checkpoint",
+    "resultFile": "checkpoint-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so remediation checkpoint inspection fails at runtime"
+      },
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so remediation checkpoint branch inspection fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "report-pr-status",
+    "resultFile": "status-result.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so publishing the pull-request status fails at runtime (the GitHub PR-write grant also authorizes the Gitea commit-status path)"
+      }
+    ]
+  },
+  {
+    "command": "resolve-review-threads",
+    "resultFile": "review-thread-resolution.json",
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so review-thread replies and resolutions fail at runtime"
+      }
+    ]
+  },
+  {
+    "command": "respond-to-findings",
+    "resultFile": "remediation-response.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so finding responses cannot be published at runtime",
+        "unlessFlags": [
+          "check"
+        ]
+      }
+    ]
+  },
+  {
+    "command": "select-source",
+    "resultFile": "selection.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so parent-issue lookup, comment listing, and claiming fail at runtime"
+      }
+    ]
+  },
+  {
+    "command": "set-milestone",
+    "resultFile": "milestone-result.json",
+    "capabilities": [
+      {
+        "capability": "github:milestones:write",
+        "consequence": "the capability-scoped credential is not injected, so milestone assignment fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "telemetry-query",
+    "capabilities": [
+      {
+        "capability": "telemetry:read",
+        "consequence": "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime",
+        "flag": "--format",
+        "flagValue": "tutor-live-verification"
+      }
+    ]
+  },
+  {
+    "command": "update-behind-pr",
+    "resultFile": "update-behind-result.json",
+    "mutatesClaimLedger": true,
+    "capabilities": [
+      {
+        "capability": "github:pr:write",
+        "consequence": "the capability-scoped credential is not injected, so behind-base pull-request update fails at runtime"
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so behind-base remediation routing fails at runtime"
+      }
+    ]
+  },
+  {
+    "command": "validate-plan",
+    "resultFile": "plan-validation.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:read",
+        "consequence": "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"
+      }
+    ]
+  }
+]

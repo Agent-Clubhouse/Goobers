@@ -4,6 +4,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -44,6 +45,12 @@ type check struct {
 	// group <name>` runs only the checks in one group so the workflow can fan
 	// the sequential merge gate across independent runners. See ci.yml.
 	group string
+	// skip, when non-nil, is evaluated immediately before the check would
+	// run. If it reports skip=true, the check is treated as an automatic
+	// pass: the returned reason is logged in place of the command output
+	// and the command itself is never invoked. nil means always run, same
+	// as before this field existed. See resolvePortalPlaywrightSkip (#3372).
+	skip func() (bool, string)
 }
 
 // Check groups. Each maps to one parallel job in .github/workflows/ci.yml.
@@ -316,6 +323,10 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
+		// The release image's Go toolchain is an input to a shipped artifact,
+		// and packaging/docker/Dockerfile is the only leg that can drift from
+		// go.mod (ci.yml defers to it via go-version-file). #3452.
+		{label: "go-toolchain", command: tools.goCommand, args: []string{"run", "./test/gotoolchain"}, group: groupChecks},
 	}
 
 	portalPrepared := false
@@ -384,6 +395,16 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		"--",
 		"-race",
 		"-timeout", "30m",
+		// -count=1 disables Go's test-result cache for the merge-tier suite.
+		// Two reasons, both about not reporting work that did not happen.
+		// First, the coverage threshold is now enforced from this run's profile
+		// (unit-macos -> `make cover-gate`), so the run that produces the number
+		// must be a real one. Second, it is the property the deleted
+		// `conformance` job uniquely had; carrying it here is what makes that
+		// deletion a no-op rather than a loosening. It costs nothing in CI,
+		// where the build cache is cold anyway, and it is what stops a restored
+		// warm cache from ever turning "cached PASS" into a green that never ran.
+		"-count=1",
 		"-covermode=atomic",
 		"-coverprofile=coverage.out",
 		"./...",
@@ -413,6 +434,25 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		env:     testEnvironment,
 		group:   groupUnit,
 	}
+	// Deliberately NOT routed through test/hermetic, though every other suite is.
+	//
+	// It was tempting: the unit group sets
+	// GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1, so the shards never run these
+	// contracts, and the whole-tree `make test` pass behind the deleted
+	// `coverage` job was the only place they ran under the restricted PATH.
+	// But that pass only existed from 2026-08-16 (#3152) — before it, nothing in
+	// CI ran these contracts hermetically either, so there is no long-standing
+	// property here to preserve, only a five-day-old side effect of the job this
+	// change removes.
+	//
+	// And it does not work on Windows. hermetic links each allowlisted tool into
+	// a temp directory and points PATH at it; `git.exe` resolves its libexec
+	// helpers relative to its own install layout, so a linked-in-isolation git
+	// dies with "error launching git: The system cannot find the path specified."
+	// Measured on PR #3461: every reference-workflow contract failed at
+	// `git init` on windows-latest while ubuntu and macOS passed. Making these
+	// contracts hermetic therefore needs a fix in the hermetic runner's Windows
+	// tool materialisation first, and belongs in its own change.
 	shippedWorkflowCheck := check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
@@ -545,6 +585,85 @@ func fastChecks(mergeChecks []check) []check {
 	return result
 }
 
+// playwrightBrowsersPathEnv is the environment variable Playwright's CLI and
+// installer both honour for the browsers cache directory.
+const playwrightBrowsersPathEnv = "PLAYWRIGHT_BROWSERS_PATH"
+
+// resolvePortalPlaywrightSkip decides whether portal-playwright-install can
+// no-op instead of invoking `playwright install chromium`.
+//
+// Playwright's own installer (packages/playwright-core/src/server/registry/
+// index.ts, Registry.install) unconditionally mkdir's PLAYWRIGHT_BROWSERS_PATH
+// and takes a lock on a __dirlock file inside it *before* it ever compares
+// installed browser versions. On a container image that bakes browsers into
+// a read-only PLAYWRIGHT_BROWSERS_PATH (readOnlyRootFilesystem), that lock
+// write fails outright — `EROFS: read-only file system, mkdir
+// '.../__dirlock'` — even though the exact pinned chromium build the repo
+// needs is already sitting right there. See #3372.
+//
+// This mirrors just enough of Playwright's own registry logic to detect that
+// already-satisfied case without ever invoking the installer: a browser's
+// on-disk directory is named "<name>-<revision>" and a completed download
+// leaves an "INSTALLATION_COMPLETE" marker file inside it (both from the
+// same index.ts). The revision is read from the installed playwright-core
+// package's own browsers.json manifest rather than re-deriving it from
+// portal/package-lock.json: npm ci (the portal-install check immediately
+// before this one, in the same group) already resolved package-lock.json's
+// pinned @playwright/test version into that exact file, so it names the one
+// chromium revision that version can ever mean — with no separate
+// version-to-revision table of our own to keep in sync with playwright
+// releases.
+//
+// If PLAYWRIGHT_BROWSERS_PATH is unset, or the pinned revision can't be
+// resolved, or that revision isn't present with a completion marker, this
+// reports "do not skip" and portal-playwright-install runs the installer
+// exactly as it does today — a missing or wrong-version bake must still
+// fail loudly here, not surface later as a confusing portal-test failure.
+func resolvePortalPlaywrightSkip() (bool, string) {
+	browsersDir := strings.TrimSpace(os.Getenv(playwrightBrowsersPathEnv))
+	if browsersDir == "" {
+		return false, fmt.Sprintf("%s not set", playwrightBrowsersPathEnv)
+	}
+	manifestPath := filepath.Join("portal", "node_modules", "playwright-core", "browsers.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false, fmt.Sprintf("could not read %s: %v", manifestPath, err)
+	}
+	revision, err := pinnedChromiumRevision(data)
+	if err != nil {
+		return false, fmt.Sprintf("could not resolve pinned chromium revision from %s: %v", manifestPath, err)
+	}
+	chromiumDir := filepath.Join(browsersDir, "chromium-"+revision)
+	if _, err := os.Stat(filepath.Join(chromiumDir, "INSTALLATION_COMPLETE")); err != nil {
+		return false, fmt.Sprintf("chromium revision %s not installed at %s", revision, chromiumDir)
+	}
+	return true, fmt.Sprintf("browsers preinstalled at %s, skipping", chromiumDir)
+}
+
+// pinnedChromiumRevision extracts the chromium build revision from a
+// playwright-core browsers.json manifest — the exact file Playwright's own
+// installer reads to decide what to download.
+func pinnedChromiumRevision(browsersJSON []byte) (string, error) {
+	var manifest struct {
+		Browsers []struct {
+			Name     string `json:"name"`
+			Revision string `json:"revision"`
+		} `json:"browsers"`
+	}
+	if err := json.Unmarshal(browsersJSON, &manifest); err != nil {
+		return "", fmt.Errorf("parse browsers.json: %w", err)
+	}
+	for _, browser := range manifest.Browsers {
+		if browser.Name == "chromium" {
+			if strings.TrimSpace(browser.Revision) == "" {
+				return "", fmt.Errorf("chromium entry has no revision")
+			}
+			return browser.Revision, nil
+		}
+	}
+	return "", fmt.Errorf("no chromium entry")
+}
+
 func portalPreparationChecks(tools toolchain) []check {
 	return []check{
 		{
@@ -559,6 +678,7 @@ func portalPreparationChecks(tools toolchain) []check {
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"},
 			windowsBatch: true,
+			skip:         resolvePortalPlaywrightSkip,
 			group:        groupChecks,
 		},
 		{
@@ -616,6 +736,13 @@ func executeChecksAt(
 	for _, current := range checks {
 		_, _ = fmt.Fprintf(stdout, "==> %s\n", current.label)
 		started := now()
+		if current.skip != nil {
+			if shouldSkip, reason := current.skip(); shouldSkip {
+				_, _ = fmt.Fprintf(stdout, "%s: %s\n", current.label, reason)
+				_, _ = fmt.Fprintf(stdout, "<== %s (elapsed %s)\n", current.label, now().Sub(started).Round(time.Millisecond))
+				continue
+			}
+		}
 		output, err := exec.run(current)
 		_, _ = fmt.Fprintf(stdout, "<== %s (elapsed %s)\n", current.label, now().Sub(started).Round(time.Millisecond))
 		if err != nil {

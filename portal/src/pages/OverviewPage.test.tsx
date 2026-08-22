@@ -33,4 +33,34 @@ describe("overview page", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  // #3346: what the reader could not verify is labelled as such and never joins
+  // the run's blockers, so a credential-less read cannot make a healthy run look
+  // blocked.
+  it("labels reader-side diagnostics limitations separately from run blockers", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((summary) => summary.id === "01JZ441DAEMONAPI");
+    if (!running?.operator) {
+      throw new Error("fixture is missing the running run's operator summary");
+    }
+    running.operator = {
+      ...running.operator,
+      latestError: undefined,
+      review: undefined,
+      potentialBlockers: [],
+      diagnosticsLimitations: [
+        "provider claim marker verification unavailable: no credential in GOOBERS_CRED_GITHUB_ISSUES_READ env var",
+      ],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const active = within(await screen.findByRole("region", { name: "Active runs" }));
+    expect(
+      active.getByText(
+        "Diagnostics limited (not a run blocker): provider claim marker verification unavailable: no credential in GOOBERS_CRED_GITHUB_ISSUES_READ env var",
+      ),
+    ).toBeInTheDocument();
+    expect(active.queryByText(/Blockers:/)).not.toBeInTheDocument();
+  });
 });

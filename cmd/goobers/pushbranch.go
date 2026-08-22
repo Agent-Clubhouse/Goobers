@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/goobers/goobers/internal/adoauth"
@@ -32,6 +35,10 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
 	"credentials, and never persisted to .git/config.\n" +
+	"A push rejected as a ref race (non-fast-forward, \"failed to push some\n" +
+	"refs\") fetches the remote tip, rebases the local branch onto it, and\n" +
+	"retries up to 2 more times before failing, so a fully-validated diff is\n" +
+	"not discarded because a concurrent writer advanced the branch (#3366).\n" +
 	"[path] defaults to the current directory (the stage's worktree).\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
@@ -61,13 +68,120 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if err := gitPushBranch(dir, branch, env); err != nil {
+	if err := pushBranchWithRetry(dir, branch, env, stderr); err != nil {
 		pf(stderr, "error: push branch %q: %v\n", branch, err)
 		return 1
 	}
+	// Record the successful publication in the stage's mutation sidecar so the
+	// runner journals it as a ref.touched event (#228's machinery). #3366's
+	// re-claim discovery reads it back: a prior run whose journal shows a
+	// pushed branch did not strand its diff, so gather-implement-context must
+	// not offer that run's work as recoverable.
+	appendBranchPushFact(dir, branch)
 
 	pf(stdout, "pushed %s to origin\n", branch)
 	return 0
+}
+
+// pushRaceAttempts bounds the push → fetch-and-rebase → retry loop: the total
+// number of pushes attempted before a persistently rejected push fails the
+// stage.
+const pushRaceAttempts = 3
+
+// pushBranchWithRetry pushes branch, and when the push is rejected as a ref
+// race (#3366's trigger class 3: a concurrent writer advanced the remote
+// branch between this worktree's fork point and its push — "failed to push
+// some refs" after minutes of validated implement work), fetches the remote
+// tip, rebases the local branch onto it, and retries. A rebase that does not
+// apply cleanly aborts and surfaces the original push rejection: conflict
+// resolution is agentic work, not a push-layer concern. Any non-race failure
+// (auth, missing remote) fails immediately, exactly as before.
+func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = gitPushBranch(dir, branch, env)
+		if err == nil {
+			return nil
+		}
+		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
+			return err
+		}
+		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
+		if rebaseErr := rebaseOntoRemoteBranch(dir, branch, env); rebaseErr != nil {
+			pf(stderr, "warning: rebase onto remote %q failed (%v); surfacing the original push rejection\n", branch, rebaseErr)
+			return err
+		}
+	}
+}
+
+// isPushRaceError classifies a push failure as a ref race worth a
+// fetch-rebase-retry, from git's own stable rejection phrasing. Everything
+// else (auth failures, unreachable remotes, missing refs) is not retryable
+// at this layer.
+func isPushRaceError(err error) bool {
+	msg := err.Error()
+	for _, marker := range []string{
+		"failed to push some refs",
+		"fetch first",
+		"non-fast-forward",
+		"cannot lock ref",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// rebaseOntoRemoteBranch fetches branch's current remote tip and rebases the
+// local branch onto it, authenticated via the same env-injected credential as
+// the push. On a rebase failure the rebase is aborted so the worktree is left
+// exactly as it was before the attempt.
+func rebaseOntoRemoteBranch(dir, branch string, env []string) error {
+	url, err := originURL(dir)
+	if err != nil {
+		return err
+	}
+	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
+	fetch.Dir = dir
+	fetch.Env = env
+	if out, err := fetch.CombinedOutput(); err != nil {
+		return fmt.Errorf("fetch remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
+	rebase.Dir = dir
+	rebase.Env = env
+	if out, err := rebase.CombinedOutput(); err != nil {
+		abort := exec.Command("git", "rebase", "--abort")
+		abort.Dir = dir
+		abort.Env = env
+		_ = abort.Run()
+		return fmt.Errorf("rebase onto remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// appendBranchPushFact appends a branch-publication mutation fact to the
+// stage worktree's mutation sidecar (mutations.jsonl), best-effort like
+// sidecarMutationRecorder: the push already happened for real, so a failed
+// sidecar write must never fail the stage — it only costs the ref.touched
+// journal projection.
+func appendBranchPushFact(dir, branch string) {
+	fact := mutationFact{Provider: "git", Kind: "branch", ID: branch, Operation: "push"}
+	data, err := json.Marshal(fact)
+	if err != nil {
+		log.Printf("mutation sidecar: marshal branch push fact: %v", err)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, mutationsSidecarFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	}
 }
 
 // currentBranch returns the branch checked out at dir — the run branch

@@ -406,6 +406,10 @@ func platformToolSpecs(goos string) []toolSpec {
 			{name: "node", required: true},
 			{name: "npm.cmd", required: true},
 			{name: "powershell.exe", required: true},
+			// Optional: PowerShell 7 ships as pwsh alongside the built-in
+			// Windows PowerShell. Hosted runners have it, developer machines
+			// need not.
+			{name: "pwsh"},
 			{name: "sh", required: true},
 		}
 	}
@@ -416,6 +420,14 @@ func platformToolSpecs(goos string) []toolSpec {
 		{name: "npm", required: true},
 		{name: "sh", required: true},
 		{name: "bash"},
+		// Optional: PowerShell is cross-platform and preinstalled on hosted
+		// runners, so allowlisting it lets the PowerShell quoting tests execute
+		// in the hermetic tier instead of skipping. It must stay optional -
+		// developer machines without PowerShell simply run those tests as
+		// skips, exactly as they do today. Both spellings are listed because
+		// the binary is pwsh off Windows and powershell on it.
+		{name: "pwsh"},
+		{name: "powershell"},
 		{name: "cat", required: true},
 		{name: "dirname", required: true},
 		{name: "echo", required: true},

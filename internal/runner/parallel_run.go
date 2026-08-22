@@ -472,11 +472,17 @@ func (r *Runner) runParallelBranch(
 	ex := newExecutors(r.cfg, branchJournal, reg)
 	visitedStages := stageVisitSeed(history)
 	gateEval := &gate.Evaluator{
-		Automated:      r.cfg.Automated,
-		Journal:        branchJournal,
-		MaxRepasses:    int(in.RunControls.MaxRepasses),
-		Attempts:       gateRepassSeed(history),
-		RepassAttempts: targetRepassSeed(history),
+		Automated:   r.cfg.Automated,
+		Journal:     branchJournal,
+		MaxRepasses: int(in.RunControls.MaxRepasses),
+		Attempts:    gateRepassSeed(history),
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               targetRepassSeed(history),
+		InfrastructureAttempts:       gateInfrastructureSeed(history),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
 		IsReentry: func(target string) bool {
 			return visitedStages[target]
 		},
