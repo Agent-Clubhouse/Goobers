@@ -1,0 +1,162 @@
+# Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)
+
+Status: Draft — Goobernetes v1 design. Encodes the PO decision record in
+[goobernetes-decisions.md](goobernetes-decisions.md) and delivery decisions 003/006/007/009.
+This document resolves the dispatcher's cluster-facing surface so the infra collateral
+(RBAC, NetworkPolicies, image contract) renders against decided facts rather than assumed
+ones — the §12-open-point-1 topology question especially. It implements issue #3513 and the
+mode-3 half of #3482.
+
+Companions own what this doesn't: [goobernetes-architecture.md](goobernetes-architecture.md)
+(the substrate model + the §12 open points this closes), the constraint solver (#3506,
+merged — eligible-runner-set output the dispatcher consumes),
+[distributed-state-and-coordination.md](distributed-state-and-coordination.md) (the write
+API the dispatcher's pods call), [goobernetes-restrictions.md](goobernetes-restrictions.md)
+(#3516 — what the dispatcher stamps), and
+[goobernetes-deployment-images.md](goobernetes-deployment-images.md) (the image contract).
+
+---
+
+## 1. Topology (closes architecture §12 open point 1)
+
+**The dispatcher is a resident component in `goobers-system`, one instance per cluster**, not
+per-gaggle. Decided here, on these grounds:
+
+- **It is control-plane, not workload.** It holds the credential-minting reach (it stamps
+  stage-scoped credentials via the write API on the pod's behalf) and the Kubernetes
+  `pods: create` authority. Per-gaggle dispatchers would replicate that authority into every
+  gaggle namespace — the opposite of the structural-least-privilege the RBAC design (D-RBAC)
+  builds on.
+- **It shares the daemon's single-writer domain.** The dispatcher reads the resolved runner
+  inventory and the pinned run definitions the daemon owns on the RWO instance root; a
+  co-resident single instance in goobers-system avoids a second cross-namespace read path.
+- **Per-gaggle fairness is a QUEUE property, not a process-location property** (D9: queues
+  key (gaggle × runner-type)). One dispatcher serving all queues preserves fairness without
+  N processes.
+
+**Consequence for infra, and it confirms the constraint (b) framing:** the dispatcher IS the
+first `goobers-system` component to call the Kubernetes API server, and goobers-system is
+deny-first. Its egress set (§4) must be rendered into goobers-system NetworkPolicies — the
+per-gaggle-namespace alternative is off the table, so render against goobers-system's eight
+policies, not per-gaggle ones.
+
+*(The premise the disavowed document asserted as settled is now settled — but by this
+document, sourced to the grounds above, not carried forward from it. The other two premises
+it asserted, dispose-after-surrender and (gaggle × runner-type) queues, were already settled:
+architecture D3 and D9 respectively.)*
+
+## 2. What the dispatcher does per stage attempt
+
+1. Receives the stage activity on its (gaggle × runner-type) queue.
+2. Resolves the eligible runner from the solver's output (#3506 — an eligible-runner *set*;
+   the dispatcher picks within it, Linux-preferring per the placement policy, and on a
+   satisfiable-but-empty capacity waits within the bounded schedule-to-start, higher on
+   Windows per D12).
+3. Creates ONE fresh pod for the resolved runner from its host kind (`self` → local path,
+   no pod; `image` → dispatcher-rendered spec; `deployment` → instantiated from the named
+   template — DI-9), stamping: resource requests from `runsOn` quantities + limits from the
+   runner ceiling (§5 for the tmpfs interaction), the mount-based restriction bindings
+   (decision 006/007), exactly one **derived, non-overridable** `goobers.dev/runner-class`
+   label (§3), the deny-first pod posture, and the OS node selector + Windows toleration.
+4. Supervises the stage; relays liveness to the live journal.
+5. Confirms output surrender (blobstore write-through + journal emits + ResultEnvelope) and
+   **disposes the pod** — one attempt per pod, per D1.
+
+## 3. The runner-class label — derived and non-overridable (decision 004, corrected)
+
+The dispatcher stamps exactly one `goobers.dev/runner-class` label, **derived from the
+resolved restriction set and non-overridable by workflow, gaggle, or stage input** — asserted
+at dispatch, refuse-to-create on any attempt to influence it. RBAC cannot constrain label
+*values*, so an input-influenced class label is privilege escalation into a broader egress
+grant (the per-class NetworkPolicy model attributes egress by this label). This is the
+load-bearing invariant, not the earlier "exactly one label" (a map key holds one value by
+construction — a non-invariant).
+
+## 4. Egress set (constraint (b) — for goobers-system NetworkPolicy rendering)
+
+The dispatcher's outbound needs, deny-first, to be rendered as goobers-system egress
+allows:
+
+| Destination | Purpose | Transport |
+| --- | --- | --- |
+| Kubernetes **API server** | pod create/delete/get/list/watch; pods/log+status; resourcequotas/limitranges get/list/watch; apps/deployments get/list/watch (DI-9 template read) | HTTPS to the in-cluster API endpoint |
+| **Temporal** `:7233` | poll the (gaggle × runner-type) activity queues | gRPC |
+| Blobstore | artifact materialize/write-through | **volume mount, NOT network** — no egress rule |
+| The daemon write API | mint stage-scoped credentials for pods, journal emits | in-cluster to the daemon service (loopback if co-located; else goobers-system service) |
+
+Nothing else. In particular the dispatcher does **not** read the container registry (the
+image check is a tag comparison, decision 009 — no manifest read, no pull credential; the
+kubelet pulls via the AcrPull identity, dispatcher only names the image).
+
+## 5. Stamped pod spec — the interactions infra flagged
+
+- **tmpfs sizeLimit set-and-budgeted (constraint (d)):** the decision-006 `tmp:ephemeral`
+  mount is memory-backed `emptyDir`, which counts against the container memory limit
+  (GA 1.22). The dispatcher sets the tmpfs `sizeLimit` explicitly (never default-to-half-node-
+  RAM) and adds it to the container memory limit when stamping from the runner ceiling — so a
+  stage filling `/tmp` fails with a budgeted, named limit, not a mysterious OOM against a
+  ceiling that never accounted for it.
+- **Restriction bindings by OS (decisions 006/007):** Linux `fs:readonly-except-workspace` =
+  `readOnlyRootFilesystem: true` + writable workspace + writable HOME; Windows the same effect
+  binds to `windowsOptions.runAsUserName: ContainerUser` and the dispatcher **must NOT stamp
+  `readOnlyRootFilesystem` on Windows pods** (silently ignored, fails open — decision 007).
+  `tmp:ephemeral` = ephemeral volume at the platform temp path (Linux /tmp; Windows the
+  profile-nested temp path). `network:*` = the per-runner-class NetworkPolicy (rendered
+  reference manifests, not dispatcher-applied — the operator holds no networking RBAC).
+- **Orphan cleanup — NOT a cross-namespace ownerReference (constraint (a)):** the dispatcher
+  is in goobers-system, pods in gaggle namespaces, and k8s GC deletes a dependent whose
+  namespaced owner is in another namespace (silent-delete-reads-as-eviction). v1 mechanism:
+  **`activeDeadlineSeconds` as the always-on backstop** (every stage pod carries one, derived
+  from the stage timeout + a margin, so a dispatcher crash between create and the stage's own
+  completion cannot leak the pod past its deadline) **plus a label + reconcile sweep** (the
+  dispatcher labels every pod it creates with the run/attempt identity and, on restart,
+  reconciles: any labeled pod whose run is terminal or unknown is deleted). No ownerReference.
+  This is a per-attempt-leak-bounded design, not a zero-leak one — acceptable for v1 since
+  activeDeadlineSeconds caps the leak window.
+
+## 6. The version-skew check (decision 009 — tag comparison, publish-verified)
+
+At dispatch the dispatcher compares its own embedded commit-sha to the image's **sha tag** —
+a tag comparison that equals a commit comparison because the dev tag encodes the commit
+(`goobers-base:<40-char-sha>`). No registry read. Soundness rests on a **publish-side stamp
+gate covering the continuous-main sha-tag channel** — a named prerequisite (decision 009):
+the release-engine publish path publishes no images today, and infra's `apply-tag.sh` gates
+the release channel only. Until that gate exists for the sha-tag stream, tag-trust is only as
+sound as the manual build discipline behind it — stated, not assumed.
+
+## 7. What infra renders against this (the collateral hold released)
+
+With topology decided (goobers-system, §1) the held (b) render is unblocked:
+- **goobers-system NetworkPolicies** for the dispatcher's §4 egress set (the first
+  goobers-system→API-server allow).
+- **Dispatcher RBAC** (infra's `dispatcher-rbac.yaml`, already dry-run-clean) — namespaced
+  Role per gaggle namespace, no PVC verbs (the instance-root-isolation structural invariant),
+  the §4 verbs.
+- **Per-runner-class egress policies** per decision 004/008 (CIDR-backed, per-class only, no
+  `ipBlock.except`, the ratchet as the standing check) — network:allowlist v1 = "egress
+  limited to these CIDRs" (decision 008).
+
+## 8. Acceptance (the dispatcher's own; the e2e proof is #3517)
+
+1. A mode-3 stage attempt runs in a fresh pod the dispatcher created, disposed after output
+   surrender; no pod serves two attempts.
+2. The runner-class label on every created pod is derived from the resolved restriction set;
+   a workflow attempting to set it is refused at dispatch.
+3. A dispatcher crash between create and stage completion leaks no pod past
+   `activeDeadlineSeconds`; the restart reconcile sweep deletes any labeled orphan.
+4. On a Windows pod, `readOnlyRootFilesystem` is NOT stamped; the fs restriction binds to
+   ContainerUser (decision 007), proven by the denied-attempt test the restrictions epic owns.
+5. The dispatcher's egress reaches only the §4 set; a call to any other host is denied by the
+   goobers-system deny-first policy (negative control).
+6. A stage exceeding its budgeted tmpfs `sizeLimit` fails with a named limit error, not an
+   unattributed OOM.
+
+## 9. Open implementation points
+
+- Warm pools (deferred, D9/epic) layer on §2 later; the dispatcher's create path is the seam.
+- The `deployment` host-kind template extraction contract (architecture §12 open point 2).
+- Whether the dispatcher is a distinct binary/Deployment or a mode of the daemon process
+  (co-resident in goobers-system either way; affects only the write-API transport in §4 —
+  loopback vs service).
+- The publish-side sha-tag stamp gate (decision 009 prerequisite) — owner TBD between the
+  release engine (DI-7) and infra's apply-tag.sh adoption.
