@@ -745,6 +745,33 @@ func (l *ClaimLedger) HistoryForRun(runID string) []ClaimEntry {
 	return entries
 }
 
+// HistoryForItem returns retained claim attempts for itemID, including
+// released attempts, ordered newest first.
+func (l *ClaimLedger) HistoryForItem(itemID string) []ClaimEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var entries []ClaimEntry
+	for _, history := range l.history {
+		for _, entry := range history {
+			if entry.ItemID == itemID || entry.ExternalID == itemID {
+				entries = append(entries, entry)
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return claimHistoryTime(entries[i]).After(claimHistoryTime(entries[j]))
+	})
+	return entries
+}
+
+func claimHistoryTime(entry ClaimEntry) time.Time {
+	if entry.ReleasedAt != nil {
+		return *entry.ReleasedAt
+	}
+	return entry.ClaimedAt
+}
+
 func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]ClaimEntry {
 	activeRuns := make(map[string]struct{}, len(l.entries))
 	for _, entry := range l.entries {
