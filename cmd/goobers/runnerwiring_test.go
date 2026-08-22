@@ -2364,7 +2364,7 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 	prev := newDaemonIdentityGitHubAppTokenSource
 	mints := 0
 	var gotRepoName string
-	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
 		gotRepoName = gaggleRepoName
 		return func(context.Context) (string, error) {
 			mints++
