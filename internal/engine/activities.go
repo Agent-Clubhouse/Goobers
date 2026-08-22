@@ -171,6 +171,9 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		SyncBase:        syncBase,
 	})
 	if err != nil {
+		if worktree.IsTransientProvisionError(err) {
+			return nil, invoke.InfrastructureFailure(fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err))
+		}
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
 	}
 	if ws == nil || ws.Path() == "" {
