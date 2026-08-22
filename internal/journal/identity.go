@@ -40,6 +40,7 @@ type Trigger struct {
 type InputRef struct {
 	Name      string          `json:"name"`
 	Ref       Ref             `json:"ref"`
+	Source    string          `json:"source,omitempty"`
 	Integrity apiv1.Integrity `json:"integrity"`
 }
 

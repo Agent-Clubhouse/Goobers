@@ -49,6 +49,7 @@ func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
 		InputIntegrity: map[string]apiv1.Integrity{
 			"injected": apiv1.IntegrityMaintainer,
 		},
+		InputSource: map[string]string{"injected": "operator://payload"},
 	}
 	continuation, err := CreateContinuation(root, req)
 	if err != nil {
@@ -78,6 +79,7 @@ func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
 		t.Fatalf("continuation identity = %+v", id)
 	}
 	if len(id.Inputs) != 1 || id.Inputs[0].Name != "injected" ||
+		id.Inputs[0].Source != req.InputSource["injected"] ||
 		id.Inputs[0].Integrity != apiv1.IntegrityMaintainer ||
 		!strings.HasPrefix(id.Inputs[0].Ref.Digest, "sha256:") {
 		t.Fatalf("continuation input = %+v", id.Inputs)

@@ -47,6 +47,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 	}
 	sourceID := filepath.Base(sourceDir)
 	inputs := make(map[string][]byte, len(inputFlags))
+	inputSources := make(map[string]string, len(inputFlags))
 	for _, value := range inputFlags {
 		name, path, ok := strings.Cut(value, "=")
 		if !ok || name == "" || path == "" {
@@ -59,6 +60,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		inputs[name] = data
+		inputSources[name] = path
 	}
 	grade := apiv1.Integrity(*integrity)
 	if !grade.Valid() {
@@ -76,6 +78,7 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 			RunID: runID, SourceRunID: sourceID, ExpectedTerminalSeq: *terminalSeq,
 			Operator: *operator, Target: *target, Inputs: inputs,
 			InputIntegrity: inputIntegrityMap(inputFlags, grade),
+			InputSource:    inputSources,
 		},
 	)
 	if err != nil {

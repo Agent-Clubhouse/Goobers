@@ -77,6 +77,7 @@ type config struct {
 	scrubber       Scrubber
 	now            func() time.Time
 	inputIntegrity map[string]apiv1.Integrity
+	inputSource    map[string]string
 	appendObserver func(runID string, seq uint64)
 }
 
@@ -109,6 +110,17 @@ func WithInputIntegrity(grades map[string]apiv1.Integrity) Option {
 		c.inputIntegrity = make(map[string]apiv1.Integrity, len(grades))
 		for name, grade := range grades {
 			c.inputIntegrity[name] = grade
+		}
+	}
+}
+
+// WithInputSource records the caller-provided provenance for immutable input
+// snapshots.
+func WithInputSource(sources map[string]string) Option {
+	return func(c *config) {
+		c.inputSource = make(map[string]string, len(sources))
+		for name, source := range sources {
+			c.inputSource[name] = source
 		}
 	}
 }
@@ -227,7 +239,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 			return nil, fmt.Errorf("journal: snapshot input %q has unknown integrity %q", name, integrity)
 		}
 		ref.Integrity = integrity
-		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref, Integrity: integrity})
+		id.Inputs = append(id.Inputs, InputRef{
+			Name: name, Ref: ref, Source: cfg.inputSource[name], Integrity: integrity,
+		})
 	}
 	if err := writeRunYAML(dir, id); err != nil {
 		releaseRunLock(lock)
@@ -306,6 +320,7 @@ type ContinuationRequest struct {
 	Target              string
 	Inputs              map[string][]byte
 	InputIntegrity      map[string]apiv1.Integrity
+	InputSource         map[string]string
 }
 
 // CreateContinuation creates a distinct journal from a terminal source
@@ -327,6 +342,11 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 		return nil, errors.New("journal: continuation target is required")
 	}
 	sourceDir := filepath.Join(runsDir, req.SourceRunID)
+	sourceLock, err := acquireRunLock(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: lock continuation source: %w", err)
+	}
+	defer releaseRunLock(sourceLock)
 	reader, err := OpenRead(sourceDir)
 	if err != nil {
 		return nil, fmt.Errorf("journal: open continuation source: %w", err)
@@ -361,7 +381,9 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 	id.Operator = strings.TrimSpace(req.Operator)
 	id.RequestedTarget = strings.TrimSpace(req.Target)
 	id.Trigger = Trigger{Kind: TriggerManual, Ref: req.SourceRunID}
-	return Create(runsDir, id, req.Inputs, append(opts, WithInputIntegrity(req.InputIntegrity))...)
+	return Create(runsDir, id, req.Inputs, append(opts,
+		WithInputIntegrity(req.InputIntegrity), WithInputSource(req.InputSource),
+	)...)
 }
 
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are
