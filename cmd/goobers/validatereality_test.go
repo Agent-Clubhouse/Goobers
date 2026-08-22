@@ -283,7 +283,8 @@ func TestValidateWarnsOnZeroWorkflowBudget(t *testing.T) {
 	appendToFile(t, filepath.Join(root, "instance.yaml"), `
 runConditions:
   workflowBudgets:
-    paused: 0
+    default-implement: 0
+    unknown: 0
 `)
 
 	code, stdout, stderr := runArgs(t, "validate", root)
@@ -291,7 +292,10 @@ runConditions:
 		t.Fatalf("validate code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		`WARNING WF022 Instance/paused: runConditions.workflowBudgets["paused"] is 0`,
+		`WARNING WF022 Instance/default-implement: runConditions.workflowBudgets["default-implement"] is 0`,
+		"no instance-level override",
+		"no workflow-budget field that pauses",
+		`WARNING WF022 Instance/unknown: runConditions.workflowBudgets["unknown"] is 0`,
 		"no configured workflow has that name",
 		"entry is inert",
 	} {
