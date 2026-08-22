@@ -83,25 +83,36 @@ func (c Claimed) Has(cap string) bool {
 // Derived-requirement vocabulary (dsl-3.0.md D7, decision record D2): the
 // placement tags a stage carries by construction rather than by declaration —
 // "harness:<name>" for agentic stages (from the goober's harness: field) and
-// "shell" for sh/make stages. This leaf package owns the spellings so the
+// "run:shell" for sh/make stages. This leaf package owns the spellings so the
 // deriving side (internal/workflow/v_3_0) and the matching side
-// (internal/runnersolve) cannot drift. Note "harness:<name>" deliberately
-// fails ValidToken: it is a system-derived fact, not an author token, so a
-// runner cannot claim it in provides.capabilities — how a non-self runner
-// image advertises a harness is the dispatcher/image contract's to define
-// (#3513, decision record D8); in v1 only the self runner satisfies harness
-// tags (implicitly — the daemon host runs every configured harness through
-// the local execution path, preflight-verified at startup).
+// (internal/runnersolve) cannot drift. EVERY derived tag deliberately fails
+// ValidToken (the colon is rejected by the author-token grammar): a derived
+// tag is a system-derived fact an author can neither require nor claim in
+// provides.capabilities — how a non-self runner image advertises a harness
+// or shell is the dispatcher/image contract's to define (#3513, decision
+// record D8); in v1 only the self runner satisfies derived tags (implicitly
+// — the daemon host runs every configured harness and every shell stage
+// through the local execution path, preflight-verified at startup).
 const (
 	// DerivedShellTag is the derived requirement of a stage that shells out.
-	DerivedShellTag = "shell"
+	// Spelled with a colon namespace ("run:", matching the harness:<name>
+	// pattern) precisely so it lives OUTSIDE the author grammar: a plain
+	// "shell" token passes ValidToken, so an author CAN spell it, and an
+	// author-spelled token must behave as an ordinary capability — exact set
+	// membership, never the self-implicit derived-tag satisfaction. A 2.0
+	// config declaring requiredCapabilities: [shell] therefore admits
+	// byte-identically to legacy runnercap matching on every instance shape.
+	DerivedShellTag = "run:shell"
 	// DerivedHarnessTagPrefix prefixes the derived requirement of an agentic
 	// stage: DerivedHarnessTagPrefix + the goober's harness name.
 	DerivedHarnessTagPrefix = "harness:"
 )
 
 // DerivedTag reports whether s is a member of the derived-requirement
-// namespace ("shell", or any "harness:"-prefixed tag).
+// namespace ("run:shell", or any "harness:"-prefixed tag). Membership keys
+// ONLY on the colon-namespaced spellings above — every member fails the
+// author-token grammar by design, so no author-spellable token (including
+// the plain "shell") is ever a derived tag.
 func DerivedTag(s string) bool {
 	return s == DerivedShellTag || strings.HasPrefix(s, DerivedHarnessTagPrefix)
 }

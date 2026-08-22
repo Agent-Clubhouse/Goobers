@@ -15,14 +15,19 @@ import (
 // implicit self entry synthesized from the legacy singular runner: block).
 //
 // selfOS is the operating system substituted for a self entry that declares
-// no provides.os — the daemon host's OS is a process fact, not a trusted
-// claim, so callers pass runnersolve.HostOS() (`goobers validate` therefore
-// reads the validating host's OS; for local modes the validating host is the
-// executing host, and on an inventory-less instance every solve finding is
-// advisory anyway). A self entry that DOES declare provides.os keeps its
-// declaration. Non-self entries claim only what they declare (decision
-// record D10: trusted claims; explicit-complete — an entry with no
-// provides.os satisfies no OS requirement).
+// no provides.os. That substitution is RUNTIME-ONLY: the daemon's boot solve
+// and the scheduler's per-run admission run on the actual executing host,
+// where its GOOS is an authoritative process fact — those callers pass
+// runnersolve.HostOS(). `goobers validate` (checkpoint 1) passes "" instead:
+// the validating machine's OS says nothing about the daemon host the config
+// will run on, and substituting it makes validate's findings — and with a
+// declared inventory, its EXIT CODE — machine-dependent. At validate time an
+// os-less self entry is simply os-UNKNOWN (satisfies no OS requirement;
+// checkpoint 1 reports the resulting finding at warning severity with
+// guidance — see appendPlacementFindings). A self entry that DOES declare
+// provides.os keeps its declaration everywhere. Non-self entries claim only
+// what they declare (decision record D10: trusted claims; explicit-complete
+// — an entry with no provides.os satisfies no OS requirement).
 func (c *Config) PlacementRunners(selfOS string) []runnersolve.Runner {
 	resolved := c.ResolvedRunners()
 	runners := make([]runnersolve.Runner, 0, len(resolved))
@@ -31,6 +36,7 @@ func (c *Config) PlacementRunners(selfOS string) []runnersolve.Runner {
 			Name:         entry.Name,
 			Self:         entry.Host == RunnerHostSelfName,
 			OS:           string(entry.Provides.OS),
+			Host:         entry.Host,
 			CPU:          parsedCeiling(entry.Provides.CPU),
 			Memory:       parsedCeiling(entry.Provides.Memory),
 			Disk:         parsedCeiling(entry.Provides.Disk),

@@ -15,7 +15,7 @@ package v30
 //     lets harness-less runner images exist (PO-D8's minimal goobers-base).
 //   - sh/make stages — any deterministic stage that shells out to something
 //     other than the goobers binary, or runs an inline script — derive
-//     "shell".
+//     "run:shell".
 //   - Builtin stages (goobers <subcommand>) derive their needs from stage
 //     identity via the provider-stage manifest resolved at this interpreter's
 //     DSL version (providerstage.ForVersion, the D7 prerequisite that landed
@@ -26,12 +26,14 @@ package v30
 //     interpreter can never see it. Recording that as data now would be a
 //     dead, all-empty column.
 //
-// Derived tags use the "harness:<name>"/"shell" spelling from the design
-// record. These are system-derived facts, not author-declared tokens, so they
-// do not pass through the runnercap author-token grammar; the spellings are
-// owned by internal/runnercap (the leaf both the deriving and the matching
-// side import), and how each runner kind satisfies them is the shared
-// solver's contract (internal/runnersolve, #3506).
+// Derived tags use the colon-namespaced "harness:<name>"/"run:shell"
+// spellings. These are system-derived facts, not author-declared tokens, so
+// every one of them FAILS the runnercap author-token grammar by design (the
+// colon is rejected) — an author-spelled plain "shell" is an ordinary
+// capability token, never a derived tag; the spellings are owned by
+// internal/runnercap (the leaf both the deriving and the matching side
+// import), and how each runner kind satisfies them is the shared solver's
+// contract (internal/runnersolve, #3506).
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"

@@ -8,11 +8,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -73,6 +76,43 @@ func writeSecondWorkflow(t *testing.T, root, yaml string) {
 		t.Fatal(err)
 	}
 }
+
+// declareRemoteRunner appends an engine: block (a remote runner requires the
+// engine connection, RNR002) and adds one remote runner entry after the
+// declared self entry.
+func declareRemoteRunner(t *testing.T, root, entryYAML string) {
+	t.Helper()
+	appendToFile(t, filepath.Join(root, "instance.yaml"),
+		"engine:\n  hostPort: temporal.example:7233\n")
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"    provides:\n      os: linux\n",
+		"    provides:\n      os: linux\n"+entryYAML)
+}
+
+// remoteOnlyV30WorkflowYAML is the reviewer's finding-1 probe shape: a
+// builtin stage (derives no self-only tag) whose runsOn only a remote
+// runner can satisfy. The base spelling requires windows; capability
+// variants string-replace the runsOn block.
+const remoteOnlyV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: win-build
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: run a builtin stage that only a remote runner satisfies
+      runsOn:
+        os: windows
+      run:
+        command: ["goobers", "docs-churn"]
+`
 
 // TestValidatePlacementSever: acceptance §9 item 4. The same unsatisfiable
 // 3.0 workflow is an ERROR (exit 1, RNR001) when the instance declares a
@@ -327,6 +367,268 @@ func TestDaemonStartsWithOneUnsatisfiableWorkflow(t *testing.T) {
 	}
 	if !sawRefusal {
 		t.Errorf("expected a workflow.refused event for win-build: %+v", events)
+	}
+}
+
+// TestRemoteOnlyStageValidatesButBootRefuses is the finding-1 (blocker)
+// regression in the reviewer's probe shape: a stage satisfiable ONLY by a
+// declared remote runner VALIDATES clean (checkpoint 1 judges config
+// validity against the whole declared inventory), and is REFUSED at boot
+// and at dispatch (checkpoints 2/3 judge execution placement against the
+// substrate that actually executes — self only, until #3513) with a named
+// diagnostic, journaled workflow.refused — and nothing ever executes on the
+// daemon host that does not satisfy the stage.
+func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root, "  - name: ci\n    host: ghcr.io/example/ci:v1\n    provides:\n      os: windows\n")
+	writeSecondWorkflow(t, root, remoteOnlyV30WorkflowYAML)
+
+	// Checkpoint 1: the config is VALID — the declared inventory satisfies
+	// the stage (the remote windows runner). Exit 0, no placement finding.
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (a remote-satisfiable config is valid); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") {
+		t.Errorf("checkpoint 1 must not flag a remote-satisfiable stage:\n%s", stdout)
+	}
+
+	// Checkpoint 3: boot marks the workflow refused with the substrate
+	// diagnostic naming where it COULD place and the #3513 pointer.
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if err != nil {
+		t.Fatalf("boot must never kill (#2860): %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+	var refused *localscheduler.WorkflowEntry
+	for i := range setup.Entries {
+		if setup.Entries[i].Workflow == "win-build" {
+			refused = &setup.Entries[i]
+		}
+	}
+	if refused == nil {
+		t.Fatalf("win-build missing from entries: %+v", setup.Entries)
+	}
+	for _, want := range []string{
+		`placeable only on runner(s) [ci (host: ghcr.io/example/ci:v1)]`,
+		"distributed dispatch arrives with #3513",
+	} {
+		if !strings.Contains(refused.PlacementRefusal, want) {
+			t.Errorf("refusal diagnostic missing %q: %s", want, refused.PlacementRefusal)
+		}
+	}
+
+	// The scheduler journals the refusal and refuses dispatch; nothing
+	// executes on self (checkpoint 2).
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	if _, err := sched.Trigger(context.Background(), "win-build", time.Now()); err == nil {
+		t.Fatal("dispatch of a remote-only workflow must be refused")
+	} else {
+		var rejected *localscheduler.TriggerRejectedError
+		if !errors.As(err, &rejected) {
+			t.Fatalf("expected *TriggerRejectedError, got %T: %v", err, err)
+		}
+		if !strings.HasPrefix(rejected.Reason, localscheduler.ReasonPlacementUnsatisfiable) ||
+			!strings.Contains(rejected.Reason, "#3513") {
+			t.Errorf("dispatch refusal must carry the substrate diagnostic: %q", rejected.Reason)
+		}
+	}
+	events, err := journal.ReadInstanceLog(setup.InstanceLog.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRefusal bool
+	for _, ev := range events {
+		if ev.Type == journal.EventWorkflowRefused && ev.Workflow == "win-build" {
+			sawRefusal = true
+			if !strings.Contains(ev.Reason, "#3513") {
+				t.Errorf("workflow.refused must carry the substrate diagnostic: %+v", ev)
+			}
+		}
+		if ev.Type == journal.EventRunStarted {
+			t.Errorf("nothing may execute on the daemon host: %+v", ev)
+		}
+	}
+	if !sawRefusal {
+		t.Errorf("expected a workflow.refused event for win-build: %+v", events)
+	}
+}
+
+// TestRemoteOnlyCapabilityRefusalSurfacesInStatus verifies the finding-2
+// ruling: on a declared inventory the capability axis is enforced and
+// SURFACED — a stage needing a capability only a remote runner claims boots
+// into a workflow.refused naming the capability and the remote-only
+// placement, and `goobers status` (text and --json shapes) shows it, so the
+// operator signal that used to come from CheckCapabilityRequirements
+// survives declared inventories.
+func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root, "  - name: ci\n    host: ghcr.io/example/ci:v1\n    provides:\n      os: linux\n      capabilities: [\"dotnet@8\"]\n")
+	dotnet := strings.Replace(remoteOnlyV30WorkflowYAML,
+		"      runsOn:\n        os: windows\n",
+		"      runsOn:\n        capabilities: [\"dotnet@8\"]\n", 1)
+	writeSecondWorkflow(t, root, dotnet)
+
+	// Validates clean: the declared inventory claims the capability.
+	if code, stdout, stderr := runArgs(t, "validate", root); code != 0 {
+		t.Fatalf("validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if err != nil {
+		t.Fatalf("boot must never kill (#2860): %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+	localscheduler.New(setup.Entries, setup.InstanceLog)
+
+	events, err := journal.ReadInstanceLog(setup.InstanceLog.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	for _, ev := range events {
+		if ev.Type == journal.EventWorkflowRefused && ev.Workflow == "win-build" {
+			reason = ev.Reason
+		}
+	}
+	for _, want := range []string{
+		"missing capabilities dotnet@8",
+		`placeable only on runner(s) [ci (host: ghcr.io/example/ci:v1)]`,
+		"#3513",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("workflow.refused reason missing %q: %q", want, reason)
+		}
+	}
+
+	// The same journal drives the status projection: text and --json both
+	// carry the refusal.
+	service, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      instance.NewLayout(root),
+		Definitions: setup.Definitions,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := refusedWorkflowStatusLines(status)
+	for _, want := range []string{"example/win-build", "dotnet@8", "#3513"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status text missing %q: %q", want, text)
+		}
+	}
+	blob, err := json.Marshal(statusJSONOutput{RefusedWorkflows: status.RefusedWorkflows})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"refusedWorkflows", "dotnet@8", "#3513"} {
+		if !strings.Contains(string(blob), want) {
+			t.Errorf("status --json missing %q: %s", want, blob)
+		}
+	}
+}
+
+// TestValidateSelfOSUnknownIsMachineIndependent is the finding-4 regression:
+// with a declared inventory whose self entry declares no provides.os, an
+// os-requiring stage must produce the SAME findings and exit code on every
+// GOOS — a warning with guidance, never a host-dependent silent pass or
+// error. Two stages pin the two OSes a biased substitution would treat
+// differently: whatever the validating host runs, neither may satisfy
+// statically (no silent pass) and neither may error (no exit-code flip) —
+// asserting both shapes at once is what makes the test itself
+// machine-independent instead of skipping per platform.
+func TestValidateSelfOSUnknownIsMachineIndependent(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	// Strip the fixture's declared os: the self entry becomes os-UNKNOWN.
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"    provides:\n      os: linux\n", "")
+	twoOS := strings.Replace(remoteOnlyV30WorkflowYAML,
+		"      run:\n        command: [\"goobers\", \"docs-churn\"]\n",
+		"      run:\n        command: [\"goobers\", \"docs-churn\"]\n      next: lin\n"+
+			"    - name: lin\n      type: deterministic\n      goal: needs linux\n      runsOn:\n        os: linux\n      run:\n        command: [\"goobers\", \"docs-churn\"]\n", 1)
+	writeSecondWorkflow(t, root, twoOS)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 on every GOOS (os-unknown self downgrades to warning); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "ERROR RNR001") {
+		t.Errorf("an os-unknown-self finding must never be an error (machine-dependent exit code):\n%s", stdout)
+	}
+	for _, want := range []string{
+		"WARNING RNR001 Workflow/win-build",
+		`os "windows"`,
+		`os "linux"`,
+		"declare provides.os on the self runner",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestValidateNetworkNoneRequiresDeclaredEnforcement is the finding-5
+// regression: the solver consults DECLARED restrictions only — self
+// enforces nothing implicitly (no execution path wires runsOn restrictions
+// into executor isolation until #3516), so network:none on a default
+// self-only inventory is honestly unsatisfiable: RNR001 at error severity
+// iff a runners: inventory is declared, warning on the inventory-less
+// instance — and a self entry explicitly declaring the effect is eligible
+// (declared, trusted per RRQ-1).
+func TestValidateNetworkNoneRequiresDeclaredEnforcement(t *testing.T) {
+	netless := strings.Replace(remoteOnlyV30WorkflowYAML,
+		"      runsOn:\n        os: windows\n",
+		"      runsOn:\n        restrictions: [\"network:none\"]\n", 1)
+
+	// Declared self-only inventory, no restrictions declared: error.
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	writeSecondWorkflow(t, root, netless)
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code = %d, want 1 (undeclared enforcement on a declared inventory); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"ERROR RNR001 Workflow/win-build",
+		"does not enforce restrictions network:none",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// The self entry explicitly declaring the effect: eligible, clean.
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"    provides:\n      os: linux\n",
+		"    provides:\n      os: linux\n    restrictions: [\"network:none\"]\n")
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (declared enforcement is trusted); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") {
+		t.Errorf("a declared network:none self runner must satisfy the stage:\n%s", stdout)
+	}
+
+	// Default (inventory-less) instance: advisory warning, exit 0.
+	legacy := initDeterministicDemo(t)
+	replaceInFile(t, filepath.Join(legacy, "config", "manifest.yaml"),
+		"metadata:\n  name: example-instance",
+		"metadata:\n  name: example-instance\n  annotations:\n    goobers.dev/allow-preview-features: \"true\"")
+	writeSecondWorkflow(t, legacy, netless)
+	code, stdout, stderr = runArgs(t, "validate", legacy)
+	if code != 0 {
+		t.Fatalf("inventory-less validate code = %d, want 0 (warning only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING RNR001 Workflow/win-build") {
+		t.Errorf("inventory-less network:none must warn RNR001:\n%s", stdout)
 	}
 }
 

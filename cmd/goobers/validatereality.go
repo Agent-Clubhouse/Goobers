@@ -183,7 +183,14 @@ func appendPlacementFindings(
 	if inventoryDeclared && !advisory {
 		unsatSeverity = validate.Error
 	}
-	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners(runnersolve.HostOS())}
+	// selfOS is "" here — NEVER runnersolve.HostOS(): checkpoint 1 must be
+	// machine-independent (the same config validates identically, same exit
+	// code and findings, on every GOOS — the validating machine's OS says
+	// nothing about the daemon host the config will run on). A self entry
+	// with no declared provides.os is os-UNKNOWN at validate time; the
+	// HostOS substitution is runtime-only (boot/admission on the actual
+	// executing host — see instance.Config.PlacementRunners).
+	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners("")}
 	gaggleSpecs := make(map[string]apiv1.GaggleSpec, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
@@ -213,6 +220,10 @@ func appendPlacementFindings(
 			}
 			return "/spec/tasks"
 		}
+		requirementFor := make(map[string]runnersolve.StageRequirement, len(requirements))
+		for _, requirement := range requirements {
+			requirementFor[requirement.Stage] = requirement
+		}
 		result := runnersolve.Solve(inventory, requirements)
 		for _, placement := range result.Stages {
 			for _, note := range placement.Advisories {
@@ -228,15 +239,55 @@ func appendPlacementFindings(
 				code = validate.RunnerQuantityUnsatisfiable
 				remedy = "raise a runner's declared ceiling or lower the stage minimum"
 			}
+			severity := unsatSeverity
 			message := placement.Unsat.Diagnostic
-			if inventoryDeclared {
+			switch {
+			case selfOSUnknownUnsat(inventory, requirementFor[placement.Stage], placement):
+				// The ONLY reason this stage is unsatisfiable is that the self
+				// runner's OS is unknown at validate time (no declared
+				// provides.os; the stage would place on self if its OS
+				// matched). Whether it actually places is a runtime fact of
+				// the daemon host, which boot/admission check authoritatively
+				// with the real host OS — so this is a machine-independent
+				// WARNING with guidance, never an exit-code-changing error
+				// that would flip with the validating machine's GOOS.
+				severity = validate.Warning
+				message += "; the self runner declares no provides.os, so its operating system is unknown at validate time and this check stays machine-independent — declare provides.os on the self runner to validate OS placement statically, or rely on runtime admission (the daemon checks the actual host OS at boot and per run)"
+			case inventoryDeclared:
 				message += "; no run of this workflow can be scheduled on the declared inventory (" + remedy + ")"
-			} else {
+			default:
 				message += "; advisory on this inventory-less instance — the local runner admits runs against its claimed capabilities at schedule time (declare a runners: inventory to enforce placement here)"
 			}
-			add(code, unsatSeverity, "Workflow", wf.Name, file, pathFor(placement.Stage), message)
+			add(code, severity, "Workflow", wf.Name, file, pathFor(placement.Stage), message)
 		}
 	}
+}
+
+// selfOSUnknownUnsat reports whether a stage's unsatisfiability is
+// attributable solely to the self runner's UNKNOWN OS at validate time: the
+// stage requires an OS, the inventory has a self entry with no declared
+// provides.os, and re-solving with that entry assumed to claim the required
+// OS makes the stage satisfiable. Such a finding is a runtime fact of the
+// daemon host (boot/admission substitute the real host OS), so checkpoint 1
+// reports it at warning severity — keeping validate's exit code identical
+// on every GOOS.
+func selfOSUnknownUnsat(inventory runnersolve.Inventory, requirement runnersolve.StageRequirement, placement runnersolve.StagePlacement) bool {
+	if placement.Unsat == nil || placement.Unsat.Kind != runnersolve.UnsatRequirement || requirement.OS == "" {
+		return false
+	}
+	assumed := runnersolve.Inventory{Mandates: inventory.Mandates}
+	sawUnknownSelf := false
+	for _, runner := range inventory.Runners {
+		if runner.Self && runner.OS == "" {
+			runner.OS = requirement.OS
+			sawUnknownSelf = true
+		}
+		assumed.Runners = append(assumed.Runners, runner)
+	}
+	if !sawUnknownSelf {
+		return false
+	}
+	return len(runnersolve.Solve(assumed, []runnersolve.StageRequirement{requirement}).Unsatisfiable()) == 0
 }
 
 // appendUnclaimedCapabilityWarnings cross-checks every gaggle's whole-gaggle

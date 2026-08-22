@@ -87,24 +87,27 @@ type Runner struct {
 	Name string
 	// Self marks the daemon host itself (host: "self", or the implicit entry
 	// a legacy singular runner: block resolves to). A self runner implicitly
-	// satisfies every derived-namespace requirement (harness:<name>, shell —
-	// internal/runnercap's derived vocabulary): the daemon host executes
-	// agentic and shell stages through the local execution path with its
-	// configured harness command, preflight-verified at startup (#238/#735).
-	// Non-self runners must claim tokens exactly; the derived harness
-	// spelling is deliberately not author-declarable (colon fails the
+	// satisfies every derived-namespace requirement (harness:<name>,
+	// run:shell — internal/runnercap's derived vocabulary): the daemon host
+	// executes agentic and shell stages through the local execution path with
+	// its configured harness command, preflight-verified at startup
+	// (#238/#735). Non-self runners must claim tokens exactly; the derived
+	// spellings are deliberately not author-declarable (the colon fails the
 	// provides.capabilities token grammar), so how a runner image advertises
-	// a harness is the dispatcher/image contract's to define (#3513, decision
-	// record D8) — until then agentic stages are placeable only on self,
-	// which is also the only host kind that executes anything today.
-	// A self runner also implicitly enforces the network:none restriction:
-	// the local executor's isolation mechanism ships today
-	// (internal/executor/network_*.go) and dsl-3.0.md D16 keeps it as the
-	// self-runner enforcement of the migrated run.network surface. The other
-	// v1 effects have no local mechanism and must be declared.
+	// a harness or shell is the dispatcher/image contract's to define (#3513,
+	// decision record D8) — until then agentic and shell stages are placeable
+	// only on self, which is also the only host kind that executes anything
+	// today.
+	// Restrictions are NOT implicit on self: self enforces only what it
+	// declares, like every other runner (see enforces).
 	Self bool
 	// OS is the runner's claimed operating system ("" claims none).
 	OS string
+	// Host is the runner's declared host value (the raw instance.yaml
+	// spelling: "self", an image reference, or a Deployment name), carried
+	// for diagnostics only — the substrate refusal names where a stage COULD
+	// place (see SolveExecutable). Never matched on.
+	Host string
 	// CPU, Memory, and Disk are the runner's declared ceilings (provides
 	// quantities — they become limits in mode 3). Nil means no declared
 	// ceiling, which constrains nothing.
@@ -131,10 +134,11 @@ func SelfRunner(caps []string) Runner {
 // runnercap.Claimed.Missing for every declared token, which is what keeps the
 // scheduler's refusal diagnostics identical to previous releases for legacy
 // configs (checkpoint 2's replacement contract). The one addition is the
-// derived namespace: a self runner satisfies harness:<name> and shell
-// implicitly (see Runner.Self); legacy required sets never contain harness
-// tags (the author grammar cannot spell them), so the addition is invisible
-// to 2.0 shapes.
+// derived namespace: a self runner satisfies harness:<name> and run:shell
+// implicitly (see Runner.Self); legacy required sets can never contain a
+// derived tag (every derived spelling carries a colon, which the author
+// grammar rejects — a plain author-spelled "shell" is an ordinary token,
+// NOT a derived tag), so the addition is byte-invisible to 2.0 shapes.
 func (r Runner) MissingCapabilities(required []string) []string {
 	claimed := runnercap.NewClaimed(r.Capabilities)
 	var missing []string
@@ -155,11 +159,20 @@ func (r Runner) MissingCapabilities(required []string) []string {
 	return missing
 }
 
-// enforces reports whether r enforces restriction effect.
+// enforces reports whether r enforces restriction effect — DECLARED
+// restrictions only, self included (restrictions doc D4: self declares only
+// what a probe proves). Self enforces NOTHING implicitly: in 3.0 no
+// execution path translates a runsOn restriction into executor isolation
+// (and 3.0 refuses run.network, the surface that used to wire network
+// isolation), so an implicit grant here would be an enforcement guarantee
+// nothing delivers — the stage would solve as isolated and run with no
+// isolation at all. SEAM (#3516): the wiring that connects an enforced
+// restriction to the local executor's isolation mechanisms — and with it
+// the set of restrictions a self entry may declare as probe-proven — lands
+// there; until then a restriction-requiring stage matches only a runner
+// whose inventory entry explicitly declares the effect (trusted claims,
+// decision record D10/RRQ-1).
 func (r Runner) enforces(effect string) bool {
-	if r.Self && effect == string(runnercap.RestrictionNetworkNone) {
-		return true
-	}
 	for _, declared := range r.Restrictions {
 		if declared == effect {
 			return true
@@ -221,6 +234,32 @@ func (inv Inventory) LocalMode() bool {
 	return true
 }
 
+// ExecutableSubstrate returns the sub-inventory of runners the CURRENT
+// execution substrate can actually run a stage on: the self entries only,
+// in inventory order, with the mandate floor carried over.
+//
+// THIS IS THE SEAM the #3513 dispatcher widens. Today every admitted stage
+// executes on the daemon host through the local execution path — there is
+// no dispatcher that can route a stage to an image- or Deployment-hosted
+// runner — so checkpoints 2 and 3 (boot refusal and per-run admission,
+// which decide EXECUTION placement) must solve against this substrate, not
+// the declared inventory: a stage green-lit because a remote runner
+// satisfies it would still execute on the daemon host that does not.
+// Checkpoint 1 (config VALIDITY) deliberately keeps the whole inventory —
+// a config satisfiable by its declared inventory is a valid config. When
+// distributed dispatch lands (#3513), this function grows to return the
+// dispatch-reachable runner set and the checkpoints widen with it, without
+// touching the match.
+func (inv Inventory) ExecutableSubstrate() Inventory {
+	substrate := Inventory{Mandates: inv.Mandates}
+	for _, r := range inv.Runners {
+		if r.Self {
+			substrate.Runners = append(substrate.Runners, r)
+		}
+	}
+	return substrate
+}
+
 // UnsatKind classifies why a stage has an empty eligible set, which is what
 // splits the RNR001 and RNR003 validation codes (dsl-3.0.md §5).
 type UnsatKind string
@@ -234,6 +273,12 @@ const (
 	// runner's declared ceiling (RNR003). Never produced in local mode,
 	// where quantities are advisory.
 	UnsatQuantity UnsatKind = "quantity"
+	// UnsatSubstrate means the declared inventory satisfies the stage but
+	// the current execution substrate cannot execute it — the stage is
+	// placeable only on runner(s) the #3513 dispatcher does not exist to
+	// reach yet. Produced only by SolveExecutable (checkpoints 2/3), never
+	// by Solve (checkpoint 1: such a config is valid).
+	UnsatSubstrate UnsatKind = "substrate"
 )
 
 // Unsat describes an unsatisfiable stage: its kind and a deterministic
@@ -285,7 +330,10 @@ func (r Result) Unsatisfiable() []StagePlacement {
 }
 
 // Solve crosses every stage requirement with the inventory. Deterministic:
-// same inputs, same placements, same diagnostic strings.
+// same inputs, same placements, same diagnostic strings. This is the
+// CONFIG-VALIDITY solve — checkpoint 1's (dsl-3.0.md §5): a stage is
+// satisfiable when any DECLARED runner satisfies it. The execution-placement
+// checkpoints (2/3) consume SolveExecutable instead.
 func Solve(inv Inventory, stages []StageRequirement) Result {
 	result := Result{Stages: make([]StagePlacement, 0, len(stages))}
 	localMode := inv.LocalMode()
@@ -293,6 +341,58 @@ func Solve(inv Inventory, stages []StageRequirement) Result {
 		result.Stages = append(result.Stages, solveStage(inv, stage, localMode))
 	}
 	return result
+}
+
+// SolveExecutable is the EXECUTION-PLACEMENT solve checkpoints 2 and 3
+// consume (boot refusal and per-run admission): every stage requirement
+// crossed with the runners the current substrate can actually execute on
+// (ExecutableSubstrate — self only until #3513). Local mode stays a fact of
+// the DECLARED inventory, not the substrate: on a distributed-shape
+// inventory quantities remain hard constraints even though only self
+// executes today.
+//
+// A stage the declared inventory satisfies but the substrate cannot execute
+// is unsatisfiable here (UnsatSubstrate) with a diagnostic naming where it
+// COULD place and that distributed dispatch arrives with #3513 — refused
+// loudly rather than green-lit on a remote runner's claims and then
+// executed on the daemon host that does not satisfy them.
+func SolveExecutable(inv Inventory, stages []StageRequirement) Result {
+	substrate := inv.ExecutableSubstrate()
+	localMode := inv.LocalMode()
+	result := Result{Stages: make([]StagePlacement, 0, len(stages))}
+	for _, stage := range stages {
+		placement := solveStage(substrate, stage, localMode)
+		if placement.Unsat != nil {
+			if full := solveStage(inv, stage, localMode); full.Unsat == nil {
+				placement.Unsat = &Unsat{
+					Kind:       UnsatSubstrate,
+					Diagnostic: substrateDiagnostic(stage.Stage, inv, full.Eligible, placement.Unsat.Diagnostic),
+				}
+			}
+		}
+		result.Stages = append(result.Stages, placement)
+	}
+	return result
+}
+
+// substrateDiagnostic renders the UnsatSubstrate reason: the runners (with
+// their declared hosts) the stage is placeable on, the #3513 pointer, and
+// why the executable substrate itself cannot take it.
+func substrateDiagnostic(stage string, inv Inventory, eligible []string, substrateWhy string) string {
+	hosts := make(map[string]string, len(inv.Runners))
+	for _, r := range inv.Runners {
+		hosts[r.Name] = r.Host
+	}
+	parts := make([]string, 0, len(eligible))
+	for _, name := range eligible {
+		if host := hosts[name]; host != "" {
+			parts = append(parts, fmt.Sprintf("%s (host: %s)", name, host))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return fmt.Sprintf("stage %q placeable only on runner(s) [%s]; distributed dispatch arrives with #3513 (on the executable substrate: %s)",
+		stage, strings.Join(parts, ", "), substrateWhy)
 }
 
 // runnerMatch is one runner's evaluation against one stage.

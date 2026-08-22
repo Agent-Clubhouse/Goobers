@@ -97,44 +97,103 @@ func TestSolveCapabilityMembership(t *testing.T) {
 }
 
 // TestMissingCapabilitiesMatchesRunnercap pins the checkpoint-2 byte-identity
-// contract: for declared (non-derived) tokens, the solver's self-runner miss
+// contract: for every author-spellable token, the solver's self-runner miss
 // list is exactly runnercap.Claimed.Missing — same tokens, same order, same
 // de-duplication — so the scheduler's refusal diagnostics for legacy configs
-// cannot change.
+// cannot change. The adversarial rows pin the finding-3 regression: the
+// plain "shell" token is AUTHOR-SPELLABLE (it passes the token grammar,
+// unlike the colon-namespaced derived run:shell), so a legacy config
+// requiring it must behave byte-identically to runnercap — never picked up
+// by the self-implicit derived-tag skip — including under duplication,
+// reordering, and case variants (matching is exact and case-sensitive).
 func TestMissingCapabilitiesMatchesRunnercap(t *testing.T) {
-	claims := []string{"dotnet@8", "go@1.26"}
-	required := []string{"dotnet@10", "go@1.26", "xcode", "dotnet@10", "netfx@4.8"}
-	got := SelfRunner(claims).MissingCapabilities(required)
-	want := runnercap.NewClaimed(claims).Missing(required)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("solver missing = %v, runnercap missing = %v — checkpoint 2 diverged", got, want)
+	cases := []struct {
+		name     string
+		claims   []string
+		required []string
+	}{
+		{
+			name:     "declared tokens",
+			claims:   []string{"dotnet@8", "go@1.26"},
+			required: []string{"dotnet@10", "go@1.26", "xcode", "dotnet@10", "netfx@4.8"},
+		},
+		{
+			name:     "author-spelled shell unclaimed",
+			claims:   []string{"dotnet@8"},
+			required: []string{"shell"},
+		},
+		{
+			name:     "author-spelled shell claimed, case variants unclaimed",
+			claims:   []string{"shell"},
+			required: []string{"shell", "Shell", "SHELL"},
+		},
+		{
+			name:     "shell duplicated in the required set",
+			claims:   nil,
+			required: []string{"shell", "shell", "xcode", "shell"},
+		},
+		{
+			name:     "shell reordered among declared tokens",
+			claims:   []string{"go@1.26"},
+			required: []string{"xcode", "shell", "go@1.26", "SHELL", "shell"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SelfRunner(tc.claims).MissingCapabilities(tc.required)
+			want := runnercap.NewClaimed(tc.claims).Missing(tc.required)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("solver missing = %v, runnercap missing = %v — checkpoint 2 diverged", got, want)
+			}
+		})
 	}
 }
 
-// TestDerivedTagsSatisfiedBySelfOnly: harness:<name> and shell are implicit
-// on the self runner (the daemon host runs every configured harness through
-// the local path); a non-self runner has no way to claim a harness tag in
-// v1 (the author grammar rejects the colon), so agentic stages place only on
-// self until the image/dispatcher advertisement contract lands (#3513).
+// TestDerivedTagsSatisfiedBySelfOnly: harness:<name> and run:shell are
+// implicit on the self runner (the daemon host runs every configured harness
+// and shell stage through the local path); a non-self runner has no way to
+// claim ANY derived tag in v1 (the author grammar rejects the colon), so
+// agentic and shell stages place only on self until the image/dispatcher
+// advertisement contract lands (#3513). The plain "shell" spelling is an
+// ordinary author token, never a derived tag — self does not satisfy it
+// implicitly (finding-3 regression: derived spellings live outside the
+// author grammar).
 func TestDerivedTagsSatisfiedBySelfOnly(t *testing.T) {
 	self := Runner{Name: "self", Self: true, OS: OSLinux}
 	remote := Runner{Name: "ci", OS: OSLinux}
-	if missing := self.MissingCapabilities([]string{"harness:copilot", "shell"}); len(missing) != 0 {
+	if missing := self.MissingCapabilities([]string{"harness:copilot", "run:shell"}); len(missing) != 0 {
 		t.Fatalf("self must satisfy derived tags implicitly, missing %v", missing)
 	}
 	if missing := remote.MissingCapabilities([]string{"harness:copilot"}); len(missing) != 1 {
 		t.Fatalf("a non-self runner must not satisfy a harness tag, missing %v", missing)
 	}
-	// A remote runner MAY claim the plain "shell" token explicitly.
-	remote.Capabilities = []string{"shell"}
-	if missing := remote.MissingCapabilities([]string{"shell"}); len(missing) != 0 {
-		t.Fatalf("an explicit shell claim must satisfy the derived tag, missing %v", missing)
+	if missing := remote.MissingCapabilities([]string{"run:shell"}); len(missing) != 1 {
+		t.Fatalf("a non-self runner must not satisfy the derived shell tag, missing %v", missing)
+	}
+	if !runnercap.DerivedTag("run:shell") || runnercap.DerivedTag("shell") {
+		t.Fatal("run:shell must be the derived spelling and plain shell must not be")
+	}
+	if runnercap.ValidToken("run:shell") {
+		t.Fatal("the derived shell spelling must live outside the author token grammar")
+	}
+	// The plain "shell" token is author territory: unclaimed it is missing
+	// even on self; claimed it matches by ordinary membership.
+	if missing := self.MissingCapabilities([]string{"shell"}); !reflect.DeepEqual(missing, []string{"shell"}) {
+		t.Fatalf("an author-spelled shell token must not be implicit on self, missing %v", missing)
+	}
+	self.Capabilities = []string{"shell"}
+	if missing := self.MissingCapabilities([]string{"shell"}); len(missing) != 0 {
+		t.Fatalf("an explicit shell claim must satisfy an author-spelled shell requirement, missing %v", missing)
 	}
 }
 
-// TestSolveRestrictions: stage requires ⊆ runner enforces; the self runner
-// implicitly enforces network:none (D16 keeps the local executor mechanism);
-// instance mandates merge into every stage as a floor.
+// TestSolveRestrictions: stage requires ⊆ runner DECLARED enforces — self
+// included. Self enforces nothing implicitly (finding-5 regression: in 3.0
+// no execution path wires a runsOn restriction into executor isolation, so
+// an implicit grant would be a guarantee nothing delivers; the wiring and
+// self's declarable set land with #3516). A self entry that explicitly
+// declares an effect in the inventory is trusted like any other claim
+// (RRQ-1/D10). Instance mandates merge into every stage as a floor.
 func TestSolveRestrictions(t *testing.T) {
 	inv := Inventory{Runners: []Runner{
 		{Name: "self", Self: true, OS: OSLinux},
@@ -145,12 +204,25 @@ func TestSolveRestrictions(t *testing.T) {
 		{Stage: "allowlisted", Restrictions: []string{"network:allowlist"}},
 		{Stage: "impossible", Restrictions: []string{"fs:readonly-except-workspace"}},
 	})
-	mustEligible(t, result, "netless", "self")
+	// network:none on a default self-only view: honestly unsatisfiable —
+	// nothing declares (and nothing would enforce) the isolation.
+	unsat := mustUnsat(t, result, "netless", UnsatRequirement)
+	if !strings.Contains(unsat.Diagnostic, `runner "self" does not enforce restrictions network:none`) {
+		t.Errorf("diagnostic must name self's undeclared restriction: %s", unsat.Diagnostic)
+	}
 	mustEligible(t, result, "allowlisted", "locked")
-	unsat := mustUnsat(t, result, "impossible", UnsatRequirement)
+	unsat = mustUnsat(t, result, "impossible", UnsatRequirement)
 	if !strings.Contains(unsat.Diagnostic, "does not enforce restrictions fs:readonly-except-workspace") {
 		t.Errorf("diagnostic must name the unenforced restriction: %s", unsat.Diagnostic)
 	}
+
+	// A self runner that explicitly DECLARES restrictions: [network:none] in
+	// the inventory is eligible — declared, trusted per RRQ-1/D10.
+	declared := Inventory{Runners: []Runner{
+		{Name: "self", Self: true, OS: OSLinux, Restrictions: []string{"network:none"}},
+	}}
+	result = Solve(declared, []StageRequirement{{Stage: "netless", Restrictions: []string{"network:none"}}})
+	mustEligible(t, result, "netless", "self")
 
 	// Mandate floor (seam): with tmp:ephemeral mandated instance-wide, only
 	// the enforcing runner remains eligible for an unrestricted stage.
@@ -226,6 +298,103 @@ func TestSolveBaseContractOnly(t *testing.T) {
 	inv := Inventory{Runners: []Runner{{Name: "self", Self: true}}}
 	result := Solve(inv, []StageRequirement{{Stage: "plain"}})
 	mustEligible(t, result, "plain", "self")
+}
+
+// TestSolveExecutableRefusesRemoteOnlyStages is the finding-1 (blocker)
+// regression at the solver level: checkpoints 2/3 decide EXECUTION
+// placement, so a stage only a remote runner satisfies must be
+// UnsatSubstrate under SolveExecutable — named for where it COULD place,
+// with the #3513 pointer — never green-lit to execute on the daemon host
+// that does not satisfy it. Solve (checkpoint 1: config validity) keeps the
+// same stage satisfiable on the whole declared inventory.
+func TestSolveExecutableRefusesRemoteOnlyStages(t *testing.T) {
+	inv := Inventory{Runners: []Runner{
+		{Name: "self", Self: true, OS: OSLinux, Host: "self"},
+		{Name: "ci", OS: OSWindows, Host: "ghcr.io/example/ci:v1", Capabilities: []string{"dotnet@8"}},
+	}}
+	stages := []StageRequirement{
+		{Stage: "local", OS: OSLinux},
+		{Stage: "win-only", OS: OSWindows},
+		{Stage: "needs-dotnet", Capabilities: []string{"dotnet@8"}},
+		{Stage: "impossible", OS: OSMacOS},
+	}
+
+	// Checkpoint 1: the config is valid — the declared inventory satisfies
+	// every stage but the truly impossible one.
+	if unsat := Solve(inv, stages); len(unsat.Unsatisfiable()) != 1 || unsat.Unsatisfiable()[0].Stage != "impossible" {
+		t.Fatalf("whole-inventory solve must satisfy the remote-satisfiable stages: %+v", unsat.Unsatisfiable())
+	}
+
+	result := SolveExecutable(inv, stages)
+	mustEligible(t, result, "local", "self")
+	for _, stage := range []string{"win-only", "needs-dotnet"} {
+		unsat := mustUnsat(t, result, stage, UnsatSubstrate)
+		for _, want := range []string{
+			"placeable only on runner(s) [ci (host: ghcr.io/example/ci:v1)]",
+			"distributed dispatch arrives with #3513",
+		} {
+			if !strings.Contains(unsat.Diagnostic, want) {
+				t.Errorf("stage %q diagnostic missing %q: %s", stage, want, unsat.Diagnostic)
+			}
+		}
+	}
+	// The capability-axis refusal must NAME the capability the substrate is
+	// missing (finding 2: the operator signal survives on declared
+	// inventories).
+	if unsat := mustUnsat(t, result, "needs-dotnet", UnsatSubstrate); !strings.Contains(unsat.Diagnostic, "missing capabilities dotnet@8") {
+		t.Errorf("capability refusal must name the missing capability: %s", unsat.Diagnostic)
+	}
+	// A stage nothing satisfies keeps its plain requirement diagnostic (no
+	// misleading remote-only clause).
+	if unsat := mustUnsat(t, result, "impossible", UnsatRequirement); strings.Contains(unsat.Diagnostic, "#3513") {
+		t.Errorf("a config-invalid stage must not carry the substrate clause: %s", unsat.Diagnostic)
+	}
+}
+
+// TestSolveExecutableKeepsDeclaredModeForQuantities: mode is a fact of the
+// DECLARED inventory, not the substrate — on a distributed-shape inventory a
+// quantity only a remote runner's ceiling covers is a hard substrate
+// refusal, never demoted to a local-mode advisory just because only self
+// executes today. On a self-only declared inventory SolveExecutable and
+// Solve agree exactly (zero behavior change for local modes).
+func TestSolveExecutableKeepsDeclaredModeForQuantities(t *testing.T) {
+	distributed := Inventory{Runners: []Runner{
+		{Name: "self", Self: true, OS: OSLinux, Host: "self", CPU: quantity(t, "4000m")},
+		{Name: "big", OS: OSLinux, Host: "big-workers", CPU: quantity(t, "64")},
+	}}
+	stages := []StageRequirement{{Stage: "heavy", CPU: "16"}}
+	unsat := mustUnsat(t, SolveExecutable(distributed, stages), "heavy", UnsatSubstrate)
+	for _, want := range []string{"placeable only on runner(s) [big (host: big-workers)]", "#3513"} {
+		if !strings.Contains(unsat.Diagnostic, want) {
+			t.Errorf("diagnostic missing %q: %s", want, unsat.Diagnostic)
+		}
+	}
+
+	selfOnly := Inventory{Runners: []Runner{
+		{Name: "self", Self: true, OS: OSLinux, Host: "self", CPU: quantity(t, "4000m")},
+	}}
+	if !reflect.DeepEqual(SolveExecutable(selfOnly, stages), Solve(selfOnly, stages)) {
+		t.Fatal("on a self-only inventory SolveExecutable must equal Solve")
+	}
+}
+
+// TestExecutableSubstrateSeam pins the seam the #3513 dispatcher widens:
+// self entries only, inventory order, mandates carried.
+func TestExecutableSubstrateSeam(t *testing.T) {
+	inv := Inventory{
+		Runners: []Runner{
+			{Name: "ci", Host: "ghcr.io/example/ci:v1"},
+			{Name: "self", Self: true, Host: "self"},
+		},
+		Mandates: []string{"tmp:ephemeral"},
+	}
+	substrate := inv.ExecutableSubstrate()
+	if len(substrate.Runners) != 1 || substrate.Runners[0].Name != "self" {
+		t.Fatalf("substrate = %+v, want the self entry only", substrate.Runners)
+	}
+	if !reflect.DeepEqual(substrate.Mandates, inv.Mandates) {
+		t.Fatalf("substrate mandates = %v, want the inventory floor carried", substrate.Mandates)
+	}
 }
 
 // TestHostOSEnum pins the GOOS → product-spelling map for the platform the

@@ -58,7 +58,7 @@ func TestStagePlacementsV30(t *testing.T) {
 		},
 		{
 			Stage:        "local-ci",
-			Capabilities: []string{"go@1.26", "shell"},
+			Capabilities: []string{"go@1.26", "run:shell"},
 		},
 	}
 	if !reflect.DeepEqual(requirements, want) {
@@ -109,7 +109,7 @@ func TestStagePlacementsPreV30(t *testing.T) {
 			t.Fatalf("pre-3.0 requirement must carry only capabilities: %#v", requirement)
 		}
 		for _, token := range requirement.Capabilities {
-			if token == "shell" || token == "harness:claude-code" {
+			if token == "run:shell" || token == "harness:claude-code" {
 				t.Fatalf("pre-3.0 documents must derive nothing (frozen interpreters): %#v", requirement)
 			}
 		}

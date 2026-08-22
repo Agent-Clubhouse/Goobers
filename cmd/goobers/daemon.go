@@ -215,7 +215,11 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// another declared runner provides, so the per-workflow constraint solve
 	// (placementRefusals, checkpoint 3 of dsl-3.0.md §5) replaces it there —
 	// same never-fatal posture, per-workflow diagnostics, journaled as
-	// workflow.refused.
+	// workflow.refused. That solve is substrate-aware
+	// (runnersolve.SolveExecutable): a stage needing a capability only a
+	// remote runner claims still surfaces as a boot refusal naming the
+	// capability and the remote-only placement, so the operator signal for
+	// the capability axis survives on declared inventories too.
 	if len(cfg.Runners) == 0 {
 		if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)

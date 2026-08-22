@@ -77,6 +77,22 @@ func TestPlacementRunnersDeclaredInventory(t *testing.T) {
 	if got := cfg.PlacementRunners("macOS")[0].OS; got != "linux" {
 		t.Fatalf("declared self OS = %q, want the declaration kept", got)
 	}
+	// The declared host value rides along for substrate diagnostics.
+	if got := cfg.PlacementRunners("macOS")[1].Host; got != "ghcr.io/example/win:v1" {
+		t.Fatalf("host = %q, want the declared host value carried", got)
+	}
+}
+
+// TestPlacementRunnersValidateTimeSeamKeepsSelfOSUnknown pins the seam
+// `goobers validate` relies on for machine-independent exit codes: passing
+// selfOS "" (checkpoint 1 — HostOS substitution is runtime-only) leaves an
+// os-less self entry os-UNKNOWN instead of inheriting anything from the
+// machine running the check.
+func TestPlacementRunnersValidateTimeSeamKeepsSelfOSUnknown(t *testing.T) {
+	cfg := &Config{Runners: []RunnerEntry{{Name: "self", Host: "self"}}}
+	if got := cfg.PlacementRunners("")[0].OS; got != "" {
+		t.Fatalf("validate-time self OS = %q, want os-unknown (no substitution)", got)
+	}
 }
 
 // TestRunnerEngineMissingErrorType: the RNR002 condition is a typed error so

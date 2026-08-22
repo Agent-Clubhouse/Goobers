@@ -11,6 +11,16 @@ package main
 // (workflow.refused, surfaced by `goobers status`), and the scheduler
 // refuses that workflow's runs (localscheduler.ReasonPlacementUnsatisfiable).
 //
+// Unlike checkpoint 1 (config validity — whole declared inventory), this
+// checkpoint decides EXECUTION placement, so it solves against the runners
+// the current substrate can actually execute on
+// (runnersolve.SolveExecutable: self only, until the #3513 dispatcher
+// exists). A workflow satisfiable only by remote runners VALIDATES clean —
+// the config is fine — but is refused here with a diagnostic naming where
+// it could place and pointing at #3513, instead of being green-lit on a
+// remote runner's claims and then executed on the daemon host that does not
+// satisfy them.
+//
 // Only a declared runners: inventory produces boot refusals. A
 // zero-declaration instance solves nothing here: its capability union check
 // has the same outcome delivered per-run at dispatch (the self-runner check
@@ -54,7 +64,7 @@ func placementRefusals(
 			// impossible rather than silently skipping the solve.
 			return nil, fmt.Errorf("workflow %q placement requirements: %w", identity.Workflow, err)
 		}
-		unsatisfiable := runnersolve.Solve(inventory, requirements).Unsatisfiable()
+		unsatisfiable := runnersolve.SolveExecutable(inventory, requirements).Unsatisfiable()
 		if len(unsatisfiable) == 0 {
 			continue
 		}
