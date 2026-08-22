@@ -939,7 +939,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	}()
 	runID := "progressing-gate"
 	machine := agenticGateMachine(t)
-	r := newAgenticGateRunner(t, map[string]stubTaskResult{
+	r, _ := newAgenticGateRunner(t, map[string]stubTaskResult{
 		runID + ":implement": {status: apiv1.ResultSuccess},
 	}, reviewer, nil)
 	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}

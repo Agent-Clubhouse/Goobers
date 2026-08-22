@@ -360,6 +360,26 @@ type FailedOutcome struct {
 // item.
 type FailedHandler func(ctx context.Context, o FailedOutcome) error
 
+// ExistingFixOutcome describes a run terminating with no-work from the
+// implement stage because the fix for the claimed issue already exists on
+// main (issue #3236) — the value Config.ExistingFix receives.
+type ExistingFixOutcome struct {
+	RunID string
+	// ItemID is the backlog item id whose fix already exists.
+	ItemID string
+	// RepoRef is the target repository.
+	RepoRef apiv1.RepoRef
+	// Commit is the SHA of the commit that fixes the issue.
+	Commit string
+}
+
+// ExistingFixHandler is Config.ExistingFix's shape. Implementations are
+// instance-level (composition-root) policy: strip goobers:ready and
+// goobers:critical labels from the item to prevent reclaim, and optionally
+// close the issue, when a no-work completion indicates the fix already exists
+// on main (issue #3236).
+type ExistingFixHandler func(ctx context.Context, o ExistingFixOutcome) error
+
 // AgentProvenance identifies the configured model and preflighted harness
 // version for spans emitted before an agent executor is resolved or invoked.
 type AgentProvenance struct {
@@ -464,6 +484,13 @@ type Config struct {
 	// error is journaled (failed_handling_failed), never fatal to reaching the
 	// terminal phase.
 	Failed FailedHandler
+	// ExistingFix handles the instance-level consequence of the implement stage
+	// returning no-work with existingFixCommit set (issue #3236): stripping
+	// goobers:ready and goobers:critical labels to prevent reclaim when the fix
+	// for a reopened issue already exists on main. Called before the run's
+	// terminal run.finished event. Optional — nil is a no-op; a handler error is
+	// journaled, never fatal to reaching the terminal phase.
+	ExistingFix ExistingFixHandler
 	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
 	// the capabilities its definition declares. An agentic GATE has no
 	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
@@ -745,6 +772,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}
 		inputs["item"] = b
 		inputIntegrity["item"] = in.Item.Integrity
+	}
+	// Pin the reviewer-goober capability map (#294) alongside the definition:
+	// an agentic gate's reviewer grants are instance policy, not part of the
+	// workflow definition, so post-start consumers (the daemon credential
+	// plane, PR #3528) read them from this snapshot via
+	// PinnedGateGooberCapabilities rather than the currently-served config.
+	if len(r.cfg.GateGooberCapabilities) > 0 {
+		gateCaps, err := json.Marshal(r.cfg.GateGooberCapabilities)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: marshal pinned gate-goober capabilities: %w", err)
+		}
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = gateCaps
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
 	}
 
 	// registrar/scrubber are fresh per run (never shared — a run's secrets
@@ -3102,6 +3142,47 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// query-backlog -> curate/implement wiring (Next names a real,
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
+
+		// Issue #3236: when implement returns no-work with existingFixCommit,
+		// notify the handler before completing so labels can be stripped to
+		// prevent reclaim.
+		if t.Name == "implement" && r.cfg.ExistingFix != nil && result.Outputs != nil {
+			if commit, ok := result.Outputs["existingFixCommit"].(string); ok && commit != "" {
+				var itemID string
+				if item != nil {
+					itemID = item.ID
+				} else if r.cfg.ClaimedItems != nil {
+					ids, resolveErr := r.cfg.ClaimedItems(runID)
+					if resolveErr != nil {
+						if aerr := jr.Append(journal.Event{
+							Type: journal.EventError, Stage: t.Name,
+							Error: &journal.ErrorDetail{Code: "existingfix_item_resolution_failed", Message: resolveErr.Error()},
+						}); aerr != nil {
+							res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix item-resolution error for %q: %w", t.Name, aerr))
+							return "", res, false, err
+						}
+					} else if len(ids) > 0 {
+						itemID = ids[0]
+					}
+				}
+				o := ExistingFixOutcome{
+					RunID:   runID,
+					ItemID:  itemID,
+					RepoRef: repoRef,
+					Commit:  commit,
+				}
+				if herr := r.cfg.ExistingFix(stalledAttemptContext(ctx), o); herr != nil {
+					if aerr := jr.Append(journal.Event{
+						Type: journal.EventError, Stage: t.Name,
+						Error: &journal.ErrorDetail{Code: "existingfix_handling_failed", Message: herr.Error()},
+					}); aerr != nil {
+						res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix handler error for %q: %w", t.Name, aerr))
+						return "", res, false, err
+					}
+				}
+			}
+		}
+
 		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
 		res.NoWork = steps == 1
 		return "", res, false, err

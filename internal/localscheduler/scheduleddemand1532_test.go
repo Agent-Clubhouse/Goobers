@@ -165,7 +165,7 @@ func TestReconcileRepollsScheduledDemandBeforeNextFire(t *testing.T) {
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeScheduleDemandState(schedulerDir, map[WorkflowIdentity]bool{
+	if err := writeScheduleDemandState(schedulerDir, nil, map[WorkflowIdentity]bool{
 		{Gaggle: "goobers", Workflow: "pr-remediation"}: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestReloadClearsRemovedWorkflowScheduleDemand(t *testing.T) {
 	sched.mu.Lock()
 	sched.pendingScheduleDemand[identity] = scheduledDemand{remaining: 1}
 	sched.mu.Unlock()
-	if err := writeScheduleDemandState(schedulerDir, map[WorkflowIdentity]bool{identity: true}); err != nil {
+	if err := writeScheduleDemandState(schedulerDir, nil, map[WorkflowIdentity]bool{identity: true}); err != nil {
 		t.Fatal(err)
 	}
 

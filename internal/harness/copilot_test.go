@@ -344,6 +344,7 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
 	if err != nil {
 		t.Fatal(err)
@@ -386,6 +387,196 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") {
 			t.Fatalf("unexpected model token injected during stored auth: %v", runner.lastReq.Env)
 		}
+	}
+}
+
+func TestCopilotAdapterStoredAuthStripsAmbientModelFallbackTokens(t *testing.T) {
+	reserved := []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}
+	for _, name := range reserved {
+		t.Setenv(name, "ambient-token")
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+		ExtraEnvAllowlist:              reserved,
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth: %v", err)
+	}
+	for _, entry := range runner.lastReq.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		for _, reservedName := range reserved {
+			if strings.EqualFold(name, reservedName) {
+				t.Fatalf("ambient %s shadowed stored Copilot auth: %v", reservedName, runner.lastReq.Env)
+			}
+		}
+	}
+}
+
+func TestCopilotAdapterStoredAuthWithRepoPushKeepsTokenOutOfSubprocess(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "COPILOT_GITHUB_TOKEN",
+			"repo:push":   "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("PUSH_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "push-ref", Env: "PUSH_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "repo:push", Ref: "push-ref"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "repo:push"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "repo:push"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth and repo:push: %v", err)
+	}
+	if len(runner.lastReq.Command) == 0 {
+		t.Fatal("Copilot was not launched")
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "GH_TOKEN=") {
+			t.Fatalf("repository token shadowed stored Copilot auth: %v", runner.lastReq.Env)
+		}
+	}
+	if token, err := creds.Token(context.Background(), "repo:push"); err != nil || token != "repository-token" {
+		t.Fatalf("scoped repo:push credential = %q, %v; want repository-token retained for its consumer", token, err)
+	}
+}
+
+func TestCopilotAdapterAllowsStoredAuthWithUnmaterializedADOCapability(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "provider:pr:write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		EnvCapabilities: map[string]string{
+			"agent:model":       "COPILOT_GITHUB_TOKEN",
+			"provider:pr:write": "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{
+			"agent:model": true,
+		},
+	}
+	env := testEnvelope(t.TempDir(), "agent:model", "provider:pr:write")
+	env.RepoRef = apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "example-org",
+		Project:  "Example Service",
+		Name:     "Example.Repo",
+	}
+	got, err := adapter.credentialEnv(context.Background(), RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if err != nil {
+		t.Fatalf("credentialEnv with unmaterialized ADO capability = %v, want nil", err)
+	}
+	for _, entry := range got {
+		if strings.HasPrefix(entry, "GH_TOKEN=") {
+			t.Fatalf("unmaterialized ADO capability injected GH_TOKEN: %v", got)
+		}
+	}
+}
+
+func TestCopilotAdapterRejectsStoredAuthWithGitHubToolToken(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model":         "COPILOT_GITHUB_TOKEN",
+			"github:issues:write": "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("ISSUES_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "issues-ref", Env: "ISSUES_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "github:issues:write", Ref: "issues-ref"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "github:issues:write"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "github:issues:write"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configure a distinct agent:model credential") {
+		t.Fatalf("Run error = %v, want actionable stored-auth conflict", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("Copilot launched despite stored-auth conflict: %+v", runner.lastReq)
 	}
 }
 

@@ -60,9 +60,19 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		t.Fatalf("API actions = %d, want one for each of %d registered routes", len(apiActions), len(apicontract.V1Routes()))
 	}
 	// Every route is read-only except the tier-2 intervention mutations
-	// (approve/override/rerun, HITL-7/#469) and the local-only run reveal
-	// maintenance action.
+	// (approve/override/rerun, HITL-7/#469), the maintenance actions (the
+	// local-only run reveal, and HITL escalation resolution — operator
+	// recovery of a terminal run, kept outside the parity contract like
+	// `run abort`), and the write planes' workflow-execution routes
+	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11 —
+	// a stage pod advancing its own execution, the same machine-seam class
+	// as the claims plane).
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
+	workflowExecutionRoutes := map[apicontract.ActionID]bool{
+		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
+		"triggerIngest": true, "credentialResolve": true,
+	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {
 			if action.Class != apicontract.ActionRuntimeMutation {
@@ -70,9 +80,15 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 			}
 			continue
 		}
-		if action.ID == "runReveal" {
+		if maintenanceRoutes[action.ID] {
 			if action.Class != apicontract.ActionMaintenance {
 				t.Fatalf("API action %q class = %q, want maintenance", action.ID, action.Class)
+			}
+			continue
+		}
+		if workflowExecutionRoutes[action.ID] {
+			if action.Class != apicontract.ActionWorkflowExecution {
+				t.Fatalf("API action %q class = %q, want workflow-execution", action.ID, action.Class)
 			}
 			continue
 		}

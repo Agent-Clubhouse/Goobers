@@ -49,6 +49,24 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
+	// DSL 3.0-only surface (dsl-3.0.md §2/§4, issue #3505): the schemas are
+	// shared across interpreters, so these leaves are parseable here, but the
+	// fields exist only in 3.0 — this frozen interpreter never learns them
+	// (PO-D0), and the version router refuses a 2.0 document that uses them
+	// (internal/workflow preV30SurfaceProblems). They register in the 3.0
+	// registry (internal/workflow/v_3_0).
+	"workflow.spec.tasks.runsOn.os":           "DSL 3.0-only surface; registered as task.runsOn.os in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.cpu":          "DSL 3.0-only surface; registered as task.runsOn.cpu in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.memory":       "DSL 3.0-only surface; registered as task.runsOn.memory in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.disk":         "DSL 3.0-only surface; registered as task.runsOn.disk in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.capabilities": "DSL 3.0-only surface; registered as task.runsOn.capabilities in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.restrictions": "DSL 3.0-only surface; registered as task.runsOn.restrictions in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.repoFrom":            "DSL 3.0-only surface; registered as task.repoFrom in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.commitsRepo":         "DSL 3.0-only surface; registered as task.commitsRepo in the 3.0 registry, refused on 2.0 by the version router",
+	"gaggle.spec.runsOn.os":                   "DSL 3.0-only surface; registered as gaggle.spec.runsOn.os in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+	"gaggle.spec.runsOn.capabilities":         "DSL 3.0-only surface; registered as gaggle.spec.runsOn.capabilities in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+	"gaggle.spec.runsOn.restrictions":         "DSL 3.0-only surface; registered as gaggle.spec.runsOn.restrictions in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+
 	// Registered under a FeatureID whose spelling differs from the leaf path.
 	// #3292 ruled: keep the exception rather than align. Released FeatureIDs
 	// are pinned by validateFeatureRegistryEvolution, so the id cannot be

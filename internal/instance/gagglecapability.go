@@ -93,10 +93,36 @@ func WorkflowRequiredCapabilities(gaggle apiv1.Gaggle, wf apiv1.Workflow) []stri
 		}
 	}
 	add(gaggle.Spec.RequiredCapabilities)
+	add(gaggleRunsOnCapabilities(gaggle))
 	for j := range wf.Spec.Tasks {
 		add(wf.Spec.Tasks[j].RequiredCapabilities)
+		add(taskRunsOnCapabilities(&wf.Spec.Tasks[j]))
 	}
 	return sortedKeys(seen)
+}
+
+// gaggleRunsOnCapabilities reads the DSL 3.0 gaggle-level placement floor's
+// capability tags (GaggleSpec.RunsOn supersedes RequiredCapabilities in 3.0;
+// the interpreters enforce that only one of the two surfaces exists per
+// version, so unioning both here is safe for every version).
+func gaggleRunsOnCapabilities(gaggle apiv1.Gaggle) []string {
+	if gaggle.Spec.RunsOn == nil {
+		return nil
+	}
+	return gaggle.Spec.RunsOn.Capabilities
+}
+
+// taskRunsOnCapabilities reads a stage's DSL 3.0 runsOn capability tags — the
+// 3.0 spelling of Task.RequiredCapabilities, matched by the same exact
+// set-membership check at schedule time. OS, quantities, and restrictions are
+// deliberately NOT unioned here: the mode-3 constraint solve owns those
+// (dsl-3.0.md §5 checkpoint 1/2, the admission work from #3506 on), and on
+// local modes quantities are advisory by design (RNR004).
+func taskRunsOnCapabilities(task *apiv1.Task) []string {
+	if task.RunsOn == nil {
+		return nil
+	}
+	return task.RunsOn.Capabilities
 }
 
 // RequiredCapabilities returns the union of every runner capability the given
@@ -114,6 +140,7 @@ func RequiredCapabilities(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) []str
 		}
 	}
 	add(gaggle.Spec.RequiredCapabilities)
+	add(gaggleRunsOnCapabilities(gaggle))
 	for i := range workflows {
 		wf := &workflows[i]
 		if wf.Spec.Gaggle != gaggle.Name {
@@ -121,6 +148,7 @@ func RequiredCapabilities(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) []str
 		}
 		for j := range wf.Spec.Tasks {
 			add(wf.Spec.Tasks[j].RequiredCapabilities)
+			add(taskRunsOnCapabilities(&wf.Spec.Tasks[j]))
 		}
 	}
 	return sortedKeys(seen)

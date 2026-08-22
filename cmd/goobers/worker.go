@@ -146,6 +146,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
+		// The #2931 dispatch canary asserts envelopes against the SAME shared
+		// registry the seams' executors register every resolved credential
+		// with — so a value that leaks into a dispatch payload after being
+		// resolved anywhere in this process refuses the stage instead of
+		// executing with it.
+		engineRuntime.deps.Canary = seams.SharedRegistry()
 		// Replace the uncredentialed provisioner too: workerEngineDeps builds
 		// its worktree manager before any instance is known, so it has no git
 		// auth and cannot clone a private repo.

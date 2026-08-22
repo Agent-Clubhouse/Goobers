@@ -139,6 +139,7 @@ complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l port -r 
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l workdir -r -d 'Directory holding the tutorial sample and instance'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l gaggle -r -d 'Trigger the workflow in this gaggle'
+complete -c goobers -n '__fish_seen_subcommand_from run' -l pr -r -d 'Target an exact pull request for merge-review'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'
 complete -c goobers -n '__fish_seen_subcommand_from approve' -l decision -r -d 'Gate decision'
 complete -c goobers -n '__fish_seen_subcommand_from approve' -l actor -r -d 'Recorded actor identity'
