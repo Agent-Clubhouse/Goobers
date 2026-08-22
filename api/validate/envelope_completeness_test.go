@@ -88,6 +88,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
 		TaskID:              "implement",
+		Attempt:             1,
 		WorkflowID:          "implementation",
 		RunID:               "run-123",
 		TriggerRef:          "github:issue:1704",
@@ -96,6 +97,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		BaseBranch:          "main",
 		Goober:              "implementer",
 		Goal:                "implement the claimed issue",
+		OwnershipBoundary:   "task:implement",
 		InstructionAddendum: "Preserve the public contract.",
 		Workspace:           "/workspace",
 		RepoRef: apiv1.RepoRef{
@@ -145,10 +147,51 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		},
 		MinimumIntegrity: apiv1.IntegrityMaintainer,
 		Capabilities:     []string{"repo:push"},
+		PolicyActions:    []string{"modify-repository"},
+		ParentPlatformPolicy: &apiv1.PlatformPolicy{
+			Capabilities:       []string{"repo:push"},
+			PolicyActions:      []string{"modify-repository"},
+			Credentials:        []string{"repo:push"},
+			Sandbox:            "workspace",
+			FilesystemRoots:    []string{"workspace", "workspace:reference"},
+			NetworkEgress:      []string{"github"},
+			ContentExclusions:  []string{"secrets"},
+			Budget:             apiv1.Limits{MaxDurationSeconds: 600, MaxTokens: 10_000, MaxCostUSD: 1.5},
+			Cancellation:       "stage-context",
+			CompletionContract: "result",
+		},
 		Limits: apiv1.Limits{
 			MaxDurationSeconds: 600,
 			MaxTokens:          10_000,
 			MaxCostUSD:         1.5,
+		},
+		NestedAgentPolicy: &apiv1.NestedAgentPolicy{
+			Version:           apiv1.NestedAgentPolicyVersion,
+			Delegation:        apiv1.DelegationBounded,
+			MaxDepth:          1,
+			PermittedProfiles: []string{"coordinator"},
+			Context: apiv1.NestedContextPolicy{
+				Mode:             apiv1.ContextExplicit,
+				ArtifactNames:    []string{"evidence"},
+				EnvelopeSections: []string{"objective"},
+			},
+			Model: apiv1.NestedModelPolicy{
+				Allowlist:          []string{"safe-model"},
+				MaxReasoningEffort: apiv1.ReasoningHigh,
+			},
+			PeerMessaging: true,
+			PlatformPolicy: apiv1.PlatformPolicy{
+				Capabilities:       []string{"repo:push"},
+				PolicyActions:      []string{"modify-repository"},
+				Credentials:        []string{"repo:push"},
+				Sandbox:            "workspace",
+				FilesystemRoots:    []string{"workspace"},
+				NetworkEgress:      []string{"github"},
+				ContentExclusions:  []string{"secrets"},
+				Budget:             apiv1.Limits{MaxDurationSeconds: 300, MaxTokens: 5_000, MaxCostUSD: 1},
+				Cancellation:       "stage-context",
+				CompletionContract: "result",
+			},
 		},
 		Inputs: map[string]interface{}{"repass": false},
 	}
@@ -314,6 +357,8 @@ func completeJournalEvent() journal.Event {
 		Status:              "success",
 		WorkflowVersion:     1,
 		WorkflowDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceRunID:         "0af7651916cd43dd8448eb211c80319c",
+		SourceTerminalSeq:   7,
 		Outputs:             map[string]any{"ciStatus": "success"},
 		Artifacts: []journal.Ref{{
 			Path:      "artifacts/sha256/aa/plan.txt",

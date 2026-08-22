@@ -511,6 +511,13 @@ type Config struct {
 	// PinnedWorkspace runs every repository-backed stage in one persistent
 	// checkout protected by a whole-run lease.
 	PinnedWorkspace bool
+	// RunnersDeclared reports that this instance declares a runners: inventory
+	// (instance.Config.Runners is non-empty). It gates placement provenance:
+	// an instance that declares no runners — and sets no GOOBERS_RUNNER_*
+	// identity env — journals no runner.placement events at all, so its
+	// journals stay byte-identical to before placement provenance existed
+	// (goobernetes-architecture.md §11 item 1). See placement.go.
+	RunnersDeclared bool
 	// PinnedCleanPolicy is none, ignored-safe, or full. Empty means none.
 	PinnedCleanPolicy string
 	// ScratchDir contains disposable workspaces for deterministic commands that
@@ -3608,6 +3615,26 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
+		// Placement provenance (goobernetes-architecture.md §7): journal
+		// where this attempt executes, under runner.* — authoritative but
+		// never conformance surface. Modes 1–2 record the self runner; the
+		// mode-3 dispatcher fills node/pod/queue-wait through this same
+		// event shape (#3513), never a second mechanism.
+		//
+		// Emission is GATED on the deployment having declared placement at all
+		// (a runners: inventory, or any GOOBERS_RUNNER_* identity env). §11
+		// item 1 is zero-declaration invariance: an untouched single-host
+		// install must keep producing the same journals it produced before
+		// this feature existed, and an unconditional per-attempt event would
+		// change every one of them. A journal that cannot be written is fatal
+		// (§2.6), same as stage.started above.
+		if r.recordsPlacement() {
+			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
+				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, err
+			}
+		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
 		attemptAddendum := instructionAddendum
@@ -4029,6 +4056,14 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		return apiv1.ResultEnvelope{}, nil, coded, nil
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
+	env.Attempt = int32(attempt)
+	env.OwnershipBoundary = "task:" + t.Name
+	env.PolicyActions = append([]string(nil), t.PolicyActions...)
+	env.NestedAgentPolicy = t.NestedAgentPolicy
+	if t.NestedAgentPolicy != nil {
+		parent := apiv1.StagePlatformAuthority(env, "result")
+		env.ParentPlatformPolicy = &parent
+	}
 	env.InstructionAddendum = instructionAddendum
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation

@@ -61,6 +61,7 @@ spec:
   instructions: instructions.md
   harness: copilot
   capabilities:
+    - repo:read
     - github:issues:write
     - telemetry:read
     - agent:model

@@ -192,12 +192,14 @@ acceptance criteria, which this criterion adopts verbatim. Enforcement is CIDR-N
 per the standing #2898 PO ruling (2026-08-16); the proxy/FQDN layer is #1307, later
 (decision record D7).
 
-**Observer:** an exit-code assertion, machine-checkable (delivery decision 004): policy
-denial = curl exit 28 (connection timed out against a resolved address), DNS failure =
-exit 6 (could not resolve) — never log prose; plus a positive control in the same run — an
-allowlisted endpoint reachable from the same pod — so "denied" is not "network broken", and
-ideally a second runner-class pod reaching a target the restricted class cannot, so denial
-is attributable to the class. A `doctor --k8s` PASS is explicitly **not** an observer: today's
+**Observer:** an exit-code TRIPLE, machine-checkable (decisions 004/008), all three legs
+REQUIRED: (1) denial — curl exit 28 (connection timed out against a resolved address),
+never exit 6 (DNS) and never log prose; (2) a positive control from the same pod — an
+allowlisted endpoint that **shares no prefix with any model endpoint** (a shared-prefix
+control is itself the bypass measurement — the false green this clause exists to prevent);
+(3) a second runner-class pod reaching a target the restricted class cannot, so denial is
+attributable to the class rather than to broken networking. Per decision 008 the criterion
+claims denial of non-allowlisted endpoints — not endpoint-class exclusion. A `doctor --k8s` PASS is explicitly **not** an observer: today's
 `checkNetworkPolicySupport` is API-discovery only (internal/k8spreflight/checks.go:62) and passes
 on clusters with zero enforcement — the exact trap #2898 records. Only the in-cluster negative
 control counts.

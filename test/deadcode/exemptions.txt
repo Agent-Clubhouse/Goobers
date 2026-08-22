@@ -96,9 +96,6 @@ github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpret
 github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.RepoFromCoverage # WF022 coverage projection consumed by the dslmigrate --to 3.0 target (#3516) and pinned today by the golden discriminator fixture (#3505).
-github.com/goobers/goobers/internal/workflow/v_3_0.DerivedCapabilities # D7 derived-requirements seam the constraint solve consumes (#3506); pinned by derivation tests until that wave lands (#3505).
-github.com/goobers/goobers/internal/workflow/v_3_0.EffectiveCapabilities # D7 derived-union seam the constraint solve consumes (#3506); pinned by derivation tests until that wave lands (#3505).
-github.com/goobers/goobers/internal/workflow/v_3_0.EffectiveRunsOn # §2 gaggle-floor merge seam the constraint solve consumes (#3506); pinned by the os-unspecified acceptance test until that wave lands (#3505).
 github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.

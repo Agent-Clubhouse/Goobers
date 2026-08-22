@@ -666,6 +666,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Goober: "coder", Inputs: map[string]string{"x": "y", "fieldOrder": "number:asc"},
 				Capabilities: []string{"repo:push"}, MinimumIntegrity: apiv1.IntegrityMaintainer,
 				ContextFrom: []string{"claim"}, PolicyActions: []string{"claim-item"},
+				NestedAgentPolicy: nestedFeaturePolicy(),
 				RunsOn: &apiv1.RunsOn{
 					OS: "linux", CPU: "2000m", Memory: "4Gi", Disk: "20Gi",
 					Capabilities: []string{"dotnet@8"},
@@ -1016,6 +1017,18 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	}
 }
 
+func nestedFeaturePolicy() *apiv1.NestedAgentPolicy {
+	return &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		PermittedProfiles: []string{"worker"},
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextFresh},
+		PlatformPolicy: apiv1.PlatformPolicy{
+			Sandbox: "workspace", Cancellation: "stage-context", CompletionContract: "result",
+		},
+	}
+}
+
 func automatedFeatureGate(check, next string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
@@ -1098,6 +1111,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.minimumIntegrity",
 		"task.contextFrom",
 		"task.policyActions",
+		"task.nestedAgentPolicy",
 		"task.retry",
 		"task.retry.maxAttempts",
 		"task.retry.backoff",

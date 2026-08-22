@@ -36,6 +36,7 @@ type snapshotCapabilityUse struct {
 	Capability  capability.Capability `json:"capability"`
 	Consequence string                `json:"consequence"`
 	Optional    bool                  `json:"optional,omitempty"`
+	Exact       bool                  `json:"exact,omitempty"`
 	Flag        string                `json:"flag,omitempty"`
 	FlagValue   string                `json:"flagValue,omitempty"`
 	AnyFlags    []string              `json:"anyFlags,omitempty"`
@@ -73,6 +74,7 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 				Capability:  use.Capability,
 				Consequence: use.Consequence,
 				Optional:    use.optional,
+				Exact:       use.exact,
 				Flag:        use.flag,
 				FlagValue:   use.flagValue,
 				AnyFlags:    use.anyFlags,

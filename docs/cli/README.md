@@ -2274,9 +2274,10 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
+       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
@@ -3188,8 +3189,13 @@ validate an instance or checked-in config source tree
 Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
-path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+path "."). Placement findings (RNR001/RNR003) are errors when
+instance.yaml declares a runners: inventory that cannot satisfy some
+stage, and warnings otherwise. --source-tree validates a checked-in
+config source tree using instance.yaml.example and the path itself as
+config/; because the tree carries no real instance.yaml, its placement
+solve runs against the example inventory and is advisory-only
+(warnings, never errors). --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

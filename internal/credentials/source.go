@@ -2,9 +2,13 @@ package credentials
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -40,6 +44,15 @@ type TokenRef struct {
 	// StoreResolver. Refs with Store set can only be built into a resolver
 	// via NewResolverWithStores — NewResolver fails closed on them.
 	Store string
+	// GitHubCLI selects a login from the GitHub CLI credential store. The
+	// selected token is resolved and identity-checked during resolver creation.
+	GitHubCLI *GitHubCLIRef
+}
+
+// GitHubCLIRef identifies one authenticated GitHub CLI account.
+type GitHubCLIRef struct {
+	Hostname string
+	User     string
 }
 
 func (r TokenRef) validate() error {
@@ -52,8 +65,16 @@ func (r TokenRef) validate() error {
 			sources++
 		}
 	}
+	if r.GitHubCLI != nil {
+		sources++
+	}
 	if sources != 1 {
-		return fmt.Errorf("credentials: token ref %q must set exactly one of Env, File, Keychain, or Store", r.Name)
+		return fmt.Errorf("credentials: token ref %q must set exactly one credential source", r.Name)
+	}
+	if r.GitHubCLI != nil {
+		if strings.TrimSpace(r.GitHubCLI.Hostname) == "" || strings.TrimSpace(r.GitHubCLI.User) == "" {
+			return fmt.Errorf("credentials: token ref %q GitHub CLI source requires hostname and user", r.Name)
+		}
 	}
 	return nil
 }
@@ -99,6 +120,8 @@ func (r TokenRef) resolve(ctx context.Context, stores StoreResolver) (string, er
 			return "", fmt.Errorf("credentials: token ref %q: %w", r.Name, err)
 		}
 		raw = value
+	case r.GitHubCLI != nil:
+		return resolveGitHubCLI(ctx, *r.GitHubCLI)
 	}
 	val := strings.TrimSpace(raw)
 	if val == "" {
@@ -157,15 +180,15 @@ type ExpiringResolver interface {
 	ResolveWithExpiry(ctx context.Context, name string) (string, time.Time, error)
 }
 
-// tokenRefResolver holds no secret material itself. Every TokenRef is re-read
-// at resolve time so a rotated env var, file, Keychain item, or store secret
-// takes effect without restarting the process (store reads are TTL-cached by
-// the StoreResolver, not here); dynamic sources are consulted per resolve for
-// the same reason.
+// tokenRefResolver re-reads env, file, Keychain, and store refs at resolve
+// time, while GitHub CLI refs are identity-checked and pinned in memory during
+// construction so later ambient account switches cannot change the daemon's
+// identity. Dynamic sources are consulted per resolve.
 type tokenRefResolver struct {
-	refs    map[string]TokenRef
-	stores  StoreResolver
-	sources map[string]ResolveFunc
+	refs     map[string]TokenRef
+	stores   StoreResolver
+	sources  map[string]ResolveFunc
+	resolved map[string]string
 	// expiring are dynamic sources that state each value's expiry. They share
 	// the refs/sources namespace: a name appears in at most one of the three.
 	expiring map[string]ExpiringResolveFunc
@@ -215,6 +238,7 @@ func NewResolverWith(refs []TokenRef, stores StoreResolver, sources map[string]R
 // sources and a zero time for every other ref kind.
 func NewResolverWithExpiring(refs []TokenRef, stores StoreResolver, sources map[string]ResolveFunc, expiring map[string]ExpiringResolveFunc) (Resolver, error) {
 	byName := make(map[string]TokenRef, len(refs))
+	resolved := make(map[string]string)
 	for _, r := range refs {
 		if err := r.validate(); err != nil {
 			return nil, err
@@ -224,6 +248,13 @@ func NewResolverWithExpiring(refs []TokenRef, stores StoreResolver, sources map[
 		}
 		if _, dup := byName[r.Name]; dup {
 			return nil, fmt.Errorf("credentials: duplicate token ref name %q", r.Name)
+		}
+		if r.GitHubCLI != nil {
+			value, err := r.resolve(context.Background(), stores)
+			if err != nil {
+				return nil, err
+			}
+			resolved[r.Name] = value
 		}
 		byName[r.Name] = r
 	}
@@ -252,7 +283,13 @@ func NewResolverWithExpiring(refs []TokenRef, stores StoreResolver, sources map[
 			return nil, fmt.Errorf("credentials: duplicate token ref name %q", name)
 		}
 	}
-	return &tokenRefResolver{refs: byName, stores: stores, sources: sources, expiring: expiring}, nil
+	return &tokenRefResolver{
+		refs:     byName,
+		stores:   stores,
+		sources:  sources,
+		resolved: resolved,
+		expiring: expiring,
+	}, nil
 }
 
 // Resolve returns the secret value for the named token ref.
@@ -291,6 +328,73 @@ func (r *tokenRefResolver) ResolveWithExpiry(ctx context.Context, name string) (
 	if !ok {
 		return "", time.Time{}, fmt.Errorf("%w: %q", ErrTokenRefNotFound, name)
 	}
+	if value, ok := r.resolved[name]; ok {
+		return value, time.Time{}, nil
+	}
 	value, err := ref.resolve(ctx, r.stores)
 	return value, time.Time{}, err
+}
+
+var githubCLICommand = func(ctx context.Context, hostname, user string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", hostname, "--user", user)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh auth token failed for %s as %s", hostname, user)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return "", errors.New("gh auth token returned an empty token")
+	}
+	return token, nil
+}
+
+var githubCLIIdentity = func(ctx context.Context, hostname, token string) (string, error) {
+	apiHost := hostname
+	path := "/user"
+	if hostname == "github.com" {
+		apiHost = "api.github.com"
+	} else {
+		path = "/api/v3/user"
+	}
+	endpoint := (&url.URL{Scheme: "https", Host: apiHost, Path: path}).String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("build GitHub identity request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("verify GitHub identity: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("verify GitHub identity: status %s", resp.Status)
+	}
+	var identity struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&identity); err != nil {
+		return "", fmt.Errorf("decode GitHub identity: %w", err)
+	}
+	if strings.TrimSpace(identity.Login) == "" {
+		return "", errors.New("GitHub identity response has no login")
+	}
+	return identity.Login, nil
+}
+
+func resolveGitHubCLI(ctx context.Context, ref GitHubCLIRef) (string, error) {
+	hostname := strings.ToLower(strings.TrimSpace(ref.Hostname))
+	user := strings.TrimSpace(ref.User)
+	token, err := githubCLICommand(ctx, hostname, user)
+	if err != nil {
+		return "", fmt.Errorf("resolve GitHub CLI credential for %s as %s: %w", hostname, user, err)
+	}
+	actual, err := githubCLIIdentity(ctx, hostname, token)
+	if err != nil {
+		return "", fmt.Errorf("verify GitHub CLI credential for %s: %w", user, err)
+	}
+	if !strings.EqualFold(actual, user) {
+		return "", fmt.Errorf("GitHub CLI credential identity mismatch: expected %q, got %q", user, actual)
+	}
+	return token, nil
 }

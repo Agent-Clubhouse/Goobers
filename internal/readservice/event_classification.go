@@ -43,6 +43,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 
 	case journal.EventError,
 		journal.EventWorkflowStarved,
+		journal.EventWorkflowRefused,
 		journal.EventClaimLockTimeout,
 		journal.EventConfigReloadRejected,
 		journal.EventDaemonDirtyRestart:
@@ -64,6 +65,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventRedaction,
 		journal.EventRepaired,
 		journal.EventRunnerAnnotation,
+		journal.EventRunnerPlacement,
 		journal.EventClaimAcquired,
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,

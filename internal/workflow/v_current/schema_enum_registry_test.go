@@ -163,6 +163,9 @@ var constBackedEnums = []enumRule{
 
 	// --- api/v1alpha1 workflow types ---
 	{schema: "workflow.schema.json", path: "$defs/task/properties/type/enum", source: "api/v1alpha1.TaskType", want: goConsts("api/v1alpha1/workflow_types.go", "TaskType")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/nestedAgentPolicy/properties/delegation/enum", source: "api/v1alpha1.DelegationAuthority", want: goConsts("api/v1alpha1/nested_agent.go", "DelegationAuthority")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/nestedAgentPolicy/properties/context/properties/mode/enum", source: "api/v1alpha1.ContextMode", want: goConsts("api/v1alpha1/nested_agent.go", "ContextMode")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/nestedAgentPolicy/properties/model/properties/maxReasoningEffort/enum", source: "api/v1alpha1.ReasoningEffort", want: goConsts("api/v1alpha1/nested_agent.go", "ReasoningEffort")},
 	{schema: "workflow.schema.json", path: "$defs/gate/properties/evaluator/enum", source: "api/v1alpha1.EvaluatorKind", want: goConsts("api/v1alpha1/workflow_types.go", "EvaluatorKind")},
 	{schema: "workflow.schema.json", path: "$defs/trigger/properties/type/enum", source: "api/v1alpha1.TriggerType", want: goConsts("api/v1alpha1/workflow_types.go", "TriggerType")},
 	{schema: "workflow.schema.json", path: "$defs/task/properties/run/properties/workspace/enum", source: "api/v1alpha1.WorkspaceMode", want: goConsts("api/v1alpha1/workflow_types.go", "WorkspaceMode")},

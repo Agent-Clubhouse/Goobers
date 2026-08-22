@@ -23,9 +23,8 @@ import (
 // issue-close-out, #131/#132) can look up its own injected credential by the
 // same convention buildStageEnv uses to set it, without duplicating the
 // sanitization rule.
-func CredentialEnvVar(capability string) string {
-	sanitized := nonAlnum.ReplaceAllString(capability, "_")
-	return "GOOBERS_CRED_" + strings.ToUpper(sanitized)
+func CredentialEnvVar(capabilityName string) string {
+	return capability.CredentialEnvVar(capabilityName)
 }
 
 // InputEnvVar returns the deterministic env var name a stage's declared

@@ -482,6 +482,7 @@ const (
 	featureTaskMinimumIntegrity           FeatureID = "task.minimumIntegrity"
 	featureTaskContextFrom                FeatureID = "task.contextFrom"
 	featureTaskPolicyActions              FeatureID = "task.policyActions"
+	featureTaskNestedAgentPolicy          FeatureID = "task.nestedAgentPolicy"
 	featureTaskRetry                      FeatureID = "task.retry"
 	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
 	featureTaskRetryBackoff               FeatureID = "task.retry.backoff"
@@ -701,6 +702,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskMinimumIntegrity,
 		featureTaskContextFrom,
 		featureTaskPolicyActions,
+		featureTaskNestedAgentPolicy,
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
 		featureTaskRetryBackoff,
@@ -945,6 +947,12 @@ type retryFeatureIDs struct {
 	policy      FeatureID
 	maxAttempts FeatureID
 	backoff     FeatureID
+}
+
+func addNestedAgentPolicyFeatures(used featureSet, policy *apiv1.NestedAgentPolicy) {
+	if policy != nil {
+		used.add(featureTaskNestedAgentPolicy)
+	}
 }
 
 func addRetryFeatures(used featureSet, retry *apiv1.RetryPolicy, ids retryFeatureIDs) {
@@ -1384,6 +1392,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.PolicyActions != nil {
 		used.add(featureTaskPolicyActions)
 	}
+	addNestedAgentPolicyFeatures(used, task.NestedAgentPolicy)
 	// task.requiredCapabilities has no ID in the 3.0 registry: the field does
 	// not exist in this version and removedSurfaceProblems refuses it with a
 	// pointer diagnostic, so it must not resolve as a feature either.

@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -445,6 +446,83 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	if _, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "gamma", Workflow: "deploy"}, time.Now()); err == nil ||
 		!strings.Contains(err.Error(), `unknown workflow "deploy" in gaggle "gamma"`) {
 		t.Fatalf("unknown exact manual trigger error = %v", err)
+	}
+}
+
+func TestTriggerSignalExactPreservesTargetedReference(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}})
+
+	runID, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err != nil {
+		t.Fatalf("TriggerSignalExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerSignalExact returned an empty run ID")
+	}
+	waitForCount(t, starter.count, 1)
+	starter.mu.Lock()
+	trigger := starter.starts[0].Trigger
+	starter.mu.Unlock()
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want targeted pull-request signal", trigger)
+	}
+	sched.Wait()
+}
+
+func TestTriggerSignalExactValidatesTargetedPullRequestBeforeDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, number int) error {
+		return fmt.Errorf("pull request #%d is closed", number)
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "pull request #3261 is closed") {
+		t.Fatalf("targeted validation error = %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
+}
+
+func TestTriggerSignalExactRejectsUnsupportedSignalBeforeTargetValidation(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	validationCalls := 0
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "implementation",
+		Signals:  []string{"github-webhook:issues"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, _ int) error {
+		validationCalls++
+		return nil
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "implementation"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not subscribed") {
+		t.Fatalf("unsupported signal error = %v", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("targeted validation calls = %d, want none for an unsupported signal", validationCalls)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
 	}
 }
 

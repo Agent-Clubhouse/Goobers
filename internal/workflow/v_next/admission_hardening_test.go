@@ -126,8 +126,8 @@ func TestCompileSubsumedCapabilitySatisfiesBuiltinRequirement(t *testing.T) {
 	}
 
 	dedupe.Capabilities = []string{string(capability.GitHubIssuesWrite)}
-	if _, err := compileAcknowledged(Definition{Name: "write-subsumes", Version: 1, Spec: singleTaskSpec(dedupe)}); err != nil {
-		t.Fatalf("write grant must satisfy the narrowed read requirement via Subsumes (#2386): %v", err)
+	if _, err := compileAcknowledged(Definition{Name: "write-subsumes", Version: 1, Spec: singleTaskSpec(dedupe)}); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_GITHUB_ISSUES_READ") {
+		t.Fatalf("write grant must not satisfy the separately brokered read requirement: %v", err)
 	}
 
 	dedupe.Capabilities = []string{string(capability.GitHubIssuesRead)}

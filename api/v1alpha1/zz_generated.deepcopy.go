@@ -1262,6 +1262,29 @@ func (in *Task) DeepCopyInto(out *Task) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.NestedAgentPolicy != nil {
+		in, out := &in.NestedAgentPolicy, &out.NestedAgentPolicy
+		*out = new(NestedAgentPolicy)
+		**out = **in
+		if (*in).PermittedProfiles != nil {
+			(*out).PermittedProfiles = append([]string(nil), (*in).PermittedProfiles...)
+		}
+		if (*in).Context.ArtifactNames != nil {
+			(*out).Context.ArtifactNames = append([]string(nil), (*in).Context.ArtifactNames...)
+		}
+		if (*in).Context.EnvelopeSections != nil {
+			(*out).Context.EnvelopeSections = append([]string(nil), (*in).Context.EnvelopeSections...)
+		}
+		if (*in).Model.Allowlist != nil {
+			(*out).Model.Allowlist = append([]string(nil), (*in).Model.Allowlist...)
+		}
+		(*out).PlatformPolicy.Capabilities = append([]string(nil), (*in).PlatformPolicy.Capabilities...)
+		(*out).PlatformPolicy.PolicyActions = append([]string(nil), (*in).PlatformPolicy.PolicyActions...)
+		(*out).PlatformPolicy.Credentials = append([]string(nil), (*in).PlatformPolicy.Credentials...)
+		(*out).PlatformPolicy.FilesystemRoots = append([]string(nil), (*in).PlatformPolicy.FilesystemRoots...)
+		(*out).PlatformPolicy.NetworkEgress = append([]string(nil), (*in).PlatformPolicy.NetworkEgress...)
+		(*out).PlatformPolicy.ContentExclusions = append([]string(nil), (*in).PlatformPolicy.ContentExclusions...)
+	}
 	if in.RequiredCapabilities != nil {
 		in, out := &in.RequiredCapabilities, &out.RequiredCapabilities
 		*out = make([]string, len(*in))

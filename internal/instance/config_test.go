@@ -158,6 +158,45 @@ repos:
 	}
 }
 
+func TestLoadConfigGitHubCLITokenRef(t *testing.T) {
+	path := writeInstanceYAML(t, `apiVersion: goobers.dev/v1alpha1
+kind: Instance
+selfIdentity: alice
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      githubCLI:
+        hostname: github.com
+        user: alice`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Repos[0].Token.GitHubCLI == nil || cfg.Repos[0].Token.GitHubCLI.User != "alice" {
+		t.Fatalf("githubCLI token ref = %+v, want alice", cfg.Repos[0].Token.GitHubCLI)
+	}
+}
+
+func TestLoadConfigRejectsGitHubCLIIdentityMismatch(t *testing.T) {
+	path := writeInstanceYAML(t, `apiVersion: goobers.dev/v1alpha1
+kind: Instance
+selfIdentity: alice
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      githubCLI:
+        hostname: github.com
+        user: bob`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `token.githubCLI.user "bob" does not match selfIdentity "alice"`) {
+		t.Fatalf("LoadConfig error = %v, want GitHub CLI identity mismatch", err)
+	}
+}
+
 // TestLoadConfigGitHubAppAuth: appId/installationId accept both the YAML
 // number and string spellings GitHub surfaces (numeric IDs vs client-ID
 // strings), normalized to strings; the loaded repo reports GitHubAppAuth.

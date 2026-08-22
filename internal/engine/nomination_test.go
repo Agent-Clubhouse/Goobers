@@ -110,16 +110,17 @@ func fixtureCandidateFindings(t *testing.T, validator *validate.Validator) []byt
 // nominatedIssue is what the nominator files for one gap: the fixture's
 // stand-in for a real providers.CreateWorkItemRequest.
 type nominatedIssue struct {
-	title    string
-	evidence string
-	labels   []string
+	dedupeKey string
+	title     string
+	evidence  string
+	labels    []string
 }
 
 // nominateFixture applies the same evidence-first, capped, dedupe-first
 // decision shape described in the nominator's instructions.md,
 // deterministically, so the test is reproducible without an LLM in the loop.
-// existing holds gap descriptions already covered by an open
-// goobers:nominated issue (dedupe query, run first).
+// existing holds ordinary gap subjects or credit findings' stable dedupe keys
+// already covered by an open goobers:nominated issue (dedupe query, run first).
 func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int, capabilities []string) (filed []nominatedIssue, deduped int) {
 	autoApprove := false
 	for _, granted := range capabilities {
@@ -138,21 +139,35 @@ func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int
 		return ordered[i].Metrics["occurrences"] > ordered[j].Metrics["occurrences"]
 	})
 	for _, s := range ordered {
-		if existing[s.Subject] {
+		dedupeKey := s.Subject
+		if guardrails := s.NominationGuardrails; guardrails != nil {
+			dedupeKey = guardrails.DedupeKey
+		}
+		if existing[dedupeKey] {
 			deduped++
+			continue
+		}
+		if s.Kind == rollup.FindingCreditAssignment &&
+			(s.NominationGuardrails == nil ||
+				!s.NominationGuardrails.RequiresUpstreamCauseCheck ||
+				s.NominationGuardrails.GoverningTargetTreatment != rollup.CreditGoverningTargetTreatment) {
 			continue
 		}
 		if len(filed) >= cap {
 			continue
 		}
 		labels := []string{"goobers:nominated"}
+		if s.NominationGuardrails != nil && s.NominationGuardrails.RequiresHumanReview {
+			labels = append(labels, "goobers:needs-human")
+		}
 		if autoApprove {
 			labels = append(labels, "goobers:approved")
 		}
 		filed = append(filed, nominatedIssue{
-			title:    "nominated: " + s.Subject,
-			evidence: s.Subject,
-			labels:   labels,
+			dedupeKey: dedupeKey,
+			title:     "nominated: " + s.Subject,
+			evidence:  s.Subject,
+			labels:    labels,
 		})
 	}
 	return filed, deduped
@@ -170,6 +185,7 @@ func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelop
 		"--aggregate", "stage-failure-rate",
 		"--aggregate", "error-signature",
 		"--aggregate", "gate-noise",
+		"--aggregate", "credit-assignment",
 		"--format", "candidate-findings",
 	}
 	if !reflect.DeepEqual(run.Command, wantCommand) {
@@ -199,16 +215,22 @@ type fixtureNominator struct {
 	runsDir   string
 	existing  map[string]bool
 
-	gotGoal    string
-	gotCap     string
-	gotFiled   int
-	gotDeduped int
-	summary    string
+	gotGoal     string
+	gotCap      string
+	gotDedupe   string
+	gotMinRuns  string
+	gotMinShare string
+	gotFiled    int
+	gotDeduped  int
+	summary     string
 }
 
 func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	n.gotGoal = env.Goal
 	n.gotCap, _ = env.Inputs["maxNominationsPerRun"].(string)
+	n.gotDedupe, _ = env.Inputs["dedupeWindowDays"].(string)
+	n.gotMinRuns, _ = env.Inputs["creditAssignmentMinRuns"].(string)
+	n.gotMinShare, _ = env.Inputs["creditAssignmentMinFailureShare"].(string)
 	cap, err := strconv.Atoi(n.gotCap)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("parse maxNominationsPerRun: %w", err)
@@ -361,6 +383,16 @@ func TestWorkNominationDryRun(t *testing.T) {
 	if nominator.gotCap != "5" {
 		t.Errorf("nominate stage maxNominationsPerRun input = %q, want 5", nominator.gotCap)
 	}
+	if nominator.gotDedupe != "14" ||
+		nominator.gotMinRuns != "5" ||
+		nominator.gotMinShare != "0.3" {
+		t.Errorf(
+			"nominate guardrail inputs = dedupe:%q min-runs:%q min-share:%q",
+			nominator.gotDedupe,
+			nominator.gotMinRuns,
+			nominator.gotMinShare,
+		)
+	}
 	if nominator.gotFiled != 4 {
 		t.Errorf("filed = %d, want 4 (all signals within cap)", nominator.gotFiled)
 	}
@@ -409,6 +441,51 @@ func TestWorkNominationCapsAtMaxPerRun(t *testing.T) {
 	if filed[0].evidence != "provider.rate_limit in issues-provider claim path" ||
 		filed[1].evidence != "harness.failure in copilot adapter timeout" {
 		t.Errorf("cap did not prioritize strongest evidence first: %+v", filed)
+	}
+}
+
+func TestWorkNominationCreditGuardrailContract(t *testing.T) {
+	guardrails := &rollup.NominationGuardrails{
+		DedupeKey:                  "credit-assignment:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RequiresUpstreamCauseCheck: true,
+		RequiresHumanReview:        true,
+		GoverningTargetTreatment:   rollup.CreditGoverningTargetTreatment,
+	}
+	signal := rollup.Finding{
+		Kind:                 rollup.FindingCreditAssignment,
+		Subject:              "implementation/gate/review/sha256:reviewer",
+		Metrics:              map[string]float64{"routedRuns": 5, "failureShare": 0.6},
+		Threshold:            0.3,
+		FlaggedRuns:          []rollup.JournalPointer{{RunID: "run-credit"}},
+		NominationGuardrails: guardrails,
+	}
+
+	filed, deduped := nominateFixture([]rollup.Finding{signal}, nil, 5, nil)
+	if deduped != 0 || len(filed) != 1 {
+		t.Fatalf("filed = %+v, deduped = %d, want one guarded nomination", filed, deduped)
+	}
+	if filed[0].dedupeKey != guardrails.DedupeKey {
+		t.Fatalf("dedupe key = %q, want %q", filed[0].dedupeKey, guardrails.DedupeKey)
+	}
+	wantLabels := []string{"goobers:nominated", "goobers:needs-human"}
+	if !reflect.DeepEqual(filed[0].labels, wantLabels) {
+		t.Fatalf("labels = %v, want %v", filed[0].labels, wantLabels)
+	}
+
+	filed, deduped = nominateFixture(
+		[]rollup.Finding{signal},
+		map[string]bool{guardrails.DedupeKey: true},
+		5,
+		nil,
+	)
+	if len(filed) != 0 || deduped != 1 {
+		t.Fatalf("duplicate credit finding filed = %+v, deduped = %d", filed, deduped)
+	}
+
+	signal.NominationGuardrails = nil
+	filed, _ = nominateFixture([]rollup.Finding{signal}, nil, 5, nil)
+	if len(filed) != 0 {
+		t.Fatalf("credit finding without upstream-cause contract was filed: %+v", filed)
 	}
 }
 

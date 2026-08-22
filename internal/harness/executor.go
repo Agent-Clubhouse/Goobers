@@ -335,11 +335,60 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, *apiv1.ArtifactPointer, error) {
+	var envEffectivePolicy *apiv1.ChildExecutionPolicy
+	var nestedAdapter NestedPolicyCapability
+	var selectedEnvelopeSections map[string]any
+	if env.NestedAgentPolicy != nil {
+		if env.ParentPlatformPolicy == nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: parent platform authority is required")
+		}
+		var err error
+		nestedAdapter, err = ValidateNestedAgentPolicy(e.adapter, *env.NestedAgentPolicy)
+		if err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+		parentPlatform := clonePlatformPolicy(*env.ParentPlatformPolicy)
+		parent := apiv1.ChildExecutionPolicy{
+			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt,
+			ParentAgent: env.Goober, Objective: env.Goal, Ownership: env.OwnershipBoundary,
+			Capabilities:   intersectStrings(env.Capabilities, parentPlatform.Capabilities),
+			PolicyActions:  intersectStrings(env.PolicyActions, parentPlatform.PolicyActions),
+			PlatformPolicy: parentPlatform,
+		}
+		if e.model != "" {
+			parent.Model.Allowlist = []string{e.model}
+		}
+		reasoning, err := configuredReasoningEffort(e.harnessOptions)
+		if err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+		parent.Model.MaxReasoningEffort = reasoning
+		parent.Delegation = apiv1.DelegationBounded
+		parent.MaxDepth = env.NestedAgentPolicy.MaxDepth + 1
+		parent.PeerMessaging = true
+		profile := env.NestedAgentPolicy.PermittedProfiles[0]
+		effective, err := apiv1.AdmitChild(parent, *env.NestedAgentPolicy, profile, e.model, string(reasoning))
+		if err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+		envEffectivePolicy = &effective
+		env = applyNestedExecutionPolicy(env, effective)
+		env, selectedEnvelopeSections, err = applyNestedContextPolicy(env, effective)
+		if err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+	}
 	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
 	}
-	creds, err := e.injector.Materialize(ctx, env.Capabilities)
+	var creds *credentials.Set
+	var err error
+	if envEffectivePolicy != nil {
+		creds, err = e.injector.MaterializeRestricted(ctx, envEffectivePolicy.PlatformPolicy.Credentials)
+	} else {
+		creds, err = e.injector.Materialize(ctx, env.Capabilities)
+	}
 	if err != nil {
 		// A credential-materialization failure is an infrastructure fault at
 		// stage-environment build time, not evidence about the work (#3361):
@@ -360,22 +409,29 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, err
 	}
 	req := RunRequest{
-		Mode:                  mode,
-		Envelope:              env,
-		Instructions:          e.instructions,
-		Model:                 e.model,
-		HarnessOptions:        e.harnessOptions,
-		HarnessConfigResolved: true,
-		MCPServers:            copyMCPServers(e.mcpServers),
-		Tools:                 append([]string(nil), e.tools...),
-		Workspace:             env.Workspace,
-		CompletionPath:        completionPath,
-		TelemetryDir:          telemetry.PrepareStageTelemetryDir(env.Workspace),
-		Credentials:           creds,
-		ContextPaths:          contextPaths,
-		Timeout:               invocationTimeout(env, e.timeout),
-		MaxTranscriptBytes:    e.transcriptLimit,
-		HarnessVersion:        e.harnessVersion,
+		Mode:                     mode,
+		Envelope:                 env,
+		ExecutionPolicy:          envEffectivePolicy,
+		SelectedEnvelopeSections: selectedEnvelopeSections,
+		Instructions:             e.instructions,
+		Model:                    e.model,
+		HarnessOptions:           e.harnessOptions,
+		HarnessConfigResolved:    true,
+		MCPServers:               copyMCPServers(e.mcpServers),
+		Tools:                    append([]string(nil), e.tools...),
+		Workspace:                env.Workspace,
+		CompletionPath:           completionPath,
+		TelemetryDir:             telemetry.PrepareStageTelemetryDir(env.Workspace),
+		Credentials:              creds,
+		ContextPaths:             contextPaths,
+		Timeout:                  invocationTimeout(env, e.timeout),
+		MaxTranscriptBytes:       e.transcriptLimit,
+		HarnessVersion:           e.harnessVersion,
+	}
+	if nestedAdapter != nil {
+		if err := validateNestedExecution(req); err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
+		}
 	}
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -410,7 +466,13 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		}
 	}
 
-	out, runErr := e.adapter.Run(ctx, req)
+	var out Outcome
+	var runErr error
+	if nestedAdapter != nil {
+		out, runErr = nestedAdapter.RunNested(ctx, req)
+	} else {
+		out, runErr = e.adapter.Run(ctx, req)
+	}
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	invoke.ReportAgentUsage(ctx, out.Metrics)
 	if out.InputInspectionReceiptsCollected {
@@ -549,6 +611,141 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	return out, transcript, nil, nil
 }
 
+func applyNestedExecutionPolicy(env apiv1.InvocationEnvelope, effective apiv1.ChildExecutionPolicy) apiv1.InvocationEnvelope {
+	env.Capabilities = append([]string(nil), effective.Capabilities...)
+	env.PolicyActions = append([]string(nil), effective.PolicyActions...)
+	env.Limits = effective.PlatformPolicy.Budget
+	env.ParentPlatformPolicy = nil
+
+	declaration := *env.NestedAgentPolicy
+	declaration.Delegation = effective.Delegation
+	declaration.MaxDepth = effective.MaxDepth
+	declaration.PermittedProfiles = []string{effective.Profile}
+	declaration.Context = effective.Context
+	declaration.Model = effective.Model
+	declaration.Model.Allowlist = append([]string(nil), effective.Model.Allowlist...)
+	declaration.PeerMessaging = effective.PeerMessaging
+	declaration.PlatformPolicy = clonePlatformPolicy(effective.PlatformPolicy)
+	env.NestedAgentPolicy = &declaration
+
+	allowedRoots := make(map[string]struct{}, len(effective.PlatformPolicy.FilesystemRoots))
+	for _, root := range effective.PlatformPolicy.FilesystemRoots {
+		allowedRoots[root] = struct{}{}
+	}
+	workspaces := make([]apiv1.AdditionalWorkspace, 0, len(env.AdditionalWorkspaces))
+	for _, workspace := range env.AdditionalWorkspaces {
+		if _, ok := allowedRoots["workspace:"+workspace.Name]; ok {
+			workspaces = append(workspaces, workspace)
+		}
+	}
+	env.AdditionalWorkspaces = workspaces
+	return env
+}
+
+func applyNestedContextPolicy(env apiv1.InvocationEnvelope, effective apiv1.ChildExecutionPolicy) (apiv1.InvocationEnvelope, map[string]any, error) {
+	switch effective.Context.Mode {
+	case apiv1.ContextFresh:
+		env.ContextPointers = nil
+		env.Item = nil
+		env.Inputs = nil
+		env.InstructionAddendum = ""
+	case apiv1.ContextInherited:
+	case apiv1.ContextExplicit:
+		available := make(map[string]apiv1.ContextPointer, len(env.ContextPointers))
+		for _, pointer := range env.ContextPointers {
+			available[pointer.Name] = pointer
+		}
+		selected := make([]apiv1.ContextPointer, 0, len(effective.Context.ArtifactNames))
+		for _, name := range effective.Context.ArtifactNames {
+			pointer, ok := available[name]
+			if !ok {
+				return apiv1.InvocationEnvelope{}, nil, fmt.Errorf("selected artifact %q is unavailable", name)
+			}
+			selected = append(selected, pointer)
+		}
+		env.ContextPointers = selected
+		env.Item = nil
+		env.Inputs = nil
+		env.InstructionAddendum = ""
+		return env, selectNestedEnvelopeSections(effective), nil
+	default:
+		return apiv1.InvocationEnvelope{}, nil, fmt.Errorf("unsupported context mode %q", effective.Context.Mode)
+	}
+	return env, nil, nil
+}
+
+func selectNestedEnvelopeSections(policy apiv1.ChildExecutionPolicy) map[string]any {
+	values := map[string]any{
+		"run":                policy.RunID,
+		"stage":              policy.StageID,
+		"attempt":            policy.Attempt,
+		"parentAgent":        policy.ParentAgent,
+		"objective":          policy.Objective,
+		"ownership":          policy.Ownership,
+		"capabilities":       append([]string(nil), policy.Capabilities...),
+		"policyActions":      append([]string(nil), policy.PolicyActions...),
+		"platformPolicy":     clonePlatformPolicy(policy.PlatformPolicy),
+		"completionContract": policy.PlatformPolicy.CompletionContract,
+		"cancellation":       policy.PlatformPolicy.Cancellation,
+		"budget":             policy.PlatformPolicy.Budget,
+	}
+	selected := make(map[string]any, len(policy.Context.EnvelopeSections))
+	for _, name := range policy.Context.EnvelopeSections {
+		selected[name] = values[name]
+	}
+	return selected
+}
+
+func configuredReasoningEffort(options map[string]apiextensionsv1.JSON) (apiv1.ReasoningEffort, error) {
+	for _, name := range []string{"reasoningEffort", "effort"} {
+		value, ok := options[name]
+		if !ok {
+			continue
+		}
+		var effort string
+		if err := json.Unmarshal(value.Raw, &effort); err != nil {
+			return "", fmt.Errorf("nested agent policy: decode %s: %w", name, err)
+		}
+		switch apiv1.ReasoningEffort(effort) {
+		case apiv1.ReasoningMinimal, apiv1.ReasoningLow, apiv1.ReasoningMedium, apiv1.ReasoningHigh:
+			return apiv1.ReasoningEffort(effort), nil
+		default:
+			return "", fmt.Errorf("nested agent policy: unsupported configured reasoning effort %q", effort)
+		}
+	}
+	return "", nil
+}
+
+func clonePlatformPolicy(policy apiv1.PlatformPolicy) apiv1.PlatformPolicy {
+	policy.Capabilities = append([]string(nil), policy.Capabilities...)
+	policy.PolicyActions = append([]string(nil), policy.PolicyActions...)
+	policy.Credentials = append([]string(nil), policy.Credentials...)
+	policy.FilesystemRoots = append([]string(nil), policy.FilesystemRoots...)
+	policy.NetworkEgress = append([]string(nil), policy.NetworkEgress...)
+	policy.ContentExclusions = append([]string(nil), policy.ContentExclusions...)
+	return policy
+}
+
+func intersectStrings(left, right []string) []string {
+	allowed := make(map[string]struct{}, len(right))
+	for _, value := range right {
+		allowed[value] = struct{}{}
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, value := range left {
+		if _, ok := allowed[value]; !ok {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func copyMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
 	if len(servers) == 0 {
 		return nil
@@ -622,6 +819,7 @@ func (e *Executor) liftArtifactFile(env apiv1.InvocationEnvelope) (*apiv1.Artifa
 	if path == "" {
 		return nil, nil
 	}
+
 	full, err := apiv1.ResolveContainedPath(env.Workspace, path)
 	if err != nil {
 		switch {

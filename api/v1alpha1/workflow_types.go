@@ -224,6 +224,10 @@ type Task struct {
 	// set so policy changes cannot silently outrun capability admission.
 	// +optional
 	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
+	// NestedAgentPolicy controls child-agent delegation and context. It is
+	// admitted before execution; omitted preserves legacy non-nested behavior.
+	// +optional
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty" yaml:"nestedAgentPolicy,omitempty"`
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
 	// `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct

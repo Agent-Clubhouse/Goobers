@@ -136,7 +136,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequest(l.SchedulerDir(), "", "acceptance")
+		requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "acceptance")
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}
