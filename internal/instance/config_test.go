@@ -1059,9 +1059,11 @@ func TestConfigRejectsWorkflowSourceStoreBackedAppKeyWithoutStores(t *testing.T)
 
 // TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture loads #3274's acceptance
 // fixture — a sanitized copy of the cloud deployment's real instance.yaml,
-// combining per-repo App auth, daemonIdentity App auth, and workflowSource App
-// auth in one document — through the full LoadConfig strict-decode + Validate
-// path. Before WorkflowSource carried Auth, the strict decoder refused the
+// combining per-repo App auth and workflowSource App auth in one document —
+// through the full LoadConfig strict-decode + Validate path. Its daemonIdentity
+// is a PAT rather than an App: the fixture's repos span two owners, and #3414
+// rejects a single-installation App identity in that shape because it cannot
+// mint for both. Before WorkflowSource carried Auth, the strict decoder refused the
 // document outright ("unknown field").
 func TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture(t *testing.T) {
 	cfg, err := LoadConfig(filepath.Join("..", "..", "api", "schemas", "testdata", "instance-workflowsource-app-auth.fixture.yaml"))
@@ -3005,6 +3007,147 @@ func TestRepoAuthBotLogin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.auth.BotLogin(); got != tc.want {
 				t.Fatalf("BotLogin() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// #3414 F1: a GitHub App installation belongs to exactly one owner, so a single
+// installationId cannot cover repos spanning several. Such a config is already
+// runtime-fatal (a 422 at first cross-owner mint, #3341), so rejecting it at
+// load can only hit configs that never worked.
+func TestValidateDaemonIdentityOwnerCoverage(t *testing.T) {
+	app := func() *DaemonIdentityConfig {
+		return &DaemonIdentityConfig{
+			Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999",
+			PrivateKey: &TokenRef{File: "/key.pem"},
+		}
+	}
+	gh := func(owner, name string) RepoRef {
+		return RepoRef{Provider: "github", Owner: owner, Name: name}
+	}
+
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "two owners on one installation is rejected and names both",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+			wantErr: "acme, globex",
+		},
+		{
+			name: "single owner is unchanged",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos:          []RepoRef{gh("acme", "a"), gh("acme", "b")},
+			},
+		},
+		{
+			// The check is about GitHub App installation scope, so an ADO
+			// organization is not an owner for this purpose. Counting it would
+			// reject a perfectly valid mixed-provider instance.
+			name: "non-github repos do not count toward owner span",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos: []RepoRef{
+					gh("acme", "a"),
+					{Provider: "ado", Owner: "globex", Project: "p", Name: "b"},
+				},
+			},
+		},
+		{
+			name: "pat daemon identity is untouched on multi-owner repos",
+			cfg: Config{
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}},
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+		},
+		{
+			name: "no installation id declared yet is not this check's business",
+			cfg: Config{
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthApp, AppID: "123456"},
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validateDaemonIdentityOwnerCoverage()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// #3414 F1, second arm: GitHub allows one installation per (App, owner), so a
+// repo naming the same App as the daemon identity but a different installation
+// means one half of the config is wrong. The message must not presume which.
+func TestValidateDaemonIdentitySameAppInstallations(t *testing.T) {
+	identity := &DaemonIdentityConfig{
+		Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999",
+		PrivateKey: &TokenRef{File: "/key.pem"},
+	}
+	repo := func(appID, installationID GitHubID) RepoRef {
+		return RepoRef{
+			Provider: "github", Owner: "acme", Name: "a",
+			Auth: &RepoAuthConfig{Kind: GitHubAuthApp, AppID: appID, InstallationID: installationID},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name:    "same app, different installation is rejected",
+			cfg:     Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "888")}},
+			wantErr: "disagrees with daemonIdentity.installationId",
+		},
+		{
+			name: "same app, same installation agrees",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "999")}},
+		},
+		{
+			// A different App is a different installation namespace entirely,
+			// so disagreement carries no information.
+			name: "different app is not cross-checked",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("654321", "888")}},
+		},
+		{
+			name: "repo without its own installation id inherits and is not a conflict",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "")}},
+		},
+		{
+			name: "repo without app auth is ignored",
+			cfg: Config{DaemonIdentity: identity, Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "a", Token: TokenRef{Env: "T"}},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validateDaemonIdentitySameAppInstallations()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
 	}
