@@ -110,6 +110,12 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrStorageOperation, "create"),
 		attribute.Int(AttrUnmeasuredWorktrees, 0),
 		attribute.String(AttrErrorMessage, "fixture error"),
+		attribute.String(AttrAgentID, "agent-1"),
+		attribute.String(AttrAgentParentID, "coordinator"),
+		attribute.String(AttrAgentLifecycle, "started"),
+		attribute.String(AttrAgentRequestedModel, "requested"),
+		attribute.String(AttrAgentResolvedModel, "resolved"),
+		attribute.String(AttrAgentReasoningEffort, "high"),
 	}
 	attrs := append(canonical,
 		attribute.Bool("typed.bool", true),
