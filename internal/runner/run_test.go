@@ -6781,8 +6781,9 @@ func agenticImplementNeedsHumanGateMachine(t *testing.T) *workflow.Machine {
 
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
-// capability sourcing.
-func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) *Runner {
+// capability sourcing. The second return is the runner's runs directory, for
+// tests that inspect the journal a Start writes.
+func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -6809,7 +6810,7 @@ func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, review
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return r
+	return r, filepath.Join(instanceRoot, "runs")
 }
 
 // TestRunnerAgenticGateSourcesGooberCapabilities is #294: an agentic gate
@@ -6835,7 +6836,7 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 
 	t.Run("sources the reviewer goober's declared capabilities", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
+		r, runsDir := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
 		if res := start(t, r); res.Phase != journal.PhaseCompleted {
 			t.Fatalf("phase = %q, want completed", res.Phase)
 		}
@@ -6845,11 +6846,32 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 		if got := reviewer.gotCaps; len(got) != 1 || got[0] != "agent:model" {
 			t.Fatalf("gate envelope capabilities = %v, want [agent:model]", got)
 		}
+
+		// PR #3528 finding-1 producer half, local tier: Start journals the
+		// map as the trusted gate-goober-capabilities input, readable through
+		// PinnedGateGooberCapabilities — the run's pin, not the
+		// currently-served config, is what post-start consumers (the daemon
+		// credential plane) resolve an agentic gate's reviewer grants from.
+		rd, err := journal.OpenRead(filepath.Join(runsDir, "run-agentic-gate"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := rd.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned, found, err := PinnedGateGooberCapabilities(rd, identity)
+		if err != nil || !found {
+			t.Fatalf("PinnedGateGooberCapabilities = (%v, %t, %v), want the pinned map", pinned, found, err)
+		}
+		if got := pinned["reviewer"]; len(got) != 1 || got[0] != "agent:model" {
+			t.Fatalf("pinned reviewer capabilities = %v, want [agent:model]", got)
+		}
 	})
 
 	t.Run("no mapping means no capabilities (fail-closed)", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, nil)
+		r, _ := newAgenticGateRunner(t, byTask, reviewer, nil)
 		_ = start(t, r)
 		if !reviewer.called {
 			t.Fatal("reviewer was never invoked")

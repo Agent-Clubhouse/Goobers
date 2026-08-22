@@ -177,6 +177,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
 	}
+	// The reviewer-goober capability map pinned into the run input at start
+	// (#294): projected as a trusted input so the daemon credential plane
+	// resolves an agentic gate's reviewer grants from the run's pin, never
+	// the currently-served config (PR #3528).
+	if len(proj.GateGooberCapabilities) > 0 {
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = []byte(proj.GateGooberCapabilities)
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
+	}
 	if proj.Item != nil {
 		item := normalizeItemIntegrity(proj.Item)
 		b, err := json.Marshal(item)

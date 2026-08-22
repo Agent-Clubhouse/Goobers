@@ -198,6 +198,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 		})
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
+	registerCredentialRoute(router, config.credentials, errorLog)
 }
 
 func registerClaimRoute(

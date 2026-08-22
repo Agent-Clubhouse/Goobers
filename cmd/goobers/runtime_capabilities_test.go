@@ -64,12 +64,14 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// local-only run reveal, and HITL escalation resolution — operator
 	// recovery of a terminal run, kept outside the parity contract like
 	// `run abort`), and the write planes' workflow-execution routes
-	// (claims + trigger ingestion, #3509 §7).
+	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11 —
+	// a stage pod advancing its own execution, the same machine-seam class
+	// as the claims plane).
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
-		"triggerIngest": true,
+		"triggerIngest": true, "credentialResolve": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {

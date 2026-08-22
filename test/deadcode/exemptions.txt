@@ -170,9 +170,7 @@ github.com/goobers/goobers/internal/journal.encodeCompleteness # Cross-runner co
 github.com/goobers/goobers/internal/journal.encodeOutputs # Cross-runner conformance helper (stage Outputs) retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.Reader.Dir # Journal reader accessor retained for external journal tooling.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
-github.com/goobers/goobers/internal/journal.Reader.Schema # Journal schema inspection accessor required by the persisted-schema compatibility contract and exercised by migration tests.
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.

@@ -59,6 +59,15 @@ const (
 	ClaimSettlePath          = V1Prefix + "/claims/settle"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+
+	// CredentialResolvePath is the credential plane's resolve endpoint
+	// (distributed-state-and-coordination.md §11, DS9/DS10): a stage pod,
+	// authenticated as its run, receives short-lived credentials scoped to
+	// exactly its stage's declared credential capabilities. Stage pods are the
+	// only intended callers; dispatch payloads carry opaque references only
+	// (#2931), and resolution happens at stage start — never inherited from
+	// dispatch time.
+	CredentialResolvePath = V1Prefix + "/credentials/resolve"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -96,6 +105,7 @@ const (
 	RouteClaimSettle       RouteID = "claimSettle"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
+	RouteCredentialResolve RouteID = "credentialResolve"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -165,6 +175,14 @@ const (
 	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
 	// a mutation that cannot be accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// CredentialResolveBudget covers the credential plane's resolve route. Its
+	// time is an outbound token mint, not a query: a GitHub App installation
+	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
+	// the budget must contain one cold mint plus margin. The route is called
+	// by stage pods, never by the portal, so the portal's 10s client abort
+	// (cost_test.go clientAbort) does not bound it — the pod-side consumer
+	// owns its own retry-on-infra-budget discipline (DS7/#3361).
+	CredentialResolveBudget = 45 * time.Second
 )
 
 var v1Routes = []Route{
@@ -205,6 +223,12 @@ var v1Routes = []Route{
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+
+	// The credential plane (§11, DS9/DS10) is a machine seam like the claims
+	// plane — a stage pod advancing its own execution — so it shares the
+	// workflow-execution action class, but its budget is mint-bound rather
+	// than ledger-bound (see CredentialResolveBudget).
+	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

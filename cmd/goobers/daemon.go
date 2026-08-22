@@ -98,6 +98,10 @@ type schedulerSetup struct {
 	// Interventions is the atomically replaced definition snapshot used by the
 	// daemon's mutation service during config reload.
 	Interventions *interventionDefinitionRegistry
+	// CredentialPlane is the daemon credential service (#3511); set by up.go
+	// after API wiring so config reload can swap its config-derived snapshot
+	// alongside the intervention definitions. Nil outside the `up` daemon.
+	CredentialPlane *daemonCredentialService
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that

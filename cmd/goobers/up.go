@@ -492,12 +492,28 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
 	triggerPlane := newDaemonTriggerService()
+	// The credential plane (#3511, distributed-state-and-coordination.md §11,
+	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
+	// stage start through the same capability-gated machinery the local
+	// runner's executors resolve through. The snapshot is replaced on config
+	// reload (see configreload.go) so a reloaded gaggle's grants apply.
+	//
+	// Wired on every daemon, but RULED fail-closed (PR #3528 finding 2): the
+	// route itself requires an authenticated POD principal unconditionally —
+	// on this file's loopback null-auth posture (no api.auth block, so no
+	// authenticator below) every resolve answers a typed 403 rather than
+	// handing raw secret material to any local caller. Local modes never need
+	// the plane; their resolution stays in-process via buildCredentialEnv.
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
+	setup.CredentialPlane = credentialPlane
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithCredentialService(credentialPlane),
 	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
