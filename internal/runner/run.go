@@ -241,9 +241,8 @@ func (h stageHeartbeat) Stop() error {
 
 // SpanStarter is the slice of the telemetry client the runner needs to open
 // run/task/gate spans (issue #126). *telemetry.Client satisfies it
-// structurally, mirroring internal/scheduler.SpanStarter's narrow-interface
-// pattern for the same reason: no import cycle, and the runner never depends
-// on telemetry's full surface.
+// structurally — the narrow-interface pattern keeps the import direction
+// clean, and the runner never depends on telemetry's full surface.
 type SpanStarter interface {
 	StartRun(ctx context.Context, attrs telemetry.RunAttributes) (context.Context, telemetry.Span, error)
 	StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error)
@@ -919,7 +918,7 @@ func runSpanOutcome(phase journal.RunPhase) (string, bool) {
 
 // startRunSpan opens the run's root span, if telemetry is configured. A zero
 // telemetry.Span is safe to use (its methods no-op), so callers need no nil
-// checks — mirrors internal/scheduler.Scheduler.startSpan. The returned ctx
+// checks. The returned ctx
 // carries the run's trace id (RunID, per telemetry.Client.StartRun) so every
 // task/gate span opened while walking this run joins the same trace.
 func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Context, telemetry.Span) {

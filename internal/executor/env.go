@@ -162,7 +162,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		env = append(env, key+"="+value)
 	}
 	// GOTRACEBACK=all makes every Go stage subprocess (go test under `make ci`,
-	// the goobers CLI, goober-runtime) print ALL goroutines — including runtime
+	// the goobers CLI) print ALL goroutines — including runtime
 	// and system stacks — when it dumps on SIGQUIT (the timeout-diagnostics path
 	// in shell.go) or its own -test.timeout. No runtime/perf cost: it only
 	// changes what a crash/quit dump contains. Set here so a hung stage's

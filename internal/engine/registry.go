@@ -99,11 +99,6 @@ func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
 	return wf.Compile(def, wf.WithPreviewFeatures(r.allowPreviewFeatures))
 }
 
-// PreviewFeaturesEnabled reports the policy carried by registered definitions.
-func (r *Registry) PreviewFeaturesEnabled() bool {
-	return r.allowPreviewFeatures
-}
-
 // Get returns a specific pinned version of a workflow (1-based).
 func (r *Registry) Get(name string, version int) (wf.Definition, bool) {
 	r.mu.RLock()

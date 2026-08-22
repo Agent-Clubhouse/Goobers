@@ -15,19 +15,6 @@ import (
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
-func TestNewStarterDefaultsTaskQueue(t *testing.T) {
-	// A nil client is fine for construction (the starter only dials on Start).
-	if NewStarter(nil, "") == nil {
-		t.Fatal("NewStarter returned nil")
-	}
-	if NewStarter(nil, "custom-queue") == nil {
-		t.Fatal("NewStarter with explicit queue returned nil")
-	}
-	if DefaultTaskQueue == "" {
-		t.Fatal("DefaultTaskQueue must be set")
-	}
-}
-
 func TestRegisterEngineWiresPublicScheduleReconciler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

@@ -43,7 +43,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	metadata := buildMetadata{version: "v1.2.3", commit: "abcdef0", date: "2026-07-20T12:00:00Z"}
 
-	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux", "")
+	gotChecks := checks([]string{"config-sync", "goobers", "operator"}, tools, metadata, "linux", "")
 	var got []string
 	for _, current := range gotChecks {
 		got = append(got, current.label)
@@ -66,7 +66,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-dist-untracked",
 		"build-goobers",
 		"validate-configs",
-		"build-scheduler",
+		"build-operator",
 		"shipped-workflows",
 		"schema-description-coverage",
 		"test",
@@ -148,7 +148,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	t.Parallel()
 	mergeChecks := checks(
-		[]string{"config-sync", "goobers", "scheduler"},
+		[]string{"config-sync", "goobers", "operator"},
 		toolchain{
 			goCommand:       "go",
 			gofmtCommand:    "gofmt",
@@ -172,7 +172,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 		"vet",
 		"build-config-sync",
 		"build-goobers",
-		"build-scheduler",
+		"build-operator",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fast check order = %q, want %q", got, want)
@@ -299,7 +299,7 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	t.Parallel()
 	got := checks(
-		[]string{"scheduler"},
+		[]string{"operator"},
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
@@ -309,7 +309,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links go-toolchain build-scheduler portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links go-toolchain build-operator portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -849,7 +849,7 @@ func mergeGateChecks() []check {
 		npmCommand:      "npm",
 		golangciCommand: "golangci-lint",
 	}
-	return checks([]string{"config-sync", "goobers", "scheduler"}, tools, buildMetadata{}, "linux", "")
+	return checks([]string{"config-sync", "goobers", "operator"}, tools, buildMetadata{}, "linux", "")
 }
 
 // TestEveryMergeCheckHasAGroup guarantees the parallel CI jobs collectively run

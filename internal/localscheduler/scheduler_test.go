@@ -1570,7 +1570,8 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 // when WithTelemetry is configured, a dispatched tick opens exactly one
 // scheduler decision span, attributed to the firing workflow. Before this
 // fix, Scheduler had no telemetry seam at all — dispatch() never called
-// StartSchedulerSpan, the direct parity gap vs internal/scheduler.Scheduler.
+// StartSchedulerSpan, the direct parity gap vs the since-deleted tier-3
+// scheduler fork.
 func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	spans := &fakeSpanStarter{}
