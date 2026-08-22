@@ -252,6 +252,29 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 		}
 	}
 
+	// #3439: an instance-config per-workflow budget override of exactly zero
+	// means "stop this workflow from starting" — api/schemas/instance.schema.json
+	// says so for both maps ("Zero stops it from starting"). The overrides below
+	// are applied only when > 0, so a zero override was indistinguishable from
+	// an absent one and fell through to the workflow's own value or the
+	// scheduler default of 10. An operator writing `workflowBudgets: {wf: 0}` to
+	// pause a workflow got ten runs an hour instead: the documented behaviour and
+	// the actual behaviour were opposites, and the config validated clean, so the
+	// only way to discover it was to watch the workflow run.
+	//
+	// Handled here rather than by relaxing the `> 0` guards because zero is not a
+	// budget value in this scheme — it is a stop, and the two maps express it at
+	// different windows. Note this is deliberately NOT the same question as the
+	// workflow's own maxRunsPerHour/maxRunsPerDay fields, whose schema documents
+	// zero as "fall back to the default of 10" and "disables the daily cap"
+	// respectively; those already agree with the code and are left alone (#3360).
+	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonBudget
+	}
+	if override, ok := c.dayBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonDailyBudget
+	}
+
 	maxRunsPerHour := r.MaxRunsPerHour
 	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override > 0 {
 		maxRunsPerHour = int32(override)
