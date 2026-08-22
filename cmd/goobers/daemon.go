@@ -204,7 +204,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	//
 	// So: one unsatisfiable stage no longer takes the whole instance down, and
 	// every OTHER gaggle keeps running.
-	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
+	if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
@@ -1128,7 +1128,7 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// dispatch can refuse a run whose gaggle/stages require a capability this
 	// runner does not claim. Wired uniformly for both `up` and `run`.
 	if s.Config != nil {
-		opts = append(opts, localscheduler.WithRunnerCapabilities(s.Config.Runner.Capabilities))
+		opts = append(opts, localscheduler.WithRunnerCapabilities(s.Config.SelfRunnerCapabilities()))
 	}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
