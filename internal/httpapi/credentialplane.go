@@ -113,6 +113,26 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 			writeError(w, status, code, message)
 			return
 		}
+		// DS9 posture, RULED for delivery (PR #3528 finding 2): the credential
+		// plane is mode-3 machinery and FAILS CLOSED. Unlike the claims and
+		// trigger planes, it requires an authenticated POD principal
+		// UNCONDITIONALLY — a pod token proves "I am run X's stage pod" and
+		// authorizes credential resolution for run X's own stages and no other
+		// run's. With no authenticator wired (the loopback null-auth daemon)
+		// or no pod principal on the request — including an authenticated
+		// human OIDC principal, whatever its role — the route answers 403.
+		// Local modes never need the plane (local resolution stays in-process
+		// via buildCredentialEnv), so loopback convenience does not extend to
+		// raw-secret endpoints: without this gate any unauthenticated local
+		// caller could pull raw secret material for any run/stage and drive
+		// GitHub App token minting. The gate sits before body decoding — an
+		// unauthenticated caller learns nothing from this surface.
+		principal, authenticated := PrincipalFromRequest(request)
+		if !authenticated || !IsPodPrincipal(principal) {
+			writeError(w, http.StatusForbidden, "credential_plane_requires_pod_principal",
+				"the credential plane requires an authenticated pod principal; it serves stage pods only")
+			return
+		}
 		var input CredentialResolveRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -134,23 +154,11 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 				return
 			}
 		}
-		// DS9 posture: this plane serves stage pods. A pod token proves "I am
-		// run X's stage pod" and authorizes credential resolution for run X's
-		// own stages and no other run's. An authenticated HUMAN principal is
-		// refused outright — the plane is a secret-disclosure surface, and no
-		// human workflow needs it (operators hold instance access already; the
-		// smoke drives it through real pod tokens). An unauthenticated request
-		// only exists on the loopback null-auth posture, where the caller is
-		// local-trusted and could read the instance config directly.
-		if principal, ok := PrincipalFromRequest(request); ok {
-			if !IsPodPrincipal(principal) {
-				writeError(w, http.StatusForbidden, "pod_principal_required", "the credential plane serves stage pods only")
-				return
-			}
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only resolve credentials for its own run")
-				return
-			}
+		// Per-run containment: the pod principal established above may only
+		// resolve credentials for its OWN run's stages.
+		if principal.Subject != podPrincipalSubject(input.RunID) {
+			writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only resolve credentials for its own run")
+			return
 		}
 		response, err := credentials.Resolve(request.Context(), input)
 		if err != nil {

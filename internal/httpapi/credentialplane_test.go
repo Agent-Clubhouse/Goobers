@@ -47,6 +47,14 @@ func TestCredentialResolveRouteIsInTheContract(t *testing.T) {
 	}
 }
 
+// podAuthenticator authenticates every request as run-1's stage pod — the only
+// principal kind the credential plane serves (it fails closed on anything
+// else, including the null-auth loopback posture; see
+// TestCredentialResolveFailsClosedWithoutPodPrincipal).
+func podAuthenticator() *fakeAuthenticator {
+	return &fakeAuthenticator{principal: &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer}}
+}
+
 func TestCredentialResolveDispatchesAndAnswers(t *testing.T) {
 	expires := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
 	service := &fakeCredentialService{response: CredentialResolveResponse{
@@ -56,7 +64,7 @@ func TestCredentialResolveDispatchesAndAnswers(t *testing.T) {
 			{Capability: "repo:push", Value: "minted-value", ExpiresAt: &expires},
 		},
 	}}
-	handler := writePlaneHandler(t, nil, AllowAll, WithCredentialService(service))
+	handler := writePlaneHandler(t, podAuthenticator(), AllowAll, WithCredentialService(service))
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.CredentialResolvePath,
@@ -83,7 +91,7 @@ func TestCredentialResolveDispatchesAndAnswers(t *testing.T) {
 
 func TestCredentialResolveValidatesBeforeTheService(t *testing.T) {
 	service := &fakeCredentialService{}
-	handler := writePlaneHandler(t, nil, AllowAll, WithCredentialService(service))
+	handler := writePlaneHandler(t, podAuthenticator(), AllowAll, WithCredentialService(service))
 
 	tooMany := make([]string, MaxCredentialResolveCapabilities+1)
 	for i := range tooMany {
@@ -166,6 +174,71 @@ func TestCredentialResolveServesPodsOnly(t *testing.T) {
 	}
 }
 
+// TestCredentialResolveFailsClosedWithoutPodPrincipal is the PR #3528
+// finding-2 ruling, reproduced at the route: the credential plane is mode-3
+// machinery and FAILS CLOSED. On the loopback null-auth posture (no
+// authenticator wired — the mode-1 daemon), where the claims/trigger planes
+// serve anonymous local callers, the credential plane instead answers a typed
+// 403 and the service is never invoked: no values resolve, so no audit event
+// can claim a resolution happened. A pod principal works as before; a human
+// OIDC principal — whatever its role — is refused with the same typed 403.
+func TestCredentialResolveFailsClosedWithoutPodPrincipal(t *testing.T) {
+	body := `{"runId":"run-1","stage":"implement"}`
+
+	refused := func(t *testing.T, handler http.Handler) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.CredentialResolvePath, body))
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body = %s", response.Code, response.Body)
+		}
+		var envelope ErrorEnvelope
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != "credential_plane_requires_pod_principal" {
+			t.Fatalf("error code = %q, want credential_plane_requires_pod_principal", envelope.Error.Code)
+		}
+	}
+
+	t.Run("loopback null-auth daemon is refused", func(t *testing.T) {
+		service := &fakeCredentialService{response: CredentialResolveResponse{RunID: "run-1", Stage: "implement"}}
+		// nil authenticator + AllowAll is exactly up.go's unconfigured
+		// loopback posture: every request stays anonymous.
+		handler := writePlaneHandler(t, nil, AllowAll, WithCredentialService(service))
+		refused(t, handler)
+		if len(service.requests) != 0 {
+			t.Fatalf("an unauthenticated resolve reached the credential service: %+v", service.requests)
+		}
+	})
+
+	t.Run("human OIDC principal is refused whatever its role", func(t *testing.T) {
+		service := &fakeCredentialService{response: CredentialResolveResponse{RunID: "run-1", Stage: "implement"}}
+		authenticator := &fakeAuthenticator{}
+		handler := writePlaneHandler(t, authenticator, AllowAll, WithCredentialService(service))
+		for _, role := range []Role{RoleView, RoleOperate, RoleAdmin} {
+			authenticator.principal = &Principal{Subject: "human", Roles: []Role{role}}
+			refused(t, handler)
+		}
+		if len(service.requests) != 0 {
+			t.Fatalf("a human resolve reached the credential service: %+v", service.requests)
+		}
+	})
+
+	t.Run("pod principal still resolves its own run", func(t *testing.T) {
+		service := &fakeCredentialService{response: CredentialResolveResponse{RunID: "run-1", Stage: "implement"}}
+		handler := writePlaneHandler(t, podAuthenticator(), AllowAll, WithCredentialService(service))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.CredentialResolvePath, body))
+		if response.Code != http.StatusOK {
+			t.Fatalf("pod resolve: status = %d, body = %s", response.Code, response.Body)
+		}
+		if len(service.requests) != 1 {
+			t.Fatalf("service saw %+v, want exactly the pod's resolve", service.requests)
+		}
+	})
+}
+
 // TestCredentialResolveTypedRefusalsPassThrough proves a service-typed
 // refusal (the undeclared-capability 403 naming the capability) reaches the
 // caller intact rather than collapsing into a generic 500.
@@ -173,7 +246,7 @@ func TestCredentialResolveTypedRefusalsPassThrough(t *testing.T) {
 	service := &fakeCredentialService{err: NewInterventionError(
 		http.StatusForbidden, "capability_undeclared",
 		`capability "repo:push" is not declared by stage "plan"; nothing materializes for an undeclared capability`, nil)}
-	handler := writePlaneHandler(t, nil, AllowAll, WithCredentialService(service))
+	handler := writePlaneHandler(t, podAuthenticator(), AllowAll, WithCredentialService(service))
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.CredentialResolvePath,

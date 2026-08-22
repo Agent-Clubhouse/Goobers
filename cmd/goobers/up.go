@@ -492,6 +492,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stage start through the same capability-gated machinery the local
 	// runner's executors resolve through. The snapshot is replaced on config
 	// reload (see configreload.go) so a reloaded gaggle's grants apply.
+	//
+	// Wired on every daemon, but RULED fail-closed (PR #3528 finding 2): the
+	// route itself requires an authenticated POD principal unconditionally —
+	// on this file's loopback null-auth posture (no api.auth block, so no
+	// authenticator below) every resolve answers a typed 403 rather than
+	// handing raw secret material to any local caller. Local modes never need
+	// the plane; their resolution stays in-process via buildCredentialEnv.
 	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
