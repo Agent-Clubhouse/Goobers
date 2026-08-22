@@ -44,6 +44,17 @@
       "type": "array",
       "description": "Machine-filtered causal signals that are eligible for automated nomination or promotion.",
       "items": {
+        "examples": [
+          {
+            "node": "review",
+            "value": 0.25,
+            "lower": 0.1,
+            "upper": 0.4,
+            "source": "randomized",
+            "caveat": "Eligible only for the observed randomized cohort.",
+            "promotionEligible": true
+          }
+        ],
         "allOf": [
           {
             "$ref": "#/$defs/promotionSignal"
@@ -179,6 +190,23 @@
     },
     "causalCredit": {
       "type": "object",
+      "examples": [
+        {
+          "node": "review",
+          "effect": 0.25,
+          "lower": 0,
+          "upper": 0,
+          "identification": "unidentifiable",
+          "caveat": "No trusted randomized assignment or valid comparison cohort.",
+          "treatedBefore": 0,
+          "treatedAfter": 0,
+          "controlBefore": 0,
+          "controlAfter": 0,
+          "intervalAvailable": false,
+          "promotionEligible": false,
+          "promotionSource": "correlational-fallback"
+        }
+      ],
       "additionalProperties": false,
       "required": [
         "node",
@@ -314,6 +342,15 @@
     },
     "promotionSignal": {
       "type": "object",
+      "examples": [
+        {
+          "node": "review",
+          "value": 0.25,
+          "source": "correlational-fallback",
+          "caveat": "No trusted randomized assignment or valid comparison cohort.",
+          "promotionEligible": false
+        }
+      ],
       "additionalProperties": false,
       "required": [
         "node",

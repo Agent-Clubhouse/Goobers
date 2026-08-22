@@ -168,12 +168,14 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 	thresholds.MinCreditRuns = 5
 	thresholds.MinCreditFailureShare = 0.4
 	thresholds.MaxFlaggedRuns = 2
-	result, err := detectCandidateFindingsWithCredit(
+	result, err := detectCandidateFindingsWithCausalCredit(
 		rollupDB,
 		creditStore,
 		24*time.Hour,
 		start.Add(-time.Minute),
+		"",
 		"core",
+		"",
 		telemetryAggregateValues{telemetryAggregateCreditAssignment},
 		nil,
 		thresholds,
@@ -347,11 +349,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
+	first, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindingsWithCredit(db, nil, 24*time.Hour, since, "", aggregates, nil, thresholds)
+	second, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}

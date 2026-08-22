@@ -530,22 +530,6 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 	return "", nil
 }
 
-func detectCandidateFindingsWithCredit(
-	db *rollup.DB,
-	creditStore *readmodel.Store,
-	window time.Duration,
-	since time.Time,
-	gaggle string,
-	aggregates telemetryAggregateValues,
-	learningActions telemetryLearningActionValues,
-	thresholds rollup.Thresholds,
-) (candidateFindingsArtifact, error) {
-	return detectCandidateFindingsWithCausalCredit(
-		db, creditStore, window, since, "", gaggle, "",
-		aggregates, learningActions, thresholds,
-	)
-}
-
 func detectCandidateFindingsWithCausalCredit(
 	db *rollup.DB,
 	creditStore *readmodel.Store,

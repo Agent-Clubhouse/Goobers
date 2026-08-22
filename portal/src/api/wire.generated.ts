@@ -844,9 +844,11 @@ export const goWireFixtures = {
         "failureRuns": 1,
         "failureShare": 0.25,
         "escalationRuns": 1,
-        "retryWasteAttempts": 2
+        "retryWasteAttempts": 2,
+        "identification": ""
       }
     ],
+    "causalCredit": null,
     "curation": {
       "everRecorded": false,
       "runs": 0,
