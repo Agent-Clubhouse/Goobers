@@ -3138,6 +3138,19 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 				var itemID string
 				if item != nil {
 					itemID = item.ID
+				} else if r.cfg.ClaimedItems != nil {
+					ids, resolveErr := r.cfg.ClaimedItems(runID)
+					if resolveErr != nil {
+						if aerr := jr.Append(journal.Event{
+							Type: journal.EventError, Stage: t.Name,
+							Error: &journal.ErrorDetail{Code: "existingfix_item_resolution_failed", Message: resolveErr.Error()},
+						}); aerr != nil {
+							res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix item-resolution error for %q: %w", t.Name, aerr))
+							return "", res, false, err
+						}
+					} else if len(ids) > 0 {
+						itemID = ids[0]
+					}
 				}
 				o := ExistingFixOutcome{
 					RunID:   runID,

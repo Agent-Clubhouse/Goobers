@@ -806,13 +806,9 @@ func serveDashboardIndex(response http.ResponseWriter, request *http.Request, in
 func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api dashboardAPI) error {
 	cancelRequests()
 	apiErr := api.close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	shutdownErr := server.Shutdown(ctx)
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		shutdownErr = errors.Join(shutdownErr, server.Close())
-	}
-	return errors.Join(shutdownErr, apiErr)
+	return errors.Join(server.Shutdown(ctx), apiErr)
 }
 
 func openDashboardBrowser(ctx context.Context, address string) error {
