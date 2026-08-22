@@ -791,7 +791,21 @@ type DaemonIdentityConfig struct {
 	// RepoAuthConfig.AppID).
 	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
 	// InstallationID is the App's installation ID for kind "github-app".
+	// Mutually exclusive with Installations: one App installation belongs to
+	// exactly one owner, so this form only covers a single-owner instance.
 	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// Installations binds one installation per owner for kind "github-app"
+	// (#3415), so one App, one key, and one slug can serve an instance whose
+	// repos span several owners. Mutually exclusive with InstallationID.
+	//
+	// This exists because the single-installation form is not merely limited,
+	// it is runtime-fatal on a multi-owner instance: the daemon identity backs
+	// the whole daemon-mutation capability set instance-wide, so a token minted
+	// from one owner's installation fails with a 422 the first time a stage
+	// touches a repo in another owner. Observed in production, worked around by
+	// removing the daemon identity entirely and giving up explicit PR
+	// attribution.
+	Installations []DaemonInstallation `json:"installations,omitempty" yaml:"installations,omitempty"`
 	// PrivateKey references the App's PEM-encoded private key for kind
 	// "github-app" (see RepoAuthConfig.PrivateKey).
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
@@ -807,10 +821,46 @@ type DaemonIdentityConfig struct {
 	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
 }
 
+// DaemonInstallation binds one GitHub App installation to the owner it was
+// installed on (#3415).
+type DaemonInstallation struct {
+	// Owner is the GitHub owner this installation covers, matching a
+	// repos[].owner value.
+	Owner string `json:"owner" yaml:"owner"`
+	// InstallationID is the App's installation ID on that owner.
+	InstallationID GitHubID `json:"installationId" yaml:"installationId"`
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (d *DaemonIdentityConfig) hasGitHubAppFields() bool {
-	return d.AppID != "" || d.InstallationID != "" || d.PrivateKey != nil || d.Slug != ""
+	return d.AppID != "" || d.InstallationID != "" || len(d.Installations) > 0 ||
+		d.PrivateKey != nil || d.Slug != ""
+}
+
+// InstallationForOwner resolves the installation this identity should mint with
+// when acting on owner. It answers for both forms: the single-installation
+// form covers whatever owner it was installed on (the caller has already been
+// validated as single-owner, so any owner resolves to it), and the per-owner
+// form matches by name.
+//
+// The owner is known where credentials are wired — buildCredentials receives
+// the gaggle's owner and builds one resolver per gaggle — so selection happens
+// there rather than threading a repo through credentials.ResolveFunc, which
+// takes only a context.
+func (d *DaemonIdentityConfig) InstallationForOwner(owner string) (GitHubID, bool) {
+	if d == nil {
+		return "", false
+	}
+	if len(d.Installations) == 0 {
+		return d.InstallationID, d.InstallationID != ""
+	}
+	for _, binding := range d.Installations {
+		if binding.Owner == owner {
+			return binding.InstallationID, binding.InstallationID != ""
+		}
+	}
+	return "", false
 }
 
 // GitHubApp reports whether this identity authenticates through GitHub App
@@ -848,11 +898,38 @@ func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[stri
 		if d.AppID == "" {
 			return fmt.Errorf("appId is required for kind %q", GitHubAuthApp)
 		}
-		if d.InstallationID == "" {
-			return fmt.Errorf("installationId is required for kind %q", GitHubAuthApp)
+		// #3415: exactly one of the two forms. Accepting both would leave the
+		// precedence question to whoever reads the code next, and the two
+		// answers differ in which owner gets minted for.
+		if d.InstallationID == "" && len(d.Installations) == 0 {
+			return fmt.Errorf("installationId or installations is required for kind %q", GitHubAuthApp)
 		}
-		if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
-			return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+		if d.InstallationID != "" && len(d.Installations) > 0 {
+			return fmt.Errorf("set either installationId or installations for kind %q, not both — "+
+				"installations already carries the per-owner binding", GitHubAuthApp)
+		}
+		if d.InstallationID != "" {
+			if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
+				return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+			}
+		}
+		seenOwners := make(map[string]bool, len(d.Installations))
+		for i, binding := range d.Installations {
+			if binding.Owner == "" {
+				return fmt.Errorf("installations[%d]: owner is required", i)
+			}
+			if seenOwners[binding.Owner] {
+				return fmt.Errorf("installations[%d]: owner %q is bound more than once — "+
+					"GitHub allows one installation per App per owner", i, binding.Owner)
+			}
+			seenOwners[binding.Owner] = true
+			if binding.InstallationID == "" {
+				return fmt.Errorf("installations[%d] (%s): installationId is required", i, binding.Owner)
+			}
+			if _, err := strconv.ParseUint(string(binding.InstallationID), 10, 64); err != nil {
+				return fmt.Errorf("installations[%d] (%s): installationId %q must be the numeric installation ID",
+					i, binding.Owner, binding.InstallationID)
+			}
 		}
 		if d.PrivateKey == nil || d.PrivateKey.sourceCount() != 1 {
 			return fmt.Errorf("privateKey must reference exactly one of env, file, keychain, or store — " +
