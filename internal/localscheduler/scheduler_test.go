@@ -499,6 +499,33 @@ func TestTriggerSignalExactValidatesTargetedPullRequestBeforeDispatch(t *testing
 	}
 }
 
+func TestTriggerSignalExactRejectsUnsupportedSignalBeforeTargetValidation(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	validationCalls := 0
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "implementation",
+		Signals:  []string{"github-webhook:issues"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, _ int) error {
+		validationCalls++
+		return nil
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "implementation"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not subscribed") {
+		t.Fatalf("unsupported signal error = %v", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("targeted validation calls = %d, want none for an unsupported signal", validationCalls)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
+}
+
 func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)

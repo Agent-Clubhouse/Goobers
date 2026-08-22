@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -180,6 +181,29 @@ func targetedRunCount(t *testing.T, root string) int {
 	return len(entries)
 }
 
+func waitForTargetedRunCleanup(t *testing.T, root, runID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	layout := instance.NewLayout(root)
+	if _, err := waitForRunTerminal(ctx, layout.ForGaggle("example").RunsDir(), runID); err != nil {
+		t.Fatalf("wait for targeted run: %v", err)
+	}
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	for {
+		release, err := acquireInstanceLock(lockPath)
+		if err == nil {
+			release()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("targeted run did not release its instance lock: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func TestRunTargetRejectsExplicitZeroPR(t *testing.T) {
 	if !flagWasSet([]string{"merge-review", "--pr", "0"}, "pr") {
 		t.Fatal("flagWasSet did not detect an explicit --pr flag")
@@ -285,11 +309,12 @@ func TestRunTargetedPullRequestCompletesWithExactTriggerReference(t *testing.T) 
 	fixture := newTargetedPullRequestFixture(t, 3261, "open", "https://github.com/your-org/your-repo/pull/3261", token, http.StatusOK)
 	root := initTargetedMergeReviewDemo(t, token)
 
-	code, stdout, stderr := runArgs(t, "run", "merge-review", "--pr", "3261", root)
+	code, stdout, stderr := runArgs(t, "run", "merge-review", "--pr", "3261", "--no-wait", root)
 	if code != 0 {
 		t.Fatalf("run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	runID := runIDFromRunStdout(t, stdout)
+	waitForTargetedRunCleanup(t, root, runID)
 	reader, err := journal.OpenRead(filepath.Join(instance.NewLayout(root).ForGaggle("example").RunsDir(), runID))
 	if err != nil {
 		t.Fatal(err)
@@ -315,10 +340,11 @@ func TestRunTargetedPullRequestValidationUsesFreshProviderState(t *testing.T) {
 	fixture := newTargetedPullRequestFixture(t, 3261, "open", "https://github.com/your-org/your-repo/pull/3261", token, http.StatusOK)
 	root := initTargetedMergeReviewDemo(t, token)
 
-	code, stdout, stderr := runArgs(t, "run", "merge-review", "--pr", "3261", root)
+	code, stdout, stderr := runArgs(t, "run", "merge-review", "--pr", "3261", "--no-wait", root)
 	if code != 0 {
 		t.Fatalf("first run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+	waitForTargetedRunCleanup(t, root, runIDFromRunStdout(t, stdout))
 	fixture.setState("closed")
 	code, stdout, stderr = runArgs(t, "run", "merge-review", "--pr", "3261", root)
 	if code == 0 || !strings.Contains(stderr, "is closed") {
@@ -422,7 +448,6 @@ func TestRunTargetCLIRejectsInvalidTargetedPullRequests(t *testing.T) {
 	}{
 		{name: "zero", args: []string{"run", "merge-review", "--pr", "0", t.TempDir()}},
 		{name: "negative", args: []string{"run", "merge-review", "--pr", "-1", t.TempDir()}},
-		{name: "wrong workflow", args: []string{"run", "implement", "--pr", "42", t.TempDir()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			code, _, stderr := runArgs(t, test.args...)
@@ -434,4 +459,16 @@ func TestRunTargetCLIRejectsInvalidTargetedPullRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunTargetCLIRejectsWorkflowWithoutPullRequestTrigger(t *testing.T) {
+	root := initDeterministicDemo(t)
+	code, _, stderr := runArgs(t, "run", "default-implement", "--pr", "42", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want workflow error 1; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "workflow subscribed to the pull_request event") {
+		t.Fatalf("stderr = %q, want config-sourced trigger error", stderr)
+	}
+	assertNoTargetedRuns(t, root)
 }

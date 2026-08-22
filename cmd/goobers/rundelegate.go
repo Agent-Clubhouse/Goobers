@@ -78,10 +78,6 @@ const (
 // use. Before this was atomic, os.CreateTemp minted the request file already
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
-func writeTriggerRequest(schedulerDir, gaggle, workflow string) (requestID string, err error) {
-	return writeTriggerRequestContext(context.Background(), schedulerDir, gaggle, workflow)
-}
-
 func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string) (requestID string, err error) {
 	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
@@ -90,10 +86,6 @@ func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workf
 		CreatedAt: createdAt,
 		Deadline:  deadline,
 	})
-}
-
-func writeTargetedTriggerRequest(schedulerDir, gaggle, workflow string, pr int) (requestID string, err error) {
-	return writeTargetedTriggerRequestContext(context.Background(), schedulerDir, gaggle, workflow, pr)
 }
 
 func writeTargetedTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string, pr int) (requestID string, err error) {

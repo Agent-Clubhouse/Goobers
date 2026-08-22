@@ -1703,6 +1703,16 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 	if !ok {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
 	}
+	subscribed := false
+	for _, configuredSignal := range entry.Signals {
+		if configuredSignal == signal {
+			subscribed = true
+			break
+		}
+	}
+	if !subscribed {
+		return "", fmt.Errorf("localscheduler: workflow %q in gaggle %q is not subscribed to signal %q", identity.Workflow, identity.Gaggle, signal)
+	}
 	if pullNumber, targeted := webhookhttp.PullNumberFromTriggerRef(ref); targeted && s.targetedPRValidator != nil {
 		number, convErr := strconv.Atoi(pullNumber)
 		if convErr != nil {
@@ -1715,14 +1725,9 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 			return "", err
 		}
 	}
-	for _, subscribed := range entry.Signals {
-		if subscribed == signal {
-			return s.triggerWorkflow(dispatchCtx, entry, now,
-				journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
-				"signal")
-		}
-	}
-	return "", fmt.Errorf("localscheduler: workflow %q in gaggle %q is not subscribed to signal %q", identity.Workflow, identity.Gaggle, signal)
+	return s.triggerWorkflow(dispatchCtx, entry, now,
+		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
+		"signal")
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run

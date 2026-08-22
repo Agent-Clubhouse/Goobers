@@ -92,8 +92,8 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) || (*pr > 0 && target.Workflow != "merge-review") {
-		pf(stderr, "error: --pr requires a positive pull request number and the merge-review workflow\n")
+	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) {
+		pf(stderr, "error: --pr requires a positive pull request number\n")
 		return 2
 	}
 	target.PR = *pr
@@ -198,11 +198,17 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 
 	matches := 0
 	gaggle := target.Gaggle
+	subscribesToPullRequests := false
 	for _, e := range setup.Entries {
 		if e.Workflow == target.Workflow && (target.Gaggle == "" || e.Gaggle == target.Gaggle) {
 			matches++
 			if matches == 1 {
 				gaggle = e.Gaggle
+			}
+			for _, signal := range e.Signals {
+				if signal == webhookhttp.SignalName("pull_request") {
+					subscribesToPullRequests = true
+				}
 			}
 		}
 	}
@@ -212,6 +218,10 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		} else {
 			pf(stderr, "error: no workflow named %q in %s\n", target.Workflow, l.ConfigDir())
 		}
+		return 1
+	}
+	if target.PR > 0 && !subscribesToPullRequests {
+		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
 
