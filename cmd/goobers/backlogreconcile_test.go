@@ -121,6 +121,37 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 		}
 	}
 	server.mu.Lock()
+	comments := append([]string(nil), server.issues[7].comments...)
+	server.mu.Unlock()
+	var releasedOrphan bool
+	for _, comment := range comments {
+		if strings.Contains(comment, "goobers-claim-release: run=historical-run") {
+			releasedOrphan = true
+			break
+		}
+	}
+	if !releasedOrphan {
+		t.Fatalf("issue 7 comments = %q, want release marker for historical-run", comments)
+	}
+	claim, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	})
+	if err != nil {
+		t.Fatalf("claim recovered issue 7: %v", err)
+	}
+	if !claim.Claimed || claim.ClaimedBy != "later-run" {
+		t.Fatalf("reclaimed issue 7 = %+v, want later-run to win", claim)
+	}
+	if _, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	}); err != nil {
+		t.Fatalf("release follow-up claim: %v", err)
+	}
+	server.mu.Lock()
 	beforeComments := make(map[int]int, len(server.issues))
 	for id, issue := range server.issues {
 		beforeComments[id] = len(issue.comments)
