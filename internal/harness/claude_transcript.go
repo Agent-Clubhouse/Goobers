@@ -277,8 +277,8 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 			if json.Unmarshal(line, &native) != nil {
 				continue
 			}
-			if isNormalizedAgentRecord(line) {
-				_, _ = buf.Write(append(append([]byte(nil), line...), '\n'))
+			if normalized, ok := normalizedAgentRecord(line); ok {
+				_, _ = buf.Write(append(normalized, '\n'))
 				converted = true
 			}
 			if native.Type == "system" && native.Subtype == "init" && native.MCPServers != nil {

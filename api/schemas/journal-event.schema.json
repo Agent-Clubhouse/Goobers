@@ -419,12 +419,14 @@
         "leaf": { "type": "boolean" },
         "requestedModel": { "type": "string" },
         "resolvedModel": { "type": "string" },
-        "reasoningEffort": { "type": "string" },
+        "requestedReasoningEffort": { "type": "string" },
+        "resolvedReasoningEffort": { "type": "string" },
         "lifecycle": { "type": "string", "enum": ["started", "waiting", "resumed", "completed", "failed", "cancelled"] },
         "startedAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "budget": { "$ref": "#/$defs/agentUsage" },
         "usage": { "$ref": "#/$defs/agentUsage" },
+        "usageAggregated": { "type": "boolean" },
         "results": { "type": "array", "items": { "$ref": "#/$defs/ref" } },
         "dependsOn": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "fidelity": { "type": "string", "enum": ["full", "partial", "none"] }
@@ -434,9 +436,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "inputTokens": { "type": "integer" },
-        "outputTokens": { "type": "integer" },
-        "costUsd": { "type": "number" }
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "costUsd": { "type": "number", "minimum": 0 }
       }
     },
     "peerMessage": {

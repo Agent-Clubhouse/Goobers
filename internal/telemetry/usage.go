@@ -81,12 +81,7 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 // remain authoritative, preventing coordinator usage from being counted twice.
 func RecordNestedAgentUsage(ctx context.Context, metrics map[string]float64, events []journal.Event) {
 	merged := MergeNestedAgentUsage(metrics, events)
-	for name := range merged {
-		if _, exists := metrics[name]; !exists {
-			RecordAgentUsage(ctx, merged, nil)
-			return
-		}
-	}
+	RecordAgentUsage(ctx, merged, nil)
 }
 
 // MergeNestedAgentUsage fills measures absent from an adapter's aggregate with

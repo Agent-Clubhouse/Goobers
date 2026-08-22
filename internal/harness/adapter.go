@@ -122,6 +122,10 @@ type RunRequest struct {
 	Timeout time.Duration
 	// Attempt identifies the stage attempt for retry-safe provenance.
 	Attempt int
+	// AgentEventSink durably projects structured events as they are observed.
+	// Adapters call it before returning so active agents are queryable while
+	// the harness process is still running.
+	AgentEventSink func(journal.Event) error
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
@@ -195,6 +199,9 @@ type Outcome struct {
 	// AgentTelemetryFidelity explicitly reports whether structured nested-agent
 	// events are complete, partial, or unavailable.
 	AgentTelemetryFidelity string
+	// AgentTelemetryDetail explains a partial/none fidelity result without
+	// requiring operators to infer adapter limitations from missing events.
+	AgentTelemetryDetail string
 }
 
 // MCPServerFailure identifies one MCP server that was registered for a

@@ -141,8 +141,8 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 			}
 			return transcriptCapture{}, false
 		}
-		if isNormalizedAgentRecord(line) {
-			_, _ = buf.Write(append(append([]byte(nil), line...), '\n'))
+		if normalized, ok := normalizedAgentRecord(line); ok {
+			_, _ = buf.Write(append(normalized, '\n'))
 			converted = true
 		}
 		events := convertCopilotSessionEvent(native)

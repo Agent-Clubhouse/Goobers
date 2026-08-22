@@ -16,10 +16,10 @@ import (
 
 func TestJournalEventMirrorFieldSet(t *testing.T) {
 	intentionallyUnmirrored := []string{
-		"action", "branchName", "branchStatus", "complete", "completeness",
+		"action", "agent", "branchName", "branchStatus", "complete", "completeness",
 		"decision", "gaggle", "instructionAddendum", "integrity",
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
-		"parallel", "rationale", "skipCount",
+		"parallel", "peerMessage", "rationale", "skipCount",
 	}
 	want := append(jsonFields(reflect.TypeOf(journalEvent{})), intentionallyUnmirrored...)
 	sort.Strings(want)

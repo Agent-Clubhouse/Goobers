@@ -45,6 +45,11 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
 		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
 	}
+	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
+		if err := ValidateAgentEvent(ev); err != nil {
+			return nil, err
+		}
+	}
 	return json.Marshal(event(ev))
 }
 
