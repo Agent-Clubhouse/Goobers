@@ -164,7 +164,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	}()
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	// DS6 for the one-shot path (#3512 review, finding 2): this command holds
+	// the instance lock, so the daemon — and with it every claim renewal — is
+	// stopped. On an engine-configured instance the setup-time reap plus
+	// Claim's expired-lease takeover would both fire on a live distributed
+	// run's stale-looking lease, so renewal must run before any
+	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
+	// recover-at-setup behavior.
+	claimRecovery := newOneShotClaimRecovery(l)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -178,6 +186,10 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 			setup.Shutdown(context.Background())
 		}
 	}()
+	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	matches := 0
 	gaggle := target.Gaggle

@@ -247,7 +247,7 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRecoverClaimsSkipsCorruptHolderJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestRecoverClaimsResolvesBacklogReconcileClaimsByOwningRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

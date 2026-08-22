@@ -561,14 +561,17 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 // simply ran long invites double-processing — the freed item can be claimed
 // by a second run while the first is still working it. RecoverExpired itself
 // still trusts the lease at face value; the liveness this comment used to
-// describe as undriven is now issue #2014's RenewEntry, called periodically
-// by cmd/goobers' claimTicker for every run its own daemonRunnerRegistry is
-// actively tracking (RenewEntry's doc). A run that keeps renewing never
-// reaches ExpiresAt here regardless of how long it takes; one that stops
-// (crashed, or its owning process died) does, which is what makes a short
-// DefaultClaimLease safe to reap on — RecoverExpired needs no code change of
-// its own for that, since a renewed lease's ExpiresAt is already in the
-// future by construction.
+// describe as undriven is now issue #2014's RenewEntry, driven by cmd/goobers'
+// claimTicker for every LEDGER claim whose holding run is live — tracked
+// in-process, or an open engine workflow when `engine:` is configured (DS6,
+// docs/design/distributed-state-and-coordination.md §10; see RunLivenessProbe
+// and RecoveryGate in renewal.go, which also withholds a restarted daemon's
+// first reap until that renewal set is rebuilt). A run that keeps renewing
+// never reaches ExpiresAt here regardless of how long it takes; one that
+// stops (crashed, its owning process died, or its engine workflow closed)
+// does, which is what makes a short DefaultClaimLease safe to reap on —
+// RecoverExpired needs no code change of its own for that, since a renewed
+// lease's ExpiresAt is already in the future by construction.
 //
 // Issue #235 (edge 2): a ci-poll-bearing implementation run once exceeded the
 // OLD 2h DefaultClaimLease (cmd/goobers/backlogquery.go) with no renewal to

@@ -397,9 +397,18 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return err
 		}
-		recoveredClaims, err = ledger.RecoverExpired(time.Now())
-		if err != nil {
-			return err
+		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
+		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
+		// so `goobers up` closes this gate and reaps in its own startup
+		// recovery pass after the rebuild. The one-shot callers (`run`,
+		// `signal`) do the same when `engine:` is configured
+		// (oneShotClaimRecovery); only a pure mode-1 one-shot passes no gate
+		// and keeps reaping here as before.
+		if options.claimRecoveryGate.RecoveryPermitted() {
+			recoveredClaims, err = ledger.RecoverExpired(time.Now())
+			if err != nil {
+				return err
+			}
 		}
 		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
