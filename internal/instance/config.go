@@ -75,8 +75,10 @@ type Config struct {
 	// the pre-Goobernetes schema every existing install is on; 2 introduces
 	// the runners: inventory. Strict loading on both halves means a
 	// schemaVersion-2 config using runners: hard-fails on an older binary by
-	// design rather than being silently misread.
-	SchemaVersion int       `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
+	// design rather than being silently misread. A pointer so the loader can
+	// tell absent from an explicit 0 — the published schema's enum is [1, 2],
+	// so an explicit 0 is refused rather than silently read as legacy.
+	SchemaVersion *int      `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
 	Repos         []RepoRef `json:"repos" yaml:"repos"`
 	// SelfIdentity is the instance-wide provider login used when a gaggle does
 	// not declare its own identity. It is an identity value, not a credential.

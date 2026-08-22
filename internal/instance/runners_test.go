@@ -94,6 +94,11 @@ func TestLoadConfigSchemaVersion(t *testing.T) {
 		{name: "runners revision accepted", version: "schemaVersion: 2", want: 2},
 		{name: "future revision refused", version: "schemaVersion: 3", wantErr: "schemaVersion 3 is not supported"},
 		{name: "negative revision refused", version: "schemaVersion: -1", wantErr: "schemaVersion -1 is not supported"},
+		// Only an ABSENT schemaVersion means legacy — the published schema's
+		// enum is [1, 2], and its error text says so. An explicit 0 slipping
+		// through as legacy would make the loader accept what the contract
+		// (goobers schema instance, editor validation) refuses.
+		{name: "explicit zero refused", version: "schemaVersion: 0", wantErr: "schemaVersion 0 is not supported"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -180,6 +185,37 @@ runners:
 `))
 	if err != nil {
 		t.Fatalf("remote runner with env-resolved engine was refused: %v", err)
+	}
+}
+
+func TestLoadConfigRemoteRunnerRefusedWithNonConnectionEngineEnvOnly(t *testing.T) {
+	// LoadConfig synthesizes cfg.Engine on ANY engine env override, but the
+	// daemon's connection-configured predicate (EngineProjectionEnabled)
+	// requires a yaml engine: block or a hostPort override. A namespace-only
+	// or task-queue-only override must therefore NOT satisfy the remote-runner
+	// check: a remote runner accepted on the synthesized block alone loads
+	// cleanly and can never dispatch.
+	for _, test := range []struct {
+		name string
+		env  string
+	}{
+		{name: "task-queue override only", env: TaskQueueEnv},
+		{name: "namespace override only", env: TemporalNamespaceEnv},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.env, "goobers-somewhere")
+			_, err := LoadConfig(writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci-linux
+    host: ghcr.io/example/goobers-ci:v0.7.0
+`))
+			if err == nil || !strings.Contains(err.Error(), "declares no engine") {
+				t.Fatalf("remote runner with a non-connection engine env override loaded without error (err = %v), want the declares-no-engine refusal", err)
+			}
+		})
 	}
 }
 

@@ -203,10 +203,10 @@ func ClassifyRunnerHost(host string) (RunnerHostKind, error) {
 // EffectiveSchemaVersion resolves the instance schema revision: an absent
 // schemaVersion means the pre-Goobernetes schema (dsl-3.0.md D8).
 func (c *Config) EffectiveSchemaVersion() int {
-	if c.SchemaVersion == 0 {
+	if c.SchemaVersion == nil {
 		return InstanceSchemaVersionLegacy
 	}
-	return c.SchemaVersion
+	return *c.SchemaVersion
 }
 
 // ResolvedRunners returns the effective runner inventory: the declared
@@ -245,14 +245,20 @@ func (c *Config) SelfRunnerCapabilities() []string {
 	return nil
 }
 
-// validateSchemaVersion accepts the two known revisions (absent means legacy).
+// validateSchemaVersion accepts the two known revisions. Only an ABSENT
+// schemaVersion means legacy; an explicit 0 is refused, matching the
+// published schema's enum [1, 2] (the pointer field is what lets the strict
+// loader tell the two apart).
 func (c *Config) validateSchemaVersion() error {
-	switch c.SchemaVersion {
-	case 0, InstanceSchemaVersionLegacy, InstanceSchemaVersionRunners:
+	if c.SchemaVersion == nil {
+		return nil
+	}
+	switch *c.SchemaVersion {
+	case InstanceSchemaVersionLegacy, InstanceSchemaVersionRunners:
 		return nil
 	default:
 		return fmt.Errorf("schemaVersion %d is not supported (supported: %d and %d; absent means %d)",
-			c.SchemaVersion, InstanceSchemaVersionLegacy, InstanceSchemaVersionRunners, InstanceSchemaVersionLegacy)
+			*c.SchemaVersion, InstanceSchemaVersionLegacy, InstanceSchemaVersionRunners, InstanceSchemaVersionLegacy)
 	}
 }
 
@@ -274,7 +280,12 @@ func (c *Config) validateRunners() error {
 	}
 	seen := make(map[string]bool, len(c.Runners))
 	for i := range c.Runners {
-		if err := c.Runners[i].validate(i, seen, c.Engine != nil); err != nil {
+		// EngineProjectionEnabled is the daemon's own connection-configured
+		// predicate (yaml engine: block, or a hostPort env override). Gating
+		// on c.Engine != nil instead would also pass a namespace-only or
+		// task-queue-only env override — LoadConfig synthesizes cfg.Engine on
+		// ANY override — letting a remote runner load that can never dispatch.
+		if err := c.Runners[i].validate(i, seen, c.EngineProjectionEnabled()); err != nil {
 			return err
 		}
 	}
