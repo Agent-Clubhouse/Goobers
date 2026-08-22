@@ -513,10 +513,19 @@ func TestReconcilerFilesDivergenceToTheNamedChannel(t *testing.T) {
 	}
 }
 
-// stubRegistry pins IsOpen independent of a real writer.
+// stubRegistry pins the registry's answer independent of a real writer: true
+// behaves like a writer that holds every run open (reservations refused),
+// false grants every reservation.
 type stubRegistry bool
 
 func (s stubRegistry) IsOpen(string) bool { return bool(s) }
+
+func (s stubRegistry) Reserve(string) (func(), bool) {
+	if bool(s) {
+		return nil, false
+	}
+	return func() {}, true
+}
 
 // TestReconcilerSkipsRunsTheLiveWriterHoldsOpen: Temporal reporting a
 // workflow closed does not mean the terminal emission has landed; a journal
@@ -539,6 +548,121 @@ func TestReconcilerSkipsRunsTheLiveWriterHoldsOpen(t *testing.T) {
 	}
 	if fake.queries != 0 || *observations != 0 || len(divergences) != 0 {
 		t.Fatalf("open run was touched: queries=%d observations=%d divergences=%v", fake.queries, *observations, divergences)
+	}
+}
+
+// TestProjectRunRefusesReplacingAJournalALiveWriterHolds is the #3529 major's
+// filesystem half: a partial journal whose run-dir lock a live writer holds
+// must never be deleted-and-replaced out from under it — removal detaches the
+// writer's events log into an unlinked inode, so it keeps acknowledging
+// appends no reader of the published directory can see. The replace path
+// refuses with journal.ErrRunActive, and the writer's next acknowledged emit
+// stays readable from the published run directory.
+func TestProjectRunRefusesReplacingAJournalALiveWriterHolds(t *testing.T) {
+	proj := executeForProjection(t, projectionInput("live-held", crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	writer, runsDir := newLiveWriter(t)
+	liveAuthor(t, writer, proj, len(proj.Ops)-1) // partial: the writer holds the journal open
+	if !writer.IsOpen(proj.Identity.RunID) {
+		t.Fatal("fixture writer does not hold the run open")
+	}
+
+	if _, err := ProjectRun(runsDir, proj); !errors.Is(err, journal.ErrRunActive) {
+		t.Fatalf("ProjectRun err = %v, want journal.ErrRunActive", err)
+	}
+
+	stragglerKey := proj.Identity.RunID + "|straggler"
+	resp, err := writer.Emit(context.Background(), livejournal.EmitRequest{
+		RunID:  proj.Identity.RunID,
+		Gaggle: proj.Identity.Gaggle,
+		Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: stragglerKey, Time: time.Date(2026, 8, 22, 4, 0, 0, 0, time.UTC), Event: &journal.Event{
+			Type: journal.EventError, Error: &journal.ErrorDetail{Code: "straggler", Message: "late emission"},
+		}}},
+	})
+	if err != nil || resp.Applied != 1 {
+		t.Fatalf("straggler emit = (%+v, %v), want one applied op", resp, err)
+	}
+	published := false
+	for _, ev := range liveEvents(t, runsDir, proj.Identity.RunID) {
+		if key, _ := ev.Runner[livejournal.EmitKeyRunnerField].(string); key == stragglerKey {
+			published = true
+		}
+	}
+	if !published {
+		t.Fatal("acknowledged emit is not readable from the published run directory")
+	}
+}
+
+// TestReconcilerBackfillNeverStrandsAStragglerEmit is the #3529 major's probe
+// interleaving: a straggler emit arrives while the crash-orphan backfill is
+// mid-pass (during its projection query) — the window the old point-in-time
+// IsOpen peek left open, where the emit rehydrated the very directory the
+// backfill then deleted, acknowledging appends into an unlinked inode. The
+// reservation parks the emit for the duration of the repair; it then
+// re-derives state under the run-dir lock and is refused by the backfilled
+// terminal journal. The invariant: an emit is either refused, or its event is
+// readable from the published run directory — never acknowledged and lost.
+func TestReconcilerBackfillNeverStrandsAStragglerEmit(t *testing.T) {
+	proj := executeForProjection(t, projectionInput("live-straggle", crSpec("implement", []apiv1.Task{crTask("implement", "")}, nil)), &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+	}, false)
+	writer, runsDir := newLiveWriter(t)
+	liveAuthor(t, writer, proj, len(proj.Ops)-1)
+	// The daemon "died": the journal is partial and unlocked.
+	writer.Close()
+
+	var divergences []string
+	reconciler, fake, _ := reconcilerFor(t, proj, runsDir, writer, &divergences)
+
+	runID := proj.Identity.RunID
+	stragglerKey := runID + "|straggler"
+	type emitResult struct {
+		resp livejournal.EmitResponse
+		err  error
+	}
+	emitted := make(chan emitResult, 1)
+	var fired sync.Once
+	fake.onQuery = func() {
+		fired.Do(func() {
+			go func() {
+				resp, err := writer.Emit(context.Background(), livejournal.EmitRequest{
+					RunID:  runID,
+					Gaggle: proj.Identity.Gaggle,
+					Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: stragglerKey, Time: time.Date(2026, 8, 22, 4, 1, 0, 0, time.UTC), Event: &journal.Event{
+						Type: journal.EventError, Error: &journal.ErrorDetail{Code: "straggler", Message: "late emission"},
+					}}},
+				})
+				emitted <- emitResult{resp, err}
+			}()
+			// Give the emit time to reach the writer while the backfill is
+			// still mid-query. With the reservation, the emit parks here
+			// regardless of how much of this pause it uses.
+			time.Sleep(200 * time.Millisecond)
+		})
+	}
+	if _, err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	res := <-emitted
+
+	events := liveEvents(t, runsDir, runID)
+	if last := events[len(events)-1]; last.Type != journal.EventRunFinished {
+		t.Fatalf("published journal ends with %s, want the backfilled run.finished", last.Type)
+	}
+	stragglerPublished := false
+	for _, ev := range events {
+		if key, _ := ev.Runner[livejournal.EmitKeyRunnerField].(string); key == stragglerKey {
+			stragglerPublished = true
+		}
+	}
+	if res.err == nil && res.resp.Applied > 0 && !stragglerPublished {
+		t.Fatalf("straggler emit was acknowledged (%+v) but its event is absent from the published run directory", res.resp)
+	}
+	if res.err != nil && !errors.Is(res.err, livejournal.ErrTerminal) {
+		t.Fatalf("parked straggler emit = %v, want ErrTerminal against the backfilled terminal journal", res.err)
 	}
 }
 

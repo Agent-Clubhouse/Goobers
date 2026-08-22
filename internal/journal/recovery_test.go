@@ -124,6 +124,59 @@ func TestRecoverTruncationProperty(t *testing.T) {
 	}
 }
 
+// TestRecoverReportsTheUnderLockEventView pins RecoverReport.Events (#3529):
+// the report carries the event log as read under the writer lock — the exact
+// state the returned Run continues from — so a caller deriving state from the
+// journal (the live writer's rehydration) sees events another owner appended
+// while Recover was blocked behind its lock. A pre-lock read misses exactly
+// those: the terminalizer's run.finished was the probe-proven corruption.
+func TestRecoverReportsTheUnderLockEventView(t *testing.T) {
+	restore := SetLockTimeoutForTest(10*time.Second, 5*time.Millisecond)
+	defer restore()
+	root := t.TempDir()
+	first, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := first.Append(Event{Type: EventStageStarted, Stage: "s", Attempt: 1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	dir := first.Dir()
+
+	type res struct {
+		report RecoverReport
+		err    error
+	}
+	done := make(chan res, 1)
+	go func() {
+		second, report, err := Recover(dir, WithClock(fixedClock()))
+		if err == nil {
+			_ = second.Close()
+		}
+		done <- res{report, err}
+	}()
+	// Let the second Recover park on the run-dir lock, then append the
+	// terminal event and release. The blocked Recover's report must include
+	// what landed while it waited.
+	time.Sleep(150 * time.Millisecond)
+	if err := first.Append(Event{Type: EventRunFinished, Status: string(PhaseAborted)}); err != nil {
+		t.Fatalf("terminal Append: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("blocked Recover: %v", r.err)
+	}
+	if len(r.report.Events) == 0 || r.report.Events[len(r.report.Events)-1].Type != EventRunFinished {
+		t.Fatalf("report.Events misses the run.finished appended while blocked: %d events", len(r.report.Events))
+	}
+	if r.report.LastSeq != r.report.Events[len(r.report.Events)-1].Seq {
+		t.Fatalf("LastSeq %d != last reported event seq %d", r.report.LastSeq, r.report.Events[len(r.report.Events)-1].Seq)
+	}
+}
+
 // TestRecoverNulTailIsTruncatedNotBricking is the #116 negative control for the
 // NUL-tail bricking cascade. A crash can extend events.jsonl without flushing the
 // record, leaving NUL zero-fill after the last complete event. Recovery must

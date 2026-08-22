@@ -188,8 +188,14 @@ type Writer struct {
 	scrubber journal.Scrubber
 	now      func() time.Time
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// open holds the journals the writer currently has open for appending.
 	open map[string]*liveRun
+	// reserved holds runs an external repairer (the DS5 backfill) has taken
+	// exclusive control of via Reserve; an Emit for such a run waits on the
+	// channel instead of rehydrating a journal the repairer is about to
+	// replace. Closed on release.
+	reserved map[string]chan struct{}
 }
 
 type liveRun struct {
@@ -232,7 +238,7 @@ func NewWriter(runsDir func(gaggle string) (string, bool), opts ...Option) (*Wri
 	if runsDir == nil {
 		return nil, errors.New("livejournal: runs-directory resolver is required")
 	}
-	w := &Writer{runsDir: runsDir, now: time.Now, open: make(map[string]*liveRun)}
+	w := &Writer{runsDir: runsDir, now: time.Now, open: make(map[string]*liveRun), reserved: make(map[string]chan struct{})}
 	for _, opt := range opts {
 		opt(w)
 	}
@@ -242,11 +248,52 @@ func NewWriter(runsDir func(gaggle string) (string, bool), opts ...Option) (*Wri
 // IsOpen reports whether the writer currently holds runID's journal open —
 // the demoted repair projection must not touch such a run (a final emit may
 // still be in flight even after Temporal reports the workflow closed).
+//
+// This is a point-in-time snapshot: an emit can rehydrate the run the
+// instant after IsOpen returns false. A repairer that goes on to REPLACE the
+// run directory must use Reserve instead, which holds the answer stable for
+// the duration of the repair.
 func (w *Writer) IsOpen(runID string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_, ok := w.open[runID]
 	return ok
+}
+
+// Reserve takes exclusive external control of runID for the duration of a
+// repair (the DS5 crash-orphan backfill replacing the run directory). It
+// refuses (ok=false) while the writer holds the run's journal open — the
+// atomic form of the IsOpen skip: the check and the claim happen under one
+// lock, so an emit cannot rehydrate between them — and while another
+// reservation is already in flight.
+//
+// While reserved, an Emit for the run parks at acquire until release, then
+// proceeds normally: it re-derives the journal's state under the run-dir
+// lock (rehydrate), so it lands against whatever the repair published — a
+// backfilled terminal journal refuses new ops with ErrTerminal — and never
+// acknowledges an append into a directory the repair has unlinked.
+//
+// release must be called exactly once, on every path.
+func (w *Writer) Reserve(runID string) (release func(), ok bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, open := w.open[runID]; open {
+		return nil, false
+	}
+	if _, taken := w.reserved[runID]; taken {
+		return nil, false
+	}
+	ch := make(chan struct{})
+	w.reserved[runID] = ch
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			w.mu.Lock()
+			delete(w.reserved, runID)
+			w.mu.Unlock()
+			close(ch)
+		})
+	}, true
 }
 
 // Emit applies one batch: dedupes each op on its idempotency key, appends the
@@ -336,13 +383,25 @@ func (run *liveRun) terminalSeq() uint64 { return run.keys[terminalMarker] }
 const terminalMarker = "\x00terminal"
 
 // acquire finds the open run, rehydrates an existing journal, or creates one
-// from the batch's Open header.
+// from the batch's Open header. A run under an external Reserve is waited
+// out first: rehydrating mid-repair would open (and then lose) the very
+// directory the repairer is about to replace.
 func (w *Writer) acquire(req EmitRequest) (*liveRun, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if run, ok := w.open[req.RunID]; ok {
-		return run, nil
+	for {
+		if run, ok := w.open[req.RunID]; ok {
+			w.mu.Unlock()
+			return run, nil
+		}
+		reservation, reserved := w.reserved[req.RunID]
+		if !reserved {
+			break
+		}
+		w.mu.Unlock()
+		<-reservation
+		w.mu.Lock()
 	}
+	defer w.mu.Unlock()
 	runsDir, ok := w.runsDir(req.Gaggle)
 	if !ok {
 		return nil, fmt.Errorf("livejournal: gaggle %q has no configured runs directory", req.Gaggle)
@@ -439,16 +498,43 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 // rehydrate reattaches to an existing journal after a daemon restart or idle
 // close: dedup state and the verdict-artifact refs are derived from the
 // journal itself (the keys ride each event's Runner map), so no state beyond
-// the journal has to have survived. A terminal journal is NOT reopened for
-// writing — its dedup view alone answers straggler re-emits.
+// the journal has to have survived.
+//
+// The derivation comes from journal.Recover's OWN under-lock read
+// (RecoverReport.Events) — one full parse, atomic with acquiring the writer.
+// It must never come from a separate unlocked pre-read: Recover blocks on the
+// run-dir lock, and CloseIdle exists precisely so other owners (the
+// stalled-run sweep, `goobers run abort`) can take that lock and terminalize
+// a quiet run — state derived before the lock misses their run.finished, and
+// the writer would then silently append AFTER the terminal event. When the
+// under-lock view shows a terminal journal, the writer is closed again
+// without writing anything; the dedup view alone answers straggler re-emits,
+// and a genuinely new op is refused with ErrTerminal in applyOp exactly as
+// the doc promises.
+//
+// Reopen cost is one full O(N) parse (Recover's). If quiet-run reopen churn
+// ever matters at much larger event counts, the bounded-tail option is to
+// checkpoint the derived key/ref tables alongside state.json's LastSeq and
+// parse only the tail past it — deliberately not done here (a second,
+// separately-crashable dedup record is what the journal-as-dedup-state design
+// rejected; a checkpoint would need the same lag-tolerant healing state.json
+// gets).
 func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		return nil, fmt.Errorf("livejournal: open existing journal for %s: %w", req.RunID, err)
+	clock := &replayClock{}
+	// Seed the clock with the batch's first op time so anything Recover
+	// itself appends (a torn-tail repaired event) carries a real,
+	// workflow-adjacent timestamp instead of the zero time.
+	clock.set(req.Ops[0].Time)
+	opts := []journal.Option{journal.WithClock(clock.nowFunc())}
+	if w.observer != nil {
+		opts = append(opts, journal.WithAppendObserver(w.observer))
 	}
-	events, err := rd.Events()
+	if w.scrubber != nil {
+		opts = append(opts, journal.WithScrubber(w.scrubber))
+	}
+	jr, report, err := journal.Recover(dir, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("livejournal: read existing journal for %s: %w", req.RunID, err)
+		return nil, fmt.Errorf("livejournal: reopen journal for %s: %w", req.RunID, err)
 	}
 	run := &liveRun{
 		gaggle:       req.Gaggle,
@@ -457,7 +543,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		artifactRefs: map[string]journal.Ref{},
 	}
 	terminal := false
-	for _, ev := range events {
+	for _, ev := range report.Events {
 		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
 			run.keys[key] = ev.Seq
 		}
@@ -470,21 +556,14 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		}
 	}
 	if terminal {
-		// Leave jr nil: duplicates dedupe against keys; a genuinely new op is
-		// refused with ErrTerminal in applyOp.
+		// Terminal under the lock: release the writer immediately, having
+		// written nothing. jr stays nil on the returned run — duplicates
+		// dedupe against keys; a genuinely new op is refused with ErrTerminal
+		// in applyOp.
+		if err := jr.Close(); err != nil {
+			return nil, fmt.Errorf("livejournal: release terminal journal for %s: %w", req.RunID, err)
+		}
 		return run, nil
-	}
-	clock := &replayClock{}
-	opts := []journal.Option{journal.WithClock(clock.nowFunc())}
-	if w.observer != nil {
-		opts = append(opts, journal.WithAppendObserver(w.observer))
-	}
-	if w.scrubber != nil {
-		opts = append(opts, journal.WithScrubber(w.scrubber))
-	}
-	jr, _, err := journal.Recover(dir, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("livejournal: reopen journal for %s: %w", req.RunID, err)
 	}
 	run.jr = jr
 	run.clock = clock

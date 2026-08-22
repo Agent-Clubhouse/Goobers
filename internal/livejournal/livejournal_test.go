@@ -331,6 +331,76 @@ func TestCloseIdleReleasesTheRunLockAndEmitReopens(t *testing.T) {
 	}
 }
 
+// TestEmitBlockedBehindTerminalizerIsRefusedNotAppended is the #3529 blocker's
+// probe shape: CloseIdle released the run-dir lock (its whole purpose — so the
+// stalled-run sweep or `goobers run abort` can terminalize a quiet run), a
+// terminalizer takes that lock and appends run.finished, and a late Emit that
+// was parked on the lock the whole time must derive its state from its own
+// under-lock read: the new op is refused with ErrTerminal (the 409
+// journal_terminal surface), never appended after the terminal event on the
+// strength of state read before the lock.
+func TestEmitBlockedBehindTerminalizerIsRefusedNotAppended(t *testing.T) {
+	w, runsDir := testWriter(t)
+	started := time.Now().UTC().Truncate(time.Second)
+	if _, err := w.Emit(context.Background(), openBatch("run-race", started)); err != nil {
+		t.Fatal(err)
+	}
+	if closed := w.CloseIdle(0); len(closed) != 1 {
+		t.Fatalf("CloseIdle = %v", closed)
+	}
+
+	// The terminalizer takes — and holds — the run-dir lock, run.finished not
+	// yet appended: exactly the window the pre-read raced.
+	jr, _, err := journal.Recover(filepath.Join(runsDir, "run-race"))
+	if err != nil {
+		t.Fatalf("terminalizer Recover: %v", err)
+	}
+
+	type result struct {
+		resp EmitResponse
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		resp, emitErr := w.Emit(context.Background(), EmitRequest{RunID: "run-race", Gaggle: "web", Ops: []Op{
+			appendOp("run-race|0|build|1|1", started.Add(time.Minute), journal.Event{
+				Type: journal.EventStageFinished, Stage: "build", Attempt: 1, Status: string(apiv1.ResultSuccess),
+			}),
+		}})
+		done <- result{resp, emitErr}
+	}()
+
+	// Let the emit read whatever it reads without the lock and park on the
+	// lock; then terminalize and release. With the under-lock derivation the
+	// outcome is interleaving-independent — however much of this pause the
+	// emit used, it acquires the writer only after run.finished is durable
+	// and must see it.
+	time.Sleep(300 * time.Millisecond)
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
+		t.Fatalf("terminalize: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := <-done
+	if !errors.Is(res.err, ErrTerminal) {
+		t.Fatalf("late emit = (%+v, %v), want ErrTerminal", res.resp, res.err)
+	}
+	events := readEvents(t, runsDir, "run-race")
+	if err := journal.MonotonicSeq(events); err != nil {
+		t.Fatal(err)
+	}
+	if last := events[len(events)-1]; last.Type != journal.EventRunFinished {
+		t.Fatalf("journal ends with %s — an op was appended after run.finished", last.Type)
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventStageFinished {
+			t.Fatalf("refused op landed in the journal anyway: %+v", ev)
+		}
+	}
+}
+
 func TestEmitRefusesUnknownRunWithoutOpenHeader(t *testing.T) {
 	w, _ := testWriter(t)
 	_, err := w.Emit(context.Background(), EmitRequest{RunID: "run-none", Gaggle: "web", Ops: []Op{
@@ -352,6 +422,55 @@ func TestEmitRefusesUnresolvableGaggleAndKeylessOps(t *testing.T) {
 		{Kind: OpAppend, Event: &journal.Event{Type: journal.EventRunStarted}},
 	}}); err == nil || !strings.Contains(err.Error(), "idempotency key") {
 		t.Fatalf("keyless op err = %v", err)
+	}
+}
+
+// TestReserveParksEmitsAndRefusesOpenRuns pins the repairer coordination
+// surface (#3529): Reserve is refused while the writer holds the run open
+// (the atomic form of the reconciler's old IsOpen peek), only one reservation
+// exists at a time, and an Emit arriving during a reservation parks until
+// release instead of rehydrating a journal the repairer may replace.
+func TestReserveParksEmitsAndRefusesOpenRuns(t *testing.T) {
+	w, runsDir := testWriter(t)
+	started := time.Now().UTC().Truncate(time.Second)
+	if _, err := w.Emit(context.Background(), openBatch("run-res", started)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := w.Reserve("run-res"); ok {
+		t.Fatal("Reserve granted while the writer holds the run open")
+	}
+	if closed := w.CloseIdle(0); len(closed) != 1 {
+		t.Fatalf("CloseIdle = %v", closed)
+	}
+	release, ok := w.Reserve("run-res")
+	if !ok {
+		t.Fatal("Reserve refused for a closed run")
+	}
+	if _, again := w.Reserve("run-res"); again {
+		t.Fatal("second concurrent reservation granted")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Emit(context.Background(), EmitRequest{RunID: "run-res", Gaggle: "web", Ops: []Op{
+			appendOp("run-res|0|build|1|1", started.Add(time.Minute), journal.Event{
+				Type: journal.EventStageFinished, Stage: "build", Attempt: 1, Status: string(apiv1.ResultSuccess),
+			}),
+		}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("emit completed during the reservation (err=%v), want it parked", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("parked emit after release: %v", err)
+	}
+	events := readEvents(t, runsDir, "run-res")
+	if last := events[len(events)-1]; last.Type != journal.EventStageFinished {
+		t.Fatalf("journal ends with %s, want the released emit's stage.finished", last.Type)
 	}
 }
 
