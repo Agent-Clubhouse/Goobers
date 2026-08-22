@@ -37,6 +37,11 @@ telemetry-backed signals; `quality-sprint` does not request it.)
    duplicate; if it's stale or under-specified, you may add evidence as a
    comment instead of opening a new issue.
 3. File a new issue only when you have real evidence, not a guess:
+   - **Durable code learning**: accept only a `learning-episode` whose
+     `classification` is `code-defect` and `recommendedAction` is
+     `code-issue`. Cite its stable finding signature/identity and at least
+     two distinct `{runId, seq}` pointers. Other learning actions belong to
+     Tutor's governed config/skill PR path and must not be nominated here.
    - **Coverage gap**: name the package/function, its current coverage
      number, and why it's worth closing (not every low-coverage line
      matters equally — a mechanical getter differs from a durability
@@ -64,6 +69,10 @@ telemetry-backed signals; `quality-sprint` does not request it.)
    `goobers:approved` immediately (for example,
    `GH_TOKEN="$GOOBERS_CRED_GITHUB_ISSUES_APPROVE" gh issue edit <number> --add-label goobers:approved`).
    Never add `goobers:ready`; curation still owns readiness.
+   **Exception:** an issue created from a `code-defect` learning episode
+   always remains unapproved, even if the approval credential is present.
+   Do not add `goobers:approved` or an assignee; a human must make that trust
+   decision.
 
 Credit-assignment findings require the configured minimum run count and failure
 share plus their machine-readable `nomination_guardrails`. Query existing issue

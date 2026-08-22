@@ -1,13 +1,12 @@
 package gate
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 )
 
 // Journal is what Evaluator needs to record a gate verdict. It is satisfied
@@ -130,19 +129,28 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	if r.Verdict != nil && len(r.Verdict.Findings) > 0 {
 		identities := make([]string, 0, len(r.Verdict.Findings))
-		for _, finding := range r.Verdict.Findings {
-			data, err := json.Marshal(struct {
-				Message  string `json:"message"`
-				Location string `json:"location,omitempty"`
-				Class    string `json:"class,omitempty"`
-			}{finding.Message, finding.Location, string(finding.Class)})
-			if err != nil {
-				return nil, fmt.Errorf("gate: encode finding identity: %w", err)
-			}
-			sum := sha256.Sum256(data)
-			identities = append(identities, "sha256:"+hex.EncodeToString(sum[:]))
+		for i := range r.Verdict.Findings {
+			learning.NormalizeFinding(&r.Verdict.Findings[i], r.Gate, diffDigest)
+			identities = append(identities, r.Verdict.Findings[i].ID)
 		}
 		runner["findingIdentities"] = identities
+		runner["learningFindings"] = learningFindingRecords(r.Verdict.Findings)
+		runner["correctionFeedback"] = r.Verdict.Rationale
+	}
+	if len(r.ResolvedFindingIDs) > 0 {
+		runner["resolvedFindingIdentities"] = r.ResolvedFindingIDs
+	}
+	if len(r.SuppressedFindingIDs) > 0 {
+		runner["suppressedFindingIdentities"] = r.SuppressedFindingIDs
+	}
+	if len(r.ReopenedFindingIDs) > 0 {
+		runner["reopenedFindingIdentities"] = r.ReopenedFindingIDs
+	}
+	if len(r.DisprovenFindingIDs) > 0 {
+		runner["disprovenFindingIdentities"] = r.DisprovenFindingIDs
+	}
+	if len(r.DisprovenFindings) > 0 {
+		runner["disprovenLearningFindings"] = learningFindingRecords(r.DisprovenFindings)
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,

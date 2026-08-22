@@ -216,7 +216,7 @@ _goobers_completion()
             flags+=(--max --lookback)
             ;;
         telemetry-query)
-            flags+=(--window --aggregate --threshold --format --gaggle --workflow)
+            flags+=(--window --aggregate --learning-action --threshold --format --gaggle --workflow)
             ;;
         docs-churn)
             flags+=(--repo --workflow --gaggle --since --buffer-multiplier --format)

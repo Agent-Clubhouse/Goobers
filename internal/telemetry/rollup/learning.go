@@ -2,50 +2,40 @@ package rollup
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/learning"
 )
 
-// LearningEpisode is the durable projection of one non-pass review or
-// validation result. EvidenceJSON contains bounded journal pointers rather
-// than copied transcript content.
+// LearningEpisode is one finding-level durable projection of a correction or
+// deterministic false-finding review/validation result.
 type LearningEpisode struct {
-	RunID              string    `json:"runId"`
-	SourceSeq          uint64    `json:"sourceSeq"`
-	Workflow           string    `json:"workflow"`
-	Stage              string    `json:"stage,omitempty"`
-	Gate               string    `json:"gate"`
-	SourceAttempt      int       `json:"sourceAttempt"`
-	NextAttempt        int       `json:"nextAttempt,omitempty"`
-	WorkflowDigest     string    `json:"workflowDigest,omitempty"`
-	GooberDigest       string    `json:"gooberDigest,omitempty"`
-	EffectiveVersion   string    `json:"effectiveVersion,omitempty"`
-	Signature          string    `json:"signature"`
-	Classification     string    `json:"classification"`
-	EvidenceJSON       string    `json:"evidence"`
-	CorrectionFeedback string    `json:"correctionFeedback,omitempty"`
-	FindingIdentities  []string  `json:"findingIdentities,omitempty"`
-	Outcome            string    `json:"outcome"`
-	OccurredAt         time.Time `json:"occurredAt"`
-}
-
-func recommendedLearningAction(classification string) string {
-	switch strings.ToLower(classification) {
-	case "validation":
-		return "targeted-test-mapping"
-	case "code", "code-defect":
-		return "code-issue"
-	case "workflow", "gate":
-		return "workflow-or-gate"
-	default:
-		return "instruction-or-skill"
-	}
+	RunID              string                       `json:"runId"`
+	SourceSeq          uint64                       `json:"sourceSeq"`
+	FindingID          string                       `json:"findingId"`
+	FindingIdentities  []string                     `json:"findingIdentities,omitempty"`
+	Workflow           string                       `json:"workflow"`
+	Stage              string                       `json:"stage,omitempty"`
+	Gate               string                       `json:"gate"`
+	SourceAttempt      int                          `json:"sourceAttempt"`
+	NextAttempt        int                          `json:"nextAttempt,omitempty"`
+	WorkflowDigest     string                       `json:"workflowDigest,omitempty"`
+	GooberDigest       string                       `json:"gooberDigest,omitempty"`
+	EffectiveVersion   string                       `json:"effectiveVersion,omitempty"`
+	Signature          string                       `json:"signature"`
+	Classification     apiv1.LearningClassification `json:"classification"`
+	RecommendedAction  string                       `json:"recommendedAction"`
+	Finding            apiv1.Finding                `json:"finding"`
+	EvidenceJSON       string                       `json:"evidence"`
+	CorrectionFeedback string                       `json:"correctionFeedback,omitempty"`
+	Outcome            string                       `json:"outcome"`
+	OccurredAt         time.Time                    `json:"occurredAt"`
 }
 
 // LearningEpisodeRequest limits a learning-episode query.
@@ -57,138 +47,83 @@ type LearningEpisodeRequest struct {
 	Limit     int
 }
 
-// LearningCluster aggregates equivalent episodes while retaining every source
-// run and sequence as evidence.
+// LearningCluster aggregates equivalent finding episodes while retaining
+// exact run/sequence evidence.
 type LearningCluster struct {
-	Signature         string           `json:"signature"`
-	Classification    string           `json:"classification"`
-	Count             int              `json:"count"`
-	Episodes          []JournalPointer `json:"episodes"`
-	RecommendedAction string           `json:"recommendedAction"`
+	Signature         string                       `json:"signature"`
+	Classification    apiv1.LearningClassification `json:"classification"`
+	Count             int                          `json:"count"`
+	RunCount          int                          `json:"runCount"`
+	Episodes          []JournalPointer             `json:"episodes"`
+	RecommendedAction string                       `json:"recommendedAction"`
 }
 
-func normalizeLearningSignature(gate, verdict, code string) string {
-	parts := []string{strings.ToLower(strings.TrimSpace(gate)), strings.ToLower(strings.TrimSpace(verdict)), strings.ToLower(strings.TrimSpace(code))}
-	return strings.Join(parts, "|")
-}
-
-func learningClassification(event journalEvent) string {
-	if event.Runner != nil {
-		if value, ok := event.Runner["classification"].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.ToLower(strings.TrimSpace(value))
-		}
-	}
-	gate := strings.ToLower(event.Gate)
-	if strings.Contains(gate, "review") {
-		return "review"
-	}
-	return "validation"
-}
-
-func learningEffectiveVersion(id runIdentity) string {
-	if id.WorkflowDigest == "" && id.GooberDigest == "" {
-		return ""
-	}
-	b, _ := json.Marshal([]string{id.WorkflowDigest, id.GooberDigest})
-	sum := sha256.Sum256(b)
-	return "sha256:" + hex.EncodeToString(sum[:])
+type learningClusterKey struct {
+	signature         string
+	classification    apiv1.LearningClassification
+	recommendedAction string
 }
 
 func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, events []journalEvent) error {
 	for i, event := range events {
+		findings := eventLearningFindings(event)
+		forcedOutcome := ""
 		if !isLearningFailure(event) {
-			continue
-		}
-		attempt := event.Attempt
-		if attempt == 0 {
-			attempt = 1
-		}
-		nextAttempt := 0
-		for _, later := range events[i+1:] {
-			target := event.Target
-			if event.Type == eventStageFinished {
-				target = event.Stage
-			}
-			if later.Type == eventStageStarted && later.Stage == target {
-				nextAttempt = later.Attempt
-				break
-			}
-		}
-		code := ""
-		feedback := ""
-		gate := event.Gate
-		verdict := event.Verdict
-		stage := event.Target
-		if event.Type == eventStageFinished {
-			gate = event.Stage
-			verdict = event.Status
-			stage = event.Stage
-		}
-		if event.Runner != nil {
-			if value, ok := event.Runner["failureSignature"].(string); ok {
-				code = value
-			}
-			if value, ok := event.Runner["correctionFeedback"].(string); ok {
-				feedback = value
-			}
-		}
-		findingIdentities := runnerFindingIdentities(event)
-		if code == "" && event.Error != nil {
-			code = event.Error.Code
-			if feedback == "" {
-				feedback = event.Error.Message
-			}
-		}
-		signature := normalizeLearningSignature(gate, verdict, code)
-		evidence, err := json.Marshal(map[string]any{
-			"runId": id.RunID, "seq": event.Seq, "gate": gate,
-			"verdict": verdict, "sourceAttempt": attempt,
-			"nextAttempt": nextAttempt, "artifacts": event.Artifacts,
-			"verdictRef": event.Ref,
-			"error":      event.Error, "findingIdentities": findingIdentities,
-		})
-		if err != nil {
-			return fmt.Errorf("rollup: encode learning evidence: %w", err)
-		}
-		outcome := "escalated"
-		for _, later := range events[i+1:] {
-			if !sameLearningSubject(event, later) {
+			findings = eventRunnerFindings(event, "disprovenLearningFindings")
+			if len(findings) == 0 {
 				continue
 			}
-			laterOutcome := later.Verdict
-			if later.Type == eventStageFinished {
-				laterOutcome = later.Status
-			}
-			if isLearningPass(later) {
-				if runnerReason(later) == "REVIEW_FINDING_DISPROVEN" {
-					outcome = "false-finding"
-				} else {
-					outcome = "fixed"
-				}
-			} else if (len(findingIdentities) > 0 && sameFindingIdentities(findingIdentities, runnerFindingIdentities(later))) ||
-				(len(findingIdentities) == 0 &&
-					normalizeLearningSignature(learningSubject(later), laterOutcome, runnerSignature(later)) == signature) {
-				outcome = "repeated"
-			} else {
-				outcome = "changed-failure"
-			}
-			break
+			forcedOutcome = learning.OutcomeFalseFinding
 		}
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO learning_episodes
-			(run_id, source_seq, workflow, stage, gate, source_attempt, next_attempt,
-			 workflow_digest, goober_digest, effective_version, signature,
-			 classification, evidence_json, correction_feedback, outcome, occurred_at)
-			VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), NULLIF(?, ''),
-				NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)`,
-			id.RunID, event.Seq, id.Workflow, stage, gate, attempt,
-			nextAttempt, id.WorkflowDigest, id.GooberDigest, learningEffectiveVersion(id),
-			signature, learningClassification(event), string(evidence), feedback,
-			outcome, formatTime(event.Time))
-		if err != nil {
-			return fmt.Errorf("rollup: insert learning episode %s/%d: %w", id.RunID, event.Seq, err)
+		if len(findings) == 0 {
+			findings = []apiv1.Finding{syntheticLearningFinding(event)}
 		}
-
+		sourceAttempt := learningSourceAttempt(event)
+		nextAttempt := learningNextAttempt(event, events[i+1:])
+		correction := runnerString(event, "correctionFeedback")
+		if correction == "" && event.Error != nil {
+			correction = event.Error.Message
+		}
+		for _, finding := range findings {
+			learning.NormalizeFinding(&finding, learningSubject(event), finding.EvidenceDigest)
+			findingJSON, err := json.Marshal(finding)
+			if err != nil {
+				return fmt.Errorf("rollup: encode learning finding: %w", err)
+			}
+			evidence, err := json.Marshal(map[string]any{
+				"runId": id.RunID, "seq": event.Seq, "stage": event.Stage,
+				"gate": event.Gate, "verdict": event.Verdict, "status": event.Status,
+				"sourceAttempt": sourceAttempt, "nextAttempt": nextAttempt,
+				"artifacts": event.Artifacts, "verdictRef": event.Ref,
+				"error": event.Error, "findingId": finding.ID,
+			})
+			if err != nil {
+				return fmt.Errorf("rollup: encode learning evidence: %w", err)
+			}
+			outcome := forcedOutcome
+			if outcome == "" {
+				outcome = learningOutcome(event, finding.ID, finding.LearningSignature, events[i+1:])
+			}
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO learning_episodes
+				(run_id, source_seq, finding_id, workflow, stage, gate,
+				 source_attempt, next_attempt, workflow_digest, goober_digest,
+				 effective_version, signature, classification, recommended_action,
+				 finding_json, evidence_json, correction_feedback, outcome, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0), NULLIF(?, ''),
+					NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`,
+				id.RunID, event.Seq, finding.ID, id.Workflow, learningStage(event),
+				learningSubject(event), sourceAttempt, nextAttempt,
+				id.WorkflowDigest, id.GooberDigest,
+				learning.EffectiveVersion(id.WorkflowDigest, id.GooberDigest),
+				finding.LearningSignature, finding.LearningClassification,
+				learning.RecommendedAction(finding.LearningClassification),
+				string(findingJSON), string(evidence), correction, outcome,
+				formatTime(event.Time).String)
+			if err != nil {
+				return fmt.Errorf("rollup: insert learning episode %s/%d/%s: %w", id.RunID, event.Seq, finding.ID, err)
+			}
+		}
 	}
 	return nil
 }
@@ -207,6 +142,10 @@ func isLearningFailure(event journalEvent) bool {
 	return event.Type == eventStageFinished && event.Stage != "" && !isLearningPass(event)
 }
 
+func isLearningResult(event journalEvent) bool {
+	return event.Type == eventGateEvaluated || event.Type == eventStageFinished
+}
+
 func learningSubject(event journalEvent) string {
 	if event.Type == eventStageFinished {
 		return event.Stage
@@ -214,68 +153,220 @@ func learningSubject(event journalEvent) string {
 	return event.Gate
 }
 
-func sameLearningSubject(first, second journalEvent) bool {
-	if !isLearningResult(second) {
-		return false
+func learningStage(event journalEvent) string {
+	if event.Type == eventStageFinished {
+		return event.Stage
 	}
-	return learningSubject(first) == learningSubject(second)
+	return event.Target
 }
 
-func isLearningResult(event journalEvent) bool {
-	return event.Type == eventGateEvaluated || event.Type == eventStageFinished
+func sameLearningSubject(first, second journalEvent) bool {
+	return isLearningResult(second) && learningSubject(first) == learningSubject(second)
 }
 
-func runnerSignature(event journalEvent) string {
-	if event.Runner != nil {
-		if value, ok := event.Runner["failureSignature"].(string); ok {
-			return value
+func learningSourceAttempt(event journalEvent) int {
+	if event.Attempt > 0 {
+		return event.Attempt
+	}
+	if attempt, ok := runnerNumber(event, "repassAttempt"); ok && attempt > 0 {
+		return attempt
+	}
+	return 1
+}
+
+func learningNextAttempt(event journalEvent, later []journalEvent) int {
+	target := event.Target
+	if event.Type == eventStageFinished {
+		target = event.Stage
+	}
+	for _, candidate := range later {
+		if candidate.Type == eventStageStarted && candidate.Stage == target {
+			return candidate.Attempt
 		}
 	}
-	return ""
+	return 0
 }
 
-func runnerReason(event journalEvent) string {
-	if event.Runner == nil {
-		return ""
+func learningOutcome(source journalEvent, findingID, signature string, later []journalEvent) string {
+	for _, candidate := range later {
+		if !sameLearningSubject(source, candidate) {
+			continue
+		}
+		if runnerContains(candidate, "disprovenFindingIdentities", findingID) {
+			return learning.OutcomeFalseFinding
+		}
+		if runnerContains(candidate, "resolvedFindingIdentities", findingID) ||
+			runnerContains(candidate, "suppressedFindingIdentities", findingID) {
+			return learning.OutcomeFixed
+		}
+		if isLearningPass(candidate) {
+			if runnerString(candidate, "reason") == "REVIEW_FINDING_DISPROVEN" {
+				return learning.OutcomeFalseFinding
+			}
+			return learning.OutcomeFixed
+		}
+		for _, finding := range eventLearningFindings(candidate) {
+			if finding.ID == findingID || (finding.ID == "" && finding.LearningSignature == signature) {
+				return learning.OutcomeRepeated
+			}
+		}
+		return learning.OutcomeChangedFailure
 	}
-	value, _ := event.Runner["reason"].(string)
-	return value
+	for _, candidate := range later {
+		if candidate.Type == eventRunFinished {
+			switch strings.ToLower(candidate.Status) {
+			case "escalated", "failed", "aborted":
+				return learning.OutcomeEscalated
+			default:
+				return learning.OutcomeUnresolved
+			}
+		}
+	}
+	if source.Escalated {
+		return learning.OutcomeEscalated
+	}
+	return learning.OutcomeUnresolved
 }
 
-func runnerFindingIdentities(event journalEvent) []string {
+func syntheticLearningFinding(event journalEvent) apiv1.Finding {
+	message := runnerString(event, "correctionFeedback")
+	if message == "" && event.Error != nil {
+		message = event.Error.Message
+		if message == "" {
+			message = event.Error.Code
+		}
+	}
+	if message == "" {
+		message = learningSubject(event) + " returned " + learningResultValue(event)
+	}
+	finding := apiv1.Finding{
+		Severity:               apiv1.SeverityError,
+		Message:                message,
+		Location:               learningStage(event),
+		LearningClassification: apiv1.LearningValidation,
+	}
+	learning.NormalizeFinding(&finding, learningSubject(event), runnerString(event, "diffDigest"))
+	return finding
+}
+
+func learningResultValue(event journalEvent) string {
+	if event.Type == eventStageFinished {
+		return event.Status
+	}
+	return event.Verdict
+}
+
+func eventLearningFindings(event journalEvent) []apiv1.Finding {
 	if event.Runner == nil {
 		return nil
 	}
-	values, ok := event.Runner["findingIdentities"].([]any)
+	out := eventRunnerFindings(event, "learningFindings")
+	if len(out) > 0 {
+		return out
+	}
+
+	// Compatibility for journals written by the initial projection, before
+	// gate events carried complete finding records.
+	identities, ok := event.Runner["findingIdentities"].([]any)
 	if !ok {
 		return nil
 	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if identity, ok := value.(string); ok && identity != "" {
-			out = append(out, identity)
+	classification := apiv1.LearningInstruction
+	if event.Type == eventStageFinished {
+		classification = apiv1.LearningValidation
+	}
+	signature := strings.Join([]string{
+		learningSubject(event), learningResultValue(event), runnerString(event, "failureSignature"),
+	}, "|")
+	message := runnerString(event, "correctionFeedback")
+	if message == "" {
+		message = learningSubject(event) + " returned " + learningResultValue(event)
+	}
+	out = make([]apiv1.Finding, 0, len(identities))
+	for _, value := range identities {
+		id, _ := value.(string)
+		if id == "" {
+			continue
 		}
+		out = append(out, apiv1.Finding{
+			ID: id, Message: message, Location: learningStage(event),
+			LearningSignature: signature, LearningClassification: classification,
+		})
 	}
 	return out
 }
 
-func sameFindingIdentities(first, second []string) bool {
-	if len(first) == 0 || len(second) == 0 {
+func eventRunnerFindings(event journalEvent, key string) []apiv1.Finding {
+	if event.Runner == nil {
+		return nil
+	}
+	raw, ok := event.Runner[key].([]any)
+	if ok {
+		out := make([]apiv1.Finding, 0, len(raw))
+		for _, value := range raw {
+			data, err := json.Marshal(value)
+			if err != nil {
+				continue
+			}
+			var finding apiv1.Finding
+			if json.Unmarshal(data, &finding) == nil && finding.Message != "" {
+				out = append(out, finding)
+			}
+		}
+		return out
+	}
+	if typed, ok := event.Runner[key].([]apiv1.Finding); ok {
+		return append([]apiv1.Finding(nil), typed...)
+	}
+	return nil
+}
+
+func runnerString(event journalEvent, key string) string {
+	if event.Runner == nil {
+		return ""
+	}
+	value, _ := event.Runner[key].(string)
+	return value
+}
+
+func runnerNumber(event journalEvent, key string) (int, bool) {
+	if event.Runner == nil {
+		return 0, false
+	}
+	switch value := event.Runner[key].(type) {
+	case float64:
+		return int(value), true
+	case int:
+		return value, true
+	case json.Number:
+		n, err := value.Int64()
+		return int(n), err == nil
+	}
+	return 0, false
+}
+
+func runnerContains(event journalEvent, key, want string) bool {
+	if event.Runner == nil || want == "" {
 		return false
 	}
-	known := make(map[string]struct{}, len(first))
-	for _, identity := range first {
-		known[identity] = struct{}{}
-	}
-	for _, identity := range second {
-		if _, ok := known[identity]; ok {
-			return true
+	switch values := event.Runner[key].(type) {
+	case []any:
+		for _, value := range values {
+			if value == want {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range values {
+			if value == want {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// LearningEpisodes returns durable non-pass outcomes, ordered by occurrence.
+// LearningEpisodes returns durable correction outcomes, ordered by occurrence.
 func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) ([]LearningEpisode, error) {
 	clauses := []string{"1=1"}
 	args := []any{}
@@ -295,13 +386,15 @@ func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) 
 		clauses = append(clauses, "e.occurred_at >= ?")
 		args = append(args, formatTime(req.Since).String)
 	}
-	query := `SELECT e.run_id, e.source_seq, e.workflow, e.stage, e.gate,
-		e.source_attempt, COALESCE(e.next_attempt, 0), COALESCE(e.workflow_digest, ''),
-		COALESCE(e.goober_digest, ''), COALESCE(e.effective_version, ''),
-		e.signature, e.classification, e.evidence_json,
+	query := `SELECT e.run_id, e.source_seq, e.finding_id, e.workflow, e.stage,
+		e.gate, e.source_attempt, COALESCE(e.next_attempt, 0),
+		COALESCE(e.workflow_digest, ''), COALESCE(e.goober_digest, ''),
+		COALESCE(e.effective_version, ''), e.signature, e.classification,
+		e.recommended_action, e.finding_json, e.evidence_json,
 		COALESCE(e.correction_feedback, ''), e.outcome, e.occurred_at
 		FROM learning_episodes e JOIN runs r ON r.run_id = e.run_id
-		WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY e.occurred_at, e.run_id, e.source_seq`
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY e.occurred_at, e.run_id, e.source_seq, e.finding_id`
 	if req.Limit > 0 {
 		query += " LIMIT ?"
 		args = append(args, req.Limit)
@@ -313,55 +406,83 @@ func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) 
 	defer rows.Close()
 	var out []LearningEpisode
 	for rows.Next() {
-		var e LearningEpisode
-		var at string
-		if err := rows.Scan(&e.RunID, &e.SourceSeq, &e.Workflow, &e.Stage, &e.Gate,
-			&e.SourceAttempt, &e.NextAttempt, &e.WorkflowDigest, &e.GooberDigest,
-			&e.EffectiveVersion, &e.Signature, &e.Classification, &e.EvidenceJSON,
-			&e.CorrectionFeedback, &e.Outcome, &at); err != nil {
+		var episode LearningEpisode
+		var classification, findingJSON, at string
+		if err := rows.Scan(
+			&episode.RunID, &episode.SourceSeq, &episode.FindingID,
+			&episode.Workflow, &episode.Stage, &episode.Gate,
+			&episode.SourceAttempt, &episode.NextAttempt,
+			&episode.WorkflowDigest, &episode.GooberDigest,
+			&episode.EffectiveVersion, &episode.Signature, &classification,
+			&episode.RecommendedAction, &findingJSON, &episode.EvidenceJSON,
+			&episode.CorrectionFeedback, &episode.Outcome, &at,
+		); err != nil {
 			return nil, fmt.Errorf("rollup: scan learning episode: %w", err)
 		}
-		var evidence struct {
-			FindingIdentities []string `json:"findingIdentities"`
+		episode.Classification = apiv1.LearningClassification(classification)
+		if err := json.Unmarshal([]byte(findingJSON), &episode.Finding); err != nil {
+			return nil, fmt.Errorf("rollup: decode learning finding: %w", err)
 		}
-		if err := json.Unmarshal([]byte(e.EvidenceJSON), &evidence); err == nil {
-			e.FindingIdentities = evidence.FindingIdentities
-		}
-		var err error
-		e.OccurredAt, err = parseTime(sql.NullString{String: at, Valid: at != ""})
+		episode.FindingIdentities = []string{episode.FindingID}
+		episode.OccurredAt, err = parseTime(sql.NullString{String: at, Valid: at != ""})
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, episode)
 	}
 	return out, rows.Err()
 }
 
-// LearningClusters groups episodes by normalized signature for Tutor analysis.
+// LearningClusters groups episodes by normalized signature for Tutor and work
+// nomination analysis.
 func (db *DB) LearningClusters(ctx context.Context, req LearningEpisodeRequest) ([]LearningCluster, error) {
 	episodes, err := db.LearningEpisodes(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	grouped := map[string]*LearningCluster{}
+	grouped := map[learningClusterKey]*LearningCluster{}
+	runs := map[learningClusterKey]map[string]bool{}
 	for _, episode := range episodes {
-		cluster := grouped[episode.Signature]
+		if episode.Outcome == learning.OutcomeFalseFinding || episode.Outcome == learning.OutcomeUnresolved {
+			continue
+		}
+		key := learningClusterKey{
+			signature:         episode.Signature,
+			classification:    episode.Classification,
+			recommendedAction: episode.RecommendedAction,
+		}
+		cluster := grouped[key]
 		if cluster == nil {
-			cluster = &LearningCluster{Signature: episode.Signature, Classification: episode.Classification, RecommendedAction: recommendedLearningAction(episode.Classification)}
-			grouped[episode.Signature] = cluster
+			cluster = &LearningCluster{
+				Signature: episode.Signature, Classification: episode.Classification,
+				RecommendedAction: episode.RecommendedAction,
+			}
+			grouped[key] = cluster
+			runs[key] = map[string]bool{}
 		}
 		cluster.Count++
 		cluster.Episodes = append(cluster.Episodes, JournalPointer{RunID: episode.RunID, Seq: episode.SourceSeq})
+		runs[key][episode.RunID] = true
 	}
 	out := make([]LearningCluster, 0, len(grouped))
-	for _, cluster := range grouped {
+	for key, cluster := range grouped {
+		cluster.RunCount = len(runs[key])
 		out = append(out, *cluster)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].RunCount != out[j].RunCount {
+			return out[i].RunCount > out[j].RunCount
+		}
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count
 		}
-		return out[i].Signature < out[j].Signature
+		if out[i].Signature != out[j].Signature {
+			return out[i].Signature < out[j].Signature
+		}
+		if out[i].Classification != out[j].Classification {
+			return out[i].Classification < out[j].Classification
+		}
+		return out[i].RecommendedAction < out[j].RecommendedAction
 	})
 	return out, nil
 }

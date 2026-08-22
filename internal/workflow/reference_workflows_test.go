@@ -895,6 +895,7 @@ func TestReferenceWorkflowsTutorRunsLiveVerificationBeforeNewFindings(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var tutor apiv1.Workflow
 	if err := yaml.Unmarshal(raw, &tutor); err != nil {
 		t.Fatal(err)
@@ -921,5 +922,86 @@ func TestReferenceWorkflowsTutorRunsLiveVerificationBeforeNewFindings(t *testing
 	openPR := tasks["open-pr"]
 	if openPR.Inputs["recordLiveVerification"] != "true" || openPR.Inputs["tutorConfigSource"] != "reference-workflows" {
 		t.Fatalf("open-pr live-verification inputs = %v", openPR.Inputs)
+	}
+}
+
+func TestReferenceWorkflowsRouteDurableLearningThroughGovernedActions(t *testing.T) {
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
+	load := func(name string) apiv1.Workflow {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(root, "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got apiv1.Workflow
+		if err := yaml.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	tasks := func(workflow apiv1.Workflow) map[string]apiv1.Task {
+		result := make(map[string]apiv1.Task, len(workflow.Spec.Tasks))
+		for _, task := range workflow.Spec.Tasks {
+			result[task.Name] = task
+		}
+		return result
+	}
+
+	tutorTasks := tasks(load("tutor.yaml"))
+	gather := tutorTasks["gather-signals"]
+	command := strings.Join(gather.Run.Command, " ")
+	for _, action := range []string{
+		"--learning-action instruction-or-skill",
+		"--learning-action workflow-or-gate",
+		"--learning-action targeted-test-mapping",
+	} {
+		if !strings.Contains(command, action) {
+			t.Fatalf("Tutor gather command %q missing %q", command, action)
+		}
+	}
+	if strings.Contains(command, "code-issue") {
+		t.Fatalf("Tutor gather command routes code defects to PR authoring: %q", command)
+	}
+	openPR := tutorTasks["open-pr"]
+	if openPR.Inputs["confineToActionRoots"] != "true" ||
+		openPR.Inputs["recordLiveVerification"] != "true" ||
+		!strings.Contains(openPR.Inputs["actionRoots"], "skills") {
+		t.Fatalf("Tutor open-pr governance inputs = %v", openPR.Inputs)
+	}
+	for _, task := range tutorTasks {
+		if slices.Contains(task.Capabilities, "github:issues:approve") ||
+			slices.Contains(task.PolicyActions, "approve-issue") ||
+			slices.Contains(task.PolicyActions, "merge-pull-request") {
+			t.Fatalf("Tutor task %q can approve or merge: %+v", task.Name, task)
+		}
+	}
+
+	nominationTasks := tasks(load("work-nomination.yaml"))
+	nominationGather := strings.Join(nominationTasks["gather-signals"].Run.Command, " ")
+	if !strings.Contains(nominationGather, "--aggregate learning-episode") ||
+		!strings.Contains(nominationGather, "--learning-action code-issue") {
+		t.Fatalf("work-nomination learning route = %q", nominationGather)
+	}
+	nominate := nominationTasks["nominate"]
+	if slices.Contains(nominate.Capabilities, "github:issues:approve") ||
+		slices.Contains(nominate.PolicyActions, "approve-issue") {
+		t.Fatalf("code-defect nomination can self-approve: %+v", nominate)
+	}
+
+	configAuthor, err := os.ReadFile(filepath.Join(root, "goobers", "config-author", "instructions.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nominator, err := os.ReadFile(filepath.Join(root, "goobers", "nominator", "instructions.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configAuthor), "Never update model weights") ||
+		!strings.Contains(string(configAuthor), "cannot approve or merge") {
+		t.Fatalf("config-author lacks learning governance contract")
+	}
+	if !strings.Contains(string(nominator), "always remains unapproved") ||
+		!strings.Contains(string(nominator), "`code-defect`") {
+		t.Fatalf("nominator lacks unapproved code-defect contract")
 	}
 }

@@ -629,13 +629,14 @@ CREATE TABLE IF NOT EXISTS ci_check_failures (
 CREATE INDEX IF NOT EXISTS idx_ci_check_failures_run ON ci_check_failures(run_id);
 CREATE INDEX IF NOT EXISTS idx_ci_check_failures_name_time ON ci_check_failures(check_name, occurred_at);
 `,
-	// v20 (#3273): retain non-pass review/validation outcomes as durable learning
-	// episodes. The source journal remains authoritative; this table is a
-	// queryable projection that can be rebuilt with the rest of the rollup.
+	// v20 (#3273): retain finding-level review/validation correction episodes,
+	// including deterministic false-finding outcomes. The source journal remains
+	// authoritative; this table is a rebuildable query projection.
 	`
 CREATE TABLE IF NOT EXISTS learning_episodes (
 run_id              TEXT NOT NULL,
 source_seq          INTEGER NOT NULL,
+finding_id          TEXT NOT NULL,
 workflow            TEXT NOT NULL,
 stage               TEXT,
 gate                TEXT NOT NULL,
@@ -646,15 +647,19 @@ goober_digest       TEXT,
 effective_version   TEXT,
 signature           TEXT NOT NULL,
 classification      TEXT NOT NULL,
+recommended_action  TEXT NOT NULL,
+finding_json        TEXT NOT NULL,
 evidence_json       TEXT NOT NULL,
 correction_feedback TEXT,
 outcome             TEXT NOT NULL,
 occurred_at         TEXT NOT NULL,
-PRIMARY KEY (run_id, source_seq)
+PRIMARY KEY (run_id, source_seq, finding_id)
 );
 CREATE INDEX IF NOT EXISTS idx_learning_episodes_signature
 ON learning_episodes(signature, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_learning_episodes_workflow
 ON learning_episodes(workflow, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_learning_episodes_action
+ON learning_episodes(recommended_action, occurred_at);
 `,
 }

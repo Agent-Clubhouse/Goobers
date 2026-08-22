@@ -65,9 +65,9 @@ spec:
     # work-nomination's gather-signals stage.
     - name: gather-signals
       type: deterministic
-      goal: Query cross-run telemetry for recurring failure/noise/coverage problems.
+      goal: Query cross-run telemetry for recurring problems and governed non-code learning actions.
       run:
-        command: ["goobers", "telemetry-query", "--window", "168h"]
+        command: ["goobers", "telemetry-query", "--window", "168h", "--learning-action", "instruction-or-skill", "--learning-action", "workflow-or-gate", "--learning-action", "targeted-test-mapping"]
       inputs:
         resultFile: "telemetry-signals.json"
       capabilities:
@@ -192,7 +192,7 @@ spec:
         command: ["goobers", "open-pr"]
       inputs:
         runIdFooter: "true"
-        title: "tutor: config improvement"
+        title: "tutor: governed learning improvement"
         resultFile: "pr-result.json"
         # Persist required structure/skill/validation findings outside this
         # run so later scheduled passes can verify them after CD promotion.
