@@ -69,6 +69,11 @@
         "required": ["name", "ref"],
         "properties": {
           "name": { "type": "string", "minLength": 1, "description": "Input name." },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Origin of the supplied input content."
+          },
           "integrity": {
             "type": "string",
             "enum": ["trusted", "maintainer", "unapproved", "derived"],

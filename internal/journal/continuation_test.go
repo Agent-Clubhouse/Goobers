@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
+	"sigs.k8s.io/yaml"
 )
 
 func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
@@ -57,6 +59,21 @@ func TestCreateContinuationLinksTerminalRunAndPreservesSource(t *testing.T) {
 	}
 	if err := continuation.Close(); err != nil {
 		t.Fatal(err)
+	}
+	validator, err := validate.New()
+	if err != nil {
+		t.Fatalf("build validator: %v", err)
+	}
+	runYAML, err := os.ReadFile(filepath.Join(root, continuationID, fileRunYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runJSON, err := yaml.YAMLToJSON(runYAML)
+	if err != nil {
+		t.Fatalf("continuation run.yaml to JSON: %v", err)
+	}
+	if err := validator.ValidateJSON("journal-run.schema.json", runJSON); err != nil {
+		t.Fatalf("continuation run.yaml fails schema validation: %v\n%s", err, runJSON)
 	}
 	after, err := os.ReadFile(sourcePath)
 	if err != nil {
