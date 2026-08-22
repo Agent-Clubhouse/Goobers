@@ -628,15 +628,15 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	current, eligible, err := resolveImplementationFeedbackReadyAt(
+		ctx, issueProvider, repo, current, readyLabel,
+	)
 	if err != nil {
-		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+		return nil, false, err
 	}
-	live := []providers.WorkItem{current}
-	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
-		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
+	if !eligible {
+		return nil, false, nil
 	}
-	current = live[0]
 	count, evidence := consecutiveImplementationFailures(outcomes, itemID, *current.ReadyAt)
 	if count < threshold {
 		return nil, false, nil
@@ -670,6 +670,37 @@ func reCurateImplementationFeedbackItem(
 		ConsecutiveFailures: count,
 		Evidence:            evidence,
 	}, true, nil
+}
+
+func resolveImplementationFeedbackReadyAt(
+	ctx context.Context,
+	issueProvider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	current providers.WorkItem,
+	readyLabel string,
+) (providers.WorkItem, bool, error) {
+	readTransitions := func() ([]providers.WorkItemLabelTransition, error) {
+		return backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	}
+
+	transitions, err := readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live := []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err == nil {
+		return live[0], true, nil
+	}
+
+	transitions, err = readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live = []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
+		return providers.WorkItem{}, false, nil
+	}
+	return live[0], true, nil
 }
 
 func implementationFeedbackEligibleWithoutReadyAt(
