@@ -2,12 +2,72 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/secretstore"
 )
+
+// TestAgentModelCredentialResolverResolvesFileRef is the #3341 control: a
+// file-sourced agent:model credential (instance.yaml's `credentials:
+// [{capability: agent:model, token: {file: ...}}]`) must be resolvable by
+// name, the same shape the daemon-startup preflight now hands to a harness's
+// Preflight sign-in probe.
+func TestAgentModelCredentialResolverResolvesFileRef(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "copilot.pat")
+	if err := os.WriteFile(tokenPath, []byte("pat-from-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Credentials: []instance.CredentialGrant{{
+			Capability: string(capability.AgentModel),
+			Token:      instance.TokenRef{File: tokenPath},
+		}},
+	}
+	stores, err := secretstore.NewRegistry(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		t.Fatalf("agentModelCredentialResolver: %v", err)
+	}
+	if resolve == nil {
+		t.Fatal("expected a non-nil resolver for a configured agent:model grant")
+	}
+	got, err := resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "pat-from-file" {
+		t.Fatalf("resolve = %q, want %q", got, "pat-from-file")
+	}
+}
+
+// TestAgentModelCredentialResolverNilWithoutGrant confirms the resolver is
+// nil (not an error) when the instance has no agent:model credential
+// configured — preflight then falls back to ambient env or the CLI's own
+// cached login, unchanged from before this resolver existed.
+func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
+	cfg := &instance.Config{}
+	stores, err := secretstore.NewRegistry(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		t.Fatalf("agentModelCredentialResolver: %v", err)
+	}
+	if resolve != nil {
+		t.Fatal("expected a nil resolver when no agent:model grant is configured")
+	}
+}
 
 // harnessFakeRunner is a ProcessRunner double reporting a fixed exit code, used
 // to drive a real CopilotAdapter's Preflight to success/failure without a real
@@ -34,25 +94,25 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 	}}}}
 
 	// Unusable harness (its version check exits non-zero) → fail closed.
-	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 1}}, nil
 	}
-	if _, err := preflightAgenticHarnesses(goobers, agentic, nil, nil); err == nil {
+	if _, err := preflightAgenticHarnesses(goobers, agentic, nil, nil, nil); err == nil {
 		t.Fatal("expected preflight to fail closed on an unusable agentic harness")
 	}
 	// A deterministic-only workflow references no harness, so it must not be
 	// gated by a broken harness (the adapter would fail if consulted).
-	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, nil, nil); err != nil {
+	if _, err := preflightAgenticHarnesses(goobers, deterministicOnly, nil, nil, nil); err != nil {
 		t.Fatalf("deterministic-only workflow must not preflight a harness: %v", err)
 	}
 
 	// Healthy harness → preflight passes.
 	var gotEnvPassthrough []string
-	harnessAdapterFor = func(_ apiv1.Harness, envPassthrough []string, _ map[string][]string) (harness.Adapter, error) {
+	harnessAdapterFor = func(_ apiv1.Harness, envPassthrough []string, _ map[string][]string, _ func(context.Context) (string, error)) (harness.Adapter, error) {
 		gotEnvPassthrough = append([]string(nil), envPassthrough...)
 		return &harness.CopilotAdapter{Command: []string{"echo"}, Runner: &harnessFakeRunner{exit: 0}}, nil
 	}
-	info, err := preflightAgenticHarnesses(goobers, agentic, []string{"CLAUDE_CONFIG_DIR"}, nil)
+	info, err := preflightAgenticHarnesses(goobers, agentic, []string{"CLAUDE_CONFIG_DIR"}, nil, nil)
 	if err != nil {
 		t.Fatalf("healthy agentic harness should preflight OK: %v", err)
 	}
@@ -72,6 +132,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 		gateOnly,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("reviewer-only default harness preflight: %v", err)
@@ -86,7 +147,7 @@ func TestPreflightAgenticHarnesses(t *testing.T) {
 // preflight through adapterFor — validate --check-harness AND the automatic
 // daemon-startup preflight — verifies sign-in, not just CLI presence.
 func TestAdapterForConfiguresAuthProbe(t *testing.T) {
-	a, err := adapterFor(apiv1.HarnessCopilot, []string{"CLAUDE_CONFIG_DIR"}, nil)
+	a, err := adapterFor(apiv1.HarnessCopilot, []string{"CLAUDE_CONFIG_DIR"}, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -123,14 +184,14 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 	// Installed but signed out: version 0, auth probe non-zero. The adapter
 	// carries copilotAuthCheckArgs (as the real adapterFor now does), so the
 	// probe actually runs during the startup preflight.
-	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
+	harnessAdapterFor = func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
 			Runner:        &authProbeFakeRunner{versionExit: 0, authExit: 1},
 		}, nil
 	}
-	_, err := preflightAgenticHarnesses(goobers, agentic, nil, nil)
+	_, err := preflightAgenticHarnesses(goobers, agentic, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected the daemon-startup preflight to fail closed on a signed-out harness")
 	}

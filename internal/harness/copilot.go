@@ -181,6 +181,17 @@ type CopilotAdapter struct {
 	// toolchain env var a `dotnet`/`cargo` agentic stage needs is visible to the
 	// harness too. Empty by default: the built-in allowlist, unchanged.
 	ExtraEnvAllowlist []string
+	// ModelCredential resolves the instance's configured agent:model tokenRef
+	// (file/keychain/store — env is already covered by ambientCopilotToken)
+	// for the Preflight sign-in probe, which has no RunRequest and so cannot
+	// go through the normal credentialEnv/req.Credentials resolution path.
+	// Nil is valid: preflight then reflects only ambient env or the CLI's own
+	// cached login, exactly as before this field existed. Consulted only when
+	// no ambient env var is already set; an error it returns fails Preflight
+	// outright rather than being swallowed, since a misconfigured tokenRef
+	// must surface as an actionable error, not silently fall back to a stale
+	// cached login.
+	ModelCredential func(ctx context.Context) (string, error)
 	// InstanceRoot is exposed to the agentic subprocess so a goobers CLI command
 	// it invokes can resolve instance configuration outside the stage worktree.
 	InstanceRoot string
@@ -483,9 +494,27 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		// headless-PAT setup (COPILOT_GITHUB_TOKEN provided via env), then burn
 		// the whole run at the first agentic stage. When a copilot model token is
 		// present in the ambient environment, carry it into the probe so the
-		// check reflects the same auth the run will use.
+		// check reflects the same auth the run will use. ModelCredential covers
+		// the file/keychain/store-sourced case: an ambient env var still wins
+		// (it's the more explicit, headless-friendly signal), but absent one, a
+		// configured agent:model tokenRef is resolved and used instead of
+		// silently falling through to whatever the CLI has cached from its own
+		// prior interactive login — a different, possibly wrong, account (#3341).
+		// A ModelCredential resolution failure fails preflight outright rather
+		// than being swallowed: a misconfigured agent:model tokenRef (bad path,
+		// unreadable file, empty secret) must surface as an actionable error, not
+		// silently degrade into the exact stale-cached-login confusion this
+		// resolver exists to fix.
 		authEnv := baseEnv(c.ExtraEnvAllowlist)
-		if tok := ambientCopilotToken(); tok != "" {
+		tok := ambientCopilotToken()
+		if tok == "" && c.ModelCredential != nil {
+			resolved, err := c.ModelCredential(ctx)
+			if err != nil {
+				return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: resolve agent:model credential: %w", err)
+			}
+			tok = resolved
+		}
+		if tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
 		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
