@@ -54,9 +54,12 @@ type AgentProvenance struct {
 	UpdatedAt       time.Time      `json:"updatedAt"`
 	Budget          AgentUsage     `json:"budget,omitempty"`
 	Usage           AgentUsage     `json:"usage,omitempty"`
-	Results         []Ref          `json:"results,omitempty"`
-	DependsOn       []string       `json:"dependsOn,omitempty"`
-	Fidelity        string         `json:"fidelity,omitempty"`
+	// UsageAggregated marks coordinator usage that already includes its
+	// descendants and must not be added to child totals.
+	UsageAggregated bool     `json:"usageAggregated,omitempty"`
+	Results         []Ref    `json:"results,omitempty"`
+	DependsOn       []string `json:"dependsOn,omitempty"`
+	Fidelity        string   `json:"fidelity,omitempty"`
 }
 
 // PeerMessageMetadata describes only the orchestration effect of a peer
@@ -178,7 +181,6 @@ func RollupAgentUsageForStage(events []Event, runID, stage string) AgentUsage {
 func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 	latest := make(map[string]AgentProvenance)
 	hasChildren := make(map[string]bool)
-	hasWorkers := false
 	for _, event := range events {
 		if event.Type != "" && event.Type != EventAgentLifecycle || event.Agent == nil ||
 			event.Agent.ID == "" ||
@@ -188,9 +190,6 @@ func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 		}
 		if event.Agent.ParentID != "" {
 			hasChildren[event.Agent.ParentID] = true
-		}
-		if !event.Agent.Coordinator {
-			hasWorkers = true
 		}
 		current, ok := latest[event.Agent.ID]
 		if !ok || newerAgentEvent(event.Agent, &current) {
@@ -204,11 +203,12 @@ func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 			latest[event.Agent.ID] = current
 		}
 	}
-	// A coordinator is represented by its own usage only when no child
-	// invocation was projected. The child totals otherwise account for the
-	// coordinator's aggregate budget and avoid double counting it.
+	// Exclude a coordinator only when its own projected child edge proves that
+	// its usage is an aggregate. A coordinator without children may have done
+	// real work and must remain billable.
 	for id, agent := range latest {
-		if agent.Coordinator && (hasChildren[id] || hasWorkers) {
+		legacyAggregate := agent.Coordinator && !agent.Worker && !agent.Leaf && len(latest) > 1
+		if agent.Coordinator && (agent.UsageAggregated || hasChildren[id] || legacyAggregate) {
 			delete(latest, id)
 			continue
 		}

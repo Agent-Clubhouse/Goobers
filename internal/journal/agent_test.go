@@ -1,9 +1,31 @@
 package journal
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestNestedAgentPayloadIsRedactedAtJournalBoundary(t *testing.T) {
+	registry, scrubber := DefaultScrubber()
+	registry.Register([]byte("nested-secret-value"))
+	event := Event{Type: EventAgentLifecycle, Agent: &AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker", RunID: "run", Stage: "work",
+		Attempt: 1, Lifecycle: AgentCompleted, Objective: "nested-secret-value",
+		Results: []Ref{{Digest: "nested-secret-value"}},
+	}}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrubbed := scrubber.Scrub(raw)
+	if string(scrubbed) == string(raw) || string(scrubbed) == "" {
+		t.Fatalf("payload was not redacted: %s", scrubbed)
+	}
+	if string(scrubbed) != string(scrubber.Scrub(scrubbed)) {
+		t.Fatal("redaction is not idempotent")
+	}
+}
 
 func TestActiveAgentTreeKeepsWaitingCoordinatorAndChildren(t *testing.T) {
 	now := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)

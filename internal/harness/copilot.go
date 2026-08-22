@@ -581,7 +581,16 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // session events over the subprocess transcript when available, and captures
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
-func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	out.AgentEvents = adapterAgentEvents(req, "copilot", journal.AgentStarted, nil)
+	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
+	defer func() {
+		lifecycle := journal.AgentCompleted
+		if runErr != nil {
+			lifecycle = journal.AgentFailed
+		}
+		out.AgentEvents = append(out.AgentEvents, adapterAgentEvents(req, "copilot", lifecycle, out.Metrics)...)
+	}()
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -762,7 +771,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		stdoutCapture = responseCapture
 	}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -770,9 +779,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
 	})
+	runErr = processErr
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
@@ -814,13 +824,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			}
 		}
 	}
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
-		AgentTelemetryFidelity: journal.AgentFidelityNone,
+		AgentTelemetryFidelity: journal.AgentFidelityPartial,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -842,8 +852,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
-			out.AgentEvents = projectAgentEvents(native.data, req)
-			out.AgentTelemetryFidelity = agentEventsFidelity(out.AgentEvents)
+			out.AgentEvents = append(out.AgentEvents, projectAgentEvents(native.data, req)...)
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema
