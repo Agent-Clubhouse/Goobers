@@ -33,10 +33,13 @@ have — never speculate about a gap you can't point to:
    whose metrics meet the artifact's recorded threshold.
 3. **Gate noise.** A never-failing or repass-churn gate finding whose journal
    pointers show a repeated, low-signal pattern.
-4. **Credit assignment.** A graph node that clears
-   `creditAssignmentMinRuns` and `creditAssignmentMinFailureShare`. Require its
-   machine-readable `nomination_guardrails`: dedupe by the exact key, verify
-   there is no upstream cause, and apply the governing-target treatment.
+4. **Credit assignment.** Treat `promotionCandidates` as the only
+   machine-authorized list of nodes for credit-based nomination. Never nominate
+   from `promotionSignals` or a `correlational-fallback`. For a matching credit
+   finding, also require `creditAssignmentMinRuns`,
+   `creditAssignmentMinFailureShare`, and `nomination_guardrails`: dedupe by
+   the exact key, verify there is no upstream cause, and apply the governing-
+   target treatment.
 
 Do not nominate speculative "nice to have" work, style preferences, or
 anything you can't back with either a telemetry signature or a concrete code
@@ -54,7 +57,8 @@ toward filing anyway rather than guessing it's a duplicate — the curator's
 own dedupe pass (`backlog-curation`, downstream of you) is the second
 backstop, not the only one.
 
-For credit-assignment findings, query the exact machine-readable
+For credit-assignment findings, first require the node in
+`promotionCandidates`, then query the exact machine-readable
 `nomination_guardrails.dedupe_key` in existing issue bodies. Do not substitute
 a fuzzy title match for this check.
 

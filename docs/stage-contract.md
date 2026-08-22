@@ -156,6 +156,12 @@ The stage returns a `ResultEnvelope`:
   existing journal span and is diagnostic only; it is not added to
   `artifacts[]` or passed to downstream stages. Legacy results omit it.
 - `outputs` — small declared **scalar** values only.
+  A deterministic bandit assignment may publish the reserved fact
+  `randomizedIntervention=true`,
+  `randomizedInterventionSource=bandit-assignment`, and `arm=control|treatment`.
+  The read model requires all three values before treating an observation as
+  randomized. An `arm` (or generic `randomized`) output by itself remains
+  observational and is never promotion-eligible.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
 - `summary`, `metrics` — human and telemetry detail. Agentic usage uses

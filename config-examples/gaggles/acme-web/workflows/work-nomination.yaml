@@ -31,7 +31,7 @@ spec:
       type: deterministic
       goal: Materialize threshold-crossing telemetry and credit-assignment findings with journal evidence for the nominator.
       run:
-        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--workflow", "work-nomination", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
       inputs:
         # Without this the expectedOutputs below emit nothing: a shell stage's
         # outputs are harvested only from its declared result file, so
@@ -55,10 +55,12 @@ spec:
       goal: >-
         Analyze the candidate-findings artifact and a read-only checkout for
         genuine coverage gaps, recurring failure or gate-noise patterns, and
-        high-confidence credit-assignment findings. For credit findings, honor
-        the artifact's machine-readable nomination_guardrails: require an
-        upstream-cause check, dedupe by its exact key, and apply its
-        governing-target treatment.
+        high-confidence credit-assignment findings. A credit finding may be
+        considered only when its node appears in the artifact's
+        promotionCandidates boundary; never nominate from promotionSignals or
+        a correlational fallback. Then honor nomination_guardrails: require an
+        upstream-cause check, dedupe by its exact key, and apply its governing-
+        target treatment.
         Query existing goobers:nominated issues first and skip
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a

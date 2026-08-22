@@ -74,11 +74,14 @@ telemetry-backed signals; `quality-sprint` does not request it.)
    Do not add `goobers:approved` or an assignee; a human must make that trust
    decision.
 
-Credit-assignment findings require the configured minimum run count and failure
-share plus their machine-readable `nomination_guardrails`. Query existing issue
-bodies for the exact `dedupe_key`, inspect the flagged runs and checkout for an
-upstream cause, and skip the candidate unless that check passes. Include these
-lines in every credit-based issue:
+Credit-assignment findings may drive nomination only when their node appears in
+the machine-filtered `promotionCandidates` array. Never nominate from
+`promotionSignals`, especially a `correlational-fallback`. A matching finding
+still requires the configured minimum run count and failure share plus its
+machine-readable `nomination_guardrails`. Query existing issue bodies for the
+exact `dedupe_key`, inspect the flagged runs and checkout for an upstream cause,
+and skip the candidate unless that check passes. Include these lines in every
+credit-based issue:
 
 ```
 goobers-nomination-key: <nomination_guardrails.dedupe_key>

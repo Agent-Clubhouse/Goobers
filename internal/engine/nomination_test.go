@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -20,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 	localrunner "github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/testgit"
@@ -61,10 +63,12 @@ func loadNominator(t *testing.T) apiv1.GooberSpec {
 }
 
 type candidateFindingsFixture struct {
-	Schema   string           `json:"schema"`
-	Window   string           `json:"window"`
-	Since    string           `json:"since"`
-	Findings []rollup.Finding `json:"findings"`
+	Schema              string                        `json:"schema"`
+	Window              string                        `json:"window"`
+	Since               string                        `json:"since"`
+	Findings            []rollup.Finding              `json:"findings"`
+	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
 }
 
 func fixtureSignals() []rollup.Finding {
@@ -93,10 +97,11 @@ func fixtureSignals() []rollup.Finding {
 func fixtureCandidateFindings(t *testing.T, validator *validate.Validator) []byte {
 	t.Helper()
 	data, err := json.Marshal(candidateFindingsFixture{
-		Schema:   "goobers.dev/candidate-findings/v1",
-		Window:   "24h0m0s",
-		Since:    "2026-07-19T00:00:00Z",
-		Findings: fixtureSignals(),
+		Schema:              "goobers.dev/candidate-findings/v1",
+		Window:              "24h0m0s",
+		Since:               "2026-07-19T00:00:00Z",
+		Findings:            fixtureSignals(),
+		PromotionCandidates: []readservice.PromotionSignal{},
 	})
 	if err != nil {
 		t.Fatalf("marshal candidate findings fixture: %v", err)
@@ -121,12 +126,24 @@ type nominatedIssue struct {
 // deterministically, so the test is reproducible without an LLM in the loop.
 // existing holds ordinary gap subjects or credit findings' stable dedupe keys
 // already covered by an open goobers:nominated issue (dedupe query, run first).
-func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int, capabilities []string) (filed []nominatedIssue, deduped int) {
+func nominateFixture(
+	signals []rollup.Finding,
+	promotionCandidates []readservice.PromotionSignal,
+	existing map[string]bool,
+	cap int,
+	capabilities []string,
+) (filed []nominatedIssue, deduped int) {
 	autoApprove := false
 	for _, granted := range capabilities {
 		if granted == string(capability.GitHubIssuesApprove) {
 			autoApprove = true
 			break
+		}
+	}
+	eligibleCreditNodes := make(map[string]bool, len(promotionCandidates))
+	for _, candidate := range promotionCandidates {
+		if candidate.PromotionEligible {
+			eligibleCreditNodes[candidate.Node] = true
 		}
 	}
 	ordered := append([]rollup.Finding(nil), signals...)
@@ -153,6 +170,9 @@ func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int
 				s.NominationGuardrails.GoverningTargetTreatment != rollup.CreditGoverningTargetTreatment) {
 			continue
 		}
+		if s.Kind == rollup.FindingCreditAssignment && !eligibleCreditNodes[creditFindingNode(s.Subject)] {
+			continue
+		}
 		if len(filed) >= cap {
 			continue
 		}
@@ -173,6 +193,14 @@ func nominateFixture(signals []rollup.Finding, existing map[string]bool, cap int
 	return filed, deduped
 }
 
+func creditFindingNode(subject string) string {
+	parts := strings.Split(subject, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[1] + ":" + parts[2]
+}
+
 type nominationConnector struct {
 	rec       localrunner.ArtifactRecorder
 	validator *validate.Validator
@@ -182,6 +210,7 @@ type nominationConnector struct {
 func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	wantCommand := []string{
 		"goobers", "telemetry-query", "--window", "24h",
+		"--workflow", "work-nomination",
 		"--aggregate", "stage-failure-rate",
 		"--aggregate", "error-signature",
 		"--aggregate", "gate-noise",
@@ -258,7 +287,9 @@ func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelop
 		return apiv1.ResultEnvelope{}, fmt.Errorf("decode candidate-findings handoff: %w", err)
 	}
 
-	filed, deduped := nominateFixture(candidates.Findings, n.existing, cap, env.Capabilities)
+	filed, deduped := nominateFixture(
+		candidates.Findings, candidates.PromotionCandidates, n.existing, cap, env.Capabilities,
+	)
 	n.gotFiled, n.gotDeduped = len(filed), deduped
 	n.summary = fmt.Sprintf(
 		"found %d candidates; %d deduped; filed %d; 0 skipped at per-run cap",
@@ -430,7 +461,7 @@ func TestWorkNominationDedupesOnSecondRun(t *testing.T) {
 // bounds filing even when more genuine candidates exist than the configured
 // per-run maximum.
 func TestWorkNominationCapsAtMaxPerRun(t *testing.T) {
-	filed, deduped := nominateFixture(fixtureSignals(), nil, 2, nil)
+	filed, deduped := nominateFixture(fixtureSignals(), nil, nil, 2, nil)
 	if len(filed) != 2 {
 		t.Fatalf("len(filed) = %d, want 2 (capped)", len(filed))
 	}
@@ -460,7 +491,11 @@ func TestWorkNominationCreditGuardrailContract(t *testing.T) {
 		NominationGuardrails: guardrails,
 	}
 
-	filed, deduped := nominateFixture([]rollup.Finding{signal}, nil, 5, nil)
+	eligible := []readservice.PromotionSignal{{
+		Node: "gate:review", Value: 0.4, Lower: 0.2, Upper: 0.6,
+		Source: "randomized", Caveat: "randomized assignment", PromotionEligible: true,
+	}}
+	filed, deduped := nominateFixture([]rollup.Finding{signal}, eligible, nil, 5, nil)
 	if deduped != 0 || len(filed) != 1 {
 		t.Fatalf("filed = %+v, deduped = %d, want one guarded nomination", filed, deduped)
 	}
@@ -474,6 +509,7 @@ func TestWorkNominationCreditGuardrailContract(t *testing.T) {
 
 	filed, deduped = nominateFixture(
 		[]rollup.Finding{signal},
+		eligible,
 		map[string]bool{guardrails.DedupeKey: true},
 		5,
 		nil,
@@ -483,9 +519,35 @@ func TestWorkNominationCreditGuardrailContract(t *testing.T) {
 	}
 
 	signal.NominationGuardrails = nil
-	filed, _ = nominateFixture([]rollup.Finding{signal}, nil, 5, nil)
+	filed, _ = nominateFixture([]rollup.Finding{signal}, eligible, nil, 5, nil)
 	if len(filed) != 0 {
 		t.Fatalf("credit finding without upstream-cause contract was filed: %+v", filed)
+	}
+}
+
+func TestWorkNominationFallbackSignalCannotDriveNomination(t *testing.T) {
+	signal := rollup.Finding{
+		Kind:      rollup.FindingCreditAssignment,
+		Subject:   "implementation/stage/implement/sha256:implement",
+		Metrics:   map[string]float64{"routedRuns": 20, "failureShare": 0.6},
+		Threshold: 0.3,
+		FlaggedRuns: []rollup.JournalPointer{{
+			RunID: "run-credit-fallback",
+		}},
+		NominationGuardrails: &rollup.NominationGuardrails{
+			DedupeKey:                  "credit-assignment:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			RequiresUpstreamCauseCheck: true,
+			GoverningTargetTreatment:   rollup.CreditGoverningTargetTreatment,
+		},
+	}
+	fallback := []readservice.PromotionSignal{{
+		Node: "stage:implement", Value: 0.6, Source: "correlational-fallback",
+		Caveat: "no contemporaneous control cohort", PromotionEligible: false,
+	}}
+	if candidates := readservice.EligiblePromotionSignals(fallback); len(candidates) != 0 {
+		t.Fatalf("fallback crossed machine boundary: %+v", candidates)
+	} else if filed, _ := nominateFixture([]rollup.Finding{signal}, candidates, nil, 5, nil); len(filed) != 0 {
+		t.Fatalf("fallback signal drove nomination: %+v", filed)
 	}
 }
 
@@ -586,7 +648,7 @@ func TestWorkNominationApprovalCapabilityIsStageOptIn(t *testing.T) {
 // nomination marker, leaving the maintainer trust decision and readiness
 // marker to backlog curation.
 func TestNominatedIssueComposesWithCuration(t *testing.T) {
-	filed, _ := nominateFixture(fixtureSignals()[:1], nil, 5, nil)
+	filed, _ := nominateFixture(fixtureSignals()[:1], nil, nil, 5, nil)
 	if len(filed) != 1 {
 		t.Fatalf("len(filed) = %d, want 1", len(filed))
 	}
@@ -599,6 +661,7 @@ func TestNominatedIssueComposesWithCuration(t *testing.T) {
 func TestNominatedIssueAutoApprovesOnlyWithCapability(t *testing.T) {
 	filed, _ := nominateFixture(
 		fixtureSignals()[:1],
+		nil,
 		nil,
 		5,
 		[]string{string(capability.GitHubIssuesApprove)},
