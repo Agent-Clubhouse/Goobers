@@ -17,7 +17,6 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -585,15 +584,6 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
-	out.AgentEvents = adapterAgentEvents(req, "copilot", journal.AgentStarted, nil)
-	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
-	defer func() {
-		lifecycle := journal.AgentCompleted
-		if runErr != nil {
-			lifecycle = journal.AgentFailed
-		}
-		out.AgentEvents = append(out.AgentEvents, adapterAgentEvents(req, "copilot", lifecycle, out.Metrics)...)
-	}()
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}

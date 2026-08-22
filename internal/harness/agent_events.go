@@ -100,10 +100,6 @@ func (e *adapterAgentEmitter) lifecycleEvent(lifecycle journal.AgentLifecycle, m
 	return event
 }
 
-func adapterAgentEvents(req RunRequest, plugin string, lifecycle journal.AgentLifecycle, metrics map[string]float64) []journal.Event {
-	return []journal.Event{adapterAgentEventAt(req, plugin, lifecycle, metrics, time.Now().UTC())}
-}
-
 func adapterAgentEventAt(req RunRequest, plugin string, lifecycle journal.AgentLifecycle, metrics map[string]float64, startedAt time.Time) journal.Event {
 	attempt := req.Attempt
 	if attempt < 1 {

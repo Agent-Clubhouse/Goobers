@@ -12,9 +12,9 @@ import (
 
 func TestAdapterAgentEventsProjectLifecycleAndUsage(t *testing.T) {
 	req := RunRequest{Attempt: 3, Envelope: testEnvelope(t.TempDir(), "agent:model")}
-	events := adapterAgentEvents(req, "copilot", journal.AgentCompleted, map[string]float64{
+	events := []journal.Event{adapterAgentEventAt(req, "copilot", journal.AgentCompleted, map[string]float64{
 		"gen_ai.usage.input_tokens": 12,
-	})
+	}, time.Now().UTC())}
 	if len(events) != 1 || events[0].Agent == nil {
 		t.Fatalf("events = %#v", events)
 	}

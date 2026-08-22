@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -241,15 +240,6 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
-	out.AgentEvents = adapterAgentEvents(req, "claude", journal.AgentStarted, nil)
-	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
-	defer func() {
-		lifecycle := journal.AgentCompleted
-		if runErr != nil {
-			lifecycle = journal.AgentFailed
-		}
-		out.AgentEvents = append(out.AgentEvents, adapterAgentEvents(req, "claude", lifecycle, out.Metrics)...)
-	}()
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
