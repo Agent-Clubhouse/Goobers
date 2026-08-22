@@ -170,6 +170,20 @@ type NodeRow struct {
 	humanRequested map[int]bool
 }
 
+// RemediationExampleRow is one projected failure -> remediation example used by
+// retrieval-augmented remediation.
+type RemediationExampleRow struct {
+	RunID          string
+	Stage          string
+	Attempt        int
+	ErrorClass     string
+	FailureExcerpt string
+	FixExcerpt     string
+	DidItHelp      bool
+	ObservedAt     time.Time
+	ConfigDigest   string
+}
+
 // StageMeasurement is what the telemetry rollup knows about one stage that the
 // journal does not.
 //
@@ -250,9 +264,10 @@ func (p *Projection) rollUpMeasurement() {
 
 // Projection is the full result of projecting a run.
 type Projection struct {
-	Run    RunRow
-	Stages []StageRow
-	Nodes  []NodeRow
+	Run         RunRow
+	Stages      []StageRow
+	Nodes       []NodeRow
+	Remediation []RemediationExampleRow
 }
 
 // ProjectRun folds a run's identity and events into a projection.
@@ -518,6 +533,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 // blobs to the otherwise pure event projection.
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
+	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated ||
@@ -575,6 +591,140 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 		projection.Run.Operator.PROpenerStage = ""
 	}
 	return projection, nil
+}
+
+func projectRemediationExamples(identity journal.RunIdentity, run RunRow, events []journal.Event) []RemediationExampleRow {
+	if !run.Terminal {
+		return nil
+	}
+	scrubber := journal.NewPatternScrubber()
+	failures := make(map[string]journal.Event)
+	examples := make([]RemediationExampleRow, 0)
+	for _, event := range events {
+		if !event.KnownSchema() {
+			continue
+		}
+		if event.Type == journal.EventError && event.Stage != "" && event.Error != nil &&
+			event.Integrity != "unapproved" {
+			failures[event.Stage] = event
+			continue
+		}
+		if event.Type != journal.EventStageFinished || event.Status != "success" ||
+			event.Integrity == "unapproved" {
+			continue
+		}
+		failure, ok := failures[event.Stage]
+		if !ok {
+			continue
+		}
+		didItHelp, outcomeKnown := remediationOutcome(event.Outputs)
+		if !outcomeKnown || outputsContentExcluded(event.Outputs) ||
+			errorContentExcluded(failure.Error) {
+			continue
+		}
+		fix := remediationOutputExcerpt(event.Outputs)
+		if fix == "" {
+			fix = "stage completed successfully after the prior failure"
+		}
+		examples = append(examples, RemediationExampleRow{
+			RunID:          identity.RunID,
+			Stage:          event.Stage,
+			Attempt:        event.Attempt,
+			ErrorClass:     failure.Error.Code,
+			FailureExcerpt: scrubExcerpt(scrubber, failure.Error.Message),
+			FixExcerpt:     scrubExcerpt(scrubber, fix),
+			DidItHelp:      didItHelp,
+			ObservedAt:     event.Time,
+			ConfigDigest:   identity.WorkflowDigest,
+		})
+		delete(failures, event.Stage)
+	}
+	return examples
+}
+
+func remediationOutcome(outputs map[string]any) (bool, bool) {
+	for _, key := range []string{"didItHelp", "did-it-help", "did_it_help"} {
+		value, ok := outputs[key]
+		if !ok {
+			continue
+		}
+		switch value := value.(type) {
+		case bool:
+			return value, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "true":
+				return true, true
+			case "false":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func outputsContentExcluded(outputs map[string]any) bool {
+	for _, key := range []string{"contentExcluded", "content_excluded", "excludedContent"} {
+		value, exists := outputs[key]
+		if exists {
+			switch value := value.(type) {
+			case bool:
+				if value {
+					return true
+				}
+			case string:
+				if strings.EqualFold(strings.TrimSpace(value), "true") {
+					return true
+				}
+			}
+		}
+	}
+	for _, value := range outputs {
+		if contentExcludedText(fmt.Sprint(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func errorContentExcluded(err *journal.ErrorDetail) bool {
+	return err != nil &&
+		(contentExcludedText(err.Code) || contentExcludedText(err.Message))
+}
+
+func contentExcludedText(value string) bool {
+	value = strings.ToLower(value)
+	for _, marker := range []string{
+		"content exclusion",
+		"content_exclusion",
+		"content-exclusion",
+		"contentexclusion",
+		"excluded by your organization",
+		"excluded by the repository owner",
+		"organization policy blocks",
+		"org content policy",
+		"copilot is disabled for this file",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubExcerpt(scrubber journal.Scrubber, value string) string {
+	return strings.TrimSpace(string(scrubber.Scrub([]byte(value))))
+}
+
+func remediationOutputExcerpt(outputs map[string]any) string {
+	if len(outputs) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(outputs)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // OperatorTrajectory classifies a run's current stage for operator-facing status.
