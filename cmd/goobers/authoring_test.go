@@ -156,6 +156,10 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	workflowSpec["tasks"] = []any{
 		runExplainJSON(t, "workflow.spec.tasks[]").Example,
 	}
+	// dslVersion is not in the schema's `required` set, but since the §8.3
+	// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
+	// default — so an offline-authored workflow must pin a loadable version.
+	workflow["dslVersion"] = supportmatrix.NextDSLVersion
 	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
