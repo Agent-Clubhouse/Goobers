@@ -161,6 +161,8 @@ type NodeRow struct {
 	Kind               string
 	Name               string
 	Identity           string
+	Randomized         bool
+	Arm                string
 	Attempts           int
 	RetryWasteAttempts int
 
@@ -182,6 +184,16 @@ type RemediationExampleRow struct {
 	DidItHelp      bool
 	ObservedAt     time.Time
 	ConfigDigest   string
+}
+
+// NodeParentRow records a declared workflow-graph edge for a projected node.
+type NodeParentRow struct {
+	RunID      string
+	Kind       string
+	Name       string
+	Identity   string
+	ParentKind string
+	ParentName string
 }
 
 // StageMeasurement is what the telemetry rollup knows about one stage that the
@@ -268,6 +280,7 @@ type Projection struct {
 	Stages      []StageRow
 	Nodes       []NodeRow
 	Remediation []RemediationExampleRow
+	NodeParents []NodeParentRow
 }
 
 // ProjectRun folds a run's identity and events into a projection.
@@ -412,6 +425,11 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
+			node := nodeRow(nodes, row.RunID, "stage", event.Stage, "")
+			if randomized, arm, ok := randomizedInterventionFromOutputs(event.Outputs); ok {
+				node.Randomized = randomized
+				node.Arm = arm
+			}
 			if row.Operator.IssueTitle == "" {
 				id, idOK := event.Outputs["id"].(string)
 				title, titleOK := event.Outputs["title"].(string)
@@ -585,6 +603,7 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 				break
 			}
 		}
+		projection.NodeParents = declaredNodeParents(projection.Run.RunID, projection.Nodes, &graph)
 		break
 	}
 	if projection.Run.Operator.PullRequest != nil {
@@ -663,6 +682,47 @@ func remediationOutcome(outputs map[string]any) (bool, bool) {
 	return false, false
 }
 
+func randomizedInterventionFromOutputs(outputs map[string]any) (bool, string, bool) {
+	if len(outputs) == 0 {
+		return false, "", false
+	}
+	// randomizedIntervention is the reserved, explicit journal fact. Generic
+	// arm/randomized fields may describe observational or self-selected
+	// cohorts and must never upgrade them to randomized evidence.
+	randomized, hasRandomized := parseBoolField(outputs, "randomizedIntervention")
+	arm, hasArm := parseStringField(outputs, "arm", "banditArm", "assignmentArm", "treatmentArm")
+	source, hasSource := parseStringField(outputs, "randomizedInterventionSource")
+	if !hasRandomized {
+		return false, "", false
+	}
+	if randomized && (!hasSource || source != "bandit-assignment" ||
+		!hasArm || (arm != "control" && arm != "treatment")) {
+		return false, arm, true
+	}
+	return randomized, arm, true
+}
+
+func parseBoolField(values map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case bool:
+			return v, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "true", "yes", "1":
+				return true, true
+			case "false", "no", "0":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
 func outputsContentExcluded(outputs map[string]any) bool {
 	for _, key := range []string{"contentExcluded", "content_excluded", "excludedContent"} {
 		value, exists := outputs[key]
@@ -725,6 +785,87 @@ func remediationOutputExcerpt(outputs map[string]any) string {
 		return ""
 	}
 	return string(data)
+}
+
+func parseStringField(values map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		return strings.ToLower(text), true
+	}
+	return "", false
+}
+
+func declaredNodeParents(runID string, nodes []NodeRow, graph *workflow.Graph) []NodeParentRow {
+	if graph == nil || len(nodes) == 0 {
+		return nil
+	}
+	kindByID := map[string]string{}
+	for _, node := range graph.Nodes {
+		switch node.Kind {
+		case workflow.GraphNodeAgentic, workflow.GraphNodeDeterministic:
+			kindByID[node.ID] = "stage"
+		case workflow.GraphNodeGate:
+			kindByID[node.ID] = "gate"
+		}
+	}
+	parents := map[string]map[string]struct{}{}
+	for _, edge := range graph.Edges {
+		if edge.Terminal != "" {
+			continue
+		}
+		childKind, childOK := kindByID[edge.Target]
+		parentKind, parentOK := kindByID[edge.Source]
+		if !childOK || !parentOK {
+			continue
+		}
+		key := childKind + "\x00" + edge.Target
+		if parents[key] == nil {
+			parents[key] = map[string]struct{}{}
+		}
+		parents[key][parentKind+"\x00"+edge.Source] = struct{}{}
+	}
+	var out []NodeParentRow
+	for _, node := range nodes {
+		key := node.Kind + "\x00" + node.Name
+		nodeParents := parents[key]
+		for encoded := range nodeParents {
+			parts := strings.SplitN(encoded, "\x00", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			out = append(out, NodeParentRow{
+				RunID: runID, Kind: node.Kind, Name: node.Name, Identity: node.Identity,
+				ParentKind: parts[0], ParentName: parts[1],
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Identity != out[j].Identity {
+			return out[i].Identity < out[j].Identity
+		}
+		if out[i].ParentKind != out[j].ParentKind {
+			return out[i].ParentKind < out[j].ParentKind
+		}
+		return out[i].ParentName < out[j].ParentName
+	})
+	return out
 }
 
 // OperatorTrajectory classifies a run's current stage for operator-facing status.

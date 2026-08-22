@@ -949,7 +949,7 @@ func (r *registry) resolveProperty(doc *schemaDocument, node map[string]any, nam
 			return childDoc, child, resolved, containsString(node["required"], name), true, err
 		}
 	}
-	for _, keyword := range []string{"oneOf", "anyOf"} {
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
 		alternatives, _ := node[keyword].([]any)
 		for _, value := range alternatives {
 			alternative, ok := value.(map[string]any)
