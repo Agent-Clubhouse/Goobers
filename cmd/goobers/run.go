@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -301,7 +304,7 @@ type targetedPullRequestReader interface {
 	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
 }
 
-func validateTargetedPullRequest(ctx context.Context, root string, entry localscheduler.WorkflowEntry, number int) error {
+func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance.Config, stores credentials.StoreResolver, registrar credentials.SecretRegistrar, entry localscheduler.WorkflowEntry, number int) error {
 	repo := providers.RepositoryRef{
 		Provider: providers.ProviderKind(entry.RepoRef.Provider),
 		Owner:    entry.RepoRef.Owner,
@@ -309,7 +312,45 @@ func validateTargetedPullRequest(ctx context.Context, root string, entry localsc
 		Name:     entry.RepoRef.Name,
 		URL:      entry.RepoRef.BaseURL,
 	}
-	provider, err := newProviderForStage(root, repo, true, withStageProviderCache())
+	if number <= 0 {
+		return errors.New("pull request number must be a positive integer")
+	}
+	if cfg == nil {
+		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
+	}
+	if _, ok := configuredRepoForProject(cfg, entry.RepoRef); !ok {
+		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
+	}
+
+	var provider providers.Provider
+	var err error
+	switch repo.Provider {
+	case providers.ProviderGitHub, providers.ProviderGitea:
+		owner := entry.RepoRef.Owner
+		credentialCapability := capability.GitHubPRWrite
+		if repo.Provider == providers.ProviderGitea {
+			credentialCapability = capability.ProviderPRWrite
+		}
+		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, entry.RepoRef.Name, nil, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+		}
+		injector, buildErr := credentials.NewInjector(resolver, grants, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+		}
+		set, buildErr := injector.Materialize(ctx, []string{string(credentialCapability)})
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+		}
+		token, buildErr := set.Token(ctx, string(credentialCapability))
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+		}
+		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
+	default:
+		provider, err = newProviderForStage(root, repo, true)
+	}
 	if err != nil {
 		return fmt.Errorf("validate pull request #%d in configured repository: %w", number, err)
 	}
@@ -324,10 +365,79 @@ func validateTargetedPullRequest(ctx context.Context, root string, entry localsc
 	if pr.Number != number {
 		return fmt.Errorf("pull request #%d was not returned by the configured repository", number)
 	}
-	if !strings.EqualFold(pr.State, "open") {
-		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, pr.State)
+	state := strings.TrimSpace(pr.State)
+	if !strings.EqualFold(state, "open") {
+		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
+	}
+	if !pullRequestURLMatchesRepository(entry.RepoRef, pr.URL, number) {
+		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, targetedRepoDisplay(entry.RepoRef))
 	}
 	return nil
+}
+
+func targetedRepoDisplay(repo apiv1.RepoRef) string {
+	if repo.Provider == apiv1.ProviderADO && repo.Project != "" {
+		return repo.Owner + "/" + repo.Project + "/" + repo.Name
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number int) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(parsed.EscapedPath(), func(r rune) bool { return r == '/' })
+	for i := range parts {
+		parts[i], err = url.PathUnescape(parts[i])
+		if err != nil {
+			return false
+		}
+	}
+	numberText := strconv.Itoa(number)
+	switch repo.Provider {
+	case apiv1.ProviderGitHub:
+		if !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderGitea:
+		baseURL, baseErr := url.Parse(strings.TrimSpace(repo.BaseURL))
+		if baseErr != nil || baseURL.Host == "" || !strings.EqualFold(parsed.Host, baseURL.Host) {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderADO:
+		host := strings.ToLower(parsed.Hostname())
+		visualStudioHost := strings.ToLower(repo.Owner) + ".visualstudio.com"
+		if host != "dev.azure.com" && host != visualStudioHost {
+			return false
+		}
+		for i := 1; i+3 < len(parts); i++ {
+			organizationMatches := host == visualStudioHost ||
+				(i >= 2 && strings.EqualFold(parts[i-2], repo.Owner))
+			if organizationMatches &&
+				strings.EqualFold(parts[i], "_git") &&
+				strings.EqualFold(strings.TrimSuffix(parts[i+1], ".git"), repo.Name) &&
+				strings.EqualFold(parts[i+2], "pullrequest") &&
+				parts[i+3] == numberText {
+				return repo.Project == "" || strings.EqualFold(parts[i-1], repo.Project)
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestPathMatchesRepository(parts []string, owner, name, number string) bool {
+	for i := 2; i+1 < len(parts); i++ {
+		if (strings.EqualFold(parts[i], "pull") || strings.EqualFold(parts[i], "pulls")) &&
+			parts[i+1] == number &&
+			strings.EqualFold(parts[i-2], owner) &&
+			strings.EqualFold(strings.TrimSuffix(parts[i-1], ".git"), name) {
+			return true
+		}
+	}
+	return false
 }
 
 // runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock

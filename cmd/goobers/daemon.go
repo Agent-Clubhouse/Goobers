@@ -1128,7 +1128,7 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
 	if s.Root != "" {
 		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
-			return validateTargetedPullRequest(ctx, s.Root, entry, number)
+			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)
 		}))
 	}
 	// RRQ-1/#1101: the local runner's static advertised capability set, so

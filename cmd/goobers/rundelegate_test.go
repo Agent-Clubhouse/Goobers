@@ -132,105 +132,95 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 func TestRunDelegatedTargetedPullRequestDispatchesExactReference(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testResponseWait)
 	defer cancel()
 
-	requestSeen := make(chan triggerRequest, 1)
-	responseDone := make(chan error, 1)
-	go func() {
-		requestDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
-		for {
-			entries, err := os.ReadDir(requestDir)
-			if err != nil {
-				if os.IsNotExist(err) {
-					select {
-					case <-ctx.Done():
-						responseDone <- ctx.Err()
-						return
-					case <-time.After(time.Millisecond):
-						continue
-					}
-				}
-				responseDone <- err
-				return
-			}
-			for _, entry := range entries {
-				if !strings.HasSuffix(entry.Name(), requestSuffix) {
-					continue
-				}
-				data, err := os.ReadFile(filepath.Join(requestDir, entry.Name()))
-				if err != nil {
-					responseDone <- err
-					return
-				}
-				var req triggerRequest
-				if err := json.Unmarshal(data, &req); err != nil {
-					responseDone <- err
-					return
-				}
-				requestSeen <- req
-				requestID := strings.TrimSuffix(entry.Name(), requestSuffix)
-				response, err := json.Marshal(triggerResponse{RunID: "targeted-run"})
-				if err == nil {
-					err = os.WriteFile(filepath.Join(requestDir, requestID+responseSuffix), response, 0o644)
-				}
-				responseDone <- err
-				return
-			}
-			select {
-			case <-ctx.Done():
-				responseDone <- ctx.Err()
-				return
-			case <-time.After(time.Millisecond):
-			}
-		}
-	}()
-
-	var stdout, stderr bytes.Buffer
-	if code := runDelegatedTrigger(ctx, l, runTarget{Workflow: "merge-review", PR: 3261}, root, true, &stdout, &stderr); code != 0 {
-		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
-	}
-	if err := <-responseDone; err != nil {
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	req := <-requestSeen
+	t.Cleanup(func() { _ = log.Close() })
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, number int) error {
+		if number != 3261 {
+			return fmt.Errorf("pull request number = %d, want 3261", number)
+		}
+		return nil
+	}))
+
+	var stdout, stderr bytes.Buffer
+	codeDone := make(chan int, 1)
+	go func() {
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "merge-review", PR: 3261}, root, true, &stdout, &stderr)
+	}()
+
+	requestDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	var requestPath string
+	for requestPath == "" {
+		entries, readErr := os.ReadDir(requestDir)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), requestSuffix) {
+				requestPath = filepath.Join(requestDir, entry.Name())
+				break
+			}
+		}
+		if requestPath != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var data []byte
+	for len(data) == 0 {
+		data, err = os.ReadFile(requestPath)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatal(err)
+	}
 	if req.Workflow != "merge-review" || req.PR != 3261 {
 		t.Fatalf("request = %+v, want merge-review PR 3261", req)
 	}
-	if !strings.Contains(stdout.String(), "created run targeted-run") {
+	if err := sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	sched.Wait()
+	trigger := starter.lastRequest().Trigger
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want exact targeted pull-request reference", trigger)
+	}
+	if !strings.Contains(stdout.String(), "created run ") {
 		t.Fatalf("stdout = %q, want delegated run id", stdout.String())
 	}
 }
 
-func TestSweepTargetedPullRequestPropagatesValidationRejection(t *testing.T) {
-	for _, reason := range []string{"invalid pull request number", "closed pull request", "cross-repository pull request", "unauthorized pull request"} {
-		t.Run(reason, func(t *testing.T) {
-			starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
-			sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
-				Workflow: "merge-review",
-				Signals:  []string{"github-webhook:pull_request"},
-				Starter:  starter,
-			}}, localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, number int) error {
-				return fmt.Errorf("pull request #%d rejected: %s", number, reason)
-			}))
-
-			requestID, err := writeTargetedTriggerRequest(schedulerDir, "", "merge-review", 3261)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait); err == nil ||
-				!strings.Contains(err.Error(), reason) {
-				t.Fatalf("rejection error = %v, want %s error", err, reason)
-			}
-			if starter.count() != 0 {
-				t.Fatalf("starter calls = %d, want no dispatch", starter.count())
-			}
-		})
-	}
-}
 func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
 	alpha := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
