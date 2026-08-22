@@ -9,8 +9,13 @@ goobers validate \- validate an instance or checked-in config source tree
 Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
-path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+path "."). Placement findings (RNR001/RNR003) are errors when
+instance.yaml declares a runners: inventory that cannot satisfy some
+stage, and warnings otherwise. --source-tree validates a checked-in
+config source tree using instance.yaml.example and the path itself as
+config/; because the tree carries no real instance.yaml, its placement
+solve runs against the example inventory and is advisory-only
+(warnings, never errors). --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

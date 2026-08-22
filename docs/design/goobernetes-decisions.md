@@ -70,7 +70,7 @@ Three modes, one DSL, one repo:
   (which **gains DSL-version linkage as a funded prerequisite** — it is unversioned today);
   agentic stages derive `harness:<name>` from the goober's existing `harness:` field (declared once,
   never re-typed per stage — and it is what lets harness-less runner images exist); `sh`/`make`
-  stages derive `shell`. Credentials remain strictly capability-gated: nothing is materialized
+  stages derive `run:shell` (colon-namespaced, outside the author token grammar). Credentials remain strictly capability-gated: nothing is materialized
   without a declared credential capability.
 - **Preview features:** the per-gaggle sandbox override folds into the restrictions model (D7);
   external call-out promotes to 3.0 GA. Both stay frozen preview in 2.0.

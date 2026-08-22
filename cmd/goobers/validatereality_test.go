@@ -82,7 +82,9 @@ func TestValidateWarnsOnUnclaimedRunnerCapability(t *testing.T) {
 	for _, want := range []string{
 		`WARNING CAP003 Gaggle/example: requires runner capability "nosuchtoolchain@42"`,
 		"runner.capabilities in instance.yaml does not claim it",
-		"refuse to place every run",
+		// The consequence clause names schedule-time refusal, not a boot
+		// kill: #2936/#2860 made the daemon start regardless.
+		"refuses to place every run of this gaggle at schedule time",
 		`requires runner capability "python@3.12"`,
 		"exact string match",
 	} {
@@ -203,7 +205,7 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 				}},
 			}
 			report := &validate.Report{}
-			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, report)
+			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, nil, report, false)
 			if got := len(warnings); (got == 1) != tc.wantWarning {
 				t.Fatalf("warning count = %d, want warning %t: %#v", got, tc.wantWarning, warnings)
 			}
