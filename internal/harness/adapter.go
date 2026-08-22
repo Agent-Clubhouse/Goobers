@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -178,6 +179,13 @@ type Outcome struct {
 	// from its own run log (#3456 — no transcript equivalent exists there).
 	// Nil elsewhere, and nil never asserts that servers WERE available.
 	MCPServerFailures []MCPServerFailure
+	// AgentEvents are normalized structured events emitted by an adapter. The
+	// executor journals them after validation; raw transcripts are not parsed
+	// to fabricate nested-agent provenance.
+	AgentEvents []journal.Event
+	// AgentTelemetryFidelity explicitly reports whether structured nested-agent
+	// events are complete, partial, or unavailable.
+	AgentTelemetryFidelity string
 }
 
 // MCPServerFailure identifies one MCP server that was registered for a

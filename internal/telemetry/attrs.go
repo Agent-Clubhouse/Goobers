@@ -29,6 +29,15 @@ func RecordNestedAgent(ctx context.Context, agent journal.AgentProvenance) {
 	attrs = appendOptionalString(attrs, AttrAgentRequestedModel, agent.RequestedModel)
 	attrs = appendOptionalString(attrs, AttrAgentResolvedModel, agent.ResolvedModel)
 	attrs = appendOptionalString(attrs, AttrAgentReasoningEffort, agent.ReasoningEffort)
+	if agent.Usage.InputTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrGenAIUsageInputTokens, *agent.Usage.InputTokens))
+	}
+	if agent.Usage.OutputTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrGenAIUsageOutputTokens, *agent.Usage.OutputTokens))
+	}
+	if agent.Usage.CostUSD != nil {
+		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, *agent.Usage.CostUSD))
+	}
 	trace.SpanFromContext(ctx).SetAttributes(attrs...)
 }
 

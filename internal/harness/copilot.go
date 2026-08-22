@@ -17,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -819,6 +820,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
+		AgentTelemetryFidelity: journal.AgentFidelityNone,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts

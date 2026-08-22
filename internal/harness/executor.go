@@ -413,6 +413,42 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	out, runErr := e.adapter.Run(ctx, req)
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
 	invoke.ReportAgentUsage(ctx, out.Metrics)
+	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
+		appender, ok := e.recorder.(EventAppender)
+		if !ok {
+			runErr = errors.Join(runErr, fmt.Errorf(
+				"harness: structured agent telemetry requires a journal-backed recorder; %T cannot append events",
+				e.recorder,
+			))
+		} else {
+			for _, event := range out.AgentEvents {
+				if err := journal.ValidateAgentEvent(event); err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("harness: validate agent telemetry: %w", err))
+					continue
+				}
+				if err := appender.Append(event); err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("harness: journal agent telemetry: %w", err))
+				}
+			}
+			if out.AgentTelemetryFidelity != "" {
+				if out.AgentTelemetryFidelity != journal.AgentFidelityFull &&
+					out.AgentTelemetryFidelity != journal.AgentFidelityPartial &&
+					out.AgentTelemetryFidelity != journal.AgentFidelityNone {
+					runErr = errors.Join(runErr, fmt.Errorf(
+						"harness: invalid agent telemetry fidelity %q", out.AgentTelemetryFidelity))
+				} else if err := appender.Append(journal.Event{
+					Type:  journal.EventRunnerAnnotation,
+					Stage: env.TaskID,
+					Runner: map[string]any{
+						"kind":     "agent-telemetry-fidelity",
+						"fidelity": out.AgentTelemetryFidelity,
+					},
+				}); err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("harness: journal agent telemetry fidelity: %w", err))
+				}
+			}
+		}
+	}
 	if out.InputInspectionReceiptsCollected {
 		appender, ok := e.recorder.(EventAppender)
 		if !ok {
