@@ -643,10 +643,15 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	}
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
-	// RequiredCapabilities union its own.
+	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
+	// gaggle runsOn floor — feeds the 3.0 interpreter's merge rule the same
+	// way (dsl-3.0.md §2), and pairing it with a pre-3.0 workflow is a
+	// compile error the router raises.
 	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	gaggleRunsOn := make(map[string]*apiv1.GaggleRunsOn, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
+		gaggleRunsOn[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RunsOn
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
@@ -660,6 +665,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
+			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}

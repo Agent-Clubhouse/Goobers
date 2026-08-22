@@ -4,7 +4,37 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/runnercap"
 )
+
+// TestRunnerRestrictionsMatchSharedVocabulary pins the instance consts (which
+// the schema-enum registry guard parses as literals) to the shared
+// internal/runnercap vocabulary the validation map derives from, so the
+// inventory surface and the DSL 3.0 runsOn.restrictions surface cannot drift.
+func TestRunnerRestrictionsMatchSharedVocabulary(t *testing.T) {
+	shared := runnercap.KnownRestrictions()
+	local := KnownRunnerRestrictions()
+	if len(shared) != len(local) {
+		t.Fatalf("restriction vocabularies differ: instance %v vs runnercap %v", local, shared)
+	}
+	for i := range shared {
+		if string(shared[i]) != string(local[i]) {
+			t.Fatalf("restriction vocabularies differ: instance %v vs runnercap %v", local, shared)
+		}
+	}
+	for _, want := range []RunnerRestriction{
+		RunnerRestrictionNetworkNone,
+		RunnerRestrictionNetworkAllowlist,
+		RunnerRestrictionFSReadonly,
+		RunnerRestrictionTmpEphemeral,
+		RunnerRestrictionEnvDefaultDeny,
+	} {
+		if !runnercap.KnownRestriction(string(want)) {
+			t.Fatalf("instance const %q is not in the shared runnercap vocabulary", want)
+		}
+	}
+}
 
 // legacyRunnerBody is the shape every pre-Goobernetes install is on: a
 // singular runner: block and no schemaVersion. The zero-change upgrade

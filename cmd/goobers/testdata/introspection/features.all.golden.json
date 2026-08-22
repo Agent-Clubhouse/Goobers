@@ -165,6 +165,26 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.runsOn",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gaggle.spec.runsOn.capabilities",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gaggle.spec.runsOn.os",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gaggle.spec.runsOn.restrictions",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "gaggle.spec.sandbox",
       "stability": "preview",
       "sinceVersion": "dev"
@@ -525,6 +545,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.commitsRepo",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "task.contextFrom",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -635,6 +660,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.repoFrom",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "task.requiredCapabilities",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -653,6 +683,41 @@
       "name": "task.retry.maxAttempts",
       "stability": "ga",
       "sinceVersion": "dev"
+    },
+    {
+      "name": "task.runsOn",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.capabilities",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.cpu",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.disk",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.memory",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.os",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.restrictions",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
     },
     {
       "name": "task.timeoutSeconds",

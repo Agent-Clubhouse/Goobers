@@ -1,0 +1,91 @@
+# The WF022 DISCRIMINATOR fixture (dsl-3.0.md §4/§9 item 10, delivery
+# decisions 001/002): the goobers/implementation shape whose CI-repass lane
+# creates true fan-in at local-ci —
+#
+#   implement → review ─pass→ local-ci → local-gate ─pass→ push-branch
+#     → await-ci → ci-gate ─fail→ remediate-ci → review → local-ci …
+#
+# Correct reaching-definitions coverage at local-ci is [implement,
+# remediate-ci]; a naive DFS back-edge-pruning implementation drops the
+# ci-gate→remediate-ci loop edge and yields [implement] alone, which on every
+# CI repass would fetch the head as of implement and silently discard the
+# remediation fix. The golden digest pins the coverage via RepoFromCoverage;
+# repofrom_test.go additionally asserts that declaring only [implement] at
+# local-ci fails WF022.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: golden-implementation
+spec:
+  gaggle: golden
+  triggers:
+    - type: backlog-item
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement the claimed item on the run branch.
+      runsOn:
+        capabilities: [go@1.26]
+      next: review
+    - name: remediate-ci
+      type: agentic
+      goober: coder
+      goal: Fix the CI failures on the run branch.
+      repoFrom: implement
+      next: review
+    - name: local-ci
+      type: deterministic
+      goal: Run the local CI suite against the handed-off branch head.
+      run:
+        command: ["make", "ci"]
+      repoFrom: [implement, remediate-ci]
+      next: local-gate
+    - name: push-branch
+      type: deterministic
+      goal: Publish the run branch.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      repoFrom: [implement, remediate-ci]
+      next: await-ci
+    - name: await-ci
+      type: deterministic
+      goal: Await the pull request's CI verdict.
+      run:
+        command: ["goobers", "ci-poll"]
+        workspace: scratch
+      inputs:
+        kind: "ci-poll"
+      capabilities:
+        - provider:pr:write
+      next: ci-gate
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: local-ci
+        needs-changes: "@escalate"
+        fail: "@abort"
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: push-branch
+        fail: "@abort"
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-status
+      branches:
+        pass: ""
+        fail: remediate-ci
+        timeout: "@escalate"
