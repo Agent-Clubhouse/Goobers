@@ -12,9 +12,8 @@ package e2e
 // one: engine.ProjectCompletedRunForGaggle against the standard
 // projectionQuerier shape. The only substitution is the Temporal transport:
 // the SDK's in-process test workflow environment stands in for a live
-// server, exactly as test/e2e/integration_test.go's runEnvStarter already
-// does for the engine-start half. temporaltest.ProjectionQuerier (#2903) is
-// the new connective piece: it adapts that same test environment to the
+// server for the engine-start half. temporaltest.ProjectionQuerier (#2903) is
+// the connective piece: it adapts that same test environment to the
 // query shape the completed-run projection half expects, so both halves run
 // through their real, unmodified production code in one process.
 
@@ -122,9 +121,8 @@ func TestEngineStartAndProjectRoundTrip(t *testing.T) {
 }
 
 // fakeGoober stands in for the external Copilot agent harness (un-CI-able),
-// same role as test/e2e/integration_test.go's fakeHarness but implementing
-// invoke.Goober directly since this test drives engine.Activities without the
-// gooberruntime/telemetry layer that test also exercises.
+// implementing invoke.Goober directly since this test drives
+// engine.Activities without the gooberruntime/telemetry layer.
 type fakeGoober struct{}
 
 func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -138,3 +136,18 @@ func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.Resul
 func (fakeGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	return apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good"}, nil
 }
+
+// tempWorkspaces is the e2e engine.WorkspaceProvisioner — the engine fails
+// closed without one (#621), since the closed invocation schema requires the
+// envelope's workspace field. Temp-dir backed, standing in for the worker
+// host's worktree-backed implementation (#632) at the same cluster boundary.
+type tempWorkspaces struct{ t *testing.T }
+
+func (p tempWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
+	return tempWorkspace{dir: p.t.TempDir()}, nil
+}
+
+type tempWorkspace struct{ dir string }
+
+func (w tempWorkspace) Path() string                 { return w.dir }
+func (w tempWorkspace) Remove(context.Context) error { return nil }

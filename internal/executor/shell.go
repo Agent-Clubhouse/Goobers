@@ -53,7 +53,7 @@ const providerRateLimitResetSlack = 2 * time.Second
 
 // timeoutDumpGrace bounds how long Run waits, after sending SIGQUIT to a
 // timed-out stage's process group, for the Go processes in it (go test, the
-// goobers CLI, goober-runtime) to write their FULL goroutine traces to the
+// goobers CLI) to write their FULL goroutine traces to the
 // captured stdout/stderr and exit before Run escalates to SIGKILL. Go's
 // default SIGQUIT handler dumps every goroutine's stack (regardless of
 // GOTRACEBACK level) and exits — so on the one path that matters, a stage that

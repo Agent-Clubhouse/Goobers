@@ -957,7 +957,7 @@ jobs:
       # `go build`), so this regressed silently. Installing `make` via
       # Chocolatey (pre-installed on GitHub-hosted Windows runners)
       # reproduces the real failure mode exactly, rather than assuming some
-      # possibly-different make is already on PATH. scheduler is a
+      # possibly-different make is already on PATH. operator is a
       # portal-free command (unlike goobers, whose build-goobers target also
       # runs a full npm portal rebuild), so this stays a cheap, direct guard
       # on the Makefile's own cross-platform shell portability rather than a
@@ -967,7 +967,7 @@ jobs:
         run: choco install make --no-progress -y
 
       - name: make build (windows)
-        run: make build-scheduler
+        run: make build-operator
 
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile

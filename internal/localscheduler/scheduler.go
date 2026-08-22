@@ -163,8 +163,8 @@ var newRunID = telemetry.NewRunID
 
 // SpanStarter is the slice of the telemetry client the local scheduler needs
 // to open a decision span per dispatch (issue #126). *telemetry.Client
-// satisfies it structurally, mirroring internal/scheduler.SpanStarter's
-// narrow-interface pattern for the tier-3 scheduler.
+// satisfies it structurally — the narrow-interface pattern keeps the
+// scheduler off telemetry's full surface.
 type SpanStarter interface {
 	StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error)
 }

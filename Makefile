@@ -66,9 +66,9 @@ help:
 	@echo "Goobers — make targets:"
 	@grep -E '^## [a-z-]+:' $(MAKEFILE_LIST) | sed -E 's/^## ([a-z-]+): /  \1\t/' | expand -t20
 	@echo ""
-	@echo "Note: 'make build' also builds quarantined/superseded binaries (kept"
-	@echo "compiling, not on the V0 path) — operator, scheduler are tier-3 (V2),"
-	@echo "goober-runtime is superseded by the goobers binary. See docs/ARCHITECTURE.md §11."
+	@echo "Note: 'make build' also builds quarantined binaries (kept compiling,"
+	@echo "not on the V0 path) — operator, config-sync are tier-3 (V2). See"
+	@echo "docs/ARCHITECTURE.md §11."
 
 ## tidy: Sync go.mod/go.sum.
 .PHONY: tidy

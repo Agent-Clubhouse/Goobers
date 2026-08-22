@@ -1000,8 +1000,8 @@ func addRunControlFeatures(used featureSet, controls *apiv1.RunControls, ids run
 // providerFeatureIDs parameterizes the per-enum-value provider features per
 // declaration site (project, backlog, additionalRepos), so the sites cannot
 // drift in spelling. Provider enum values select distinct implementations
-// (internal/bootstrap/providers.go switches on them), so each value carries
-// its own FeatureID, following the goober.spec.harness.* precedent.
+// (the provider wiring in cmd/goobers switches on them), so each value
+// carries its own FeatureID, following the goober.spec.harness.* precedent.
 type providerFeatureIDs struct {
 	github FeatureID
 	ado    FeatureID
