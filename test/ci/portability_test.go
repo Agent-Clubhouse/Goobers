@@ -215,38 +215,104 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, target := range []string{"deadcode", "vulncheck", "test-integration-strict", "test-conformance", "sandbox-check", "linux-node-validation"} {
-		if !strings.Contains(workflow, "run: make "+target) {
+	// test-conformance dropped out of this list when the `conformance` job was
+	// deleted: -run '^TestConformance' ./... filters execution but not
+	// compilation, so the job rebuilt 147 race binaries for 32 tests that the
+	// unit shards already run unfiltered. The make target still exists for
+	// local and full-tier use; it simply has no dedicated CI job.
+	//
+	// Matched on "make <target>" rather than "run: make <target>" because a job
+	// may legitimately wrap the invocation in a shell block to assert something
+	// about its output (see integration's envtest PASS assertion). The contract
+	// being pinned is "CI drives this through make, so a developer can
+	// reproduce it", not the YAML shape of the step.
+	for _, target := range []string{"deadcode", "vulncheck", "test-integration-strict", "sandbox-check", "linux-node-validation"} {
+		if !strings.Contains(workflow, "make "+target) {
 			t.Errorf("CI workflow must invoke make %s so the job is locally reproducible", target)
 		}
 	}
 
 	// The required aggregate must fail if any merge-gate slice fails. `make ci`
 	// is fanned across parallel jobs (checks/lint/unit/shipped) plus the macOS
-	// behavioral unit run and dead-code analysis; those, the Windows gate, the
-	// vulnerability scan, journal conformance, and (#2019) the
+	// and Windows behavioral unit runs and dead-code analysis; those, the
+	// Windows runtime gate, vulnerability scan, journal conformance, and (#2019) the
 	// integration/sandbox/linux-validation jobs must all be depended on — all
 	// three ran on every PR already at full runner cost but enforced nothing
 	// until #2019 added them here. (The aggregate keeps its ruleset-pinned
 	// name; only its fan-in changed.)
+	// Read the aggregate's needs list from the required-ci job itself rather
+	// than by scanning for a line that happens to mention a particular gate —
+	// the previous form keyed on "conformance" and would have silently found
+	// nothing (t.Fatal, but for the wrong reason) the moment that gate moved.
+	requiredCI := workflowJob(workflow, "required-ci")
 	var needsLine string
-	for _, line := range strings.Split(workflow, "\n") {
-		if strings.Contains(line, "needs:") && strings.Contains(line, "conformance") {
+	for _, line := range strings.Split(requiredCI, "\n") {
+		if strings.Contains(line, "needs:") {
 			needsLine = line
 			break
 		}
 	}
 	if needsLine == "" {
-		t.Fatal("required-ci aggregate has no needs list referencing the conformance gate")
+		t.Fatal("required-ci aggregate has no needs list")
 	}
 	for _, gate := range []string{
-		"checks", "lint", "darwin-build", "unit", "unit-macos", "shipped",
-		"deadcode", "windows-smoke", "vulnerability-scan", "conformance",
+		"checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-macos",
+		"shipped", "deadcode", "windows-smoke", "vulnerability-scan",
 		"integration", "sandbox", "linux-validation",
 	} {
 		if !strings.Contains(needsLine, gate) {
 			t.Errorf("required CI aggregate must depend on %q so it fails when that gate fails", gate)
 		}
+	}
+
+	// The deleted whole-tree duplicates must not quietly come back as jobs. Each
+	// was an unsharded re-run of a suite another required job already runs; if
+	// one is reintroduced it has to be a deliberate, reviewed decision that also
+	// re-argues the ~48 runner-min and ~9 min of critical path it costs.
+	for _, gone := range []string{"e2e", "envtest", "coverage", "conformance"} {
+		if section := workflowJob(workflow, gone); section != "" {
+			t.Errorf("job %q was deleted as a duplicate whole-tree run; reintroducing it needs an explicit decision, not a silent re-add", gone)
+		}
+	}
+
+	// The value each deleted job uniquely carried must still be enforced
+	// somewhere. These are the exact seams that keep the deletion a no-op.
+	unitMacOS := workflowJob(workflow, "unit-macos")
+	if !strings.Contains(unitMacOS, "make cover-gate") {
+		t.Error("the coverage threshold moved onto unit-macos; it must still run `make cover-gate` against the whole-tree profile that job already produces")
+	}
+	integration := workflowJob(workflow, "integration")
+	if !strings.Contains(integration, "KUBEBUILDER_ASSETS") {
+		t.Error("the envtest control plane moved onto integration; it must still provision KUBEBUILDER_ASSETS")
+	}
+	// Pin the ASSERTION, not merely a mention of the test's name — an earlier
+	// version of this guard matched the name anywhere in the job and so stayed
+	// green when the grep was pointed at a different test, with the name left
+	// behind in the error message.
+	if !strings.Contains(integration, `grep -q -- '--- PASS: TestIntegrationEnvtestReconcile'`) {
+		t.Error("integration must grep its log for `--- PASS: TestIntegrationEnvtestReconcile` — testdep.RequireEnv SKIPS that test when KUBEBUILDER_ASSETS is empty, which would pass the job without ever running the only test that stands up an API server (#3168)")
+	}
+}
+
+func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	// The broad Windows behavioural tier is deliberately absent: enabling it
+	// surfaced 670 failing tests across 19 packages, tracked separately. The
+	// shipped-workflow contracts do run on Windows and are required.
+	shipped := workflowJob(workflow, "shipped")
+	if !strings.Contains(shipped, "os: windows-latest") {
+		t.Error("shipped-workflow contract matrix must include Windows")
+	}
+	if !strings.Contains(shipped, `timeout: "40m"`) ||
+		!strings.Contains(shipped, "GOOBERS_CI_TEST_TIMEOUT: ${{ matrix.timeout }}") {
+		t.Error("Windows shipped-workflow contracts must receive sufficient timeout headroom")
 	}
 }
 
@@ -276,7 +342,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		if section == "" {
 			t.Errorf("CI workflow is missing main validation job %q", job)
@@ -286,7 +352,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	for _, job := range []string{
 		"deadcode", "darwin-build", "integration",
-		"conformance", "vulnerability-scan", "required-ci",
+		"vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
 		if section := workflowJob(workflow, job); !strings.Contains(section, "github.event_name != 'push'") {
@@ -294,10 +360,37 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		}
 	}
 
+	// The invariant, computed rather than listed: EVERY job that validates a
+	// landed main SHA must be watched by the escalation. Hand-maintained lists
+	// drift — deploy-reference, e2e, envtest and coverage all ran on push while
+	// escalating nothing, so main could go red on any of them in silence. This
+	// derives the push lane from the workflow itself, so a new job that lacks
+	// the `!= 'push'` guard fails here until it is either guarded or watched.
+	//
+	// dependency-cache-warm and escalate-main-failure are exempt by name:
+	// the former is push-only, continue-on-error, and gates nothing; the latter
+	// is the escalation itself.
+	exemptFromEscalation := map[string]bool{
+		"dependency-cache-warm": true,
+		"escalate-main-failure": true,
+	}
+	for _, job := range workflowJobNames(workflow) {
+		if exemptFromEscalation[job] {
+			continue
+		}
+		section := workflowJob(workflow, job)
+		if strings.Contains(section, "github.event_name != 'push'") {
+			continue // PR-only: never validates main, nothing to escalate.
+		}
+		if !strings.Contains(escalationSection(workflow), "needs."+job+".result == 'failure'") {
+			t.Errorf("job %q runs on main pushes but the escalation does not watch it — a red on main would file no issue", job)
+		}
+	}
+
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [checks, lint, unit, unit-macos, shipped, windows-smoke]",
+		"needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@v9",
 		"github.rest.issues.create",
@@ -307,12 +400,48 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"checks", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
 		}
 	}
+
+	// Deliberately `== 'failure'`, not `!= 'success'`. cancel-in-progress
+	// cancels the majority of push runs (main merges land faster than a full
+	// validation finishes) and those jobs report `cancelled`; escalating on
+	// anything-but-success would file an issue on nearly every merge and bury
+	// the real reds. If that ever needs revisiting, fix the cancellation
+	// behaviour first.
+	if strings.Contains(escalation, "!= 'success'") {
+		t.Error("escalation must trigger on 'failure', not on any non-success: ~64% of push runs are cancelled by cancel-in-progress and would each file an issue")
+	}
+}
+
+// workflowJobNames lists the top-level job keys of a workflow, in file order.
+// Two-space indented, non-nested keys under `jobs:` — the same shape
+// workflowJob slices on.
+func workflowJobNames(workflow string) []string {
+	_, after, found := strings.Cut(workflow, "\njobs:\n")
+	if !found {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(after, "\n") {
+		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || !strings.HasSuffix(trimmed, ":") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(trimmed, ":"))
+	}
+	return names
+}
+
+func escalationSection(workflow string) string {
+	return workflowJob(workflow, "escalate-main-failure")
 }
 
 func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {

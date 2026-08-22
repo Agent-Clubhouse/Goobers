@@ -2,9 +2,11 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,7 +172,7 @@ func TestPhaseBoundedAgreesWithPhase(t *testing.T) {
 			if full != tc.want {
 				t.Fatalf("Phase = %q, want %q (the fixture, not the fix, is wrong)", full, tc.want)
 			}
-			bounded, err := rd.PhaseBounded()
+			bounded, err := rd.PhaseBounded(context.Background())
 			if err != nil {
 				t.Fatalf("PhaseBounded: %v", err)
 			}
@@ -195,7 +197,7 @@ func TestPhaseBoundedFallsBackWhenBudgetIsExhausted(t *testing.T) {
 		mangle: padJournal(200, 64*1024),
 	})
 
-	if _, _, _, err := tailPhase(filepath.Join(dir, fileEvents)); err == nil {
+	if _, _, _, err := tailPhaseContext(context.Background(), filepath.Join(dir, fileEvents)); err == nil {
 		t.Fatal("expected the bounded scan to exhaust its budget on this journal")
 	} else if !errors.Is(err, errPhaseTailBudgetExhausted) {
 		t.Fatalf("tailPhase error = %v, want budget exhaustion", err)
@@ -205,12 +207,47 @@ func TestPhaseBoundedFallsBackWhenBudgetIsExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRead: %v", err)
 	}
-	phase, err := rd.PhaseBounded()
+	phase, err := rd.PhaseBounded(context.Background())
 	if err != nil {
 		t.Fatalf("PhaseBounded: %v", err)
 	}
 	if phase != PhaseFailed {
 		t.Errorf("PhaseBounded = %q, want %q — the fallback did not run", phase, PhaseFailed)
+	}
+}
+
+func TestPhaseBoundedContextFallbackAgreesWithPhase(t *testing.T) {
+	dir := buildRunPhaseFixture(t, runPhaseFixture{
+		build: func(t *testing.T, run *Run) {
+			mustAppend(t, run, Event{Type: EventRunFinished, Status: string(PhaseFailed)})
+		},
+		mangle: padJournal(200, 64*1024),
+	})
+	rd, err := OpenRead(dir)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	phase, err := rd.PhaseBounded(context.Background())
+	if err != nil {
+		t.Fatalf("PhaseBounded: %v", err)
+	}
+	if phase != PhaseFailed {
+		t.Errorf("PhaseBounded = %q, want %q", phase, PhaseFailed)
+	}
+}
+
+func TestPhaseFallbackChecksCancellationBetweenReads(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterRead{
+		reader: bytes.NewReader(append(bytes.Repeat([]byte("x"), runPhaseChunkSize), '\n')),
+		cancel: cancel,
+	}
+	_, _, err := phaseFromReaderContext(ctx, reader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("phaseFromReaderContext error = %v, want context.Canceled", err)
+	}
+	if reader.reads != 1 {
+		t.Fatalf("reader completed %d reads after cancellation, want 1", reader.reads)
 	}
 }
 
@@ -237,7 +274,7 @@ func TestPhaseBoundedReadsBoundedBytes(t *testing.T) {
 		t.Fatalf("fixture journal is %d bytes, too small to show a bound", info.Size())
 	}
 
-	phase, decided, read, err := tailPhase(eventsPath)
+	phase, decided, read, err := tailPhaseContext(context.Background(), eventsPath)
 	if err != nil || !decided {
 		t.Fatalf("tailPhase = %q, %v, %v", phase, decided, err)
 	}
@@ -297,6 +334,7 @@ func padJournal(n, size int, trailing ...Event) func(*testing.T, string) {
 		records = append(records, trailing...)
 		var buf bytes.Buffer
 		for _, ev := range records {
+			ev.Schema = EventSchema
 			line, err := json.Marshal(ev)
 			if err != nil {
 				t.Fatalf("marshal pad record: %v", err)
@@ -320,4 +358,17 @@ func appendRawToEvents(t *testing.T, dir string, raw []byte) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("close events log: %v", err)
 	}
+}
+
+type cancelAfterRead struct {
+	reader io.Reader
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelAfterRead) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.reads++
+	r.cancel()
+	return n, err
 }

@@ -119,7 +119,7 @@ func TestDrainDaemonRunsForceKillsProcessGroupAndResumesCheckpoint(t *testing.T)
 				force = tt.force()
 			}
 			var stdout bytes.Buffer
-			result := drainDaemonRuns(&runs, func() {}, registry, tt.timeout, force, &stdout)
+			result := drainDaemonRuns(&runs, func() {}, registry, tt.timeout, force, &stdout, nil)
 			if !result.forced || result.terminated != 1 {
 				t.Fatalf("drain result = %+v, want one forced run", result)
 			}
@@ -196,11 +196,21 @@ func waitForStagePIDs(t *testing.T, path string) (int, int) {
 	return 0, 0
 }
 
+// waitForProcessGroupGone polls until processGroupID's process group is
+// gone. kill(-pgid, 0) alone is zombie-blind: it keeps succeeding for a
+// group whose leader has exited but not been reaped, since a zombie still
+// occupies its process-table slot. The tree this test kills is a session
+// leader (its pgid equals its own pid, see proc_unix.go's configure), so on
+// linux a "Z" state for that pid is read as the group being gone too (#3395)
+// — in a container whose pid 1 does not reap orphans, this is the difference
+// between the group reading as gone and hanging forever after the kill path
+// actually succeeded. isZombie is a no-op on non-linux unix.
 func waitForProcessGroupGone(t *testing.T, processGroupID int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(-processGroupID, 0); errors.Is(err, syscall.ESRCH) {
+		err := syscall.Kill(-processGroupID, 0)
+		if errors.Is(err, syscall.ESRCH) || isZombie(processGroupID) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -208,11 +218,15 @@ func waitForProcessGroupGone(t *testing.T, processGroupID int) {
 	t.Fatalf("process group %d still exists after hard shutdown", processGroupID)
 }
 
+// waitForProcessGone polls until pid is gone. See waitForProcessGroupGone:
+// kill(pid, 0) succeeds for a zombie, so on linux a "Z" /proc/<pid>/stat
+// state also counts as gone (#3395).
 func waitForProcessGone(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) || isZombie(pid) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

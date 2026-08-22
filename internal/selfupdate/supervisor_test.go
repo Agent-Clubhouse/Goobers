@@ -137,11 +137,13 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
-	time.Sleep(30 * time.Millisecond) // Intentional age gap distinguishes stale and current lock timestamps.
-	if err := os.Chtimes(lockPath, now.Add(2*time.Second), now.Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	heartbeat := now.Add(time.Second)
+	// Keep advancing heartbeats until the supervisor observes two distinct ticks.
 	waitFor(t, func() bool {
+		heartbeat = heartbeat.Add(time.Second)
+		if err := os.Chtimes(lockPath, heartbeat, heartbeat); err != nil {
+			t.Fatal(err)
+		}
 		_, err := os.Stat(requestPath(root))
 		return errors.Is(err, os.ErrNotExist)
 	})

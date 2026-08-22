@@ -25,7 +25,7 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := newBacklogHealthProvider(root, repo)
+			provider, err := newBacklogHealthProvider(root, repo, true)
 			if err != nil {
 				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
 			}
@@ -172,6 +172,48 @@ func TestAnnotateReadyTimesSkipsClosedItems(t *testing.T) {
 	}
 }
 
+func TestResolveImplementationFeedbackReadyAtSkipsUnexplainedReadyItem(t *testing.T) {
+	provider := &implementationFeedbackTransitionProvider{
+		transitions: [][]providers.WorkItemLabelTransition{nil, nil},
+	}
+	item := providers.WorkItem{
+		ID:     "ready-without-history",
+		State:  "open",
+		Labels: []string{providers.LabelReady},
+	}
+
+	_, eligible, err := resolveImplementationFeedbackReadyAt(
+		context.Background(),
+		provider,
+		providers.RepositoryRef{Provider: providers.ProviderGitHub},
+		item,
+		providers.LabelReady,
+	)
+	if err != nil {
+		t.Fatalf("resolveImplementationFeedbackReadyAt: %v", err)
+	}
+	if eligible {
+		t.Fatal("unexplained ready item was eligible")
+	}
+	if provider.calls != 2 {
+		t.Fatalf("transition reads = %d, want fallback read", provider.calls)
+	}
+}
+
+type implementationFeedbackTransitionProvider struct {
+	providers.BacklogProvider
+	transitions [][]providers.WorkItemLabelTransition
+	calls       int
+}
+
+func (p *implementationFeedbackTransitionProvider) ListWorkItemLabelTransitionsForItem(
+	context.Context, providers.RepositoryRef, string, string,
+) ([]providers.WorkItemLabelTransition, error) {
+	result := p.transitions[p.calls]
+	p.calls++
+	return result, nil
+}
+
 func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -191,7 +233,7 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	); err != nil {
 		t.Fatalf("remove ready label: %v", err)
 	}
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "health-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "health-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

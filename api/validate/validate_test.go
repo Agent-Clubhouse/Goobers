@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 
@@ -1058,7 +1059,7 @@ spec:
 		Code:        WarningMissingSkillPackage,
 		Severity:    Warning,
 		Scope:       "config.yaml Goober/coder",
-		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 	}
 	if len(warnings) != 1 || warnings[0] != want {
 		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
@@ -1131,7 +1132,7 @@ spec:
 		}
 	}
 	for _, want := range []string{
-		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"`,
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
 		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
 		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
 	} {
@@ -1179,6 +1180,244 @@ func TestReadOnlyReferenceReposValidateCleanly(t *testing.T) {
 	}
 	if report.HasErrors() {
 		t.Fatalf("expected config-additional-repos to validate cleanly, got:\n%s", joinIssues(report))
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
+	tests := []struct {
+		name            string
+		additionalRepos []apiv1.RepoRef
+		task            apiv1.Task
+		wantError       bool
+	}{
+		{
+			name:            "deterministic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "agentic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskAgentic, Goal: "Read reference.", Goober: "reader",
+				Workspace: apiv1.WorkspaceScratch, Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "deterministic repo supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name: "scratch without additional repos supported",
+			task: apiv1.Task{
+				Name: "read-provider", Type: apiv1.TaskDeterministic, Goal: "Read provider.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-provider"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name:            "scratch without contents read supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "compute", Type: apiv1.TaskDeterministic, Goal: "Compute.",
+				Run: &apiv1.DeterministicRun{Command: []string{"compute"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{AdditionalRepos: tc.additionalRepos}}
+			ix.goobers["reader"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-reader"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `task "read-reference" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
+	if got, want := errorCapabilityRuntimeSupport, WarningCode("WF019"); got != want {
+		t.Fatalf("errorCapabilityRuntimeSupport = %q, want stable code %q", got, want)
+	}
+	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
+		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestSubprocessTimeoutCodeStable(t *testing.T) {
+	if got, want := WarningSubprocessTimeout, WarningCode("WF021"); got != want {
+		t.Fatalf("WarningSubprocessTimeout = %q, want stable code %q", got, want)
+	}
+	for _, other := range []WarningCode{errorCapabilityRuntimeSupport, WarningGateCompletionHidesFailure} {
+		if WarningSubprocessTimeout == other {
+			t.Fatalf("WarningSubprocessTimeout duplicates %q", other)
+		}
+	}
+}
+
+func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		task        apiv1.Task
+		wantWarning bool
+	}{
+		{
+			name: "make target with GO_TEST_TIMEOUT override at or above stage timeout warns (#3377)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 1500,
+			},
+			wantWarning: true,
+		},
+		{
+			name: "stage budget clearing the declared subprocess ceiling is clean",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 2400,
+			},
+		},
+		{
+			name: "bare make target with no declared override is clean (deliberately narrow detection)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}},
+				TimeoutSeconds: 1500,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningSubprocessTimeout {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantWarning {
+				if len(got) != 1 {
+					t.Fatalf("subprocess-timeout warnings = %v, want one; report: %s", got, joinIssues(report))
+				}
+				if got[0].Severity != Warning {
+					t.Fatalf("severity = %q, want warning", got[0].Severity)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("subprocess-timeout warnings = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		wantError bool
+	}{
+		{name: "scratch rejected", workspace: apiv1.WorkspaceScratch, wantError: true},
+		{name: "repo supported", workspace: apiv1.WorkspaceRepo},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+				AdditionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			}}
+			ix.goobers["reviewer"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Start:  "prepare",
+					Tasks: []apiv1.Task{{
+						Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "Prepare.",
+						Run: &apiv1.DeterministicRun{Command: []string{"prepare"}}, Next: "review",
+					}},
+					Gates: []apiv1.Gate{{
+						Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+						Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Workspace: tc.workspace},
+						Branches: map[string]string{"pass": "", "fail": wf.TargetAbort},
+					}},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `gate "review" reviewer goober "reviewer" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
 	}
 }
 
@@ -1274,6 +1513,37 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 	}
 }
 
+// TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion pins the #3297
+// fallback: a gaggle (or goober) with zero workflows must have its features
+// checked at the newest supported DSL version. The pre-#3297 fallback was an
+// unpinned wf.Definition{}, which the version router rewrote to
+// supportmatrix.CurrentDSLVersion ("1.4", deprecated) — so every workflow-less
+// gaggle would fail validation the moment 1.4 turns unsupported (declared for
+// v0.5.0), with an error its author cannot act on because GaggleSpec has no
+// dslVersion field.
+func TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion(t *testing.T) {
+	ix := newIndex()
+
+	assertNewestSupported := func(kind string, definitions []wf.Definition) {
+		t.Helper()
+		if len(definitions) != 1 {
+			t.Fatalf("%s definitions = %+v, want exactly one fallback probe", kind, definitions)
+		}
+		got := definitions[0].DSLVersion
+		if got == "" || got == supportmatrix.CurrentDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q; must not be unpinned or the deprecated %q",
+				kind, got, supportmatrix.CurrentDSLVersion)
+		}
+		if got != supportmatrix.NextDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q, want newest supported %q",
+				kind, got, supportmatrix.NextDSLVersion)
+		}
+	}
+
+	assertNewestSupported("gaggle", ix.featureDefinitionsForGaggle("workflow-less"))
+	assertNewestSupported("goober", ix.featureDefinitionsForGoober(apiv1.GooberSpec{Gaggle: "workflow-less"}))
+}
+
 func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-warnings")
@@ -1296,6 +1566,109 @@ func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
 	if !strings.Contains(warnings[0].Explanation, want) {
 		t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
+	}
+}
+
+// TestExplicitZeroMaxRunsPerHourWarns reproduces #3360: a workflow that
+// writes readiness.maxRunsPerHour: 0 expecting "unlimited" (by analogy to
+// instance.yaml's runConditions.maxParallelRuns, where 0 does mean
+// unlimited) instead gets silently throttled to the scheduler's default of
+// 10/hour. `goobers validate` must surface this as a non-fatal warning
+// naming both the actual behavior and the asymmetric field, and must NOT
+// warn when the field is simply omitted or set to a positive value — the
+// overwhelming majority of real workflows never set it at all.
+func TestExplicitZeroMaxRunsPerHourWarns(t *testing.T) {
+	const configTemplate = `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: example
+spec:
+  instance:
+    name: example
+    environment: dev
+  gaggles:
+    - acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+metadata:
+  name: build
+spec:
+  gaggle: acme
+  triggers:
+    - type: manual
+  start: build
+%s  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`
+
+	tests := []struct {
+		name      string
+		readiness string
+		wantWarn  bool
+	}{
+		{name: "explicit zero warns", readiness: "  readiness:\n    maxRunsPerHour: 0\n", wantWarn: true},
+		{name: "omitted does not warn", readiness: "", wantWarn: false},
+		{name: "explicit positive does not warn", readiness: "  readiness:\n    maxRunsPerHour: 5\n", wantWarn: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(configTemplate, tc.readiness)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if report.HasErrors() {
+				t.Fatalf("warning must not fail validation:\n%s", joinIssues(report))
+			}
+
+			var got []CodedWarning
+			for _, warning := range report.Warnings() {
+				if warning.Code == WarningZeroMaxRunsPerHour {
+					got = append(got, warning)
+				}
+			}
+			if !tc.wantWarn {
+				if len(got) != 0 {
+					t.Fatalf("WF020 warnings = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("WF020 warnings = %+v, want exactly one", got)
+			}
+			for _, want := range []string{"maxRunsPerHour", "unlimited", "10", "maxParallelRuns"} {
+				if !strings.Contains(got[0].Explanation, want) {
+					t.Errorf("warning explanation = %q, want it to contain %q", got[0].Explanation, want)
+				}
+			}
+		})
 	}
 }
 

@@ -308,8 +308,22 @@ describe("Insight page", () => {
     getTelemetryStats.mockResolvedValue({
       creditAssignment: [],
       gaggles: [
-        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
-        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+        {
+          gaggle: "core",
+          totalRuns: 4,
+          completedRuns: 1,
+          failedRuns: 1,
+          infraFailedRuns: 0,
+          otherRuns: 2,
+        },
+        {
+          gaggle: "tools",
+          totalRuns: 1,
+          completedRuns: 0,
+          failedRuns: 0,
+          infraFailedRuns: 0,
+          otherRuns: 1,
+        },
       ],
       runs: [],
       stages: [],
@@ -321,6 +335,7 @@ describe("Insight page", () => {
           tokenSamples: 8,
           premiumRequestSamples: 0,
           costSamples: 8,
+          costUSD: 4,
           p50CostUSD: 0.8,
           p95CostUSD: 2.5,
           retryWasteAttempts: 0,
@@ -331,7 +346,10 @@ describe("Insight page", () => {
           totalAttempts: 1,
           tokenSamples: 0,
           premiumRequestSamples: 0,
-          costSamples: 0,
+          costSamples: 3,
+          costUSD: 6,
+          p50CostUSD: 0.1,
+          p95CostUSD: 5.8,
           retryWasteAttempts: 0,
         },
       ],
@@ -374,9 +392,10 @@ describe("Insight page", () => {
       name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     });
     expect(coreLink).toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: /View instance spend for gaggle tools/ }),
-    ).not.toBeInTheDocument();
+    const toolsLink = screen.getByRole("link", {
+      name: /View instance spend for gaggle tools: 3 samples, P50 \$0\.10, P95 \$5\.80/,
+    });
+    expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     // Selecting a narrower scope must not change the instance-wide rollup —
     // it always reports across all gaggles regardless of the Scope dropdown.

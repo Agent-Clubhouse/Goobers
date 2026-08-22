@@ -15,6 +15,9 @@ var ErrPruneReserved = errors.New("journal: run reserved for telemetry pruning")
 // ReserveTerminalForPrune prevents a terminal journal from being resumed while
 // telemetry pruning moves and removes it. A live or paused run is not reserved.
 func ReserveTerminalForPrune(dir string) (bool, error) {
+	if _, err := OpenRead(dir); err != nil {
+		return false, err
+	}
 	lock, err := platformlock.TryAcquire(filepath.Join(dir, fileLock))
 	if errors.Is(err, platformlock.ErrHeld) {
 		return false, nil
@@ -27,7 +30,7 @@ func ReserveTerminalForPrune(dir string) (bool, error) {
 	}
 	defer func() { _ = lock.Release() }()
 
-	reader, err := OpenRead(dir)
+	reader, err := openCurrentJournal(dir)
 	if err != nil {
 		return false, err
 	}
@@ -48,12 +51,18 @@ func ReserveTerminalForPrune(dir string) (bool, error) {
 // callback runs while the per-run lock is held and is not called after pruning
 // has reserved the journal.
 func WithPruneProtection(dir string, fn func() error) error {
+	if _, err := OpenRead(dir); err != nil {
+		return err
+	}
 	lock, err := acquireJournalLock(dir, "telemetry ingest")
 	if err != nil {
 		return err
 	}
 	defer releaseJournalLock(lock)
 
+	if _, err := openCurrentJournal(dir); err != nil {
+		return err
+	}
 	reserved, err := PruneReserved(dir)
 	if err != nil {
 		return err

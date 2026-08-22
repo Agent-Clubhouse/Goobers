@@ -22,6 +22,11 @@ type Definition = model.Definition
 // Machine is the compiled, validated state machine runners execute.
 type Machine = model.Machine
 
+// ComputeDigest returns the stable digest of a pinned workflow definition.
+func ComputeDigest(def Definition) (string, error) {
+	return model.ComputeDigest(def)
+}
+
 const (
 	// TerminalComplete ends a run successfully.
 	TerminalComplete = model.TerminalComplete

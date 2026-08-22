@@ -28,7 +28,7 @@ func TestSyncGitWorkflowSourceInstallsTrackedCommit(t *testing.T) {
 	revision, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindGit,
 		Path: repo,
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SyncGitWorkflowSource: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	}
 
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
-	first, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil)
+	first, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("first SyncGitWorkflowSource: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	runWorkflowSourceSyncTestGit(t, repo, "add", "manifest.yaml")
 	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "manifest v2")
 
-	second, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil)
+	second, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("second SyncGitWorkflowSource: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 		t.Fatal(err)
 	}
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
-	revision, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, "", nil, nil)
+	revision, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("initial SyncGitWorkflowSourceIfChanged: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T
 		t.Fatal(err)
 	}
 
-	current, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, revision, nil, nil)
+	current, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, revision, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("current SyncGitWorkflowSourceIfChanged: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSyncGitWorkflowSourceRejectsUnsupportedKind(t *testing.T) {
 	_, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindLocalDir,
 		Path: t.TempDir(),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "is not") || !strings.Contains(err.Error(), WorkflowSourceKindGit) {
 		t.Fatalf("err = %v, want kind-mismatch rejection", err)
 	}

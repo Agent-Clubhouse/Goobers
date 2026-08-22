@@ -45,6 +45,12 @@ const (
 	// NextDSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
 	NextDSLVersion = "2.0"
+	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
+	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
+	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
+	// later, separate lock ceremony staged under ValidateSupportPolicy's
+	// append-only rules.
+	V3DSLVersion = "3.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -107,6 +113,22 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 		},
 	},
+	// DSL 3.0 enters at PREVIEW (dsl-3.0.md §8, issue #3505): the interpreter
+	// ships and is fully exercisable behind the instance preview opt-in
+	// (DVL010/DVL011), while the version-level GA is a later lock ceremony —
+	// the append-only evolution rules require lifecycle transitions to be
+	// staged across releases, so the preview entry and the supported flip
+	// cannot land in one PR. The since-version names the first release line
+	// after the latest tag (v0.3.3) rather than the "dev" sentinel, which the
+	// evolution check reserves for the pre-release baseline. NewestSupported()
+	// still resolves to 2.0 until the flip, so unversioned gaggles/goobers
+	// (#3297) keep resolving at 2.0 for the whole preview window.
+	V3DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.4.0"},
+		},
+	},
 })
 
 // Lookup returns the support declaration for a DSL version.
@@ -144,6 +166,26 @@ func (m SupportMatrix) Versions() []Version {
 	return versions
 }
 
+// NewestSupported returns the newest DSL version the matrix declares
+// LevelSupported, using Versions()'s numeric major/minor order. Callers that
+// must pick a version for an object with no pin of its own (a workflow-less
+// gaggle or goober, #3297) derive it from here rather than from
+// CurrentDSLVersion: the transitional default is deprecated, and resolving an
+// unpinned object there would fail validation the moment it turns unsupported
+// — with no dslVersion field on those specs for the author to act on. ok is
+// false when no version is currently LevelSupported, a state
+// ValidateSupportPolicy never produces but one a caller must not paper over
+// with a guess.
+func (m SupportMatrix) NewestSupported() (version string, ok bool) {
+	versions := m.Versions()
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versions[i].Level == LevelSupported {
+			return versions[i].Version, true
+		}
+	}
+	return "", false
+}
+
 // GetDSL returns a copy of the compiled-in DSL SupportMatrix.
 func GetDSL() SupportMatrix {
 	out := make(SupportMatrix, len(dslVersions))
@@ -156,6 +198,31 @@ func GetDSL() SupportMatrix {
 func cloneVersionSupport(support VersionSupport) VersionSupport {
 	support.History = slices.Clone(support.History)
 	return support
+}
+
+// CompareDSLVersions orders two DSL version strings by numeric major then
+// minor — the same ordering Versions uses. ok is false when either operand is
+// not a well-formed "<major>.<minor>" version; callers own the fail-closed
+// (or fail-loud) posture instead of this package guessing an order.
+func CompareDSLVersions(left, right string) (order int, ok bool) {
+	leftMajor, leftMinor, leftOK := parseDSLVersion(left)
+	rightMajor, rightMinor, rightOK := parseDSLVersion(right)
+	if !leftOK || !rightOK {
+		return 0, false
+	}
+	if leftMajor != rightMajor {
+		if leftMajor < rightMajor {
+			return -1, true
+		}
+		return 1, true
+	}
+	if leftMinor != rightMinor {
+		if leftMinor < rightMinor {
+			return -1, true
+		}
+		return 1, true
+	}
+	return 0, true
 }
 
 func parseDSLVersion(version string) (major, minor int, ok bool) {

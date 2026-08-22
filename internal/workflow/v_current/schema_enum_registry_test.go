@@ -59,6 +59,23 @@ func goConsts(relPath, typeName string) func(t *testing.T) []string {
 	}
 }
 
+func TestEnvelopeIsValidMatchesGoConsts(t *testing.T) {
+	const envelope = "api/v1alpha1/envelope.go"
+	srcFile := filepath.Join(moduleRoot(t), filepath.FromSlash(envelope))
+	for _, typeName := range []string{"FindingClass", "ResultStatus", "VerdictDecision"} {
+		t.Run(typeName, func(t *testing.T) {
+			declared := typedStringConsts(t, srcFile, typeName)
+			accepted := isValidStringCases(t, srcFile, typeName)
+			if missing := stringsMissingFrom(declared, accepted); len(missing) > 0 {
+				t.Errorf("%s.IsValid rejects declared values: %v", typeName, missing)
+			}
+			if extra := stringsMissingFrom(accepted, declared); len(extra) > 0 {
+				t.Errorf("%s.IsValid accepts undeclared values: %v", typeName, extra)
+			}
+		})
+	}
+}
+
 // allCapabilities is the full canonical capability registry — the want set for
 // every `capabilities` enum and the mcpCredentialRef `capability` enum. The
 // runner-only entries it contains are then subtracted via runnerOnlyCapabilities
@@ -171,6 +188,20 @@ var constBackedEnums = []enumRule{
 	{schema: "agent-toolkit-manifest.schema.json", path: "$defs/dslVersion/properties/history/items/properties/level/enum", source: "internal/supportmatrix.Level", want: goConsts("internal/supportmatrix/supportmatrix.go", "Level")},
 	{schema: "gaggle.schema.json", path: "properties/spec/properties/sandbox/properties/agentic/enum", source: "internal/instance.SandboxPosture", want: goConsts("internal/instance/sandbox.go", "SandboxPosture")},
 	{schema: "instance.schema.json", path: "properties/sandbox/properties/agentic/enum", source: "internal/instance.SandboxPosture", want: goConsts("internal/instance/sandbox.go", "SandboxPosture")},
+
+	// --- runners inventory (#3508, Goobernetes D3/D7/D8) ---
+	{schema: "instance.schema.json", path: "$defs/runnerProvides/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
+	{schema: "instance.schema.json", path: "$defs/runnerEntry/properties/restrictions/items/enum", source: "internal/instance.RunnerRestriction", want: goConsts("internal/instance/runners.go", "RunnerRestriction")},
+
+	// --- DSL 3.0 runsOn surface (#3505, dsl-3.0.md §2) ---
+	// The stage/gaggle os enum and the instance provides.os enum quote the
+	// same D2 vocabulary; both bind to internal/instance.RunnerOS. The
+	// restriction effect lists bind to the shared internal/runnercap
+	// vocabulary that the instance consts mirror (TestRunnerRestrictionsMatchSharedVocabulary).
+	{schema: "workflow.schema.json", path: "$defs/task/properties/runsOn/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
+	{schema: "workflow.schema.json", path: "$defs/task/properties/runsOn/properties/restrictions/items/enum", source: "internal/runnercap.Restriction", want: goConsts("internal/runnercap/runnercap.go", "Restriction")},
+	{schema: "gaggle.schema.json", path: "properties/spec/properties/runsOn/properties/os/enum", source: "internal/instance.RunnerOS", want: goConsts("internal/instance/runners.go", "RunnerOS")},
+	{schema: "gaggle.schema.json", path: "properties/spec/properties/runsOn/properties/restrictions/items/enum", source: "internal/runnercap.Restriction", want: goConsts("internal/runnercap/runnercap.go", "Restriction")},
 }
 
 // notConstBackedEnums documents every schema enum that has no named Go const
@@ -178,6 +209,7 @@ var constBackedEnums = []enumRule{
 // anything. Each value is the reason it is not const-backed.
 var notConstBackedEnums = map[string]string{
 	"explain.schema.json\x00properties/stability/enum":                                              "lifecycle values are drawn from two sources with no shared Go type: only \"ga\" has a const (untyped schemas.StabilityGA), and preview/deprecated/removed come from the DSL feature registry; internal/authoring.Explanation.Stability is a plain string",
+	"journal-schema.schema.json\x00properties/version/enum":                                         "structural domain combining the stable schema version with the in-progress migration sentinel",
 	"workflow.schema.json\x00$defs/task/properties/onTimeout/enum":                                  "backing consts TaskOnTimeoutFail/Salvage are untyped string constants — no named enum type to bind",
 	"workflow.schema.json\x00$defs/gate/properties/human/properties/onTimeout/enum":                 "human-gate timeout actions are schema-only string literals; no Go const source",
 	"workflow.schema.json\x00$defs/task/properties/run/properties/network/enum":                     "single 'none' sentinel; not a Go enum",
@@ -190,6 +222,7 @@ var notConstBackedEnums = map[string]string{
 	"instance.schema.json\x00$defs/secretStore/properties/auth/properties/kind/enum":                "secret store ambient-auth kinds are untyped string constants (internal/instance.SecretStoreAuth*)",
 	"instance.schema.json\x00$defs/workflowSource/properties/kind/enum":                             "workflow source kinds are untyped string constants (internal/instance.WorkflowSourceKind*)",
 	"instance.schema.json\x00$defs/repoPolicy/properties/requiredMergeMethod/enum":                  "merge methods are schema-only string literals compared inline in instance config validation; no Go const source",
+	"instance.schema.json\x00properties/schemaVersion/enum":                                         "integer literal domain [1,2]; the backing InstanceSchemaVersion* constants are untyped ints and this registry binds string const types",
 	"instance.schema.json\x00$defs/speech/properties/engine/enum":                                   "speech engines are untyped string constants (internal/speechnotify.Engine*)",
 	"instance.schema.json\x00$defs/externalTelemetryConnector/properties/auth/properties/mode/enum": "external telemetry auth modes are untyped string constants (internal/externaltelemetry.Auth*)",
 	"config-source-action.schema.json\x00properties/action/enum":                                    "onboarding action names are schema-only string literals",
@@ -332,6 +365,142 @@ func typedStringConsts(t *testing.T, srcFile, typeName string) []string {
 		}
 	}
 	return out
+}
+
+// isValidStringCases resolves every case that returns true from typeName.IsValid.
+// It deliberately fails on a different method shape rather than silently deriving
+// an incomplete accepted set.
+func isValidStringCases(t *testing.T, srcFile, typeName string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, srcFile, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", srcFile, err)
+	}
+
+	constValues := make(map[string]string)
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			id, ok := vs.Type.(*ast.Ident)
+			if !ok || id.Name != typeName || len(vs.Names) != len(vs.Values) {
+				continue
+			}
+			for i, expr := range vs.Values {
+				lit, ok := expr.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s value: %v", typeName, err)
+				}
+				constValues[vs.Names[i].Name] = value
+			}
+		}
+	}
+
+	var method *ast.FuncDecl
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "IsValid" || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		recv, ok := fn.Recv.List[0].Type.(*ast.Ident)
+		if ok && recv.Name == typeName {
+			method = fn
+			break
+		}
+	}
+	if method == nil {
+		t.Fatalf("%s.IsValid method not found", typeName)
+	}
+
+	if len(method.Body.List) != 2 {
+		t.Fatalf("%s.IsValid must contain a switch followed by return false", typeName)
+	}
+	switchStmt, ok := method.Body.List[0].(*ast.SwitchStmt)
+	if !ok || !returnsBool(method.Body.List[1], false) {
+		t.Fatalf("%s.IsValid must contain a switch followed by return false", typeName)
+	}
+	receiver := method.Recv.List[0]
+	if len(receiver.Names) != 1 {
+		t.Fatalf("%s.IsValid receiver must be named", typeName)
+	}
+	tag, ok := switchStmt.Tag.(*ast.Ident)
+	if !ok || tag.Name != receiver.Names[0].Name {
+		t.Fatalf("%s.IsValid must switch directly on its receiver", typeName)
+	}
+
+	var out []string
+	for _, stmt := range switchStmt.Body.List {
+		clause, ok := stmt.(*ast.CaseClause)
+		if !ok {
+			t.Fatalf("%s.IsValid switch contains %T, want case clause", typeName, stmt)
+		}
+		if len(clause.List) == 0 {
+			if len(clause.Body) != 1 || !returnsBool(clause.Body[0], false) {
+				t.Fatalf("%s.IsValid default case must directly return false", typeName)
+			}
+			continue
+		}
+		if len(clause.Body) != 1 || !returnsBool(clause.Body[0], true) {
+			t.Fatalf("%s.IsValid has a non-default case that does not directly return true", typeName)
+		}
+		for _, expr := range clause.List {
+			switch value := expr.(type) {
+			case *ast.Ident:
+				resolved, ok := constValues[value.Name]
+				if !ok {
+					t.Fatalf("%s.IsValid case %s is not a declared %s const", typeName, value.Name, typeName)
+				}
+				out = append(out, resolved)
+			case *ast.BasicLit:
+				if value.Kind != token.STRING {
+					t.Fatalf("%s.IsValid has a non-string case", typeName)
+				}
+				resolved, err := strconv.Unquote(value.Value)
+				if err != nil {
+					t.Fatalf("unquote %s.IsValid case: %v", typeName, err)
+				}
+				out = append(out, resolved)
+			default:
+				t.Fatalf("%s.IsValid has an unsupported case expression %T", typeName, expr)
+			}
+		}
+	}
+	return out
+}
+
+func returnsBool(stmt ast.Stmt, want bool) bool {
+	ret, ok := stmt.(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return false
+	}
+	id, ok := ret.Results[0].(*ast.Ident)
+	return ok && id.Name == strconv.FormatBool(want)
+}
+
+func stringsMissingFrom(values, other []string) []string {
+	otherSet := make(map[string]bool, len(other))
+	for _, value := range other {
+		otherSet[value] = true
+	}
+	var missing []string
+	for _, value := range values {
+		if !otherSet[value] {
+			missing = append(missing, value)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 // collectSchemaEnums decodes a schema and returns every enum array keyed by its

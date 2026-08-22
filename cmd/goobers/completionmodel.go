@@ -155,7 +155,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
-		{name: "disable-read-model-reads", desc: "Read-model rollback: force journal-derived list paths for this run"},
+		{name: "disable-read-model-reads", desc: "Read-model rollback: force authoritative journal scans for this run"},
 	},
 	"fix": {
 		{name: "to", takesArg: true, desc: "Target DSL version"},
@@ -214,6 +214,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
+		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"getting-started": {
 		{name: "port", takesArg: true, desc: "Server port, or auto"},
@@ -222,6 +223,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
+		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {
@@ -251,6 +253,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"status": {
+		{name: "agents", desc: "List in-flight agentic stages by role"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
@@ -299,6 +302,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"trace": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
+		{name: "summary", desc: "Show run metadata and review verdicts"},
+		{name: "verdicts", desc: "Show review verdict content"},
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
 		{name: "transcript", takesArg: true, desc: "Show recorded transcript data for one stage"},
 	},
@@ -307,6 +312,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"escalations show": {
 		{name: "json", desc: "Emit JSON"},
+		{name: "include-verdict", desc: "Include review verdict content"},
 	},
 	"telemetry stats": {
 		{name: "json", desc: "Emit JSON"},
@@ -355,6 +361,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
+		{name: "debug", desc: "Explain candidate eligibility and exclusions"},
 		{name: "release", desc: "Release this run's claim leases early"},
 		{name: "read-only", desc: "Query without mutating provider state"},
 		{name: "reconcile", desc: "Reconcile claim state"},
@@ -375,7 +382,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
-		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "gate-noise"}, desc: "Aggregate to detect"},
+		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise"}, desc: "Aggregate to detect"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
 		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},

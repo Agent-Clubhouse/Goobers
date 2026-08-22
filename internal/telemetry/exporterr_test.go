@@ -10,6 +10,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestIsCollectorUnreachable(t *testing.T) {
@@ -47,7 +49,7 @@ func TestIsCollectorUnreachable(t *testing.T) {
 // being up — while its LOCAL exporter still captures the span (best-effort
 // remote, reliable local).
 func TestFlushAndShutdownTolerateUnreachableCollector(t *testing.T) {
-	local := NewMemoryExporter()
+	local := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{
 		ServiceName:  "unreachable-collector-test",
 		SpanExporter: local,

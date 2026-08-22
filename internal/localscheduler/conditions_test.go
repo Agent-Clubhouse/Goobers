@@ -280,3 +280,50 @@ func TestReconcileSeedsActiveCounts(t *testing.T) {
 		t.Fatalf("reconciled active count should already be at the limit: ok=%v reason=%s", ok, reason)
 	}
 }
+
+// #3439: api/schemas/instance.schema.json documents both per-workflow override
+// maps as "Zero stops it from starting." The code applied an override only when
+// it was > 0, so a zero was indistinguishable from an absent entry and fell
+// through to the workflow's own value or the scheduler default of 10 -- the
+// documented behaviour and the actual behaviour were exact opposites, and the
+// config validated clean, so the only way to find out was to watch it run.
+func TestZeroWorkflowBudgetOverrideStopsTheWorkflow(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(0, map[string]int{"wf": 0}, nil)
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 10}
+
+	ok, reason := c.Admit("wf", r, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if ok {
+		t.Fatal("a zero hourly override must stop the workflow, not fall back to the default of 10/hr")
+	}
+	if reason != ReasonBudget {
+		t.Fatalf("reason = %q, want %q", reason, ReasonBudget)
+	}
+}
+
+func TestZeroDailyBudgetOverrideStopsTheWorkflow(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(0, nil, map[string]int{"wf": 0})
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 10}
+
+	ok, reason := c.Admit("wf", r, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if ok {
+		t.Fatal("a zero daily override must stop the workflow; previously it meant 'no daily cap', the opposite")
+	}
+	if reason != ReasonDailyBudget {
+		t.Fatalf("reason = %q, want %q", reason, ReasonDailyBudget)
+	}
+}
+
+// The stop is specific to an explicit zero. An absent override must still fall
+// through to the spec value, or this fix would silently pause every workflow
+// that simply has no override configured.
+func TestAbsentBudgetOverrideStillFallsThroughToSpec(t *testing.T) {
+	c := NewConditions()
+	c.SetInstanceLimits(0, map[string]int{"other": 0}, map[string]int{"other": 0})
+	r := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 10}
+
+	if ok, reason := c.Admit("wf", r, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); !ok {
+		t.Fatalf("a workflow with no override of its own must still admit: ok=%v reason=%s", ok, reason)
+	}
+}

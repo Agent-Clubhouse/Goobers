@@ -145,6 +145,50 @@ func TestProjectionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
+	identity := testIdentity()
+	identity.Trigger = journal.Trigger{Kind: journal.TriggerItem, Ref: "trigger-item"}
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "prepare", "success"
+			e.Outputs = map[string]any{"title": "Preparation title"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "query-backlog", "success"
+			e.Outputs = map[string]any{"id": "3088", "title": "Claimed issue title"}
+		}),
+		ev(3, 3*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "open-pr", "success"
+			e.Outputs = map[string]any{"id": "4001", "title": "Pull request title"}
+		}),
+		ev(4, 4*time.Second, journal.EventRefTouched, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Kind: "issue", ID: "other-issue"}
+		}),
+	}
+
+	whole := ProjectRun(identity, Projection{}, events)
+	if got := whole.Run.Operator; got.IssueNumber != "3088" || got.IssueTitle != "Claimed issue title" {
+		t.Fatalf("operator issue = #%s %q, want #3088 claimed issue title", got.IssueNumber, got.IssueTitle)
+	}
+
+	first := ProjectRun(identity, Projection{}, events[:2])
+	incremental := ProjectRun(identity, first, events[2:])
+	if !reflect.DeepEqual(incremental.Run.Operator, whole.Run.Operator) {
+		t.Fatalf("incremental operator = %+v, whole = %+v", incremental.Run.Operator, whole.Run.Operator)
+	}
+}
+
+func TestOperatorTrajectoryDefaultsActiveStagesToImplementing(t *testing.T) {
+	for _, stage := range []string{"query-backlog", "gather-implement-context", "custom-active-stage"} {
+		if got := OperatorTrajectory(stage, journal.PhaseRunning); got != "implementing" {
+			t.Errorf("OperatorTrajectory(%q, running) = %q, want implementing", stage, got)
+		}
+	}
+	if got := OperatorTrajectory("query-backlog", journal.PhaseCompleted); got != "parked" {
+		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
+
 // TestProjectionMatchesTheRunContract checks the projected values against what
 // the read contract says a run summary means.
 func TestProjectionMatchesTheRunContract(t *testing.T) {
@@ -460,6 +504,45 @@ func TestCountByPhaseIsAnIndexedAggregate(t *testing.T) {
 	}
 	if counts[journal.PhaseCompleted] != 2 {
 		t.Errorf("completed = %d, want 2", counts[journal.PhaseCompleted])
+	}
+}
+
+func TestActiveRunCountsGroupsProjectedRunningRunsByWorkflow(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for i, events := range [][]journal.Event{
+		completedRunEvents()[:3],
+		completedRunEvents()[:3],
+		completedRunEvents(),
+	} {
+		identity := testIdentity()
+		identity.RunID = fmt.Sprintf("run-%d", i)
+		if i == 1 {
+			identity.Workflow = "other-workflow"
+		}
+		if err := store.UpsertRun(ctx, ProjectRun(identity, Projection{}, events)); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	counts, err := store.ActiveRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("active run counts: %v", err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("counts = %#v, want two active workflows", counts)
+	}
+	got := map[string]int{}
+	for _, count := range counts {
+		got[count.Gaggle+"/"+count.Workflow] = count.Count
+	}
+	if got["alpha/implementation"] != 1 || got["alpha/other-workflow"] != 1 {
+		t.Errorf("counts = %#v, want one active run for each workflow", got)
 	}
 }
 

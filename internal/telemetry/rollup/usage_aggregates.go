@@ -364,6 +364,12 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum, in
 			stat.HasCost = true
 			stat.P50CostUSD = nearestRankFloat64(accum.costs, 0.50)
 			stat.P95CostUSD = nearestRankFloat64(accum.costs, 0.95)
+			for _, cost := range accum.costs {
+				stat.CostUSD += cost
+				if math.IsInf(stat.CostUSD, 0) {
+					return nil, fmt.Errorf("rollup: cost overflow for %s usage", key.scope)
+				}
+			}
 		}
 		out = append(out, stat)
 	}

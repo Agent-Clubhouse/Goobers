@@ -224,6 +224,13 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		releaseRunLock(lock)
 		return nil, err
 	}
+	if err := writeSchemaInfo(dir, SchemaInfo{
+		Version:       CurrentSchemaVersion,
+		MinimumBinary: minimumBinaryForJournalSchema(CurrentSchemaVersion),
+	}); err != nil {
+		releaseRunLock(lock)
+		return nil, err
+	}
 
 	events, err := os.OpenFile(filepath.Join(dir, fileEvents), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {

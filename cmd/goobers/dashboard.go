@@ -94,10 +94,12 @@ func runDashboard(args []string, stdout, stderr io.Writer) int {
 	return runDashboardContext(ctx, args, stdout, stderr)
 }
 
-const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--no-open] [--dev-assets=<dir>] [path]\n\n" +
+const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]\n\n" +
 	"Serve the embedded portal against the live daemon when `goobers up` is\n" +
 	"running, or against a standalone read-only service otherwise. The default\n" +
 	"port is %d; --port=auto increments from there until a port is available.\n" +
+	"--wait-for-daemon optionally waits up to 30s for a concurrently starting\n" +
+	"daemon; use --wait-for-daemon=<duration> to choose another bound.\n" +
 	"--listen overrides the full bind address (host:port) and takes the place\n" +
 	"of --port when given; binding a non-loopback host requires api.auth to be\n" +
 	"configured in instance.yaml (SEC-043) — there is no insecure override.\n" +
@@ -112,6 +114,8 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		"a non-loopback host requires api.auth (instance.yaml) to be configured — there is no insecure override")
 	noOpen := flags.Bool("no-open", false, "print the dashboard URL without opening a browser")
 	devAssets := flags.String("dev-assets", "", "serve a portal build from this directory instead of embedded assets")
+	var waitForDaemon dashboardWaitFlag
+	flags.Var(&waitForDaemon, "wait-for-daemon", "wait for a concurrently starting daemon (default 30s; optionally specify a duration)")
 	// dashboardHelp carries a %d for the default port, so it renders here (and
 	// in the registry) through defaultDashboardPort rather than via the plain
 	// helpUsage path — keeping the documented port coupled to the constant.
@@ -156,7 +160,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	}
 
 	errorLog := log.New(stderr, "dashboard: ", log.LstdFlags)
-	api, err := prepareDashboardAPI(ctx, layout, config, errorLog, dashboardHostIsLoopback(host))
+	api, err := prepareDashboardAPI(ctx, layout, config, errorLog, dashboardHostIsLoopback(host), waitForDaemon.duration())
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
 			return 0
@@ -208,6 +212,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	}
 	dashboardURL := "http://" + net.JoinHostPort(host, portText) + "/"
 	pln(stdout, dashboardURL)
+	pf(stderr, "dashboard: mode=%s\n", api.mode)
 	if !*noOpen {
 		if err := launchDashboardBrowser(ctx, dashboardURL); err != nil {
 			shutdownErr := stopDashboard(server, cancelRequests, api)
@@ -240,6 +245,47 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: dashboard server stopped: %v\n", errors.Join(err, closeErr))
 		return 1
 	}
+}
+
+type dashboardWaitFlag struct {
+	enabled bool
+	timeout time.Duration
+}
+
+func (f *dashboardWaitFlag) String() string {
+	if !f.enabled {
+		return "false"
+	}
+	return f.timeout.String()
+}
+
+func (f *dashboardWaitFlag) Set(value string) error {
+	switch value {
+	case "true":
+		f.enabled = true
+		f.timeout = dashboardAttachTimeout
+		return nil
+	case "false":
+		f.enabled = false
+		f.timeout = 0
+		return nil
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		return fmt.Errorf("--wait-for-daemon must be a positive duration")
+	}
+	f.enabled = true
+	f.timeout = timeout
+	return nil
+}
+
+func (*dashboardWaitFlag) IsBoolFlag() bool { return true }
+
+func (f dashboardWaitFlag) duration() time.Duration {
+	if !f.enabled {
+		return 0
+	}
+	return f.timeout
 }
 
 func parseDashboardPort(value string) (dashboardPort, error) {
@@ -305,10 +351,12 @@ func dashboardHostIsLoopback(host string) bool {
 	return instance.IsLoopbackListenAddress(net.JoinHostPort(host, "0"))
 }
 
+var listenDashboardTCP = net.Listen
+
 func listenDashboard(host string, port dashboardPort) (net.Listener, error) {
 	for number := port.number; number <= 65535; number++ {
 		address := net.JoinHostPort(host, strconv.Itoa(number))
-		listener, err := net.Listen("tcp", address)
+		listener, err := listenDashboardTCP("tcp", address)
 		if err == nil {
 			return listener, nil
 		}
@@ -329,9 +377,20 @@ func listenDashboard(host string, port dashboardPort) (net.Listener, error) {
 // dashboard process's own machine, which is only correct when the caller is
 // necessarily on that same machine — true for loopback, not guaranteed once
 // --listen opts into a non-loopback bind (docs/design/portal-reveal-remote-posture.md).
-func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *instance.Config, errorLog *log.Logger, loopback bool) (dashboardAPI, error) {
+func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *instance.Config, errorLog *log.Logger, loopback bool, waitForDaemon time.Duration) (dashboardAPI, error) {
+	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
+	if waitForDaemon > 0 {
+		if config.API.Auth != nil {
+			return dashboardAPI{}, dashboardDaemonAuthError(config)
+		}
+		target, err := waitForDashboardDaemon(ctx, layout, daemonAPIScheme(config), config.APIListenAddress(), waitForDaemon, lockPath)
+		if err != nil {
+			return dashboardAPI{}, err
+		}
+		return dashboardDaemonAPI(target, errorLog), nil
+	}
 	running, _, _, err := inspectDaemonLiveness(
-		filepath.Join(layout.SchedulerDir(), "up.lock"),
+		lockPath,
 		time.Now(),
 	)
 	if err != nil {
@@ -342,25 +401,33 @@ func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *in
 		// daemon is refused up front with the real reason instead of a probe
 		// loop that times out on 401s (#640, #644).
 		if config.API.Auth != nil {
-			return dashboardAPI{}, fmt.Errorf(
-				"daemon API at %s requires a bearer token (api.auth is configured) and `goobers dashboard` cannot supply one yet; "+
-					"query the daemon API directly, or stop the daemon to serve the standalone read-only dashboard",
-				config.APIListenAddress(),
-			)
+			return dashboardAPI{}, dashboardDaemonAuthError(config)
 		}
-		target, err := waitForDashboardDaemon(ctx, layout, daemonAPIScheme(config), config.APIListenAddress())
+		target, err := waitForDashboardDaemon(ctx, layout, daemonAPIScheme(config), config.APIListenAddress(), dashboardAttachTimeout, "")
 		if err != nil {
 			return dashboardAPI{}, err
 		}
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		proxy.ErrorLog = errorLog
-		return dashboardAPI{
-			handler: proxy,
-			mode:    dashboardModeDaemon,
-			close:   func() error { return nil },
-		}, nil
+		return dashboardDaemonAPI(target, errorLog), nil
 	}
 	return standaloneDashboardAPI(layout, config, errorLog, loopback)
+}
+
+func dashboardDaemonAuthError(config *instance.Config) error {
+	return fmt.Errorf(
+		"daemon API at %s requires a bearer token (api.auth is configured) and `goobers dashboard` cannot supply one yet; "+
+			"query the daemon API directly, or stop the daemon to serve the standalone read-only dashboard",
+		config.APIListenAddress(),
+	)
+}
+
+func dashboardDaemonAPI(target *url.URL, errorLog *log.Logger) dashboardAPI {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorLog = errorLog
+	return dashboardAPI{
+		handler: proxy,
+		mode:    dashboardModeDaemon,
+		close:   func() error { return nil },
+	}
 }
 
 // daemonAPIScheme mirrors httpapi.Server.Scheme for the attach probe and
@@ -372,67 +439,92 @@ func daemonAPIScheme(config *instance.Config) string {
 	return "http"
 }
 
-func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme, configuredAddress string) (*url.URL, error) {
+func waitForDashboardDaemon(ctx context.Context, layout instance.Layout, scheme, configuredAddress string, timeout time.Duration, lockPath string) (*url.URL, error) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	deadline := time.NewTimer(dashboardAttachTimeout)
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	var lastErr error
 	lastLocation := scheme + "://" + configuredAddress
 	for {
-		address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
-		if addressErr != nil {
-			lastErr = addressErr
-		} else {
-			target, parseErr := url.Parse(scheme + "://" + address)
-			if parseErr != nil {
-				return nil, fmt.Errorf("parse daemon API address %q: %w", address, parseErr)
+		lockReady := true
+		if lockPath != "" {
+			running, _, _, err := inspectDaemonLiveness(lockPath, time.Now())
+			if err != nil {
+				return nil, err
 			}
-			lastLocation = target.String()
-			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+httpapi.HealthPath, nil)
-			if requestErr != nil {
-				return nil, requestErr
+			if !running {
+				lastErr = fmt.Errorf("`goobers up` does not hold %s", lockPath)
+				lockReady = false
 			}
-			response, requestErr := client.Do(request)
-			if requestErr == nil {
-				if response.StatusCode != http.StatusOK {
-					lastErr = fmt.Errorf("health endpoint returned %s", response.Status)
-				} else {
-					var health readservice.Health
-					switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
-					case decodeErr != nil:
-						lastErr = decodeErr
-					case !health.Ready:
-						lastErr = errors.New("daemon API is not ready")
-					case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
-						lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
-							health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
-					default:
-						lastErr = nil
-					}
-				}
-				if closeErr := response.Body.Close(); closeErr != nil && lastErr == nil {
-					lastErr = closeErr
-				}
-				if lastErr == nil {
-					return target, nil
-				}
+		}
+		if lockReady {
+			address, addressErr := dashboardDaemonAPIAddress(layout, configuredAddress)
+			if addressErr != nil {
+				lastErr = addressErr
 			} else {
-				// An untrusted api.tls certificate cannot heal within the
-				// attach window; fail fast with the cause instead of spinning
-				// to the timeout.
-				var certErr *tls.CertificateVerificationError
-				if errors.As(requestErr, &certErr) {
-					return nil, fmt.Errorf("daemon API at %s presented a TLS certificate this host does not trust: %w; "+
-						"make the api.tls certificate's issuing CA trusted on this host and retry", lastLocation, certErr)
+				target, parseErr := url.Parse(scheme + "://" + address)
+				if parseErr != nil {
+					return nil, fmt.Errorf("parse daemon API address %q: %w", address, parseErr)
 				}
-				lastErr = requestErr
+				lastLocation = target.String()
+				request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String()+httpapi.HealthPath, nil)
+				if requestErr != nil {
+					return nil, requestErr
+				}
+				response, requestErr := client.Do(request)
+				if requestErr == nil {
+					if response.StatusCode != http.StatusOK {
+						lastErr = fmt.Errorf("health endpoint returned %s", response.Status)
+					} else {
+						var health readservice.Health
+						switch decodeErr := json.NewDecoder(response.Body).Decode(&health); {
+						case decodeErr != nil:
+							lastErr = decodeErr
+						case !health.Ready:
+							lastErr = errors.New("daemon API is not ready")
+						case health.APIVersion != readservice.APIVersion || health.SchemaVersion != readservice.SchemaVersion:
+							lastErr = fmt.Errorf("daemon API contract is %s/%s, want %s/%s",
+								health.APIVersion, health.SchemaVersion, readservice.APIVersion, readservice.SchemaVersion)
+						default:
+							lastErr = nil
+						}
+					}
+					if closeErr := response.Body.Close(); closeErr != nil && lastErr == nil {
+						lastErr = closeErr
+					}
+					if lastErr == nil {
+						if lockPath != "" {
+							running, _, _, lockErr := inspectDaemonLiveness(lockPath, time.Now())
+							if lockErr != nil {
+								return nil, lockErr
+							}
+							if !running {
+								lastErr = fmt.Errorf("`goobers up` released %s before its API became ready", lockPath)
+								lockReady = false
+							}
+						}
+						if lockReady {
+							return target, nil
+						}
+					}
+				} else {
+					// An untrusted api.tls certificate cannot heal within the
+					// attach window; fail fast with the cause instead of spinning
+					// to the timeout.
+					var certErr *tls.CertificateVerificationError
+					if errors.As(requestErr, &certErr) {
+						return nil, fmt.Errorf("daemon API at %s presented a TLS certificate this host does not trust: %w; "+
+							"make the api.tls certificate's issuing CA trusted on this host and retry", lastLocation, certErr)
+					}
+					lastErr = requestErr
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline.C:
-			return nil, fmt.Errorf("live `goobers up` daemon API at %s is unavailable: %w", lastLocation, lastErr)
+			return nil, fmt.Errorf("timed out after %s waiting for live `goobers up` daemon API at %s: %w", timeout, lastLocation, lastErr)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

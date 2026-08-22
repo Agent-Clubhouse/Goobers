@@ -19,34 +19,66 @@ import (
 // first-class debugging tools (§4); Reader is the typed path for the portal,
 // telemetry rollup, and Tutor.
 type Reader struct {
-	dir string
+	dir    string
+	schema SchemaInfo
 }
 
-// EventRecord retains both the parsed shared envelope and its original JSON.
-// Future-schema events remain inspectable without requiring this build to
-// interpret fields it does not own.
+// EventRecord retains both the parsed shared envelope and its original JSON,
+// including unknown fields from the supported schema.
 type EventRecord struct {
 	Event Event
 	Raw   json.RawMessage
 }
 
+// ErrNotRunDirectory identifies a directory with neither schema.json nor the
+// legacy run.yaml marker. Callers scanning a runs root may skip only this error.
+var ErrNotRunDirectory = errors.New("journal: not a run directory")
+
 // OpenRead opens an existing run directory for reading.
 func OpenRead(dir string) (*Reader, error) {
-	if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
-		return nil, fmt.Errorf("journal: not a run directory %q: %w", dir, err)
+	_, hasManifest, err := readSchemaInfo(dir)
+	if err != nil {
+		return nil, err
 	}
-	return &Reader{dir: dir}, nil
+	if !hasManifest {
+		if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w %q: %w", ErrNotRunDirectory, dir, err)
+			}
+			return nil, fmt.Errorf("journal: inspect run.yaml in %q: %w", dir, err)
+		}
+	}
+	schema, err := ensureJournalSchema(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Reader{dir: dir, schema: schema}, nil
 }
 
 // Dir returns the run directory.
 func (r *Reader) Dir() string { return r.dir }
 
-// Identity parses run.yaml. An unknown schema version is refused rather than
-// returned with fields silently zero-valued (#2054) — the same "refuse
-// loudly" policy cmd/goobers/tutorholdout.go and respondtofindings.go already
-// apply to their own single-document schema stamps, extended here since
-// run.yaml is written once at Create and never migrated in place: an older
-// reader has no way to safely interpret a shape it does not own.
+// Schema returns the persisted run-directory schema metadata.
+func (r *Reader) Schema() SchemaInfo { return r.schema }
+
+// openCurrentJournal revalidates a journal while its writer lock is already
+// held. It must not attempt migration because migration acquires that same lock.
+func openCurrentJournal(dir string) (*Reader, error) {
+	info, exists, err := readSchemaInfo(dir)
+	if err != nil {
+		return nil, err
+	}
+	done, err := admitJournalSchema(dir, info, exists)
+	if err != nil {
+		return nil, err
+	}
+	if !done {
+		return nil, errors.New("journal: schema changed while acquiring writer lock")
+	}
+	return &Reader{dir: dir, schema: info}, nil
+}
+
+// Identity parses run.yaml and rejects payload schemas this build does not own.
 func (r *Reader) Identity() (RunIdentity, error) {
 	b, err := os.ReadFile(filepath.Join(r.dir, fileRunYAML))
 	if err != nil {
@@ -56,8 +88,8 @@ func (r *Reader) Identity() (RunIdentity, error) {
 	if err := yaml.Unmarshal(b, &id); err != nil {
 		return RunIdentity{}, fmt.Errorf("journal: parse run.yaml: %w", err)
 	}
-	if !id.KnownSchema() {
-		return RunIdentity{}, fmt.Errorf("journal: run.yaml has unknown schema %q (want %q)", id.Schema, RunSchema)
+	if id.Schema != RunSchema {
+		return RunIdentity{}, unsupportedPayloadSchema("run", id.Schema, RunSchema)
 	}
 	return id, nil
 }
@@ -77,8 +109,8 @@ func (r *Reader) State() (State, error) {
 	if err := json.Unmarshal(b, &st); err != nil {
 		return State{}, fmt.Errorf("journal: parse state.json: %w", err)
 	}
-	if !st.KnownSchema() {
-		return State{}, fmt.Errorf("journal: state.json has unknown schema %q (want %q)", st.Schema, StateSchema)
+	if st.Schema != StateSchema {
+		return State{}, unsupportedPayloadSchema("state", st.Schema, StateSchema)
 	}
 	return st, nil
 }
@@ -123,19 +155,28 @@ func PhaseFromEvents(events []Event) RunPhase { return reconstructPhase(events) 
 // and repair the torn tail on the writer side.
 func (r *Reader) Events() ([]Event, error) {
 	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+	if err == nil {
+		err = validateEventSchemas(events)
+	}
 	return events, err
 }
 
 // EventRecords is Events with each complete record's original JSON retained.
 func (r *Reader) EventRecords() ([]EventRecord, error) {
 	records, _, err := readEventRecords(filepath.Join(r.dir, fileEvents))
+	if err == nil {
+		events := make([]Event, len(records))
+		for i := range records {
+			events[i] = records[i].Event
+		}
+		err = validateEventSchemas(events)
+	}
 	return records, err
 }
 
 // KnownSchema reports whether an event uses the schema version this build owns.
-// Events written by an unknown future schema version still parse into the shared
-// envelope (unknown fields are ignored by encoding/json); readers use this to
-// decide whether to trust type-specific fields — the V0 forward-compat policy.
+// Event consumers reject unsupported versions before interpreting type-specific
+// fields.
 func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 
 // ArtifactBytes reads and verifies a stored blob against its Ref.Digest,
@@ -253,6 +294,16 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 	// released in Close.
 	lock, err := acquireRunLock(dir)
 	if err != nil {
+		return nil, RecoverReport{}, err
+	}
+	rd, err = openCurrentJournal(dir)
+	if err != nil {
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, err
+	}
+	id, err = rd.Identity()
+	if err != nil {
+		releaseRunLock(lock)
 		return nil, RecoverReport{}, err
 	}
 	if _, err := os.Stat(filepath.Join(dir, filePruning)); err == nil {
@@ -442,6 +493,9 @@ func readEvents(path string) ([]Event, int, error) {
 	events := make([]Event, len(records))
 	for i := range records {
 		events[i] = records[i].Event
+	}
+	if err := validateEventSchemas(events); err != nil {
+		return nil, 0, err
 	}
 	return events, tornBytes, nil
 }

@@ -121,6 +121,16 @@ the configured human, since no decision is pending on it.
   closes) until a human or curator pass notices. This is a real gap, but it
   existed identically for `goobers:needs-human` before this change — it is
   not a regression, just not yet fixed.
+
+  Since #3355 the gap is at least *visible*: `goobers status` reports a
+  "Parked backlog items" section listing every open item that carries a park
+  disposition without `goobers:ready` (`parkedBacklog` in `status --json`).
+  Such an item has left the instance's ready pool — `query-backlog` requires
+  `goobers:ready` — and nothing configured puts it back, so on an unattended
+  instance the park otherwise reads as work silently deleted from the backlog.
+  Re-entry is still an operator action: triage the item and re-add
+  `goobers:ready`, or close it. Automatic reconsideration (a curation resweep
+  that re-grades parked items with backoff) is the follow-up.
 - **#1696 (curator judgment) is still open.** The curator can still apply
   `goobers:needs-human` for a case that's actually a sibling dependency or
   execution stall at *initial triage* time, before the item ever reaches

@@ -1,12 +1,14 @@
 package readmodel
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Disposition values for RunRow.Disposition (§5.3).
@@ -102,9 +104,26 @@ type RunRow struct {
 	AnyCostMeasured    bool
 	AnyRetryWaste      bool
 
+	Operator OperatorFacts
+
 	// scratch holds nullable columns between Scan and decode. Unexported and
 	// cleared by finishScan, so it never escapes into a returned row.
 	scratch *nullables
+}
+
+// OperatorFacts are journal-derived facts needed by operator run summaries.
+// They are stored with the run row so bounded list reads never reopen journals.
+type OperatorFacts struct {
+	IssueNumber           string
+	IssueTitle            string
+	LastHeartbeatAt       *time.Time
+	PullRequest           *journal.ExternalRef
+	ProviderClaimRecorded bool
+	LatestError           *journal.ErrorDetail
+	ReviewVerdict         string
+	ReviewRationale       string
+	ReviewProblem         string
+	PROpenerStage         string
 }
 
 // StageRow is one projected (run, stage) pair.
@@ -261,6 +280,9 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	row.TriggerKind = string(identity.Trigger.Kind)
 	row.TriggerRef = identity.Trigger.Ref
 	row.StartedAt = identity.StartedAt
+	if identity.Trigger.Kind == journal.TriggerItem && row.Operator.IssueTitle == "" {
+		row.Operator.IssueNumber = identity.Trigger.Ref
+	}
 
 	// A run with no terminal event is running. Seeding here rather than only on
 	// an event means a first projection of an in-flight run is correct, and a
@@ -290,8 +312,17 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
+		if event.Error != nil {
+			detail := *event.Error
+			row.Operator.LatestError = &detail
+		}
 
 		switch event.Type {
+		case journal.EventStageHeartbeat:
+			if row.Operator.LastHeartbeatAt == nil || event.Time.After(*row.Operator.LastHeartbeatAt) {
+				at := event.Time
+				row.Operator.LastHeartbeatAt = &at
+			}
 		case journal.EventRunnerAnnotation:
 			if queue, ok := RunnerQueueStatus(event); ok {
 				row.CurrentStage = queue
@@ -366,6 +397,14 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
+			if row.Operator.IssueTitle == "" {
+				id, idOK := event.Outputs["id"].(string)
+				title, titleOK := event.Outputs["title"].(string)
+				if idOK && titleOK && id != "" && title != "" {
+					row.Operator.IssueNumber = id
+					row.Operator.IssueTitle = title
+				}
+			}
 			countAttempt(&row, event)
 		case journal.EventGateStarted:
 			row.CurrentStage = event.Gate
@@ -383,6 +422,27 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			node.gateOpen[event.Branch] = false
 			row.OutcomeVerdict = event.Verdict
 			row.OutcomeTarget = event.Target
+			if event.Gate == "review" {
+				row.Operator.ReviewVerdict = event.Verdict
+				row.Operator.ReviewRationale = ""
+				row.Operator.ReviewProblem = ""
+			}
+		case journal.EventRefTouched:
+			if event.ExternalRef == nil {
+				continue
+			}
+			switch event.ExternalRef.Kind {
+			case "issue":
+				if row.Operator.IssueTitle == "" {
+					row.Operator.IssueNumber = event.ExternalRef.ID
+				}
+				operation, _ := event.Runner["operation"].(string)
+				row.Operator.ProviderClaimRecorded =
+					row.Operator.ProviderClaimRecorded || operation == "claim"
+			case "pr":
+				ref := *event.ExternalRef
+				row.Operator.PullRequest = &ref
+			}
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
 			row.Phase = journal.PhaseRunning
@@ -452,6 +512,95 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	}
 
 	return Projection{Run: row, Stages: out, Nodes: outNodes}
+}
+
+// ProjectRunFromJournal adds facts that require resolving immutable journal
+// blobs to the otherwise pure event projection.
+func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
+	projection := ProjectRun(identity, Projection{}, events)
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated ||
+			event.Gate != "review" {
+			continue
+		}
+		if event.Ref == nil {
+			break
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
+			break
+		}
+		var verdict struct {
+			Rationale string `json:"rationale"`
+			Summary   string `json:"summary"`
+		}
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
+			break
+		}
+		projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Rationale)
+		if projection.Run.Operator.ReviewRationale == "" {
+			projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Summary)
+		}
+		break
+	}
+
+	for _, input := range identity.Inputs {
+		if input.Name != journal.PinnedWorkflowGraphInputName {
+			continue
+		}
+		data, err := reader.ArtifactBytes(input.Ref)
+		if err != nil {
+			return Projection{}, fmt.Errorf("readmodel: read pinned graph: %w", err)
+		}
+		var graph workflow.Graph
+		if err := json.Unmarshal(data, &graph); err != nil {
+			return Projection{}, fmt.Errorf("readmodel: parse pinned graph: %w", err)
+		}
+		if graph.Name != identity.Workflow || graph.Version != identity.WorkflowVersion ||
+			graph.Digest != identity.WorkflowDigest {
+			return Projection{}, fmt.Errorf("readmodel: pinned graph identity does not match run")
+		}
+		for _, node := range graph.Nodes {
+			if OperatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+				projection.Run.Operator.PROpenerStage = node.ID
+				break
+			}
+		}
+		break
+	}
+	if projection.Run.Operator.PullRequest != nil {
+		projection.Run.Operator.PROpenerStage = ""
+	}
+	return projection, nil
+}
+
+// OperatorTrajectory classifies a run's current stage for operator-facing status.
+func OperatorTrajectory(stage string, phase journal.RunPhase) string {
+	if phase != journal.PhaseRunning {
+		return "parked"
+	}
+	stage = strings.ToLower(stage)
+	switch {
+	case strings.Contains(stage, "review"):
+		return "review"
+	case strings.Contains(stage, "local-ci"), strings.Contains(stage, "local_ci"):
+		return "local CI"
+	case strings.Contains(stage, "push"):
+		return "push"
+	case strings.Contains(stage, "open-pr"), strings.Contains(stage, "open_pr"):
+		return "open PR"
+	case strings.Contains(stage, "poll"), strings.Contains(stage, "ci-status"):
+		return "CI poll"
+	case strings.Contains(stage, "close-out"), strings.Contains(stage, "close_out"):
+		return "close-out"
+	case strings.Contains(stage, "implement"):
+		return "implementing"
+	default:
+		return "implementing"
+	}
 }
 
 const workspaceResetSuggestionPrefix = "Workspace reset suggested:"

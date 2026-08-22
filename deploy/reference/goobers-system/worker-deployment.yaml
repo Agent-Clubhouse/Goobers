@@ -33,20 +33,27 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      # PSS restricted evaluates initContainers as well as app containers.
+      # Seed the per-worker instance root without requiring elevated privileges.
+      initContainers:
+        - name: seed-instance-root
+          image: goobers # rewritten by the kustomization images: transformer
+          command: ["sh", "-c"]
+          args:
+            - mkdir -p /var/lib/goobers/config /var/lib/goobers/runs
+          volumeMounts:
+            - name: journal
+              mountPath: /var/lib/goobers
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: worker
-          # DETERMINISTIC STAGES ONLY, as shipped. The default image carries the
-          # binary, git and ca-certificates — no agent harness — so an agentic
-          # stage fails at the harness preflight (#2849). Which harness to
-          # install is deliberately not a product choice: runner.harnessCommand
-          # is a map keyed by harness name, so the agent CLI is yours to pick.
-          #
-          # To run agentic stages, point this at an image built FROM the base:
-          #
-          #   FROM <registry>/goobers:<tag>
-          #   RUN npm install -g @github/copilot    # or your harness
-          #
-          # and set the matching runner.harnessCommand in instance.yaml.
+          # The shipped image includes the Copilot CLI default agent harness.
+          # Set runner.harnessCommand in instance.yaml when selecting another
+          # installed harness.
           image: goobers # rewritten by the kustomization images: transformer
           # `goobers worker` is the v2-cloud-scale A1.6 worker entrypoint
           # (#632): it serves the named task queue(s) until SIGTERM, then
@@ -98,6 +105,10 @@ spec:
             # on storage classes without dependable POSIX locking (cf. #2854).
             - name: blobs
               mountPath: /var/lib/goobers-blobs
+            # Copilot keeps runtime state under $HOME/.copilot. The container
+            # root stays read-only; this state lasts for the life of the pod.
+            - name: harness-home
+              mountPath: /home/nonroot
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -117,6 +128,8 @@ spec:
           persistentVolumeClaim:
             claimName: goobers-journal
         - name: workspaces
+          emptyDir: {}
+        - name: harness-home
           emptyDir: {}
         # ReadWriteMany, because more than one worker mounts it. Provision it
         # with a filesystem your platform can serve RWX (Azure Files, EFS,

@@ -64,7 +64,7 @@
         "maxRepasses": {
           "type": "integer",
           "minimum": 1,
-          "description": "Maximum consecutive non-pass gate evaluations before escalation."
+          "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome."
         },
         "stalledRunTimeout": {
           "type": "string",

@@ -1693,7 +1693,7 @@ func conditionalEgressDestination(
 					index >= len(assignment.Rhs) {
 					continue
 				}
-				assignmentBindings := bindingsAt(function, assignment, fileBindings)
+				assignmentBindings := bindingsAtScope(scope, function, assignment, fileBindings)
 				var found bool
 				if requireURL {
 					destination, found = processURLDestination(assignment.Rhs[index], assignmentBindings, true)

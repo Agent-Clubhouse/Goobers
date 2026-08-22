@@ -29,8 +29,9 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"The tier-3 engine is not on the local (V0) execution path; this command is\n" +
 	"the deployable worker shape for the cloud ladder. Automated gate checks and\n" +
 	"workspace provisioning (git worktrees + scratch dirs under --work-root) are\n" +
-	"wired; agentic and deterministic executor seams arrive with the runtime\n" +
-	"wiring slice, and stages needing them fail closed with a clear error.\n\n" +
+	"wired. With --instance, the worker also wires the same agentic and\n" +
+	"deterministic executors as the local runner; without it, stages needing\n" +
+	"those executors fail closed with a clear error.\n\n" +
 	"Flags:\n" +
 	"  --instance <dir>           instance root; wires the real agentic and\n" +
 	"                             deterministic executors (default\n" +
@@ -145,6 +146,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
+		// The #2931 dispatch canary asserts envelopes against the SAME shared
+		// registry the seams' executors register every resolved credential
+		// with — so a value that leaks into a dispatch payload after being
+		// resolved anywhere in this process refuses the stage instead of
+		// executing with it.
+		engineRuntime.deps.Canary = seams.SharedRegistry()
 		// Replace the uncredentialed provisioner too: workerEngineDeps builds
 		// its worktree manager before any instance is known, so it has no git
 		// auth and cannot clone a private repo.

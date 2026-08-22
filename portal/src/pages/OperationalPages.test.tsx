@@ -140,6 +140,12 @@ describe("operational overview", () => {
     expect(styles).toMatch(/\.attention-row\s*\{[^}]*align-items:\s*start;/s);
   });
 
+  it("keeps scope pivots visible while long workflow names truncate", () => {
+    expect(styles).toMatch(
+      /\.scope-pivot\s*\{[^}]*flex-shrink:\s*0;[^}]*white-space:\s*nowrap;/s,
+    );
+  });
+
   it("pivots an attention row's workflow into a pre-scoped Insight view without triggering the run link (#2529)", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

@@ -93,13 +93,13 @@ _goobers_completion()
             flags+=" --instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
-            flags+=" --port --listen --no-open --dev-assets"
+            flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         getting-started)
             flags+=" --port --no-open --workdir"
             ;;
         run)
-            flags+=" --gaggle --no-wait"
+            flags+=" --gaggle --pr --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"
@@ -122,7 +122,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --agents --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -148,10 +148,13 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --json --follow --transcripts --transcript"
+            flags+=" --json --follow --summary --verdicts --transcripts --transcript"
             ;;
         escalations)
             flags+=" --json"
+            case "${COMP_WORDS[2]:-}" in
+                show) flags+=" --include-verdict" ;;
+            esac
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
@@ -172,7 +175,7 @@ _goobers_completion()
             flags+=" --feedback"
             ;;
         backlog-query)
-            flags+=" --claim --release --read-only --reconcile"
+            flags+=" --claim --debug --release --read-only --reconcile"
             ;;
         reconcile-branches)
             flags+=" --delete --max --min-age --after"

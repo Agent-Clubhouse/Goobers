@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,7 +165,10 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 			runDir := filepath.Join(runsDir, entry.Name())
 			reader, err := journal.OpenRead(runDir)
 			if err != nil {
-				continue
+				if errors.Is(err, journal.ErrNotRunDirectory) {
+					continue
+				}
+				return nil, fmt.Errorf("open retention run %s: %w", entry.Name(), err)
 			}
 			phase, err := reader.Phase()
 			if err != nil {

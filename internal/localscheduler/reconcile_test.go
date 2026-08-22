@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,6 +60,66 @@ func TestActiveRunCountsMissingDir(t *testing.T) {
 	}
 	if len(counts) != 0 {
 		t.Errorf("expected empty counts, got %v", counts)
+	}
+}
+
+func TestVisitActiveRunsChecksCancellationBetweenJournals(t *testing.T) {
+	runsDir := t.TempDir()
+	for _, runID := range []string{"active-a", "active-b"} {
+		run, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: "implement", WorkflowVersion: 1, Gaggle: "g",
+			Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	visited := 0
+	err := visitActiveRunsContext(ctx, runsDir, func(journal.RunIdentity) {
+		visited++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("visitActiveRunsContext error = %v, want context.Canceled", err)
+	}
+	if visited != 1 {
+		t.Fatalf("visited %d journals after cancellation, want 1", visited)
+	}
+}
+
+func TestActiveRunCountsRejectsFutureJournalSchema(t *testing.T) {
+	runsDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(runsDir, "00-unrelated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(runsDir, "01-future")
+	if err := os.Mkdir(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ActiveRunCounts(runsDir)
+	if err == nil {
+		t.Fatal("active-run scan accepted a future journal schema")
+	}
+	for _, want := range []string{"01-future", "version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ActiveRunCounts error %q does not contain %q", err, want)
+		}
 	}
 }
 
@@ -317,6 +378,7 @@ func appendFillerRecords(t *testing.T, runDir string, n, size int) {
 	var buf bytes.Buffer
 	for i := range n {
 		line, err := json.Marshal(journal.Event{
+			Schema: journal.EventSchema,
 			Type:   journal.EventStageFinished,
 			Target: fmt.Sprintf("pad-%d", i),
 			Runner: map[string]any{"filler": filler},

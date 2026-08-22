@@ -88,7 +88,7 @@ func writeEffectiveVersionFixtureRunForGaggle(
 }
 
 func TestTelemetryQueryAggregateAcceptsCoverageGapKinds(t *testing.T) {
-	for _, name := range []string{"workflow-untriggered", "stage-unreached"} {
+	for _, name := range []string{"workflow-untriggered", "stage-unreached", "ci-check-failure"} {
 		t.Run(name, func(t *testing.T) {
 			root := initDemo(t)
 			code, _, stderr := runArgs(t, "telemetry-query", "--window", "24h", "--aggregate", name, root)

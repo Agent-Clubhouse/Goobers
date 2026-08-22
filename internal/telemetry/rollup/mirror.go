@@ -103,9 +103,12 @@ type journalRedaction struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// runSchema mirrors internal/journal.RunSchema — the only run.yaml schema
-// version this package's mirrored runIdentity shape understands (#2054).
-const runSchema = "goobers.dev/journal/run/v1"
+const (
+	// eventSchema and runSchema mirror the payload schemas this package's
+	// independent projection types understand.
+	eventSchema = "goobers.dev/journal/event/v1"
+	runSchema   = "goobers.dev/journal/run/v1"
+)
 
 // runIdentity mirrors internal/journal.RunIdentity (run.yaml). journal decodes
 // YAML via json-tagged structs (sigs.k8s.io/yaml, already a repo dependency),

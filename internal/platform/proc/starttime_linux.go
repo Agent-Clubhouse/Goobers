@@ -4,7 +4,6 @@ package proc
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -21,39 +20,15 @@ const linuxClockTicksPerSec = 100
 const startTimeSupported = true
 
 func startTime(pid int) (time.Time, bool) {
-	if pid <= 0 {
-		return time.Time{}, false
-	}
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return time.Time{}, false
-	}
-	// Fields after comm (the process name, field 2) are what proc(5) actually
-	// guarantees whitespace-delimited: comm itself is parenthesized and may
-	// contain spaces or even parens, so the only safe split point is the
-	// LAST ")" in the line — anything a process can name itself cannot
-	// contain a ")" followed by " (" that looks like a later field boundary.
-	text := string(data)
-	closeParen := strings.LastIndexByte(text, ')')
-	if closeParen < 0 || closeParen+2 > len(text) {
-		return time.Time{}, false
-	}
-	fields := strings.Fields(text[closeParen+2:])
-	// State is field 3 (index 0 in `fields`); starttime is field 22, i.e.
-	// index 22-3 = 19.
-	const starttimeIndex = 22 - 3
-	if len(fields) <= starttimeIndex {
-		return time.Time{}, false
-	}
-	ticks, err := strconv.ParseUint(fields[starttimeIndex], 10, 64)
-	if err != nil {
+	stat, ok := readProcStat(pid)
+	if !ok {
 		return time.Time{}, false
 	}
 	bootTime, ok := linuxBootTime()
 	if !ok {
 		return time.Time{}, false
 	}
-	return bootTime.Add(time.Duration(ticks) * time.Second / linuxClockTicksPerSec), true
+	return bootTime.Add(time.Duration(stat.startTicks) * time.Second / linuxClockTicksPerSec), true
 }
 
 func linuxBootTime() (time.Time, bool) {

@@ -11,11 +11,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationNativeSandboxIsolatesHostProc(t *testing.T) {
 	testdep.Require(t, "bwrap", "sh", "sleep")
+	// bubblewrap builds its confinement on an unprivileged user namespace, so a
+	// hardened runtime (seccompProfile: RuntimeDefault plus capabilities: drop
+	// [ALL]) denies the clone with EPERM even though bwrap itself is installed
+	// and the kernel's max_user_namespaces is generous. Probing the capability
+	// right after the tool turns that into a declared skip naming the denied
+	// capability, instead of a New() failure that reads like a sandbox
+	// regression (#3397).
+	testdep.RequireUserNamespaces(t)
 
 	s, err := New()
 	if err != nil {

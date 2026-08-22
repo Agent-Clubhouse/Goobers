@@ -192,19 +192,51 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 }
 
 type statusJSONSummary struct {
-	RunID          string    `json:"runId"`
-	Workflow       string    `json:"workflow"`
-	Gaggle         string    `json:"gaggle"`
-	Phase          string    `json:"phase"`
-	StartedAt      time.Time `json:"startedAt"`
-	LastActivityAt time.Time `json:"lastActivityAt"`
+	RunID          string                         `json:"runId"`
+	Workflow       string                         `json:"workflow"`
+	Gaggle         string                         `json:"gaggle"`
+	Phase          string                         `json:"phase"`
+	StartedAt      time.Time                      `json:"startedAt"`
+	LastActivityAt time.Time                      `json:"lastActivityAt"`
+	Operator       readservice.OperatorRunSummary `json:"operator"`
 }
 
 type statusJSONOutput struct {
-	Warnings      []validate.CodedWarning        `json:"warnings"`
-	TimeToFirstPR *telemetry.TimeToFirstPRMetric `json:"timeToFirstPR,omitempty"`
-	Summary       *statusFleetSummary            `json:"summary,omitempty"`
-	Runs          []statusJSONSummary            `json:"runs"`
+	Warnings      []validate.CodedWarning          `json:"warnings"`
+	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
+	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
+	Summary       *statusFleetSummary              `json:"summary,omitempty"`
+	// ParkedBacklog reports items that left the ready pool on a park
+	// disposition (#3355); omitted when the provider snapshot is unavailable,
+	// the same posture as timeToFirstPR.
+	ParkedBacklog *statusParkedBacklog `json:"parkedBacklog,omitempty"`
+	Runs          []statusJSONSummary  `json:"runs"`
+}
+
+func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
+	restart := status.DaemonRestart
+	if restart == nil {
+		return ""
+	}
+	runs := "none"
+	if len(restart.RunIDs) > 0 {
+		runs = strings.Join(restart.RunIDs, ", ")
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text,
+		"Daemon restarted %s (%s); runs resumed/reclaimed: %s\n",
+		formatLastActivity(now, restart.At), restart.Reason, runs,
+	)
+	for _, replacement := range restart.Replacements {
+		fmt.Fprintf(
+			&text,
+			"Warning: run %s failed during the daemon restart and was replaced by %s for item %s\n",
+			replacement.FailedRunID,
+			replacement.ReplacementRunID,
+			replacement.ItemID,
+		)
+	}
+	return text.String()
 }
 
 type statusFleetSummary struct {
@@ -240,6 +272,7 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 			Phase:          string(r.Phase),
 			StartedAt:      r.StartedAt,
 			LastActivityAt: r.LastActivityAt,
+			Operator:       r.Operator,
 		}
 	}
 	return summaries
@@ -461,6 +494,7 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 			Phase:          run.Phase,
 			StartedAt:      run.StartedAt,
 			LastActivityAt: run.LastActivityAt,
+			Operator:       run.Operator,
 		}
 	}
 	return runs, nil
@@ -474,11 +508,21 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
+	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
+	"With --agents, list only the agentic stages in flight right now, by role and run id.\n" +
+	"The --agents answer comes from the runner's own journals, never from a process table,\n" +
+	"so it can never match the process asking (no `ps | grep` self-match), and it drops the\n" +
+	"invoking run when it is itself a stage. It needs no credentials and makes no provider\n" +
+	"calls, so it is safe to run from inside a container during a deploy window. Combine it\n" +
+	"with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and\n" +
+	"--watch are refused because the probe reports only the live moment.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
 const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
@@ -502,10 +546,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	var watch *bool
 	var interval *time.Duration
 	var daemon *bool
+	var agents *bool
 	if supportsWatch {
 		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 		daemon = fs.Bool("daemon", false, "report daemon health and identity")
+		agents = fs.Bool("agents", false, "list in-flight agentic stages by role, from the runner's own bookkeeping")
 	}
 	fs.Usage = helpUsage(stderr, command)
 	if err := fs.Parse(args); err != nil {
@@ -529,8 +575,18 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch) {
+	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch || *agents) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
+		return 2
+	}
+	// --agents answers one question — which agentic stages are in flight right
+	// now — so the flags that shape the historical run table (--phase, --limit)
+	// and the redraw loop (--watch) are refused rather than silently ignored.
+	// --workflow/--gaggle stay available: scoping the probe to one workflow is
+	// the same question asked of a smaller fleet.
+	agentsMode := supportsWatch && *agents
+	if agentsMode && (*phaseFilter != "" || limitSet || *watch) {
+		pf(stderr, "error: --agents cannot be combined with --phase, --limit, or --watch\n")
 		return 2
 	}
 
@@ -594,6 +650,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		false,
 	)
 	if err != nil {
 		printValidationWarnings(stderr, report.CLIWarnings())
@@ -611,8 +668,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		Definitions: set,
 		Validation:  report,
 	}
+	// The agents probe answers from local bookkeeping only. Leaving the
+	// provider work-item lookup unset keeps it credential-free and network-free
+	// — the operator running it through `kubectl exec` during a deploy window
+	// gets the same answer as the daemon host, and cannot be told that the
+	// diagnostic's own missing credential is a run blocker (#3346).
+	if !agentsMode {
+		sources.WorkItemLookup = statusWorkItemLookup(l.Root, set)
+	}
+	livenessTimeout, err := cfg.Runner.LivenessTimeoutDuration()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	sources.LivenessTimeout = livenessTimeout
 	var timeToFirstPROpenErr error
-	if supportsWatch {
+	if supportsWatch && !agentsMode {
 		telemetryDB, err := openRollup(l, false)
 		if err != nil {
 			timeToFirstPROpenErr = fmt.Errorf("open telemetry rollup: %w", err)
@@ -627,7 +698,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	var statusLocation *time.Location
-	if supportsWatch {
+	if supportsWatch && !agentsMode {
 		statusLocation, err = cfg.Location()
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -653,6 +724,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
+	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR
 	if timeToFirstPROpenErr != nil {
 		loadTimeToFirstPR = func(context.Context) (telemetry.TimeToFirstPRMetric, error) {
@@ -681,14 +753,26 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		renderStatusFleetSummary(&text, summary, now)
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
+			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
 		}
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
-			return text.String(), nil
+		} else {
+			text.WriteString(prLabelStatusText(counts))
 		}
-		text.WriteString(prLabelStatusText(counts))
+		// Parked backlog items (#3355): a park disposition strips
+		// goobers:ready, so these items are gone from the ready pool with
+		// nothing configured to put them back. An unavailable PR count must
+		// not suppress them — they are the section an unattended instance
+		// needs most.
+		parked, err := parkedBacklog.Load(ctx, cfg)
+		if err != nil {
+			text.WriteString(parkedBacklogStatusUnavailableText(err))
+		} else {
+			text.WriteString(parkedBacklogStatusText(parked))
+		}
 		return text.String(), nil
 	}
 	if supportsWatch && *watch {
@@ -712,6 +796,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	allRuns := runs
 	now := time.Now()
+	if agentsMode {
+		probe := buildAgentProbe(allRuns, set.Workflows, selfProbeRunID(), *workflowFilter, *gaggleFilter)
+		if *jsonOutput {
+			if err := emitAgentProbeJSON(stdout, probe); err != nil {
+				pf(stderr, "error: %v\n", err)
+				return 2
+			}
+			return 0
+		}
+		// Config warnings first, same as the run table: a workflow definition
+		// that failed to load is exactly what turns a known role into
+		// "unknown", so the reader must see the warning next to the answer.
+		printValidationWarnings(stdout, warnings)
+		renderAgentProbe(stdout, probe, now)
+		return 0
+	}
 	var fleetSummary *statusFleetSummary
 	if supportsWatch {
 		summary, err := loadFleetSummary(allRuns, now)
@@ -724,16 +824,26 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
+		var daemonRestart *readservice.DaemonRestartStatus
+		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
 			if err == nil {
 				timeToFirstPR = &metric
 			}
+			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
+				daemonRestart = status.DaemonRestart
+			}
+			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
+				parked = &snapshot
+			}
 		}
 		output := statusJSONOutput{
 			Warnings:      warnings,
 			TimeToFirstPR: timeToFirstPR,
+			DaemonRestart: daemonRestart,
 			Summary:       fleetSummary,
+			ParkedBacklog: parked,
 			Runs:          statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
@@ -791,12 +901,66 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		return
 	}
 
-	pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n", "RUN ID", "WORKFLOW", "GAGGLE", "PHASE", "STARTED", "LAST ACTIVITY")
+	pf(stdout, "%-34s  %-24s  %-10s  %-22s  %-14s  %-12s  %-18s  %s\n",
+		"RUN ID", "ISSUE", "PHASE", "STAGE / TRAJECTORY", "LAST ACTIVITY", "PR", "CLAIM / MARKER", "NEXT")
 	for _, r := range runs {
-		pf(stdout, "%-34s  %-24s  %-10s  %-10s  %-20s  %s\n",
-			r.RunID, r.Workflow, r.Gaggle, r.Phase, r.StartedAt.Format(time.RFC3339),
-			formatLastActivity(now, r.LastActivityAt))
+		issue := "-"
+		if r.Operator.Issue != nil {
+			issue = "#" + r.Operator.Issue.Number
+			if r.Operator.Issue.Title != "" {
+				issue += " " + r.Operator.Issue.Title
+			}
+		}
+		pr := "-"
+		if r.Operator.PullRequest != nil {
+			pr = "#" + r.Operator.PullRequest.ID
+		} else if r.Operator.PROpenerStage != "" {
+			pr = "via " + r.Operator.PROpenerStage
+		}
+		heartbeat := "-"
+		if r.Operator.LastHeartbeatAt != nil {
+			heartbeat = r.Operator.Liveness + " " + formatLastActivity(now, *r.Operator.LastHeartbeatAt)
+		} else if r.Phase == journal.PhaseRunning {
+			heartbeat = r.Operator.Liveness
+		}
+		stage := r.Operator.CurrentStage
+		if stage == "" {
+			stage = "-"
+		}
+		stage += " / " + r.Operator.Trajectory
+		claim := r.Operator.Claim.LeaseStatus + " / " + r.Operator.Claim.ProviderMarker
+		pf(stdout, "%-34s  %-24s  %-10s  %-22s  %-14s  %-12s  %-18s  %s\n",
+			r.RunID, truncateStatusCell(issue, 24), r.Phase, truncateStatusCell(stage, 22),
+			heartbeat, pr, claim, r.Operator.NextTransition)
+		pf(stdout, "  workflow: %s / %s; started %s; last activity %s\n",
+			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
+		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
+			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
+		}
+		if r.Operator.Review != nil && r.Operator.Review.Rationale != "" {
+			pf(stdout, "  review %s: %s\n", r.Operator.Review.Verdict, r.Operator.Review.Rationale)
+		}
+		if len(r.Operator.PotentialBlockers) > 0 {
+			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
+		}
+		// Explicitly disclaimed and rendered after blockers: this line is about
+		// what THIS status invocation could not check, not about the run (#3346).
+		if len(r.Operator.DiagnosticsLimitations) > 0 {
+			pf(stdout, "  diagnostics limited (not a run blocker): %s\n",
+				strings.Join(r.Operator.DiagnosticsLimitations, "; "))
+		}
 	}
+}
+
+func truncateStatusCell(value string, width int) string {
+	runes := []rune(value)
+	if len(runes) <= width {
+		return value
+	}
+	if width <= 3 {
+		return string(runes[:width])
+	}
+	return string(runes[:width-3]) + "..."
 }
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {

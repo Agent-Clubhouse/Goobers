@@ -87,6 +87,19 @@ type transcriptCapture struct {
 	modelUsage   []telemetry.ModelUsage
 	truncated    bool
 	droppedBytes int64
+	// mcpServersReported reports that the harness CLI emitted at least one
+	// per-server MCP connection report for this session, making
+	// mcpServerStatus authoritative for which registered servers actually
+	// came up (#3356). Only populated by adapters whose harness reports
+	// connection state (claude-code's system/init event); Copilot's session
+	// transcript carries no equivalent, so its conversions leave both fields
+	// zero and no availability claim is ever made from them.
+	mcpServersReported bool
+	// mcpServerStatus maps a registered MCP server name to the CLI-reported
+	// connection status ("connected", "failed", ...). A server registered
+	// for the invocation but missing from this map did not appear in the
+	// CLI's report at all.
+	mcpServerStatus map[string]string
 }
 
 func readCopilotSessionTranscript(path string, limit int64) (transcriptCapture, bool) {

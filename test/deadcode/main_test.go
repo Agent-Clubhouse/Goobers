@@ -83,3 +83,17 @@ func TestAnalyzerArgsUseProductionRoots(t *testing.T) {
 		t.Fatalf("analyzer args = %q, want %q", got, want)
 	}
 }
+
+func TestExemptionProblemsIgnoreTestSupportPackages(t *testing.T) {
+	t.Parallel()
+	reports := []reportPackage{{
+		Path: "github.com/goobers/goobers/test/testsupport/fake",
+		Funcs: []reportFunction{{
+			Name:     "New",
+			Position: reportPosition{File: "test/testsupport/fake/fake.go", Line: 10},
+		}},
+	}}
+	if problems := exemptionProblems(reports, nil); len(problems) != 0 {
+		t.Fatalf("test support problems = %v", problems)
+	}
+}

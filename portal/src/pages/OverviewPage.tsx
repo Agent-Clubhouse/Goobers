@@ -457,9 +457,13 @@ function RunSection({
               <span className="row-primary">
                 <span className="row-title">{runLabel(run)}</span>
                 <span className="row-subtitle">
-                  {run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}
-                  {run.id}
+                  {active && run.operator
+                    ? operatorSubtitle(run)
+                    : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
                 </span>
+                {active && operatorContext(run) ? (
+                  <span className="row-subtitle">{operatorContext(run)}</span>
+                ) : null}
               </span>
               {active ? (
                 <>
@@ -472,7 +476,7 @@ function RunSection({
                   </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
-                    {run.currentStage ?? "Awaiting stage"}
+                    {operatorProgress(run)}
                   </span>
                 </>
               ) : (
@@ -497,7 +501,60 @@ function RunSection({
 }
 
 function runLabel(run: RunSummary): string {
+  if (run.operator?.issue) {
+    return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
+  }
   return `${run.workflow} · ${run.id}`;
+}
+
+function operatorSubtitle(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.id;
+  }
+  const heartbeat =
+    operator.heartbeatAgeMillis === undefined
+      ? "no heartbeat"
+      : `${operator.liveness} heartbeat ${formatDuration(operator.heartbeatAgeMillis)} ago`;
+  return `${operator.trajectory} · ${heartbeat} · claim ${operator.claim.leaseStatus}/${operator.claim.providerMarker}`;
+}
+
+function operatorProgress(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.currentStage ?? "Awaiting stage";
+  }
+  const pr = operator.pullRequest
+    ? `PR #${operator.pullRequest.id}`
+    : operator.prOpenerStage
+      ? `PR via ${operator.prOpenerStage}`
+      : "no PR stage";
+  return `${operator.currentStage ?? "Awaiting stage"} · ${pr} · ${operator.nextTransition ?? "no next transition"}`;
+}
+
+function operatorContext(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return "";
+  }
+  const details: string[] = [];
+  if (operator.latestError) {
+    details.push(`Error ${operator.latestError.code}${operator.latestError.message ? `: ${operator.latestError.message}` : ""}`);
+  }
+  if (operator.review) {
+    details.push(`Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`);
+  }
+  if (operator.potentialBlockers.length > 0) {
+    details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  }
+  // Kept out of "Blockers" and labelled as a reader limitation: this is what the
+  // read invocation could not verify, not something impeding the run (#3346).
+  if (operator.diagnosticsLimitations && operator.diagnosticsLimitations.length > 0) {
+    details.push(
+      `Diagnostics limited (not a run blocker): ${operator.diagnosticsLimitations.join("; ")}`,
+    );
+  }
+  return details.join(" · ");
 }
 
 function attentionHeading(count: number): string {

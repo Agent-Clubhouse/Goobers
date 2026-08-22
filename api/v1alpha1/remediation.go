@@ -86,6 +86,8 @@ type RemediationNativeReview struct {
 
 // RemediationInlineComment is one line-level PR review comment.
 type RemediationInlineComment struct {
+	ID                int64     `json:"id,omitempty"`
+	ThreadID          string    `json:"threadId,omitempty"`
 	Author            string    `json:"author,omitempty"`
 	Body              string    `json:"body"`
 	Path              string    `json:"path"`

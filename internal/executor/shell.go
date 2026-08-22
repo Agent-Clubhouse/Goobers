@@ -185,6 +185,23 @@ type ShellExecutor struct {
 	// DefaultEnv supplies runner-owned stage defaults. A stage's explicitly
 	// declared run.env values override matching keys.
 	DefaultEnv map[string]string
+	// ScratchDir, if set, roots the built-in error file this executor creates
+	// for every goobers-CLI stage (BuiltinErrorFileEnvVar) instead of the OS
+	// default temp directory. Wiring sets this to the same already-writable
+	// scratch directory the runner uses for scratch-mode workspaces
+	// (under the instance's workcopies root), which — unlike the OS default
+	// temp dir — is guaranteed to exist and be writable on any instance that
+	// runs at all, independent of whether the process environment happens to
+	// set TMPDIR or the container happens to mount something at /tmp. A
+	// read-only-root deployment that mounts nothing at /tmp and sets no
+	// TMPDIR previously failed here with "open /tmp/goobers-builtin-error-…:
+	// read-only file system" on the first stage that errored (#3342) — the
+	// path is exercised only when a goobers-CLI stage reports a typed
+	// failure, so it validated and booted clean and only broke later. Empty
+	// by default: an unset caller (e.g. an existing test) gets unchanged
+	// behavior — os.CreateTemp("", ...) resolves against os.TempDir(), which
+	// already honors TMPDIR when the process environment sets it.
+	ScratchDir string
 }
 
 type builtinErrorReport struct {
@@ -334,7 +351,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	builtinErrorFile := ""
 	if injectRunContext {
-		file, createErr := os.CreateTemp("", "goobers-builtin-error-*")
+		if e.ScratchDir != "" {
+			if mkdirErr := os.MkdirAll(e.ScratchDir, 0o700); mkdirErr != nil {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: create built-in error scratch dir: %w", mkdirErr)
+			}
+		}
+		file, createErr := os.CreateTemp(e.ScratchDir, "goobers-builtin-error-*")
 		if createErr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: create built-in error file: %w", createErr)
 		}

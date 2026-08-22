@@ -175,6 +175,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws := newWalkState(jr, startIn, registrar, in.Stage)
 		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
 		ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+		ws.visitedStages = stageVisitSeed(seedEvents)
 		ws.parallel = activeParallel
 		ws.fanIn = rerunFanIn(seedEvents, in.Machine, in.Stage)
 		if activeParallel != nil {
@@ -186,7 +187,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.branchRecorded = hasRunBranchRef(events)
 		gateAttempts, gateDiffDigests := gateRepassSeed(seedEvents), gateDiffSeed(seedEvents)
 		gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-		ws.gateAttempts, ws.gateDiffDigests = gateAttempts, gateDiffDigests
+		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
+		ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
+		ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
 		ws.rerun = rerun
 
 		ctx, span := r.startRunSpan(ctx, startIn)

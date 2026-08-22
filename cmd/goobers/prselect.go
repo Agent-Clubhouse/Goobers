@@ -113,11 +113,17 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	// abortedRunLabel is always excluded, never operator-overridable via the
-	// excludeLabels input, same as noMergeReviewLabel: a cancelled run's PR
-	// must stay ineligible for auto-merge until a human removes the label
-	// directly (#2238).
-	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	// abortedRunLabel and LabelNeedsHuman are always excluded, never
+	// operator-overridable via the excludeLabels input, same as
+	// noMergeReviewLabel: a cancelled run's PR must stay ineligible for
+	// auto-merge until a human removes the label directly (#2238).
+	// LabelNeedsHuman mirrors the exclusion pr-remediation's
+	// filterRemediationPullRequests and backlog-query's re-sweep filter
+	// already apply: the #2947 failure-streak circuit breaker applies this
+	// label after repeated terminal failures on the same claimed item, and
+	// until #3262 it wasn't checked here, so pr-select kept reselecting a PR
+	// the breaker had already tried to park (#3262).
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman)
 	identityFilters := providers.ListPullRequestsRequest{
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
@@ -266,6 +272,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -273,6 +280,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -417,7 +425,9 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel)
+	// See runPRSelect's matching comment (#3262): LabelNeedsHuman is
+	// always excluded here too, for whenever it applies to an ADO work item.
+	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman)
 	identityFilters := providers.ListPullRequestsRequest{
 		Author:            providerInput("author", ""),
 		Assignee:          providerInput("assignee", ""),
@@ -480,6 +490,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -487,6 +498,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -541,6 +553,23 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		noneIfEmpty(joinPRNumbers(fairness.Starved)),
 	)
 	return 0
+}
+
+func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
+	if !targeted {
+		return candidates
+	}
+	number, err := strconv.Atoi(pullID)
+	if err != nil {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if candidate.Number == number {
+			return []providers.PullRequestSummary{candidate}
+		}
+	}
+	return nil
 }
 
 // adoSelectProvider is the minimal mandatory-Provider surface pr-select's ADO

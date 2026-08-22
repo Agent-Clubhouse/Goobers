@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func flowSpec() apiv1.WorkflowSpec {
@@ -247,7 +248,7 @@ func TestReadinessConcurrencyAtCapacity(t *testing.T) {
 // TestDispatchEmitsSchedulerSpan: a scheduler span is recorded per dispatch.
 func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	ctx := context.Background()
-	exp := telemetry.NewMemoryExporter()
+	exp := telemetrytest.NewMemoryExporter()
 	cl, err := telemetry.New(ctx, telemetry.Config{ServiceName: "sched-test", SpanExporter: exp})
 	if err != nil {
 		t.Fatalf("telemetry.New: %v", err)

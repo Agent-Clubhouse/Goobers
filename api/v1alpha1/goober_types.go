@@ -92,6 +92,7 @@ type MCPServer struct {
 	// +optional
 	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 	// CredentialRefs bind first-party or named BYO credentials to this server.
+	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	CredentialRefs []MCPCredentialRef `json:"credentialRefs,omitempty" yaml:"credentialRefs,omitempty"`
 }
@@ -169,6 +170,7 @@ type GooberSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	// +optional
+	// +kubebuilder:validation:MaxItems=32
 	MCPServers []MCPServer `json:"mcpServers,omitempty" yaml:"mcpServers,omitempty"`
 	// ScaleFactor is the desired replica count for concurrent work. Increasing it
 	// and redeploying yields more concurrent replicas, which claim work so no two

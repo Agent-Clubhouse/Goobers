@@ -5,6 +5,8 @@ import (
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
+	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
@@ -88,15 +90,20 @@ func AllFeatures() []Feature {
 	for i, feature := range features {
 		byID[feature.ID] = i
 	}
-	for _, feature := range vnext.AllFeatures() {
-		converted := nextFeature(feature)
+	merge := func(converted Feature) {
 		i, ok := byID[converted.ID]
 		if !ok {
 			byID[converted.ID] = len(features)
 			features = append(features, converted)
-			continue
+			return
 		}
 		features[i].DSLVersions = append(features[i].DSLVersions, converted.DSLVersions...)
+	}
+	for _, feature := range vnext.AllFeatures() {
+		merge(nextFeature(feature))
+	}
+	for _, feature := range v30.AllFeatures() {
+		merge(v30Feature(feature))
 	}
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -120,6 +127,49 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 		return nil, err
 	}
 	return interpreter.featuresForWorkflow(def)
+}
+
+// FeatureDefinitionsByDSLVersion collapses workflow definitions into one
+// feature-probe Definition per distinct DSL pin, in ascending version order.
+// Gaggle/goober feature-support checks fan out over the returned probes: those
+// objects carry no dslVersion of their own, so their effective DSL version is
+// the set of pins their workflows declare, and a scoped feature must be
+// supported at every pin present (docs/design/dsl-version-lifecycle.md §8.4).
+//
+// An empty input — a gaggle or goober with no workflows — resolves at the
+// newest LevelSupported version from the support matrix, never as an unpinned
+// Definition{}. The version router rewrites an unpinned probe to
+// CurrentDSLVersion, which is deprecated; the moment it turns unsupported,
+// every workflow-less object would fail validation with a migrate-your-pin
+// error its author cannot act on, because those specs deliberately have no
+// dslVersion field to edit (#3297).
+func FeatureDefinitionsByDSLVersion(definitions []Definition) []Definition {
+	byVersion := map[string]Definition{}
+	for _, definition := range definitions {
+		byVersion[definition.DSLVersion] = Definition{
+			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		}
+	}
+	if len(byVersion) == 0 {
+		version, ok := supportmatrix.GetDSL().NewestSupported()
+		if !ok {
+			// No supported version declared at all — a matrix state the support
+			// policy rejects. Fall back to the transitional default rather than
+			// fabricate a version the router would refuse to route.
+			version = supportmatrix.CurrentDSLVersion
+		}
+		return []Definition{{DSLVersion: version}}
+	}
+	versions := make([]string, 0, len(byVersion))
+	for version := range byVersion {
+		versions = append(versions, version)
+	}
+	sort.Strings(versions)
+	out := make([]Definition, 0, len(versions))
+	for _, version := range versions {
+		out = append(out, byVersion[version])
+	}
+	return out
 }
 
 // FeaturesForGaggle resolves features used by a gaggle for a pinned definition.
@@ -298,6 +348,140 @@ func featureForNext(feature Feature) vnext.Feature {
 }
 
 func nextFeature(feature vnext.Feature) Feature {
+	out := Feature{
+		ID:                    FeatureID(feature.ID),
+		Level:                 SupportLevel(feature.Level),
+		SinceVersion:          feature.SinceVersion,
+		Replacement:           FeatureID(feature.Replacement),
+		RemovalTargetVersion:  feature.RemovalTargetVersion,
+		LastSupportingVersion: feature.LastSupportingVersion,
+		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),
+		History:               make([]SupportTransition, len(feature.History)),
+	}
+	for i, support := range feature.DSLVersions {
+		out.DSLVersions[i] = DSLFeatureSupport{
+			Version: support.Version,
+			Level:   SupportLevel(support.Level),
+		}
+	}
+	for i, transition := range feature.History {
+		out.History[i] = SupportTransition{
+			Level:        SupportLevel(transition.Level),
+			SinceVersion: transition.SinceVersion,
+		}
+	}
+	return out
+}
+
+// --- DSL 3.0 glue: the same shape as the vnext conversions above. ---------
+
+func newV30FeatureRegistry(features []Feature) (FeatureRegistry, error) {
+	converted := make([]v30.Feature, len(features))
+	for i, feature := range features {
+		converted[i] = featureForV30(feature)
+	}
+	validated, err := v30.NewFeatureRegistry(converted)
+	if err != nil {
+		return FeatureRegistry{}, err
+	}
+	return featureRegistry(featuresFromV30(validated.All())), nil
+}
+
+func v30FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
+	converted := make([]v30.Feature, len(features))
+	for i, feature := range features {
+		converted[i] = featureForV30(feature)
+	}
+	filtered, err := v30.FeaturesAtDSLVersion(converted, version)
+	if err != nil {
+		return nil, err
+	}
+	return featuresFromV30(filtered), nil
+}
+
+func featuresForV30Workflow(def Definition) ([]Feature, error) {
+	features, err := v30.FeaturesForWorkflow(def)
+	if err != nil {
+		return nil, err
+	}
+	return featuresFromV30(features), nil
+}
+
+func featuresForV30Gaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
+	features, err := v30.FeaturesForGaggle(spec)
+	if err != nil {
+		return nil, err
+	}
+	return featuresFromV30(features), nil
+}
+
+func featuresForV30Goober(spec apiv1.GooberSpec) ([]Feature, error) {
+	features, err := v30.FeaturesForGoober(spec)
+	if err != nil {
+		return nil, err
+	}
+	return featuresFromV30(features), nil
+}
+
+func checkV30FeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {
+	converted := make([]v30.Feature, len(features))
+	for i, feature := range features {
+		converted[i] = featureForV30(feature)
+	}
+	return diagnosticsFromV30(v30.CheckFeatureSupport(converted, allowPreview))
+}
+
+func checkV30WorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
+	return diagnosticsFromV30(v30.CheckWorkflowFeatureSupport(def, allowPreview))
+}
+
+func featuresFromV30(features []v30.Feature) []Feature {
+	out := make([]Feature, len(features))
+	for i, feature := range features {
+		out[i] = v30Feature(feature)
+	}
+	return out
+}
+
+func diagnosticsFromV30(diagnostics []v30.FeatureDiagnostic) []FeatureDiagnostic {
+	out := make([]FeatureDiagnostic, len(diagnostics))
+	for i, diagnostic := range diagnostics {
+		out[i] = FeatureDiagnostic{
+			Feature:  v30Feature(diagnostic.Feature),
+			Blocking: diagnostic.Blocking,
+			Message:  diagnostic.Message,
+		}
+	}
+	return out
+}
+
+func featureForV30(feature Feature) v30.Feature {
+	out := v30.Feature{
+		ID:                    v30.FeatureID(feature.ID),
+		Level:                 v30.SupportLevel(feature.Level),
+		SinceVersion:          feature.SinceVersion,
+		Replacement:           v30.FeatureID(feature.Replacement),
+		RemovalTargetVersion:  feature.RemovalTargetVersion,
+		LastSupportingVersion: feature.LastSupportingVersion,
+		DSLVersions:           make([]v30.DSLFeatureSupport, len(feature.DSLVersions)),
+		History:               make([]v30.SupportTransition, len(feature.History)),
+	}
+	for i, support := range feature.DSLVersions {
+		out.DSLVersions[i] = v30.DSLFeatureSupport{
+			Version: support.Version,
+			Level:   v30.SupportLevel(support.Level),
+		}
+	}
+	for i, transition := range feature.History {
+		out.History[i] = v30.SupportTransition{
+			Level:        v30.SupportLevel(transition.Level),
+			SinceVersion: transition.SinceVersion,
+		}
+	}
+	return out
+}
+
+func v30Feature(feature v30.Feature) Feature {
 	out := Feature{
 		ID:                    FeatureID(feature.ID),
 		Level:                 SupportLevel(feature.Level),

@@ -38,6 +38,9 @@ type DB struct {
 	readerMu     sync.RWMutex
 	readerClosed bool
 	schedulerMu  sync.Mutex
+	// schedulerIngestTimeout bounds derived telemetry work on daemon paths whose
+	// callers intentionally have no deadline.
+	schedulerIngestTimeout time.Duration
 	// path is retained so the reader pool can be reopened after Compact.
 	path string
 }
@@ -129,7 +132,11 @@ func Open(path string) (*DB, error) {
 	// between our own writers and what keeps the #1128 first-open race
 	// single-threaded through the WAL switch and migrations.
 	sqlDB.SetMaxOpenConns(1)
-	db := &DB{sql: sqlDB, path: path}
+	db := &DB{
+		sql:                    sqlDB,
+		schedulerIngestTimeout: defaultSchedulerIngestTimeout,
+		path:                   path,
+	}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -300,8 +307,8 @@ func (db *DB) PruneSchedulerBefore(ctx context.Context, cutoff time.Time) (int, 
 // (e.g. a concurrent reader transaction from another process legitimately
 // held it back) — checkpointing is a maintenance step, not a correctness
 // requirement, since WAL mode already serves correct reads without it.
-func checkpointWAL(sqlDB *sql.DB) {
-	_ = execWithBusyRetry(sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
+func checkpointWAL(ctx context.Context, sqlDB *sql.DB) {
+	_ = execWithBusyRetry(ctx, sqlDB, `PRAGMA wal_checkpoint(TRUNCATE)`)
 }
 
 // migrate runs the entire first-open setup — creating schema_meta, reading the
@@ -345,13 +352,19 @@ const busyRetryMaxAttempts = 12
 // SBUSY/LOCKED with a short linear backoff. Used by checkpointWAL, whose
 // PRAGMA wal_checkpoint can lose the write lock to a concurrent process's
 // reader/writer and must not fail the caller over it.
-func execWithBusyRetry(sqlDB *sql.DB, query string, args ...any) error {
+func execWithBusyRetry(ctx context.Context, sqlDB *sql.DB, query string, args ...any) error {
 	var err error
 	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
-		if _, err = sqlDB.Exec(query, args...); err == nil || !isSQLiteBusy(err) {
+		if _, err = sqlDB.ExecContext(ctx, query, args...); err == nil || !isSQLiteBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return err
 }
@@ -373,28 +386,41 @@ func (db *DB) migrateOnce(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	var schemaMetaExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM sqlite_master
+			WHERE type = 'table' AND name = 'schema_meta'
+		)`).Scan(&schemaMetaExists); err != nil {
+		return fmt.Errorf("rollup: inspect schema_meta: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("rollup: create schema_meta: %w", err)
 	}
-	version, err := schemaVersionTx(ctx, tx)
+	version, err := schemaVersionTx(ctx, tx, schemaMetaExists)
 	if err != nil {
 		return err
 	}
+	if version < 0 {
+		return fmt.Errorf(
+			"rollup: schema version %d is invalid; supported versions are 0 through %d; restore telemetry.db from backup",
+			version, len(migrations),
+		)
+	}
 	if version > len(migrations) {
-		// A store written by a newer binary — e.g. a version rollback, or the
-		// mixed-version window the self-update supervisor makes routine.
-		// Refusing is right: the loop below would simply never run (version
-		// already >= len(migrations)), so Open would otherwise succeed against
-		// a schema this build does not understand, and the next IngestRun
-		// would silently delete-then-insert into it with the stamped version
-		// left at the newer value forever. Matches internal/readmodel's
-		// existing guard (#2049).
-		return fmt.Errorf("rollup: store schema version %d is newer than this build supports (%d)",
-			version, len(migrations))
+		return fmt.Errorf(
+			"rollup: schema version %d is newer than supported version %d; upgrade Goobers to a binary that supports telemetry schema version %d",
+			version, len(migrations), version,
+		)
 	}
 	for i := version; i < len(migrations); i++ {
 		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
 			return fmt.Errorf("rollup: apply migration %d: %w", i+1, err)
+		}
+		if i+1 == 19 {
+			if err := backfillCICheckFailures(ctx, tx, filepath.Dir(db.path)); err != nil {
+				return fmt.Errorf("rollup: backfill migration %d: %w", i+1, err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
 			return fmt.Errorf("rollup: reset schema_meta after migration %d: %w", i+1, err)
@@ -424,14 +450,21 @@ func isSQLiteBusy(err error) bool {
 // schemaVersionTx reads the recorded schema version within the migration
 // transaction (so the read shares the write lock migrateOnce already holds — no
 // separate autocommit read that could race a concurrent first-opener).
-func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
-	if err == sql.ErrNoRows {
+func schemaVersionTx(ctx context.Context, tx *sql.Tx, schemaMetaExisted bool) (int, error) {
+	var count, version int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MIN(version), 0)
+		FROM schema_meta`).Scan(&count, &version); err != nil {
+		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	}
+	if count == 0 && !schemaMetaExisted {
 		return 0, nil
 	}
-	if err != nil {
-		return 0, fmt.Errorf("rollup: read schema version: %w", err)
+	if count != 1 {
+		return 0, fmt.Errorf(
+			"rollup: schema_meta must contain exactly one version row, found %d; restore telemetry.db from backup",
+			count,
+		)
 	}
 	return version, nil
 }

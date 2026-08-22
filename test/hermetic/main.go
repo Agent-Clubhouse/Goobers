@@ -106,6 +106,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
 	}
+	goroot, err := resolveGoroot(tools[0].path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
+		return 1
+	}
+
 	allowed := toolNames(tools)
 	violations, err := auditTestExecs(root, allowed)
 	if err != nil {
@@ -143,7 +149,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	goArgs := goCommandArgs(invocation)
 	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
 	command.Dir = root
-	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName)
+	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName, goroot)
 
 	collector := &diagnosticCollector{allowed: allowed, tools: make(map[string]struct{})}
 	stdoutWriter := &diagnosticWriter{destination: stdout, collector: collector}
@@ -392,9 +398,19 @@ func platformToolSpecs(goos string) []toolSpec {
 		return []toolSpec{
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
+			// Both spellings: internal/platform/secfile execs bare "icacls",
+			// internal/credentials execs "icacls.exe". The audit matches the
+			// literal argv[0], so dropping either one fails that package.
 			{name: "icacls", required: true},
+			{name: "icacls.exe", required: true},
 			{name: "node", required: true},
 			{name: "npm.cmd", required: true},
+			{name: "powershell.exe", required: true},
+			// Optional: PowerShell 7 ships as pwsh alongside the built-in
+			// Windows PowerShell. Hosted runners have it, developer machines
+			// need not.
+			{name: "pwsh"},
+			{name: "sh", required: true},
 		}
 	}
 
@@ -404,6 +420,14 @@ func platformToolSpecs(goos string) []toolSpec {
 		{name: "npm", required: true},
 		{name: "sh", required: true},
 		{name: "bash"},
+		// Optional: PowerShell is cross-platform and preinstalled on hosted
+		// runners, so allowlisting it lets the PowerShell quoting tests execute
+		// in the hermetic tier instead of skipping. It must stay optional -
+		// developer machines without PowerShell simply run those tests as
+		// skips, exactly as they do today. Both spellings are listed because
+		// the binary is pwsh off Windows and powershell on it.
+		{name: "pwsh"},
+		{name: "powershell"},
 		{name: "cat", required: true},
 		{name: "dirname", required: true},
 		{name: "echo", required: true},
@@ -435,8 +459,18 @@ func toolNames(tools []resolvedTool) map[string]struct{} {
 }
 
 func populateToolPath(directory string, tools []resolvedTool) error {
+	// Distinct allowlist names can normalise to one executable: on Windows
+	// executableName maps both "icacls" and "icacls.exe" to icacls.exe. The
+	// allowlist needs both spellings so the audit matches either literal
+	// argv[0], but the binary must only be linked once — linkTool fails with
+	// "The file exists" on the second attempt.
+	linked := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
 		destination := filepath.Join(directory, executableName(tool.name))
+		if _, done := linked[destination]; done {
+			continue
+		}
+		linked[destination] = struct{}{}
 		if err := linkTool(tool.path, destination); err != nil {
 			return fmt.Errorf("link %s: %w", tool.name, err)
 		}
@@ -482,7 +516,28 @@ func executableName(name string) string {
 	return name
 }
 
-func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
+// resolveGoroot asks the real Go binary where its GOROOT is, before that binary
+// is linked into the hermetic tool PATH.
+//
+// The tool PATH cannot be relied on to answer this. Off Windows linkTool makes
+// a symlink, so the Go runtime follows it back to the original binary and infers
+// GOROOT by itself. On Windows linkTool hardlinks or copies, and a copied go.exe
+// has no path home — it fails with "'go' binary is trimmed and GOROOT is not
+// set". Setting GOROOT explicitly makes the environment correct on every
+// platform rather than relying on symlink resolution.
+func resolveGoroot(goPath string) (string, error) {
+	output, err := exec.Command(goPath, "env", "GOROOT").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve GOROOT from %s: %w", goPath, err)
+	}
+	goroot := strings.TrimSpace(string(output))
+	if goroot == "" {
+		return "", fmt.Errorf("resolve GOROOT from %s: empty result", goPath)
+	}
+	return goroot, nil
+}
+
+func hermeticEnvironment(base []string, toolPath, compilerName, goroot string) []string {
 	excluded := map[string]string{
 		"GOOBERS_OTLP_ENDPOINT": "",
 		"GOOBERS_OTLP_INSECURE": "",
@@ -490,6 +545,7 @@ func hermeticEnvironment(base []string, toolPath, compilerName string) []string 
 	overrides := map[string]string{
 		"CC":          compilerName,
 		"GO":          executableName("go"),
+		"GOROOT":      goroot,
 		"GOENV":       "off",
 		"GOFLAGS":     "-mod=readonly",
 		"GONOPROXY":   "none",

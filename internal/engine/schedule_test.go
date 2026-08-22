@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 type fakeScheduleClient struct {
@@ -491,17 +492,16 @@ func (b *blockingScheduleStages) callCount() int {
 }
 
 func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		CachedDownload: testsuite.CachedDownload{Version: "default"},
-		LogLevel:       "error",
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
+	startupCtx, cancelStartup := context.WithTimeout(t.Context(), 5*time.Minute)
+	server, err := temporaltest.StartDevServer(startupCtx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
 		ExtraArgs: []string{
 			"--dynamic-config-value", "history.enableCHASMSchedulerCreation=true",
 		},
 	})
+	cancelStartup()
 	if err != nil {
 		t.Fatalf("start Temporal dev server: %v", err)
 	}
@@ -510,6 +510,8 @@ func TestTemporalScheduleLifecycleClaimsAndOverlap(t *testing.T) {
 			t.Errorf("stop Temporal dev server: %v", err)
 		}
 	})
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
 
 	const (
 		namespace = "default"

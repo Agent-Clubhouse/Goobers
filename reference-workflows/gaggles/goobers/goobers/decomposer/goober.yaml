@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: decomposer
+spec:
+  gaggle: goobers
+  role: decomposer
+  displayName: Decomposer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - repo:read
+    - github:issues:read
+    - agent:model
+  tools:
+    - github
+    - shell
+  scaleFactor: 1
+  workflows:
+    - decomposition

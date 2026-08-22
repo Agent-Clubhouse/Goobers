@@ -78,8 +78,7 @@ func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 				// review's escalation branch receives empty diffs, repass
 				// exhaustion, identical diffs, and non-retryable failures.
 				"review":     {BranchEscalate},
-				"local-gate": {"infra", BranchEscalate},
-				"ci-gate":    {"timeout", BranchEscalate},
+				"local-gate": {BranchEscalate},
 			}
 			for gateName, outcomes := range mechanicalRoutes {
 				g, ok := m.Gate(gateName)
@@ -97,6 +96,16 @@ func TestImplementationEscalatingBranchesRunIssueBookkeeping(t *testing.T) {
 						t.Errorf("%s %s branch = %q, want park-escalated; execution stalls must not route to needs-human", gateName, outcome, target)
 					}
 				}
+			}
+			localGate, _ := m.Gate("local-gate")
+			if target, ok := BranchTarget(localGate, "infra"); !ok || target != "local-ci" {
+				t.Errorf("local-gate infra branch = %q,%v, want local-ci,true", target, ok)
+			}
+			ciGate, ok := m.Gate("ci-gate")
+			if !ok {
+				t.Error("ci-gate not found")
+			} else if target, found := BranchTarget(ciGate, "timeout"); !found || target != "ci-poll" {
+				t.Errorf("ci-gate timeout branch = %q,%v, want ci-poll,true; pending checks must continue without terminal parking", target, found)
 			}
 
 			human, ok := m.Task("park-needs-human")

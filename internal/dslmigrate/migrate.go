@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -21,9 +22,10 @@ import (
 var ErrAlreadyAtTarget = errors.New("dslmigrate: workflow is already at the target dslVersion")
 
 // Edge is one registered from→to migration step. Apply mutates root (the
-// document's top-level mapping node) in place, returning whether it changed
-// anything and human-readable notes describing each change it made — the
-// scaffold's equivalent of a Terraform StateUpgrader function.
+// document's top-level mapping node) in place, returning whether it made any
+// semantic changes beyond the version pin and human-readable notes describing
+// each change it made — the scaffold's equivalent of a Terraform StateUpgrader
+// function.
 type Edge struct {
 	From  string
 	To    string
@@ -50,8 +52,7 @@ func FindEdge(from, to string) (Edge, bool) {
 // Result is the outcome of migrating one workflow document.
 type Result struct {
 	// Before and After are the document's full YAML text, before and after
-	// the migration. Equal (Changed=false) means the edge matched but had
-	// nothing to do (e.g. every field it touches was already explicit).
+	// the migration. Changed includes the mandatory dslVersion pin.
 	Before, After string
 	Changed       bool
 	// Notes describes each individual change the edge made, for the diff
@@ -77,7 +78,8 @@ func Migrate(source []byte, to string) (*Result, error) {
 	}
 
 	from := supportmatrix.CurrentDSLVersion
-	if versionNode, _ := mapValue(root, "dslVersion"); versionNode != nil && versionNode.Value != "" {
+	versionNode, _ := mapValue(root, "dslVersion")
+	if versionNode != nil && versionNode.Value != "" {
 		from = versionNode.Value
 	}
 	if from == to {
@@ -88,16 +90,160 @@ func Migrate(source []byte, to string) (*Result, error) {
 		return nil, fmt.Errorf("dslmigrate: no direct migration registered from dslVersion %q to %q (chain `fix` invocations for a multi-step upgrade)", from, to)
 	}
 
-	before, err := marshalDocument(&doc)
-	if err != nil {
-		return nil, fmt.Errorf("dslmigrate: re-render original document: %w", err)
+	before := string(source)
+	transformed, notes := edge.Apply(root)
+	var after string
+	if transformed {
+		setScalar(root, "dslVersion", to, "!!str")
+		rendered, err := marshalDocument(&doc)
+		if err != nil {
+			return nil, fmt.Errorf("dslmigrate: render migrated document: %w", err)
+		}
+		after = rendered
+	} else {
+		pinned, err := pinVersion(source, versionNode, root, to)
+		if err != nil {
+			return nil, fmt.Errorf("dslmigrate: pin dslVersion: %w", err)
+		}
+		after = string(pinned)
 	}
-	changed, notes := edge.Apply(root)
-	after, err := marshalDocument(&doc)
-	if err != nil {
-		return nil, fmt.Errorf("dslmigrate: render migrated document: %w", err)
+	return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+}
+
+func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte, error) {
+	if versionNode == nil {
+		return insertVersionPin(source, root, to)
 	}
-	return &Result{Before: before, After: after, Changed: changed, Notes: notes}, nil
+	if versionNode.Kind != yaml.ScalarNode || versionNode.Line < 1 || versionNode.Column < 1 {
+		return nil, errors.New("dslVersion must be a scalar")
+	}
+	if versionNode.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return nil, errors.New("block-style dslVersion is not supported for source-preserving migration")
+	}
+	if versionNode.Style&yaml.TaggedStyle != 0 {
+		return nil, errors.New("tagged dslVersion is not supported for source-preserving migration")
+	}
+	if versionNode.Anchor != "" {
+		return nil, errors.New("anchored dslVersion is not supported for source-preserving migration")
+	}
+	start, err := sourceOffset(source, versionNode.Line, versionNode.Column)
+	if err != nil {
+		return nil, err
+	}
+	end, err := scalarEnd(source, start, versionNode.Style)
+	if err != nil {
+		return nil, err
+	}
+	replacement := to
+	switch {
+	case versionNode.Style&yaml.DoubleQuotedStyle != 0:
+		replacement = strconv.Quote(to)
+	case versionNode.Style&yaml.SingleQuotedStyle != 0:
+		replacement = "'" + to + "'"
+	}
+	out := make([]byte, 0, len(source)-end+start+len(replacement))
+	out = append(out, source[:start]...)
+	out = append(out, replacement...)
+	out = append(out, source[end:]...)
+	return out, nil
+}
+
+func insertVersionPin(source []byte, root *yaml.Node, to string) ([]byte, error) {
+	var anchor *yaml.Node
+	for _, name := range []string{"kind", "apiVersion"} {
+		if value, _ := mapValue(root, name); value != nil {
+			anchor = value
+			break
+		}
+	}
+	if anchor == nil || anchor.Line < 1 {
+		return nil, errors.New("workflow without dslVersion must declare kind or apiVersion")
+	}
+	lineStart, err := sourceOffset(source, anchor.Line, 1)
+	if err != nil {
+		return nil, err
+	}
+	lineEnd := bytes.IndexByte(source[lineStart:], '\n')
+	eol := []byte("\n")
+	if bytes.Contains(source, []byte("\r\n")) {
+		eol = []byte("\r\n")
+	}
+	var offset int
+	var insertion []byte
+	if lineEnd < 0 {
+		offset = len(source)
+		insertion = append(append([]byte{}, eol...), []byte(`dslVersion: `+strconv.Quote(to))...)
+	} else {
+		offset = lineStart + lineEnd + 1
+		insertion = append([]byte(`dslVersion: `+strconv.Quote(to)), eol...)
+	}
+	out := make([]byte, 0, len(source)+len(insertion))
+	out = append(out, source[:offset]...)
+	out = append(out, insertion...)
+	out = append(out, source[offset:]...)
+	return out, nil
+}
+
+func sourceOffset(source []byte, line, column int) (int, error) {
+	offset := 0
+	for current := 1; current < line; current++ {
+		next := bytes.IndexByte(source[offset:], '\n')
+		if next < 0 {
+			return 0, fmt.Errorf("source has no line %d", line)
+		}
+		offset += next + 1
+	}
+	offset += column - 1
+	if offset < 0 || offset >= len(source) {
+		return 0, fmt.Errorf("source has no column %d on line %d", column, line)
+	}
+	return offset, nil
+}
+
+func scalarEnd(source []byte, start int, style yaml.Style) (int, error) {
+	if style&yaml.DoubleQuotedStyle != 0 || style&yaml.SingleQuotedStyle != 0 {
+		quote := source[start]
+		if quote != '"' && quote != '\'' {
+			return 0, errors.New("quoted dslVersion does not start with a quote")
+		}
+		for i := start + 1; i < len(source); i++ {
+			if source[i] != quote {
+				continue
+			}
+			if quote == '\'' && i+1 < len(source) && source[i+1] == quote {
+				i++
+				continue
+			}
+			if quote == '"' {
+				backslashes := 0
+				for j := i - 1; j >= start && source[j] == '\\'; j-- {
+					backslashes++
+				}
+				if backslashes%2 != 0 {
+					continue
+				}
+			}
+			return i + 1, nil
+		}
+		return 0, errors.New("unterminated quoted dslVersion")
+	}
+	end := start
+	for end < len(source) && !plainScalarDelimiter(source[end]) {
+		end++
+	}
+	if end == start {
+		return 0, errors.New("empty dslVersion scalar")
+	}
+	return end, nil
+}
+
+func plainScalarDelimiter(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n', '#', ',', ']', '}':
+		return true
+	default:
+		return false
+	}
 }
 
 func documentRoot(doc *yaml.Node) *yaml.Node {

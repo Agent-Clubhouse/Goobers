@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -158,6 +159,37 @@ type Outcome struct {
 	// Stderr is the separately captured harness subprocess stderr. It is
 	// bounded at MaxTranscriptBytes and recorded as a run artifact on failure.
 	Stderr []byte
+	// InputInspectionReceipts are tool-owned goobers-io records collected
+	// independently of adapter transcript telemetry.
+	InputInspectionReceipts []mcpio.InputInspectionReceipt
+	// InputInspectionReceiptsCollected reports that goobers-io receipt
+	// collection was configured, including when no inspection call occurred.
+	InputInspectionReceiptsCollected bool
+	// MCPServerFailures lists MCP servers this adapter registered for the
+	// session that the harness CLI then reported as not connected at
+	// invocation time — either an explicit non-"connected" status or the
+	// server missing from the CLI's own connection report entirely. A
+	// populated list means every tool those servers provide was silently
+	// absent from the agent's session even though the resolved config
+	// declared them (#3356): the Executor journals it loudly so a downstream
+	// MISSING_REQUIRED_TOOLS-shaped block stops wearing an unrelated
+	// costume. Populated by adapters that can observe per-server connection
+	// state: claude-code from its stream-json system/init event, copilot-cli
+	// from its own run log (#3456 — no transcript equivalent exists there).
+	// Nil elsewhere, and nil never asserts that servers WERE available.
+	MCPServerFailures []MCPServerFailure
+}
+
+// MCPServerFailure identifies one MCP server that was registered for a
+// harness session but reported unusable by the harness CLI at invocation
+// time (#3356).
+type MCPServerFailure struct {
+	// Server is the registered MCP server name (e.g. "goobers-io").
+	Server string
+	// Status is the harness-reported connection status (e.g. "failed"), or
+	// "absent" when the harness's connection report did not mention the
+	// registered server at all.
+	Status string
 }
 
 // PreflightInfo describes the installed harness verified before agentic work

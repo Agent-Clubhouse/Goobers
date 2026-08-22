@@ -153,8 +153,9 @@ spec:
       onTimeout: salvage
       next: review
 
-    # The local CI-equivalent gate, run on the implementation branch after
-    # syncing base. This gaggle declares `ciCommand: ["npm", "run", "ci"]`
+    # The local CI-equivalent gate, run on the reviewed, durably checkpointed
+    # implementation branch after syncing base. This gaggle declares
+    # `ciCommand: ["npm", "run", "ci"]`
     # (gaggle.yaml), so at runtime the deterministic local-ci stage runs that
     # suite instead of the Go-default command declared here (MGV-1/#1009) —
     # this declaration is the fallback for a gaggle that declares no
@@ -170,11 +171,9 @@ spec:
         maxAttempts: 1
       next: local-gate
 
-    # Deterministic branch push (#237): the implementer commits but never
-    # pushes (no configured auth/identity for an agentic session to do so
-    # reliably) — this stage publishes the run branch to origin through the
-    # credential seam (#14), authenticated per-invocation, never persisted to
-    # disk. Runs after local-ci passes so a broken build is never published.
+    # Deterministic branch checkpoint (#237/#3272): publish the reviewed commit
+    # before long local CI, but still before open-pr, so infrastructure failures
+    # preserve a durable branch without creating a pull request prematurely.
     - name: push-branch
       type: deterministic
       goal: Push the run's branch to origin.
@@ -184,7 +183,7 @@ spec:
         - repo:push
       policyActions:
         - push-repository-branch
-      next: open-pr
+      next: local-ci
 
     - name: open-pr
       type: deterministic
@@ -238,6 +237,8 @@ spec:
         - provider:pr:write
       expectedOutputs:
         - ciStatus
+        # Passed through by the built-in so timeout can re-enter this task.
+        - prNumber
       next: ci-gate
 
     - name: close-out
@@ -323,21 +324,22 @@ spec:
       agentic:
         goober: reviewer
       branches:
-        pass: local-ci
+        pass: push-branch
         needs-changes: implement
         fail: park-needs-human
         escalate: park-escalated
 
-    # Retryable executor/infrastructure failures are not actionable by the
-    # implementer and park with a distinct gate outcome.
+    # Retryable infrastructure failures re-run local-ci against the exact
+    # reviewed commit under their own bounded budget. Exhaustion takes the
+    # escalation branch and terminal cleanup retains the pushed checkpoint.
     - name: local-gate
       evaluator: automated
       automated:
         check: failure-class
       branches:
-        pass: push-branch
+        pass: open-pr
         fail: implement
-        infra: park-escalated
+        infra: local-ci
         escalate: park-escalated
 
     # #947: open-pr re-checks the claimed issue's state immediately before
@@ -378,13 +380,7 @@ spec:
         fail: remediate-ci
         escalate: park-escalated
         # A poll timeout (#239) is not evidence CI failed — just that it
-        # didn't finish in time — so it parks for remediation/investigation
-        # instead of spending an agentic repass re-implementing a change
-        # that was never actually reviewed as failing.
-        #
-        # Via park-escalated, NOT straight to "@escalate" (#929): both reach
-        # the same terminal phase, but routing at the terminal state directly
-        # skips the stage that releases the issue's claim and applies the
-        # park label (#2028: goobers:needs-remediation here), orphaning it
-        # silently.
-        timeout: park-escalated
+        # didn't finish in this polling window. Re-enter ci-poll at the
+        # journaled stage boundary so the same PR remains claimed and keeps
+        # waiting without consuming implementation or repass budget (#3325).
+        timeout: ci-poll

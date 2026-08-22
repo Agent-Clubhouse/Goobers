@@ -1,7 +1,9 @@
 package vcurrent
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +48,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"resolve-review-threads":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"route-provider-verdict":        {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
@@ -75,6 +78,7 @@ var commandPolicyActions = map[string][]string{
 	"record-merge-refusal":   {"record-merge-refusal", "demote-pr"},
 	"remediation-checkpoint": {"record-remediation-checkpoint", "escalate-pr"},
 	"respond-to-findings":    {"respond-to-findings"},
+	"resolve-review-threads": {"resolve-review-threads"},
 	"set-milestone":          {"assign-milestone"},
 	"update-behind-pr":       {"update-pr-branch", "clear-remediation"},
 }
@@ -91,6 +95,10 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
 	},
+}
+
+var readOnlyCommandArguments = map[string]string{
+	"respond-to-findings": "check",
 }
 
 var commandArgumentPolicyActionInputs = map[string]map[string]string{
@@ -250,6 +258,12 @@ func policyCommand(task apiv1.Task) string {
 
 func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	command := policyCommand(task)
+	if task.Run != nil {
+		readOnlyArgument := readOnlyCommandArguments[command]
+		if readOnlyArgument != "" && booleanCommandArgument(task.Run.Command[2:], readOnlyArgument) {
+			return nil
+		}
+	}
 	actions := append([]string(nil), commandPolicyActions[command]...)
 	argumentActions := commandArgumentPolicyActions[command]
 	if task.Run == nil || len(argumentActions) == 0 {
@@ -302,6 +316,13 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		actions = append(actions, "close-issue")
 	}
 	return actions
+}
+
+func booleanCommandArgument(args []string, name string) bool {
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	enabled := flags.Bool(name, false, "")
+	return flags.Parse(args) == nil && *enabled
 }
 
 func isCurationBacklogClaim(task apiv1.Task) bool {

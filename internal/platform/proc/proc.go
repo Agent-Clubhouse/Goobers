@@ -35,6 +35,12 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	// Record the child before anything can wait for it. A daemon running as
+	// container init reaps orphaned descendants (StartOrphanReaper), and this
+	// registration is how that reaper tells a stage — which Configure detaches
+	// into its own session, making it look like an escaped orphan — from a real
+	// one, so it never consumes the exit status this caller's Wait needs.
+	trackChild(cmd.Process.Pid)
 	tree, err := newTree(cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -65,7 +71,9 @@ func (t *Tree) RequestDump() (supported bool, err error) {
 }
 
 // Alive reports whether pid names a live process. On unix it is a signal-0
-// probe. It fails toward alive on an ambiguous probe (see doc.go): the caller
+// probe, refined on linux by a /proc state read so an unreaped zombie — which
+// answers a signal-0 as if it were running, forever — counts as dead. It
+// otherwise fails toward alive on an ambiguous probe (see doc.go): the caller
 // is the worktree reaper, for which a false "dead" is destructive.
 func Alive(pid int) bool {
 	return alive(pid)

@@ -341,6 +341,7 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
 	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
 	t.Setenv("GOOBERS_INPUT_COMMENT", "Should this implementation proceed despite the rejected approach?")
+	t.Setenv("GOOBERS_INPUT_REASON", "The parent changed after decomposition.")
 	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
@@ -356,6 +357,9 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	}
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
+	}
+	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
+		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
 	}
 }
 

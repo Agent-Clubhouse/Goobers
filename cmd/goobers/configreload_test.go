@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
@@ -38,7 +39,17 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	address := freeLoopbackAddress(t)
 	setAPIListenAddress(t, root, address)
 	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	gagglePath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "gaggle.yaml")
 	workflowPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
+	mirrorPath := t.TempDir()
+	gaggle, err := os.ReadFile(gagglePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaggle = append(gaggle, []byte("  outboxMirrorPath: "+mirrorPath+"\n")...)
+	if err := os.WriteFile(gagglePath, gaggle, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &daemonStartedWriter{started: make(chan struct{})}
@@ -102,7 +113,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 
 	reloadedWorkflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: reloaded-implement
 spec:
@@ -116,7 +127,9 @@ spec:
       type: deterministic
       goal: run a no-op local command
       run:
-        command: ["true"]
+        command: ["sh", "-c", "mkdir -p reports && printf reloaded > reports/report.txt"]
+      outbox:
+        - reports/report.txt
       next: approval
     - name: finish
       type: deterministic
@@ -143,6 +156,19 @@ spec:
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
 	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
 	runID := runIDFromRunStdout(t, stdout)
+	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
+		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data, true
+	})
+	if string(mirrored) != "reloaded" {
+		t.Fatalf("mirrored outbox = %q, want reloaded", mirrored)
+	}
 	runDir := filepath.Join(layout.ForGaggle("example").RunsDir(), runID)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -618,8 +644,8 @@ spec:
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "completed fixture task",
 			})
