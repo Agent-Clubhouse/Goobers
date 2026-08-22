@@ -241,3 +241,9 @@ github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definitio
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
 github.com/goobers/goobers/internal/temporaltest.StartDevServer # Dev-server acquisition seam used only from engine/bootstrap _test.go files (#3393).
 github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # Offline-vs-download resolution helper for the test-only dev-server seam (#3393).
+
+# Sandbox policy validation (#3546). validate and resolveDirectory are called from
+# platform-specific implementations (native_darwin.go, native_linux.go) but appear
+# dead on unsupported platforms (Windows, etc.) where native_other.go applies.
+github.com/goobers/goobers/internal/sandbox.validate # Policy validation helper reachable from platform-specific sandbox implementations (darwin/linux only; compiled out on Windows).
+github.com/goobers/goobers/internal/sandbox.resolveDirectory # Directory resolution helper reachable from policy validation and platform-specific sandbox implementations (darwin/linux only).
