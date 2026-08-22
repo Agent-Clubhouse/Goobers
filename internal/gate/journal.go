@@ -1,6 +1,8 @@
 package gate
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -125,6 +127,22 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	if r.Reason != "" {
 		runner["reason"] = r.Reason
+	}
+	if r.Verdict != nil && len(r.Verdict.Findings) > 0 {
+		identities := make([]string, 0, len(r.Verdict.Findings))
+		for _, finding := range r.Verdict.Findings {
+			data, err := json.Marshal(struct {
+				Message  string `json:"message"`
+				Location string `json:"location,omitempty"`
+				Class    string `json:"class,omitempty"`
+			}{finding.Message, finding.Location, string(finding.Class)})
+			if err != nil {
+				return nil, fmt.Errorf("gate: encode finding identity: %w", err)
+			}
+			sum := sha256.Sum256(data)
+			identities = append(identities, "sha256:"+hex.EncodeToString(sum[:]))
+		}
+		runner["findingIdentities"] = identities
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,

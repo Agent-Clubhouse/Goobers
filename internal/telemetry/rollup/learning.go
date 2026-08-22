@@ -30,6 +30,7 @@ type LearningEpisode struct {
 	Classification     string    `json:"classification"`
 	EvidenceJSON       string    `json:"evidence"`
 	CorrectionFeedback string    `json:"correctionFeedback,omitempty"`
+	FindingIdentities  []string  `json:"findingIdentities,omitempty"`
 	Outcome            string    `json:"outcome"`
 	OccurredAt         time.Time `json:"occurredAt"`
 }
@@ -131,6 +132,7 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 				feedback = value
 			}
 		}
+		findingIdentities := runnerFindingIdentities(event)
 		if code == "" && event.Error != nil {
 			code = event.Error.Code
 			if feedback == "" {
@@ -142,7 +144,7 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 			"runId": id.RunID, "seq": event.Seq, "gate": gate,
 			"verdict": verdict, "sourceAttempt": attempt,
 			"nextAttempt": nextAttempt, "artifacts": event.Artifacts,
-			"error": event.Error,
+			"error": event.Error, "findingIdentities": findingIdentities,
 		})
 		if err != nil {
 			return fmt.Errorf("rollup: encode learning evidence: %w", err)
@@ -157,8 +159,14 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 				laterOutcome = later.Status
 			}
 			if isLearningPass(later) {
-				outcome = "fixed"
-			} else if normalizeLearningSignature(learningSubject(later), laterOutcome, runnerSignature(later)) == signature {
+				if runnerReason(later) == "REVIEW_FINDING_DISPROVEN" {
+					outcome = "false-finding"
+				} else {
+					outcome = "fixed"
+				}
+			} else if (len(findingIdentities) > 0 && sameFindingIdentities(findingIdentities, runnerFindingIdentities(later))) ||
+				(len(findingIdentities) == 0 &&
+					normalizeLearningSignature(learningSubject(later), laterOutcome, runnerSignature(later)) == signature) {
 				outcome = "repeated"
 			} else {
 				outcome = "changed-failure"
@@ -225,6 +233,47 @@ func runnerSignature(event journalEvent) string {
 	return ""
 }
 
+func runnerReason(event journalEvent) string {
+	if event.Runner == nil {
+		return ""
+	}
+	value, _ := event.Runner["reason"].(string)
+	return value
+}
+
+func runnerFindingIdentities(event journalEvent) []string {
+	if event.Runner == nil {
+		return nil
+	}
+	values, ok := event.Runner["findingIdentities"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if identity, ok := value.(string); ok && identity != "" {
+			out = append(out, identity)
+		}
+	}
+	return out
+}
+
+func sameFindingIdentities(first, second []string) bool {
+	if len(first) == 0 || len(second) == 0 {
+		return false
+	}
+	known := make(map[string]struct{}, len(first))
+	for _, identity := range first {
+		known[identity] = struct{}{}
+	}
+	for _, identity := range second {
+		if _, ok := known[identity]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // LearningEpisodes returns durable non-pass outcomes, ordered by occurrence.
 func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) ([]LearningEpisode, error) {
 	clauses := []string{"1=1"}
@@ -270,6 +319,12 @@ func (db *DB) LearningEpisodes(ctx context.Context, req LearningEpisodeRequest) 
 			&e.EffectiveVersion, &e.Signature, &e.Classification, &e.EvidenceJSON,
 			&e.CorrectionFeedback, &e.Outcome, &at); err != nil {
 			return nil, fmt.Errorf("rollup: scan learning episode: %w", err)
+		}
+		var evidence struct {
+			FindingIdentities []string `json:"findingIdentities"`
+		}
+		if err := json.Unmarshal([]byte(e.EvidenceJSON), &evidence); err == nil {
+			e.FindingIdentities = evidence.FindingIdentities
 		}
 		var err error
 		e.OccurredAt, err = parseTime(sql.NullString{String: at, Valid: at != ""})

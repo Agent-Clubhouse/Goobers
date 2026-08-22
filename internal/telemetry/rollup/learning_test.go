@@ -26,7 +26,7 @@ startedAt: 2026-08-21T00:00:00Z
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(run, "events.jsonl"), []byte(`{"schema":"goobers.dev/journal/event/v1","seq":1,"time":"2026-08-21T00:00:00Z","type":"run.started"}
-{"schema":"goobers.dev/journal/event/v1","seq":2,"time":"2026-08-21T00:00:01Z","type":"gate.evaluated","gate":"review","verdict":"needs-changes","target":"implement","runner":{"failureSignature":"missing-test","correctionFeedback":"Add regression coverage."}}
+{"schema":"goobers.dev/journal/event/v1","seq":2,"time":"2026-08-21T00:00:01Z","type":"gate.evaluated","gate":"review","verdict":"needs-changes","target":"implement","runner":{"failureSignature":"missing-test","correctionFeedback":"Add regression coverage.","findingIdentities":["finding-1"]}}
 {"schema":"goobers.dev/journal/event/v1","seq":3,"time":"2026-08-21T00:00:02Z","type":"stage.started","stage":"implement","attempt":2}
 {"schema":"goobers.dev/journal/event/v1","seq":4,"time":"2026-08-21T00:00:03Z","type":"gate.evaluated","gate":"review","verdict":"pass"}
 {"schema":"goobers.dev/journal/event/v1","seq":5,"time":"2026-08-21T00:00:04Z","type":"run.finished","status":"completed"}
@@ -51,7 +51,8 @@ startedAt: 2026-08-21T00:00:00Z
 	episode := episodes[0]
 	if episode.Signature != "review|needs-changes|missing-test" ||
 		episode.NextAttempt != 2 || episode.Outcome != "fixed" ||
-		episode.EffectiveVersion == "" {
+		episode.EffectiveVersion == "" || len(episode.FindingIdentities) != 1 ||
+		episode.FindingIdentities[0] != "finding-1" {
 		t.Fatalf("episode = %+v", episode)
 	}
 	clusters, err := db.LearningClusters(context.Background(), LearningEpisodeRequest{})

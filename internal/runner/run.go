@@ -3,6 +3,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1892,7 +1894,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
-		if err := recordLearningInjection(ws.jr, g.Name, retryTarget, gr.Attempt, injected); err != nil {
+		if err := recordLearningInjection(ws.jr, g.Name, retryTarget, gr.Attempt, injected, gr.Verdict); err != nil {
 			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
 				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
 			return gr, false, terminal, true, failErr
@@ -1902,7 +1904,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 	return gr, retry, Result{}, false, nil
 }
 
-func recordLearningInjection(jr executionJournal, gate, target string, attempt int, pointer *apiv1.ContextPointer) error {
+func recordLearningInjection(jr executionJournal, gate, target string, attempt int, pointer *apiv1.ContextPointer, verdict *apiv1.Verdict) error {
 	if jr == nil {
 		return nil
 	}
@@ -1910,6 +1912,24 @@ func recordLearningInjection(jr executionJournal, gate, target string, attempt i
 		"kind":   "learning.episode.injected",
 		"gate":   gate,
 		"target": target,
+	}
+	if verdict != nil {
+		identities := make([]string, 0, len(verdict.Findings))
+		for _, finding := range verdict.Findings {
+			payload, err := json.Marshal(struct {
+				Message  string `json:"message"`
+				Location string `json:"location,omitempty"`
+				Class    string `json:"class,omitempty"`
+			}{finding.Message, finding.Location, string(finding.Class)})
+			if err != nil {
+				return fmt.Errorf("encode finding identity: %w", err)
+			}
+			sum := sha256.Sum256(payload)
+			identities = append(identities, "sha256:"+hex.EncodeToString(sum[:]))
+		}
+		runner["findingIdentities"] = identities
+		runner["episode"] = verdict
+		runner["correctionFeedback"] = verdict.Rationale
 	}
 	if pointer != nil && pointer.Artifact != nil {
 		runner["source"] = pointer.Name
