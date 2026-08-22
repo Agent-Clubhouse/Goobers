@@ -72,13 +72,34 @@ func (p compositeRunLiveness) RunLive(ctx context.Context, runID string) (bool, 
 	return false, errors.Join(errs...)
 }
 
+// claimProbeConcurrency is the worker-pool width for one liveness pass:
+// distinct holders are probed in parallel so a slow engine frontend costs one
+// describe-timeout per POOL of holders, not per holder.
+const claimProbeConcurrency = 4
+
+// claimProbeBudget bounds one WHOLE liveness pass. The startup rebuild runs
+// synchronously before the daemon's API server, crash-resume, and scheduler
+// start (`goobers up`), so a dialable-but-hung engine frontend must not
+// extend an outage by 15s × holders: when the budget expires, every holder
+// not yet answered resolves FAIL-LIVE (renewed, surfaced as a probe
+// degradation) — the safe direction per RunLivenessProbe — and the pass
+// returns. A var only so tests can tighten it; production always uses this
+// value.
+var claimProbeBudget = 30 * time.Second
+
 // ProbeLiveClaimHolders probes each distinct RunID holding an entry and
 // returns the set renewal must treat as live. A probe ERROR fails live — the
 // run is included in the returned set — with the error joined into the second
 // return for reporting: renewal proceeding on an unknown answer is the safe
 // direction (see RunLivenessProbe), and the caller decides how loudly to
-// surface the degraded probe. Run IDs are probed in sorted order so probe
-// traffic and error text are deterministic.
+// surface the degraded probe.
+//
+// Probes run on a claimProbeConcurrency-wide pool, and the whole pass is
+// bounded by claimProbeBudget: holders unanswered at the budget resolve
+// fail-live so a wedged frontend cannot stall the caller (the daemon's
+// startup rebuild runs synchronously before the scheduler starts). Results
+// and error text are assembled in sorted run-id order so they stay
+// deterministic regardless of completion order.
 func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunLivenessProbe) (map[string]bool, error) {
 	runIDs := make([]string, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
@@ -91,16 +112,64 @@ func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunL
 	}
 	sort.Strings(runIDs)
 
+	// Captured once: goroutines must not read the package var (a test may
+	// restore it while a straggler is still unwinding).
+	budget := claimProbeBudget
+	probeCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	type probeAnswer struct {
+		index int
+		live  bool
+		err   error
+	}
+	// Buffered to len(runIDs): a straggler finishing after the budget still
+	// completes its send and exits rather than leaking.
+	results := make(chan probeAnswer, len(runIDs))
+	pool := make(chan struct{}, claimProbeConcurrency)
+	for i, runID := range runIDs {
+		go func(i int, runID string) {
+			pool <- struct{}{}
+			defer func() { <-pool }()
+			if err := probeCtx.Err(); err != nil {
+				results <- probeAnswer{index: i, err: fmt.Errorf("liveness probe budget (%s) exhausted before this holder was probed: %w", budget, err)}
+				return
+			}
+			ok, err := probe.RunLive(probeCtx, runID)
+			results <- probeAnswer{index: i, live: ok, err: err}
+		}(i, runID)
+	}
+
+	answers := make([]probeAnswer, len(runIDs))
+	answered := make([]bool, len(runIDs))
+	collecting := true
+	for pending := len(runIDs); pending > 0 && collecting; {
+		select {
+		case r := <-results:
+			answers[r.index] = r
+			answered[r.index] = true
+			pending--
+		case <-probeCtx.Done():
+			// Budget expired: stop waiting. In-flight probes hold a cancelled
+			// context and unwind on their own; every unanswered holder
+			// resolves fail-live below.
+			collecting = false
+		}
+	}
+
 	live := make(map[string]bool, len(runIDs))
 	var errs []error
-	for _, runID := range runIDs {
-		ok, err := probe.RunLive(ctx, runID)
-		if err != nil {
+	for i, runID := range runIDs {
+		if !answered[i] {
+			live[runID] = true
+			errs = append(errs, fmt.Errorf("probe liveness of run %s: liveness probe budget (%s) exhausted (renewing fail-live)", runID, budget))
+			continue
+		}
+		if err := answers[i].err; err != nil {
 			live[runID] = true
 			errs = append(errs, fmt.Errorf("probe liveness of run %s: %w (renewing fail-live)", runID, err))
 			continue
 		}
-		if ok {
+		if answers[i].live {
 			live[runID] = true
 		}
 	}
@@ -142,8 +211,8 @@ func (l *ClaimLedger) RenewRuns(live map[string]bool, leaseDuration time.Duratio
 // — a probe-only degradation may (those runs were renewed fail-live).
 //
 // A nil *RecoveryGate permits recovery: callers with no startup renewal duty
-// (one-shot `goobers run`/`goobers signal` paths) keep their existing
-// recover-at-setup behavior unchanged.
+// (the one-shot `goobers run`/`goobers signal` paths on a pure mode-1
+// instance) keep their existing recover-at-setup behavior unchanged.
 type RecoveryGate struct {
 	mu             sync.Mutex
 	renewalRebuilt bool

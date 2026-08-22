@@ -538,15 +538,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	defer closeClaimLiveness()
-	if _, probeErr, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); renewErr != nil {
+	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
 		if !isJournaledClaimsLockTimeout(renewErr) {
 			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
 		}
-	} else {
-		if probeErr != nil {
-			pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
-		}
-		claimRecoveryGate.MarkRenewalRebuilt()
+	} else if probeErr != nil {
+		pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
 	}
 
 	// Claim recovery (#131/#793): released once now and periodically thereafter
@@ -904,17 +901,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				// it in the other order would let a run that is still live get
 				// reaped on the exact tick its lease was due to be renewed, on
 				// nothing worse than ordinary ticker jitter.
-				_, probeErr, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease)
+				// rebuildClaimRenewalSet also self-heals DS6's startup ordering:
+				// if the startup rebuild failed (gate still closed), a completed
+				// pass here IS the rebuild — recovery below is permitted from
+				// here on.
+				probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate)
 				if isJournaledClaimsLockTimeout(renewErr) {
 					claimRenewErrors.report(nil)
 				} else if renewErr != nil {
 					claimRenewErrors.report(renewErr)
 				} else {
 					claimRenewErrors.report(probeErr)
-					// Self-heal DS6's startup ordering: if the startup rebuild
-					// failed (gate still closed), this completed pass is the
-					// rebuild — recovery below is permitted from here on.
-					claimRecoveryGate.MarkRenewalRebuilt()
 				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {

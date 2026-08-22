@@ -3,22 +3,28 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // fakeLiveness maps runID -> answer for RunLive; missing runIDs answer
-// (false, nil) — definitively not live.
+// (false, nil) — definitively not live. Safe under ProbeLiveClaimHolders'
+// probe pool: seen is mutex-guarded (and therefore unordered).
 type fakeLiveness struct {
+	mu   sync.Mutex
 	live map[string]bool
 	errs map[string]error
 	seen []string
 }
 
 func (f *fakeLiveness) RunLive(_ context.Context, runID string) (bool, error) {
+	f.mu.Lock()
 	f.seen = append(f.seen, runID)
+	f.mu.Unlock()
 	if err := f.errs[runID]; err != nil {
 		return false, err
 	}
@@ -89,6 +95,61 @@ func TestProbeLiveClaimHoldersDedupesAndFailsLiveOnError(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "unknown-run") {
 		t.Fatalf("err = %v, want the fail-live degradation reported", err)
+	}
+}
+
+// hangingLiveness models a dialable-but-hung engine frontend: every probe
+// blocks until its context expires, exactly like a describe against a wedged
+// server. Under the pre-budget sequential pass this hung the caller for the
+// full per-describe bound TIMES the holder count.
+type hangingLiveness struct{}
+
+func (hangingLiveness) RunLive(ctx context.Context, _ string) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// TestProbeLiveClaimHoldersBoundedByBudget (#3512 review, finding 3): the
+// startup rebuild runs this pass synchronously before the daemon's API
+// server, crash-resume, and scheduler start, so a hung frontend must cost at
+// most claimProbeBudget — not 15s × holders — and every holder the budget cut
+// off resolves FAIL-LIVE (renewed) with the degradation surfaced as an error.
+// Without the budget this test does not complete: the sequential pass blocks
+// forever on the first hanging holder.
+func TestProbeLiveClaimHoldersBoundedByBudget(t *testing.T) {
+	prev := claimProbeBudget
+	claimProbeBudget = 150 * time.Millisecond
+	t.Cleanup(func() { claimProbeBudget = prev })
+
+	const holders = 12
+	entries := make([]ClaimEntry, 0, holders)
+	for i := 0; i < holders; i++ {
+		entries = append(entries, ClaimEntry{ItemID: fmt.Sprintf("issue-%d", i), RunID: fmt.Sprintf("run-%d", i)})
+	}
+
+	done := make(chan struct{})
+	var live map[string]bool
+	var err error
+	go func() {
+		defer close(done)
+		live, err = ProbeLiveClaimHolders(context.Background(), entries, hangingLiveness{})
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ProbeLiveClaimHolders did not return within 10s — the pass is not bounded by claimProbeBudget")
+	}
+
+	if err == nil {
+		t.Fatal("err = nil, want the budget-exhausted fail-live degradation surfaced")
+	}
+	if len(live) != holders {
+		t.Fatalf("live set has %d holders, want all %d renewed fail-live", len(live), holders)
+	}
+	for i := 0; i < holders; i++ {
+		if !live[fmt.Sprintf("run-%d", i)] {
+			t.Fatalf("run-%d missing from the live set: an un-probed holder must fail live, never lapse", i)
+		}
 	}
 }
 

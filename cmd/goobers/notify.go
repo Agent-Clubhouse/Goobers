@@ -82,8 +82,8 @@ type schedulerSetupOptions struct {
 	notificationWarnings io.Writer
 	startupProgress      func(string)
 	// claimRecoveryGate defers the setup-time expired-claim reap until the
-	// daemon has rebuilt its renewal set (DS6; see withClaimRecoveryGate).
-	// Nil permits the reap unchanged.
+	// caller has rebuilt its renewal set (DS6; see withClaimRecoveryGate).
+	// Nil — the pure mode-1 one-shot paths — permits the reap unchanged.
 	claimRecoveryGate *localscheduler.RecoveryGate
 }
 
