@@ -343,6 +343,49 @@
             ]
           }
         },
+        "nestedAgentPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Versioned policy governing delegated children of this agentic task.",
+          "required": ["version", "delegation", "context", "model", "platformPolicy"],
+          "properties": {
+            "version": { "type": "string", "const": "v1alpha1", "description": "Portable nested-agent policy schema version." },
+            "delegation": { "type": "string", "enum": ["disabled", "coordinator-only", "bounded"], "description": "Delegation authority available to children." },
+            "maxDepth": { "type": "integer", "minimum": 0, "description": "Maximum additional delegation depth for bounded authority." },
+            "permittedProfiles": { "type": "array", "uniqueItems": true, "description": "Agent profiles a child may select.", "items": { "type": "string", "minLength": 1 } },
+            "context": {
+              "type": "object", "additionalProperties": false, "required": ["mode"], "description": "Whether and which task context is selected for the child.",
+              "properties": {
+                "mode": { "type": "string", "enum": ["fresh", "inherited", "explicit"], "description": "Context assembly mode." },
+                "artifactNames": { "type": "array", "uniqueItems": true, "description": "Selected artifact handles for explicit context.", "items": { "type": "string", "minLength": 1 } },
+                "envelopeSections": { "type": "array", "uniqueItems": true, "description": "Selected execution-envelope sections for explicit context.", "items": { "type": "string", "minLength": 1 } }
+              }
+            },
+            "model": {
+              "type": "object", "additionalProperties": false, "description": "Model allowlist and reasoning-effort ceiling.",
+              "properties": {
+                "allowlist": { "type": "array", "uniqueItems": true, "description": "Models a child may select.", "items": { "type": "string", "minLength": 1 } },
+                "maxReasoningEffort": { "type": "string", "enum": ["minimal", "low", "medium", "high"], "description": "Highest reasoning effort a child may request." }
+              }
+            },
+            "peerMessaging": { "type": "boolean", "description": "Whether the child may message peer agents." },
+            "platformPolicy": {
+              "type": "object", "additionalProperties": false, "description": "Immutable platform restrictions inherited by every child.",
+              "required": ["sandbox", "cancellation", "completionContract"],
+              "properties": {
+                "capabilities": { "type": "array", "uniqueItems": true, "description": "Capability ceiling inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "credentials": { "type": "array", "uniqueItems": true, "description": "Credential grants inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "sandbox": { "type": "string", "minLength": 1, "description": "Sandbox posture inherited from the parent." },
+                "filesystemRoots": { "type": "array", "uniqueItems": true, "description": "Writable/readable filesystem roots inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "networkEgress": { "type": "array", "uniqueItems": true, "description": "Permitted network egress inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "contentExclusions": { "type": "array", "uniqueItems": true, "description": "Content exclusions inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "budget": { "$ref": "invocation.schema.json#/$defs/limits", "description": "Child budget ceiling." },
+                "cancellation": { "type": "string", "minLength": 1, "description": "Cancellation channel inherited from the parent." },
+                "completionContract": { "type": "string", "minLength": 1, "description": "Completion contract inherited from the parent." }
+              }
+            }
+          }
+        },
         "requiredCapabilities": {
           "description": "Runner (toolchain/platform) capabilities this stage needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101) — distinct from credential capabilities above.",
           "type": "array",

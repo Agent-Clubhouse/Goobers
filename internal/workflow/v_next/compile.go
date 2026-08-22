@@ -461,6 +461,18 @@ func reachabilityProblems(m *Machine) []string {
 // and harness checks require the referenced goober definitions.
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.NestedAgentPolicy == nil {
+			continue
+		}
+		if task.Type != apiv1.TaskAgentic {
+			problems = append(problems, fmt.Sprintf("task %q: nestedAgentPolicy is only valid for agentic tasks", task.Name))
+			continue
+		}
+		if err := task.NestedAgentPolicy.Validate(); err != nil {
+			problems = append(problems, fmt.Sprintf("task %q: %v", task.Name, err))
+		}
+	}
 	for _, t := range def.Spec.Tasks {
 		capabilities := toSet(t.Capabilities)
 		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {

@@ -621,6 +621,90 @@ spec:
                       items:
                         type: string
                       type: array
+                    nestedAgentPolicy:
+                      description: Policy governing delegated children of this agentic task.
+                      type: object
+                      properties:
+                        version:
+                          type: string
+                        delegation:
+                          type: string
+                          enum: [disabled, coordinator-only, bounded]
+                        maxDepth:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        permittedProfiles:
+                          items:
+                            type: string
+                          type: array
+                        context:
+                          type: object
+                          properties:
+                            mode:
+                              type: string
+                              enum: [fresh, inherited, explicit]
+                            artifactNames:
+                              items:
+                                type: string
+                              type: array
+                            envelopeSections:
+                              items:
+                                type: string
+                              type: array
+                        model:
+                          type: object
+                          properties:
+                            allowlist:
+                              items:
+                                type: string
+                              type: array
+                            maxReasoningEffort:
+                              type: string
+                        peerMessaging:
+                          type: boolean
+                        platformPolicy:
+                          type: object
+                          properties:
+                            capabilities:
+                              items:
+                                type: string
+                              type: array
+                            credentials:
+                              items:
+                                type: string
+                              type: array
+                            sandbox:
+                              type: string
+                            filesystemRoots:
+                              items:
+                                type: string
+                              type: array
+                            networkEgress:
+                              items:
+                                type: string
+                              type: array
+                            contentExclusions:
+                              items:
+                                type: string
+                              type: array
+                            budget:
+                              type: object
+                              properties:
+                                maxDurationSeconds:
+                                  format: int32
+                                  minimum: 0
+                                  type: integer
+                                maxTokens:
+                                  format: int64
+                                  minimum: 0
+                                  type: integer
+                                maxCostUSD:
+                                  type: number
+                            cancellation:
+                              type: string
+                            completionContract:
+                              type: string
                     requiredCapabilities:
                       description: |-
                         RequiredCapabilities are the runner (toolchain/platform) capabilities this
