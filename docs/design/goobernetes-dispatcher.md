@@ -19,8 +19,9 @@ API the dispatcher's pods call), [goobernetes-restrictions.md](goobernetes-restr
 
 ## 1. Topology (closes architecture §12 open point 1)
 
-**The dispatcher is a resident component in `goobers-system`, one instance per cluster**, not
-per-gaggle. Decided here, on these grounds:
+**The dispatcher is a resident component in `goobers-system`, one instance per cluster,
+running as a DISTINCT Deployment with its own ServiceAccount and minimal RBAC — NOT a mode of
+the daemon process** (decision 011). Decided here, on these grounds:
 
 - **It is control-plane, not workload.** It holds the credential-minting reach (it stamps
   stage-scoped credentials via the write API on the pod's behalf) and the Kubernetes
@@ -33,6 +34,11 @@ per-gaggle. Decided here, on these grounds:
 - **Per-gaggle fairness is a QUEUE property, not a process-location property** (D9: queues
   key (gaggle × runner-type)). One dispatcher serving all queues preserves fairness without
   N processes.
+- **Distinct from the daemon, not a mode of it (decision 011):** a daemon-mode dispatcher
+  would give the daemon's ServiceAccount `pods: create` in gaggle namespaces (it has zero
+  grants today) and make the instance-root-mounting daemon pod the pod-creator — a
+  blast-radius merge, not a transport detail. The dispatcher's API-server and Temporal egress
+  ride its own identity; the daemon's egress (proxy-only) is unchanged.
 
 **Consequence for infra, and it confirms the constraint (b) framing:** the dispatcher IS the
 first `goobers-system` component to call the Kubernetes API server, and goobers-system is
@@ -62,6 +68,22 @@ architecture D3 and D9 respectively.)*
 5. Confirms output surrender (blobstore write-through + journal emits + ResultEnvelope) and
    **disposes the pod** — one attempt per pod, per D1.
 
+## 2a. The artifact plane — network by digest, not a shared mount (decision 010)
+
+PVCs are namespaced: a stage pod in a gaggle namespace **cannot mount `goobers-blobs`, which
+lives in goobers-system**. So the mode-3 artifact plane is a NETWORK path — a stage pod
+materializes (D6) and surrenders artifacts by fetching/putting **sha256 digests over the
+network** from a blob endpoint, authenticated with a **stage-scoped credential minted via the
+credential plane** (the podauth path the pod already uses). Not a shared PVC, not a
+dispatcher-brokered byte-path. Blobs are already content-addressed and idempotent
+(distributed-state §3, "identity not location"), which is the one property this needs and it
+is already there. The gaggle namespace holds **no PVC** — `kubectl get pvc -n <ns>` stays
+empty, so the instance-root-isolation structural invariant holds exactly as stated (§7), no
+restatement. Backend is an implementation choice with the digest contract fixed: daemon-fronted
+(reuses the control plane; makes the daemon a byte-path) or object-store-direct (Azure
+Blob/Files, daemon-minted per-run-scoped credential — no byte-path, preferred at scale). v1
+may start daemon-fronted. **This adds one pod egress destination (§4).**
+
 ## 3. The runner-class label — derived and non-overridable (decision 004, corrected)
 
 The dispatcher stamps exactly one `goobers.dev/runner-class` label, **derived from the
@@ -79,12 +101,15 @@ allows:
 
 | Destination | Purpose | Transport |
 | --- | --- | --- |
-| Kubernetes **API server** | pod create/delete/get/list/watch; pods/log+status; resourcequotas/limitranges get/list/watch; apps/deployments get/list/watch (DI-9 template read) | HTTPS to the in-cluster API endpoint |
+| Kubernetes **API server** | pods create/delete/get/list/watch; pods/log get; resourcequotas/limitranges get/list/watch; apps/deployments **get** only (DI-9 template read) | HTTPS to the in-cluster API endpoint |
 | **Temporal** `:7233` | poll the (gaggle × runner-type) activity queues | gRPC |
-| Blobstore | artifact materialize/write-through | **volume mount, NOT network** — no egress rule |
+| Blobstore (dispatcher's own) | reads the resolved inventory / staging | **volume mount, NOT network** — no egress rule |
 | The daemon write API | mint stage-scoped credentials for pods, journal emits | in-cluster to the daemon service (loopback if co-located; else goobers-system service) |
 
-Nothing else. In particular the dispatcher does **not** read the container registry (the
+**Separately, the STAGE POD (not the dispatcher) egresses to the blob endpoint** (decision 010,
+§2a) — by digest, stage-scoped credential; that egress is rendered on the stage-pod
+runner-class policies (§7), not the dispatcher's. Nothing else on the dispatcher. In
+particular the dispatcher does **not** read the container registry (the
 image check is a tag comparison, decision 009 — no manifest read, no pull credential; the
 kubelet pulls via the AcrPull identity, dispatcher only names the image).
 
@@ -146,17 +171,21 @@ With topology decided (goobers-system, §1) the held (b) render is unblocked:
    `activeDeadlineSeconds`; the restart reconcile sweep deletes any labeled orphan.
 4. On a Windows pod, `readOnlyRootFilesystem` is NOT stamped; the fs restriction binds to
    ContainerUser (decision 007), proven by the denied-attempt test the restrictions epic owns.
-5. The dispatcher's egress reaches only the §4 set; a call to any other host is denied by the
-   goobers-system deny-first policy (negative control).
+5. The dispatcher's egress reaches only the §4 set, proven by the exit-code TRIPLE (not a
+   bare denial, which a down host/partition also produces): a non-§4 host DENIED from the
+   dispatcher (exit 28), the SAME host reachable from elsewhere (proving it is up), and a §4
+   host reachable from the dispatcher (positive control). And the stage-pod blob egress
+   (§2a) reaches the blob endpoint and nothing else, same triple.
 6. A stage exceeding its budgeted tmpfs `sizeLimit` fails with a named limit error, not an
    unattributed OOM.
+7. **Skew check (the mechanism §6 flags as resting on an unbuilt publish gate):** a stage pod
+   whose image tag's sha does not equal the dispatcher's embedded commit is REFUSED at
+   dispatch with a named diagnostic (the negative case, assertable today; the positive case
+   is gated on the publish-side sha-tag stamp gate, decision 009).
 
 ## 9. Open implementation points
 
 - Warm pools (deferred, D9/epic) layer on §2 later; the dispatcher's create path is the seam.
 - The `deployment` host-kind template extraction contract (architecture §12 open point 2).
-- Whether the dispatcher is a distinct binary/Deployment or a mode of the daemon process
-  (co-resident in goobers-system either way; affects only the write-API transport in §4 —
-  loopback vs service).
 - The publish-side sha-tag stamp gate (decision 009 prerequisite) — owner TBD between the
   release engine (DI-7) and infra's apply-tag.sh adoption.
