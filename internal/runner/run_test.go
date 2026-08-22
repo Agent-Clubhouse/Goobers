@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -8042,6 +8043,97 @@ type remediationEvidenceDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
 	ciCalls int
+}
+
+type addendumCapturingGoober struct {
+	addendum string
+}
+
+func (g *addendumCapturingGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.addendum = env.InstructionAddendum
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *addendumCapturingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationAugmentMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start: "detect",
+		Tasks: []apiv1.Task{
+			{
+				Name: "detect", Type: apiv1.TaskDeterministic, Goal: "classify failure",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "implement",
+			},
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement fix", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-augment", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation augment machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerAugmentsAgenticStageWithRetrievedRemediationExamples(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	capturingGoober := &addendumCapturingGoober{}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					"run-remediation-addendum:detect": {
+						status: apiv1.ResultSuccess, summary: "compiler failure: undefined symbol",
+					},
+				},
+			}, nil
+		},
+		NewAgentic: func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				return capturingGoober, nil
+			}
+			return &fixedVerdictReviewer{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Remediation: remediation.NewIndex([]remediation.Record{{
+			ID:             "past:implement:2",
+			Stage:          "implement",
+			ErrorClass:     "",
+			FailureExcerpt: "undefined symbol",
+			FixExcerpt:     "add the missing import",
+			DidItHelp:      true,
+			OutcomeKnown:   true,
+			Integrity:      "trusted",
+		}}, nil),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-addendum", Machine: remediationAugmentMachine(t),
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !strings.Contains(capturingGoober.addendum, "Outcome-verified historical remediation examples") ||
+		!strings.Contains(capturingGoober.addendum, "add the missing import") {
+		t.Fatalf("instruction addendum = %q", capturingGoober.addendum)
+	}
 }
 
 func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
