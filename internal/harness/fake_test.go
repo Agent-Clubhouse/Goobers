@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 type FakeAdapter struct {
@@ -24,6 +26,10 @@ func (f *FakeAdapter) Name() string {
 		return f.AdapterName
 	}
 	return "fake"
+}
+
+func (f *FakeAdapter) ValidateNestedAgentPolicy(policy apiv1.NestedAgentPolicy) error {
+	return policy.Validate()
 }
 
 func (f *FakeAdapter) Preflight(context.Context) (PreflightInfo, error) {

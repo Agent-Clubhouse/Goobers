@@ -125,8 +125,18 @@ func (p NestedAgentPolicy) Validate() error {
 		if len(p.Context.ArtifactNames) == 0 && len(p.Context.EnvelopeSections) == 0 {
 			return fmt.Errorf("nested agent policy: explicit context requires a selection")
 		}
+		for _, section := range p.Context.EnvelopeSections {
+			if !slices.Contains(supportedEnvelopeSections, section) {
+				return fmt.Errorf("nested agent policy: unsupported envelope section %q", section)
+			}
+		}
 	default:
 		return fmt.Errorf("nested agent policy: unsupported context mode %q", p.Context.Mode)
+	}
+
+	var supportedEnvelopeSections = []string{
+		"run", "stage", "parentAgent", "objective", "capabilities",
+		"platformPolicy", "completionContract", "cancellation", "budget",
 	}
 	if p.Model.MaxReasoningEffort != "" && reasoningRank(string(p.Model.MaxReasoningEffort)) == 0 {
 		return fmt.Errorf("nested agent policy: unsupported reasoning effort %q", p.Model.MaxReasoningEffort)
@@ -149,8 +159,14 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	if len(policy.Model.Allowlist) > 0 && !slices.Contains(policy.Model.Allowlist, model) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: model %q is not permitted", model)
 	}
+	if len(parent.Model.Allowlist) > 0 && !slices.Contains(parent.Model.Allowlist, model) {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: model %q exceeds parent authority", model)
+	}
 	if model == "" && len(policy.Model.Allowlist) > 0 {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: a model is required when an allowlist is declared")
+	}
+	if model == "" && len(parent.Model.Allowlist) > 0 {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: a model is required by parent authority")
 	}
 	if reasoning != "" && reasoningRank(reasoning) == 0 {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: unsupported reasoning effort %q", reasoning)
@@ -181,6 +197,9 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	if policy.Model.MaxReasoningEffort != "" && reasoning != "" && reasoningRank(reasoning) > reasoningRank(string(policy.Model.MaxReasoningEffort)) {
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: reasoning effort %q exceeds ceiling %q", reasoning, policy.Model.MaxReasoningEffort)
 	}
+	if parent.Model.MaxReasoningEffort != "" && reasoning != "" && reasoningRank(reasoning) > reasoningRank(string(parent.Model.MaxReasoningEffort)) {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: reasoning effort %q exceeds parent ceiling %q", reasoning, parent.Model.MaxReasoningEffort)
+	}
 	child := parent
 	child.Capabilities = intersection(parent.Capabilities, policy.PlatformPolicy.Capabilities)
 	child.PlatformPolicy = intersectPlatform(parent.PlatformPolicy, policy.PlatformPolicy)
@@ -188,6 +207,9 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 	child.MaxDepth = remainingDepth(parent, policy)
 	child.Context = policy.Context
 	child.Model = intersectModel(parent.Model, policy.Model)
+	if len(child.Model.Allowlist) == 0 && len(parent.Model.Allowlist) > 0 {
+		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: child model authority has no intersection with parent")
+	}
 	child.PeerMessaging = parent.PeerMessaging && policy.PeerMessaging
 	return child, nil
 }

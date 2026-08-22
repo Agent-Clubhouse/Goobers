@@ -335,6 +335,14 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, *apiv1.ArtifactPointer, error) {
+	if env.NestedAgentPolicy != nil {
+		if err := ValidateNestedAgentPolicy(e.adapter, *env.NestedAgentPolicy); err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+		if !nestedCapabilitiesSubset(env.NestedAgentPolicy.PlatformPolicy.Capabilities, env.Capabilities) {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: nested-agent capabilities exceed stage authority")
+		}
+	}
 	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)
@@ -622,6 +630,7 @@ func (e *Executor) liftArtifactFile(env apiv1.InvocationEnvelope) (*apiv1.Artifa
 	if path == "" {
 		return nil, nil
 	}
+
 	full, err := apiv1.ResolveContainedPath(env.Workspace, path)
 	if err != nil {
 		switch {
@@ -665,4 +674,20 @@ func mediaTypeFor(path string) string {
 		return "application/json"
 	}
 	return "application/octet-stream"
+}
+
+func nestedCapabilitiesSubset(values, authority []string) bool {
+	for _, value := range values {
+		found := false
+		for _, allowed := range authority {
+			if value == allowed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }

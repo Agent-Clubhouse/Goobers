@@ -261,6 +261,25 @@ type ConfigResolver interface {
 	ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error)
 }
 
+// NestedPolicyCapability declares that an adapter understands and enforces the
+// portable nested-agent policy envelope. Adapters must opt in explicitly;
+// silently passing policy to an adapter that cannot enforce it is unsafe.
+type NestedPolicyCapability interface {
+	ValidateNestedAgentPolicy(apiv1.NestedAgentPolicy) error
+}
+
+// ValidateNestedAgentPolicy performs the adapter-side admission check.
+func ValidateNestedAgentPolicy(adapter Adapter, policy apiv1.NestedAgentPolicy) error {
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	capability, ok := adapter.(NestedPolicyCapability)
+	if !ok {
+		return fmt.Errorf("harness: %s does not support nested-agent policy enforcement", adapter.Name())
+	}
+	return capability.ValidateNestedAgentPolicy(policy)
+}
+
 // ValidateConfig delegates model and option validation to adapter. An adapter
 // without a validator may only be used with an empty harness configuration.
 func ValidateConfig(adapter Adapter, model string, options map[string]apiextensionsv1.JSON) error {

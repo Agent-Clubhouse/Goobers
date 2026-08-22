@@ -94,6 +94,36 @@ func validInvocation() apiv1.InvocationEnvelope {
 	}
 }
 
+func TestInvokeBuildsFreshContextWithSelectedEnvelopeSections(t *testing.T) {
+	preparer := &fakePreparer{}
+	harness := &fakeHarness{invokeResult: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}
+	env := validInvocation()
+	env.Goober = "parent"
+	env.Capabilities = []string{"repo:read"}
+	env.NestedAgentPolicy = &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextExplicit, EnvelopeSections: []string{"run", "objective"}},
+		PermittedProfiles: []string{"worker"},
+		PlatformPolicy:    apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"},
+	}
+	rt := New(Options{Preparer: preparer, Harness: harness})
+
+	if _, err := rt.Invoke(context.Background(), env); err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	got := harness.gotInvoke.Context
+	if len(got.ContextPointers) != 0 {
+		t.Fatalf("explicit context unexpectedly retained pointers: %v", got.ContextPointers)
+	}
+	if got.ExecutionEnvelope == nil || got.ExecutionEnvelope.ParentAgent != "parent" {
+		t.Fatalf("missing mandatory execution envelope: %+v", got.ExecutionEnvelope)
+	}
+	if len(got.EnvelopeSections) != 2 || got.EnvelopeSections["run"] != env.RunID || got.EnvelopeSections["objective"] != env.Goal {
+		t.Fatalf("envelope sections = %+v", got.EnvelopeSections)
+	}
+}
+
 func TestInvokeBuildsContextAndReturnsResult(t *testing.T) {
 	preparer := &fakePreparer{}
 	harness := &fakeHarness{invokeResult: apiv1.ResultEnvelope{
@@ -112,12 +142,15 @@ func TestInvokeBuildsContextAndReturnsResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %q, want success", result.Status)
 	}
+
 	if harness.gotInvoke.Context.Instructions != "You are a careful coder." {
 		t.Errorf("instructions = %q", harness.gotInvoke.Context.Instructions)
 	}
+
 	if harness.gotInvoke.Context.RepoRef.Name != "web" {
 		t.Errorf("repo name = %q, want web", harness.gotInvoke.Context.RepoRef.Name)
 	}

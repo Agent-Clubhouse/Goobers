@@ -86,6 +86,7 @@ func TestAdmitChildPreservesParentCeilings(t *testing.T) {
 		Allowlist:          []string{"safe-model", "unsafe-model"},
 		MaxReasoningEffort: ReasoningHigh,
 	}
+
 	if _, err := AdmitChild(parent, policy, "worker", "unsafe-model", "high"); err == nil {
 		t.Fatal("child widened parent model authority")
 	}
@@ -121,5 +122,16 @@ func TestAdmitChildRejectsUnsupportedProfile(t *testing.T) {
 	policy.PermittedProfiles = []string{"unknown"}
 	if _, err := AdmitChild(validParent(), policy, "unknown", "", ""); err == nil {
 		t.Fatal("unknown profile was admitted")
+	}
+}
+
+func TestAdmitChildRejectsEmptyModelIntersection(t *testing.T) {
+	parent := validParent()
+	parent.Model.Allowlist = []string{"parent-model"}
+	policy := validNestedPolicy()
+	policy.Model.Allowlist = []string{"child-model"}
+
+	if _, err := AdmitChild(parent, policy, "worker", "child-model", ""); err == nil {
+		t.Fatal("child with no model intersection was admitted")
 	}
 }

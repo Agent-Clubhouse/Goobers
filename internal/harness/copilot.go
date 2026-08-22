@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -214,6 +215,10 @@ type CopilotAdapter struct {
 
 // Name returns the adapter's registry name.
 func (c *CopilotAdapter) Name() string { return "copilot-cli" }
+
+func (c *CopilotAdapter) ValidateNestedAgentPolicy(policy apiv1.NestedAgentPolicy) error {
+	return policy.Validate()
+}
 
 // ValidateConfig rejects model and option values the Copilot CLI adapter does
 // not know how to express. This is called during config admission.
