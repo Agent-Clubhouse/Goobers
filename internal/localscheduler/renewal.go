@@ -38,6 +38,12 @@ func TrackedRunLiveness(tracked func() []string) RunLivenessProbe {
 
 type trackedRunLiveness struct{ tracked func() []string }
 
+// InstantLiveness marks the tracked probe answerable from process memory:
+// its not-live answer is authoritative (a run this daemon is not driving and
+// no engine knows about is not live), and it must never enter the budgeted
+// probe pool — see ProbeLiveClaimHolders.
+func (trackedRunLiveness) InstantLiveness() bool { return true }
+
 func (p trackedRunLiveness) RunLive(_ context.Context, runID string) (bool, error) {
 	for _, id := range p.tracked() {
 		if id == runID {
@@ -56,6 +62,18 @@ func CompositeRunLiveness(probes ...RunLivenessProbe) RunLivenessProbe {
 }
 
 type compositeRunLiveness struct{ probes []RunLivenessProbe }
+
+// InstantLiveness reports whether every member probe is instant — a
+// composite with any network-backed member takes the budgeted path.
+func (p compositeRunLiveness) InstantLiveness() bool {
+	for _, probe := range p.probes {
+		ip, ok := probe.(instantLivenessProbe)
+		if !ok || !ip.InstantLiveness() {
+			return false
+		}
+	}
+	return true
+}
 
 func (p compositeRunLiveness) RunLive(ctx context.Context, runID string) (bool, error) {
 	var errs []error
@@ -100,6 +118,17 @@ var claimProbeBudget = 30 * time.Second
 // startup rebuild runs synchronously before the scheduler starts). Results
 // and error text are assembled in sorted run-id order so they stay
 // deterministic regardless of completion order.
+// instantLivenessProbe marks a probe answerable from process memory with an
+// authoritative not-live: it bypasses the budget/pool entirely. The budget
+// exists to bound NETWORK probes (a hung engine frontend must not stall
+// startup); wrapping an in-memory probe in it inverts the guarantee — a
+// pure mode-1 pass whose parent context arrived short of 30s resolved every
+// untracked holder fail-live and RENEWED claims the pre-DS6 daemon would
+// have reaped (caught by TestUpRecoversExpiredClaimAtStartup under -race).
+type instantLivenessProbe interface {
+	InstantLiveness() bool
+}
+
 func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunLivenessProbe) (map[string]bool, error) {
 	runIDs := make([]string, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
@@ -111,6 +140,24 @@ func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunL
 		runIDs = append(runIDs, entry.RunID)
 	}
 	sort.Strings(runIDs)
+
+	// Instant probes answer synchronously and authoritatively: no budget, no
+	// pool, no fail-live-on-unprobed — mode-1 behavior stays byte-identical
+	// to the pre-DS6 daemon.
+	if ip, ok := probe.(instantLivenessProbe); ok && ip.InstantLiveness() {
+		live := make(map[string]bool, len(runIDs))
+		var errs []error
+		for _, runID := range runIDs {
+			ok, err := probe.RunLive(ctx, runID)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("probe liveness of run %s: %w (renewing fail-live)", runID, err))
+				live[runID] = true
+				continue
+			}
+			live[runID] = ok
+		}
+		return live, errors.Join(errs...)
+	}
 
 	// Captured once: goroutines must not read the package var (a test may
 	// restore it while a straggler is still unwinding).
