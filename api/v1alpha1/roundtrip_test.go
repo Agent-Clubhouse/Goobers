@@ -118,7 +118,7 @@ func TestWorkflowRoundTrip(t *testing.T) {
 				FieldPredicate: `fields["number"] >= 100`,
 				Priority:       10,
 			}},
-			Readiness: ReadinessConditions{MaxConcurrentRuns: 2, MaxRunsPerHour: 10, MaxChainDepth: 3},
+			Readiness: ReadinessConditions{DesiredConcurrentRuns: 2, MaxConcurrentRuns: 2, MaxRunsPerHour: 10, MaxChainDepth: 3},
 			Start:     "implement",
 			Tasks: []Task{
 				{

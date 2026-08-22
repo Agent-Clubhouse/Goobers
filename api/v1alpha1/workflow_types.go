@@ -147,6 +147,14 @@ type ReadinessConditions struct {
 	// would wrongly block them on an unrelated open implementation PR.
 	// +optional
 	MaxOpenPRs int32 `json:"maxOpenPRs,omitempty" yaml:"maxOpenPRs,omitempty"`
+	// DesiredConcurrentRuns targets a minimum concurrent occupancy for queue-processing
+	// workflows. When set and less than or equal to MaxConcurrentRuns, the scheduler maintains
+	// refill intent to keep active runs at this level when eligible work is available.
+	// Budget/deadline rejections retain refill intent and retry with backoff. A workflow
+	// remains trigger-driven unless this is explicitly set (#3491).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.

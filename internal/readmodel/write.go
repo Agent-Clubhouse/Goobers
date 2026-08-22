@@ -92,6 +92,14 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM remediation_example WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear remediation examples for %s: %w", p.Run.RunID, err)
+	}
+	for _, example := range p.Remediation {
+		if err := insertRemediationExampleRow(ctx, tx, example); err != nil {
+			return err
+		}
+	}
 	// The change row commits WITH the fact it describes (§6.2). That ordering is
 	// the point: today the projection updates on run finish while the stream
 	// discovers change by polling the filesystem, so "refetch" and "the data is
@@ -255,6 +263,22 @@ func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
+	}
+	return nil
+}
+
+func insertRemediationExampleRow(ctx context.Context, tx *sql.Tx, example RemediationExampleRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO remediation_example (
+			run_id, stage, attempt, error_class, failure_excerpt, fix_excerpt, did_it_help, observed_at, config_digest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		example.RunID, example.Stage, example.Attempt, example.ErrorClass,
+		example.FailureExcerpt, example.FixExcerpt, boolInt(example.DidItHelp),
+		nullTimeValue(example.ObservedAt), example.ConfigDigest,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert remediation example %s/%s/%d: %w",
+			example.RunID, example.Stage, example.Attempt, err)
 	}
 	return nil
 }

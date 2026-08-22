@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -526,6 +527,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// Remediation is the read-only, read-model-backed institutional-memory
+	// index used to augment agentic remediation instructions.
+	Remediation *remediation.Index
 	// JournalAdvanced reports each durable journal append to derived readers.
 	// Optional; the callback owns failure reporting and must not fail the run.
 	JournalAdvanced func(runID string, seq uint64)
@@ -616,6 +620,13 @@ func New(cfg Config) (*Runner, error) {
 	}
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
+	}
+	if cfg.Remediation == nil {
+		index, err := remediation.LoadIndex(cfg.RunsDir, nil)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		cfg.Remediation = index
 	}
 	toolchains := cfg.ToolchainVerifier
 	if toolchains == nil {
@@ -4291,6 +4302,18 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		env.ParentPlatformPolicy = &parent
 	}
 	env.InstructionAddendum = instructionAddendum
+	if t.Type == apiv1.TaskAgentic {
+		errorClass := ""
+		failureExcerpt := instructionAddendum + " " + upstreamResult.Summary
+		if upstreamResult.Error != nil {
+			errorClass = upstreamResult.Error.Code
+			failureExcerpt += " " + upstreamResult.Error.Message
+		}
+		env = remediation.AugmentInvocation(env, r.cfg.Remediation, remediation.Query{
+			Stage: t.Name, ErrorClass: errorClass, FailureExcerpt: failureExcerpt,
+			ConfigDigest: in.Machine.Digest(),
+		}, remediation.Options{})
+	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {

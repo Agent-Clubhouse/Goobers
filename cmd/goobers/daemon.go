@@ -821,17 +821,32 @@ func buildSchedulerDefinitions(
 		if err != nil {
 			return nil, err
 		}
+		refillDemandCounter, err := buildRefillDemandCounter(
+			cfg,
+			gagglesByName[wf.Spec.Gaggle],
+			wf,
+			repoRefs[identity],
+			credResolver,
+			sharedReg,
+			l.SchedulerDir(),
+			selfIdentities[wf.Spec.Gaggle],
+			providerQuota,
+		)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:          wf.Name,
-			WorkflowVersion:   machine.Def.Version,
-			WorkflowDigest:    machine.Digest(),
-			Gaggle:            wf.Spec.Gaggle,
-			Readiness:         wf.Spec.Readiness,
-			Schedules:         scheds,
-			ScheduleBackoffs:  scheduleBackoffs,
-			Signals:           sigs,
-			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    backlogCounter,
+			Workflow:            wf.Name,
+			WorkflowVersion:     machine.Def.Version,
+			WorkflowDigest:      machine.Digest(),
+			Gaggle:              wf.Spec.Gaggle,
+			Readiness:           wf.Spec.Readiness,
+			Schedules:           scheds,
+			ScheduleBackoffs:    scheduleBackoffs,
+			Signals:             sigs,
+			PollFallbackCause:   pollFallbackCause,
+			BacklogCounter:      backlogCounter,
+			RefillDemandCounter: refillDemandCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
 				branchNamespaces[wf.Spec.Gaggle], providerQuota,

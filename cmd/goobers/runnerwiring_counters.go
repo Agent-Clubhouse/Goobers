@@ -120,17 +120,19 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	mu             sync.Mutex
-	ref            string
-	repo           providers.RepositoryRef
-	labels         []string
-	labelPredicate *labelpredicate.Predicate
-	fieldPredicate *fieldpredicate.Predicate
-	resolver       credentials.Resolver
-	reg            runner.SecretRegistrar
-	schedulerDir   string
-	quota          *localscheduler.ProviderQuotaState
-	cursor         string
+	mu              sync.Mutex
+	ref             string
+	repo            providers.RepositoryRef
+	labels          []string
+	labelPredicate  *labelpredicate.Predicate
+	fieldPredicate  *fieldpredicate.Predicate
+	respectAssignee bool
+	assignedTo      string
+	resolver        credentials.Resolver
+	reg             runner.SecretRegistrar
+	schedulerDir    string
+	quota           *localscheduler.ProviderQuotaState
+	cursor          string
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
@@ -148,6 +150,12 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		Assignee: func() string {
+			if b.respectAssignee && b.assignedTo != "" {
+				return b.assignedTo
+			}
+			return ""
+		}(),
 		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
@@ -162,6 +170,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	b.mu.Unlock()
 	count := 0
 	for _, item := range items {
+		if b.respectAssignee && item.Assignee != b.assignedTo {
+			continue
+		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
 		if err != nil {
 			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
@@ -281,6 +292,86 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	}
 	if quota != nil {
 		counter.quota = quota
+	}
+	return counter, nil
+}
+
+// buildRefillDemandCounter derives read-only eligibility from the workflow's
+// starting backlog-query stage. This lets an explicitly configured desired
+// occupancy refill a schedule/manual/webhook workflow without turning its
+// ordinary triggers into backlog fan-out.
+func buildRefillDemandCounter(
+	cfg *instance.Config,
+	gaggle apiv1.Gaggle,
+	wf *apiv1.Workflow,
+	repoRef apiv1.RepoRef,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	schedulerDir, selfIdentity string,
+	quota *localscheduler.ProviderQuotaState,
+) (localscheduler.BacklogCounter, error) {
+	if wf.Spec.Readiness.DesiredConcurrentRuns <= 0 || len(cfg.Repos) == 0 {
+		return nil, nil
+	}
+	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerBacklogItem {
+			// Backlog-item workflows already poll and fan out from their
+			// provider eligibility; a second refill poll would duplicate it.
+			return nil, nil
+		}
+	}
+
+	var task *apiv1.Task
+	for i := range wf.Spec.Tasks {
+		candidate := &wf.Spec.Tasks[i]
+		if candidate.Name == wf.Spec.Start &&
+			candidate.Run != nil &&
+			len(candidate.Run.Command) >= 2 &&
+			candidate.Run.Command[0] == "goobers" &&
+			candidate.Run.Command[1] == "backlog-query" {
+			task = candidate
+			break
+		}
+	}
+	if task == nil {
+		return nil, nil
+	}
+
+	requireLabels := append([]string(nil), gaggle.Spec.RequireLabels...)
+	if configured, ok := task.Inputs["requireLabels"]; ok {
+		requireLabels = splitLabelList(configured)
+	}
+	if trust := task.Inputs["trustLabel"]; trust != "" {
+		requireLabels = append(requireLabels, trust)
+	}
+	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
+	requireLabels = uniqueSortedLabels(requireLabels)
+	excludeLabels = uniqueSortedLabels(excludeLabels)
+	predicate, err := labelpredicate.Compile(task.Inputs["labelPredicate"], requireLabels, excludeLabels)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
+	}
+	fieldPredicate, err := fieldpredicate.Compile(task.Inputs["fieldPredicate"])
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q refill field predicate: %w", wf.Name, err)
+	}
+	assignedTo, assignedToConfigured := task.Inputs["assignedTo"]
+	respectAssignee := task.Inputs["respectAssignee"] == "true"
+	if respectAssignee && !assignedToConfigured {
+		assignedTo = selfIdentity
+	}
+	counter := &backlogCounter{
+		ref:             repoRef.Owner + "/" + repoRef.Name,
+		repo:            providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:          requireLabels,
+		labelPredicate:  predicate,
+		fieldPredicate:  fieldPredicate,
+		respectAssignee: respectAssignee,
+		assignedTo:      assignedTo,
+		resolver:        resolver,
+		reg:             reg,
+		schedulerDir:    schedulerDir,
+		quota:           quota,
 	}
 	return counter, nil
 }

@@ -865,6 +865,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.readiness.desiredConcurrentRuns",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.readiness.maxChainDepth",
       "stability": "ga",
       "sinceVersion": "dev"

@@ -467,6 +467,17 @@ func reachabilityProblems(m *Machine) []string {
 // and harness checks require the referenced goober definitions.
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
+	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
+	if maxConcurrentRuns <= 0 {
+		maxConcurrentRuns = 1
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns > maxConcurrentRuns {
+		problems = append(problems, fmt.Sprintf(
+			"spec.readiness.desiredConcurrentRuns (%d) must be less than or equal to spec.readiness.maxConcurrentRuns (%d)",
+			def.Spec.Readiness.DesiredConcurrentRuns,
+			maxConcurrentRuns,
+		))
+	}
 	for _, task := range def.Spec.Tasks {
 		if task.NestedAgentPolicy == nil {
 			continue

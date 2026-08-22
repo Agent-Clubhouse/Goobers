@@ -1319,7 +1319,10 @@ function workflowDefinition(workflow: WorkflowSummary): WorkflowDefinitionSummar
     triggers: workflow.triggers,
     readiness: workflow.readiness,
     concurrency: {
+      desiredRuns: workflow.concurrency.desiredRuns,
       maxConcurrentRuns: workflow.concurrency.maxConcurrentRuns,
+      admissionBlocked: workflow.concurrency.admissionBlocked,
+      blockingCondition: workflow.concurrency.blockingCondition,
     },
     owners: workflow.owners,
     stageCount: workflow.stageCount,
