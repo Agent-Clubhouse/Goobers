@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: scribe
+spec:
+  gaggle: <your-gaggle>
+  role: scribe
+  displayName: Scribe (recall + reflect)
+  instructions: instructions.md
+  harness: copilot
+  # Cheap and fast: the scribe reads memory on the way in and nominates memory
+  # on the way out. It does high-volume, low-stakes work — pick your cheapest
+  # capable model.
+  model: <fill-in>
+  harnessOptions: {}
+  # No write capability to the repo/PR/issue. The scribe reads the memory store
+  # and writes proposals via the mounted helper; it never mutates the codebase.
+  capabilities:
+    - agent:model
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - implement-with-recall
+    - implement-with-reflect

@@ -1,0 +1,65 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "1.4"
+metadata:
+  name: dream
+spec:
+  gaggle: <your-gaggle>
+  displayName: Memory consolidation (dream)
+  # Nightly memory consolidation. Deterministic detective + sync stages run
+  # first, the strongest-model wizard-dreamer writes a decisions file, and a
+  # deterministic promote stage applies it under the hard rules. Everything the
+  # dreamer produces is a proposal-review artifact; only `promote` writes active/.
+  #
+  # `--store` points at the gaggle's PERSISTENT memory store (a mounted volume
+  # or committed config dir), NOT an ephemeral checkout. Replace the placeholder
+  # path below with your real store location.
+  triggers:
+    - type: schedule
+      schedule: "0 5 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerDay: 1
+  start: audit-store
+  tasks:
+    - name: audit-store
+      type: deterministic
+      goal: Detect and quarantine any active/ memory the journal does not explain.
+      run:
+        command: ["python3", "tools/gaggle-memory.py", "audit", "--store", ".goobers/memory"]
+        workspace: repo
+      # audit always exits 0 (detective control); its report is the finding.
+      next: sync-claude
+
+    - name: sync-claude
+      type: deterministic
+      goal: Translate new/changed Claude-project memory into proposals.
+      run:
+        command: ["python3", "tools/gaggle-memory.py", "sync-claude", "--store", ".goobers/memory"]
+        workspace: repo
+      # A sync failure (e.g. an empty inbox) must not block consolidation.
+      continueOnError: true
+      next: consolidate
+
+    - name: consolidate
+      type: agentic
+      goober: wizard-dreamer
+      goal: >-
+        Read proposed/ and active/ and write a single decisions file into
+        dream/decisions-YYYYMMDD-HHMM.yaml. Promote only durable, cross-run
+        truth; merge duplicates; prune stale or contradicted memories; reject
+        the rest. A small true store beats a large plausible one. Write ONLY the
+        decisions file — never touch active/ directly.
+      workspace: repo
+      capabilities:
+        - agent:model
+      next: apply-decisions
+
+    - name: apply-decisions
+      type: deterministic
+      goal: Apply the newest decisions file under the hard rules (caps, evidence, no replay).
+      run:
+        command: ["python3", "tools/gaggle-memory.py", "promote", "--store", ".goobers/memory", "--decisions", "latest"]
+        workspace: repo
+      # Terminal: promote rebuilds MEMORY.md and journals each op with the
+      # post-op active/ tree hash.
