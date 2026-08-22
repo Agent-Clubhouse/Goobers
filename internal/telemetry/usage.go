@@ -80,6 +80,18 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 // aggregate with finalized child usage. Adapter-reported canonical measures
 // remain authoritative, preventing coordinator usage from being counted twice.
 func RecordNestedAgentUsage(ctx context.Context, metrics map[string]float64, events []journal.Event) {
+	merged := MergeNestedAgentUsage(metrics, events)
+	for name := range merged {
+		if _, exists := metrics[name]; !exists {
+			RecordAgentUsage(ctx, merged, nil)
+			return
+		}
+	}
+}
+
+// MergeNestedAgentUsage fills measures absent from an adapter's aggregate with
+// finalized nested usage. Adapter-reported measures remain authoritative.
+func MergeNestedAgentUsage(metrics map[string]float64, events []journal.Event) map[string]float64 {
 	usage := journal.RollupAgentUsage(events)
 	nested := make(map[string]float64)
 	if usage.InputTokens != nil {
@@ -100,9 +112,7 @@ func RecordNestedAgentUsage(ctx context.Context, metrics map[string]float64, eve
 			merged[name] = value
 		}
 	}
-	if len(nested) > 0 {
-		RecordAgentUsage(ctx, merged, nil)
-	}
+	return merged
 }
 
 func hasModelUsage(usage ModelUsage) bool {

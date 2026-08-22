@@ -474,8 +474,9 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		out, runErr = e.adapter.Run(ctx, req)
 	}
 	telemetry.RecordAgentUsage(ctx, out.Metrics, out.ModelUsage)
-	telemetry.RecordNestedAgentUsage(ctx, out.Metrics, out.AgentEvents)
-	invoke.ReportAgentUsage(ctx, out.Metrics)
+	metrics := telemetry.MergeNestedAgentUsage(out.Metrics, out.AgentEvents)
+	telemetry.RecordNestedAgentUsage(ctx, metrics, nil)
+	invoke.ReportAgentUsage(ctx, metrics)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		appender, ok := e.recorder.(EventAppender)
 		if !ok {

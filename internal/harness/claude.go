@@ -237,10 +237,19 @@ func (c *ClaudeAdapter) runner() ProcessRunner {
 }
 
 // Run executes one non-interactive Claude Code session.
-func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err
 	}
+	out.AgentEvents = adapterAgentEvents(req, "claude", journal.AgentStarted, nil)
+	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
+	defer func() {
+		lifecycle := journal.AgentCompleted
+		if runErr != nil {
+			lifecycle = journal.AgentFailed
+		}
+		out.AgentEvents = append(out.AgentEvents, adapterAgentEvents(req, "claude", lifecycle, out.Metrics)...)
+	}()
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
@@ -349,7 +358,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	started := time.Now()
 	initialCapture := &claudeTerminalCapture{}
 	captures := []*claudeTerminalCapture{initialCapture}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -357,11 +366,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      initialCapture,
 	})
+	runErr = processErr
 	invocationResults := []ProcessResult{result}
 	prompts := []string{prompt}
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			totalTimeout := req.Timeout
@@ -400,12 +410,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		}
 	}
 
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
 		Stderr:                 result.Stderr,
-		AgentTelemetryFidelity: journal.AgentFidelityNone,
+		AgentTelemetryFidelity: journal.AgentFidelityPartial,
 	}
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
@@ -427,8 +437,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		// visible — the session otherwise proceeds silently without those
 		// tools, and the resulting stage failure wears an unrelated costume.
 		out.MCPServerFailures = claudeMCPServerFailures(req, native)
-		out.AgentEvents = projectAgentEvents(native.data, req)
-		out.AgentTelemetryFidelity = agentEventsFidelity(out.AgentEvents)
+		out.AgentEvents = append(out.AgentEvents, projectAgentEvents(native.data, req)...)
 	}
 	if runErr != nil {
 		return out, runErr

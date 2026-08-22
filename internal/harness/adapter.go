@@ -120,6 +120,8 @@ type RunRequest struct {
 	ContextPaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
+	// Attempt identifies the stage attempt for retry-safe provenance.
+	Attempt int
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
