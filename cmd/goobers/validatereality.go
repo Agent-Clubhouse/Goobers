@@ -152,7 +152,7 @@ func appendUnclaimedCapabilityWarnings(
 	if cfg == nil {
 		return
 	}
-	claimed := runnercap.NewClaimed(cfg.Runner.Capabilities)
+	claimed := runnercap.NewClaimed(cfg.SelfRunnerCapabilities())
 	for i := range set.Gaggles {
 		gaggle := set.Gaggles[i]
 		required := instance.RequiredCapabilities(gaggle, set.Workflows)

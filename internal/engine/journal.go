@@ -102,6 +102,13 @@ type JournalProjection struct {
 	// Definition is the pinned workflow definition used for crash-safe local
 	// reconstruction of this projection.
 	Definition json.RawMessage `json:"definition,omitempty"`
+	// GateGooberCapabilities is the reviewer-goober capability map pinned into
+	// the run input at start (#294) — journaled as the
+	// journal.PinnedGateGooberCapabilitiesInputName input snapshot so
+	// post-start consumers (the daemon credential plane, PR #3528) resolve an
+	// agentic gate's reviewer grants from the run's pin, never the
+	// currently-served config.
+	GateGooberCapabilities json.RawMessage `json:"gateGooberCapabilities,omitempty"`
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
@@ -137,6 +144,14 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow definition: %w", err)
 	}
+	// json.Marshal sorts map keys, so this is workflow-deterministic.
+	var gateGooberCapabilities json.RawMessage
+	if len(in.GateGooberCapabilities) > 0 {
+		gateGooberCapabilities, err = json.Marshal(in.GateGooberCapabilities)
+		if err != nil {
+			return nil, fmt.Errorf("engine: marshal pinned gate-goober capabilities: %w", err)
+		}
+	}
 	runControls := in.RunControls
 	if runControls.MaxRepasses == 0 && in.MaxRepasses > 0 {
 		runControls.MaxRepasses = int32(in.MaxRepasses)
@@ -157,9 +172,10 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				RunControls:     &runControls,
 				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
-			Item:       in.Item,
-			Graph:      graph,
-			Definition: definition,
+			Item:                   in.Item,
+			Graph:                  graph,
+			Definition:             definition,
+			GateGooberCapabilities: gateGooberCapabilities,
 		},
 		usesRepo: runner.MachineUsesRepo(m),
 		branchRef: &journal.ExternalRef{

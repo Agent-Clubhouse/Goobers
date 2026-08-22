@@ -68,9 +68,18 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
-	APIVersion string    `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string    `json:"kind" yaml:"kind"`
-	Repos      []RepoRef `json:"repos" yaml:"repos"`
+	APIVersion string `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string `json:"kind" yaml:"kind"`
+	// SchemaVersion is the instance-config schema revision (dsl-3.0.md D8,
+	// decision record D3) — the config's first version field. Absent means 1,
+	// the pre-Goobernetes schema every existing install is on; 2 introduces
+	// the runners: inventory. Strict loading on both halves means a
+	// schemaVersion-2 config using runners: hard-fails on an older binary by
+	// design rather than being silently misread. A pointer so the loader can
+	// tell absent from an explicit 0 — the published schema's enum is [1, 2],
+	// so an explicit 0 is refused rather than silently read as legacy.
+	SchemaVersion *int      `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
+	Repos         []RepoRef `json:"repos" yaml:"repos"`
 	// SelfIdentity is the instance-wide provider login used when a gaggle does
 	// not declare its own identity. It is an identity value, not a credential.
 	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
@@ -124,6 +133,16 @@ type Config struct {
 	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
 	// a Go-only instance that declares no requirements is unaffected.
 	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+	// Runners is the plural runner inventory (decision record D3, dsl-3.0.md
+	// §3): every runner class the scheduler may place stages on. Absent, the
+	// legacy singular Runner block above maps to the implicit "self" entry —
+	// the zero-change upgrade every existing install rides (ResolvedRunners).
+	// Declared, it owns capability claims: Runner.Capabilities must then be
+	// empty (supersession, no coexistence), while Runner's execution settings
+	// (envPassthrough, timeouts, harnessCommand) keep their current homes.
+	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
+	// is startup-only, so in-flight runs finish against their pinned snapshot.
+	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
 	// SecretStores declares named external secret stores token refs can resolve
 	// through (config half of #683, SEC-010). A token ref opts in per ref with
 	// store: "<storeName>/<secretName>"; an instance that declares no stores and
@@ -1606,6 +1625,7 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
 	if err := validateInOrder(
+		c.validateSchemaVersion,
 		c.Workcopies.validate,
 		func() error { return c.API.validate(c.APIListenAddress()) },
 		c.validateWorkflowSource,
@@ -1634,6 +1654,7 @@ func (c *Config) Validate() error {
 		func() error { return c.validateDaemonIdentity(stores) },
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
+		c.validateRunners,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
 	)

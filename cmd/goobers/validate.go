@@ -1050,7 +1050,8 @@ func resolveRepoToken(repo instance.RepoRef, refName string, stores credentials.
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 		defer cancel()
-		return mint(ctx)
+		token, _, err := mint(ctx)
+		return token, err
 	}
 	if repoUsesToken(repo) {
 		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{

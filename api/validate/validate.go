@@ -172,6 +172,9 @@ const (
 	errorGateGooberGaggle         WarningCode = "REF011"
 	errorRunnerCapability         WarningCode = "CAP001"
 	errorUnknownCapability        WarningCode = "CAP002"
+	errorOSTokenInV3              WarningCode = "CAP004"
+	errorUnknownRestriction       WarningCode = "CAP005"
+	errorRepoHandoff              WarningCode = "WF022"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -1843,11 +1846,31 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// token is a platform every stage shares, which can prove a transition
 	// same-platform that stage-level tokens alone would flag.
 	var gaggleRequiredCapabilities []string
+	var gaggleRunsOn *apiv1.GaggleRunsOn
 	if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 		gaggleRequiredCapabilities = gaggle.Spec.RequiredCapabilities
+		gaggleRunsOn = gaggle.Spec.RunsOn
 	}
 	for _, msg := range wf.CheckPushBoundaries(def, gaggleRequiredCapabilities) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// The DSL 3.0 scheduling surface (dsl-3.0.md §5). On a 3.0 document these
+	// are the CAP004/CAP005 vocabulary errors, the structural runsOn problems,
+	// and the WF022 repo-handoff analysis; on an earlier pin the placement
+	// check instead refuses any use of the 3.0-only fields (which those
+	// frozen interpreters must never learn), reported under WF010 like the
+	// other admission findings.
+	for _, msg := range wf.CheckRunsOnOSTokens(def, gaggleRunsOn) {
+		r.add(errorOSTokenInV3, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRunsOnRestrictions(def, gaggleRunsOn) {
+		r.add(errorUnknownRestriction, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRunsOnPlacement(def, gaggleRunsOn) {
+		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRepoHandoffs(def) {
+		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect

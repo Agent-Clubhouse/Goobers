@@ -12,6 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
+// builtinManifest is the provider-stage manifest resolved at this
+// interpreter's own DSL version: a requirement change gated to a later DSL
+// version is invisible here, so editing the manifest for a newer DSL can
+// never re-break shipped 1.4 configs (the ed11ae81 class, #3504).
+var builtinManifest = providerstage.ForVersion(DSLVersion)
+
 type options struct {
 	goobers                    map[string]apiv1.GooberSpec
 	knownChecks                map[string]bool
@@ -246,7 +252,7 @@ func claimLedgerPlacementProblems(def Definition) []string {
 	var firstPlacement []string
 	for _, task := range def.Spec.Tasks {
 		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" ||
-			!providerstage.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
+			!builtinManifest.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
 			continue
 		}
 		placement := canonicalPlacement(task.RequiredCapabilities)
@@ -498,7 +504,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			if t.Type == apiv1.TaskDeterministic && isShellStage(t) && !builtincmd.Known(subcommand) {
 				problems = append(problems, unknownSubcommand(t.Name, subcommand))
 			}
-			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
+			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
 				// A declared capability satisfies the requirement when it IS
 				// the required one or explicitly subsumes it
 				// (internal/capability.Subsumes, #2386/#3300): narrowing a

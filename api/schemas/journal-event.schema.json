@@ -86,6 +86,7 @@
         "claim.acquired",
         "claim.released",
         "claim.force_released",
+        "claim.refused",
         "claim_lock_slow",
         "claims_lock_timeout",
         "config.reloaded",

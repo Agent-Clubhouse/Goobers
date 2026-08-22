@@ -78,6 +78,17 @@ const clientRoutes = {
   approveStage: apiRoutes.approveStage,
   overrideStage: apiRoutes.overrideStage,
   rerunStage: apiRoutes.rerunStage,
+  // Daemon write planes (#3509): machine seams (claims, trigger ingestion)
+  // plus HITL escalation resolution. The portal calls none of them yet — an
+  // escalation-resolution UI would be the first consumer — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  claimAcquire: apiRoutes.claimAcquire,
+  claimRenew: apiRoutes.claimRenew,
+  claimRelease: apiRoutes.claimRelease,
+  claimSettle: apiRoutes.claimSettle,
+  triggerIngest: apiRoutes.triggerIngest,
+  resolveEscalation: apiRoutes.resolveEscalation,
+  credentialResolve: apiRoutes.credentialResolve,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

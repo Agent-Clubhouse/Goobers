@@ -57,7 +57,7 @@ import (
 func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, gaggleOwner, gaggleName string, additionalRepos []apiv1.RepoRef, registrar credentials.SecretRegistrar) (credentials.Resolver, []credentials.Grant, error) {
 	refs := make([]credentials.TokenRef, 0, len(cfg.Repos)+len(cfg.Credentials))
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
-	var sources map[string]credentials.ResolveFunc
+	var sources map[string]credentials.ExpiringResolveFunc
 	for _, r := range cfg.Repos {
 		owner := r.Owner
 		if r.Provider == "ado" && r.Project != "" {
@@ -77,7 +77,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 				return nil, nil, fmt.Errorf("build credentials: repo %s: %w", ref, err)
 			}
 			if sources == nil {
-				sources = make(map[string]credentials.ResolveFunc)
+				sources = make(map[string]credentials.ExpiringResolveFunc)
 			}
 			sources[ref] = mint
 			tokenRef = ref
@@ -105,7 +105,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
 			}
 			if sources == nil {
-				sources = make(map[string]credentials.ResolveFunc)
+				sources = make(map[string]credentials.ExpiringResolveFunc)
 			}
 			sources[daemonIdentityRefName] = mint
 		} else {
@@ -125,7 +125,10 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 		}
 		refs = append(refs, cg.Token.CredentialTokenRef(credentialRefName(key)))
 	}
-	resolver, err := credentials.NewResolverWith(refs, stores, sources)
+	// The expiring-source form threads each minted value's stated expiry
+	// through to the materialized Set (DS10): the credential plane's mint
+	// responses carry it, so a stage pod never treats a snapshot as unbounded.
+	resolver, err := credentials.NewResolverWithExpiring(refs, stores, nil, sources)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build credential resolver: %w", err)
 	}
@@ -229,12 +232,12 @@ func credentialRefName(key string) string { return "credential:" + key }
 // github-app repo (#686). A package var so CLI tests substitute an
 // httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
 // production source caches until near expiry and single-flights refreshes.
-var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
 	if err != nil {
 		return nil, err
 	}
-	return source.Token, nil
+	return source.TokenWithExpiry, nil
 }
 
 // newDaemonIdentityGitHubAppTokenSource builds the installation-token minting
@@ -243,7 +246,7 @@ var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.
 // is (MGV-5 #1012) — a shared App installation must not hand one gaggle's
 // stages a token that reaches a sibling gaggle's repo. A package var, like
 // newGitHubAppTokenSource, so CLI tests substitute an httptest-backed source.
-var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleOwner, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleOwner, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 	const keyRefName = "daemon-identity-private-key"
 	// #3415: which installation mints depends on which owner this gaggle acts
 	// on, and that is known HERE -- buildCredentials receives the gaggle's
@@ -278,7 +281,7 @@ var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfi
 	if err != nil {
 		return nil, err
 	}
-	return source.Token, nil
+	return source.TokenWithExpiry, nil
 }
 
 // newWorkflowSourceAppTokenSource builds the installation-token minting source

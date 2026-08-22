@@ -994,6 +994,46 @@ func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflo
 	return machine, nil
 }
 
+// PinnedGateGooberCapabilities reads the run's pinned reviewer-goober
+// capability state: the GateGooberCapabilities map the starter pinned into
+// the run at start (#294) and Start journaled as the trusted
+// journal.PinnedGateGooberCapabilitiesInputName input. It is the gate-path
+// counterpart of PinnedWorkflowMachine — an agentic reviewer gate's grants
+// are instance policy, not part of the pinned workflow definition, so a
+// post-start consumer (the daemon credential plane, PR #3528) must resolve
+// them from this pin rather than the currently-served config, or a config
+// edit after run start would change a live run's reviewer grants.
+//
+// found=false reports a journal that carries no such pin (created before the
+// pin existed, or by an author that never pins one); the caller decides — the
+// credential plane fails closed. A snapshot that is present but untrusted or
+// unparseable is an error.
+func PinnedGateGooberCapabilities(rd *journal.Reader, id journal.RunIdentity) (map[string][]string, bool, error) {
+	var ref *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedGateGooberCapabilitiesInputName {
+			ref = &id.Inputs[i]
+			break
+		}
+	}
+	if ref == nil {
+		return nil, false, nil
+	}
+	if ref.Integrity != apiv1.IntegrityTrusted {
+		return nil, false, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedGateGooberCapabilitiesInputName, ref.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(ref.Ref)
+	if err != nil {
+		return nil, false, fmt.Errorf("read immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	var capabilities map[string][]string
+	if err := json.Unmarshal(data, &capabilities); err != nil {
+		return nil, false, fmt.Errorf("parse immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	return capabilities, true, nil
+}
+
 // refuseResume ends a run whose WF-016 resume verification failed at the
 // canonical PhaseFailed terminal and releases its claim.
 //

@@ -8,6 +8,11 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 )
 
+// shippedDSLVersions are the DSL versions with a live interpreter today
+// (internal/workflow v_current/v_next). Behavior tests run against each
+// shipped view: with the table all-baseline, every view must agree.
+var shippedDSLVersions = []string{"1.4", "2.0"}
+
 func TestRequiredCapabilities(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -158,31 +163,34 @@ func TestRequiredCapabilities(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			uses := RequiredCapabilities(test.command, test.args)
-			got := make([]capability.Capability, 0, len(uses))
-			for _, use := range uses {
-				got = append(got, use.Capability)
-			}
-			if !slices.Equal(got, test.want) {
-				t.Fatalf("RequiredCapabilities(%q, %q) = %q, want %q", test.command, test.args, got, test.want)
-			}
-		})
-	}
+	for _, version := range shippedDSLVersions {
+		view := ForVersion(version)
+		for _, test := range tests {
+			t.Run("DSL "+version+" "+test.name, func(t *testing.T) {
+				uses := view.RequiredCapabilities(test.command, test.args)
+				got := make([]capability.Capability, 0, len(uses))
+				for _, use := range uses {
+					got = append(got, use.Capability)
+				}
+				if !slices.Equal(got, test.want) {
+					t.Fatalf("ForVersion(%q).RequiredCapabilities(%q, %q) = %q, want %q", version, test.command, test.args, got, test.want)
+				}
+			})
+		}
 
-	for _, value := range []string{"0", "f", "F", "FALSE", "false", "False"} {
-		t.Run("read-only false spelling "+value, func(t *testing.T) {
-			uses := RequiredCapabilities("backlog-query", []string{"--read-only=" + value})
-			got := make([]capability.Capability, 0, len(uses))
-			for _, use := range uses {
-				got = append(got, use.Capability)
-			}
-			want := []capability.Capability{capability.GitHubIssuesWrite}
-			if !slices.Equal(got, want) {
-				t.Fatalf("RequiredCapabilities(%q, %q) = %q, want %q", "backlog-query", "--read-only="+value, got, want)
-			}
-		})
+		for _, value := range []string{"0", "f", "F", "FALSE", "false", "False"} {
+			t.Run("DSL "+version+" read-only false spelling "+value, func(t *testing.T) {
+				uses := view.RequiredCapabilities("backlog-query", []string{"--read-only=" + value})
+				got := make([]capability.Capability, 0, len(uses))
+				for _, use := range uses {
+					got = append(got, use.Capability)
+				}
+				want := []capability.Capability{capability.GitHubIssuesWrite}
+				if !slices.Equal(got, want) {
+					t.Fatalf("ForVersion(%q).RequiredCapabilities(%q, %q) = %q, want %q", version, "backlog-query", "--read-only="+value, got, want)
+				}
+			})
+		}
 	}
 }
 
@@ -207,12 +215,15 @@ func TestMutatesClaimLedger(t *testing.T) {
 		{name: "decomposition source", command: "select-source", want: true},
 		{name: "unrelated command", command: "open-pr"},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := MutatesClaimLedger(test.command, test.args); got != test.want {
-				t.Fatalf("MutatesClaimLedger(%q, %q) = %t, want %t", test.command, test.args, got, test.want)
-			}
-		})
+	for _, version := range shippedDSLVersions {
+		view := ForVersion(version)
+		for _, test := range tests {
+			t.Run("DSL "+version+" "+test.name, func(t *testing.T) {
+				if got := view.MutatesClaimLedger(test.command, test.args); got != test.want {
+					t.Fatalf("ForVersion(%q).MutatesClaimLedger(%q, %q) = %t, want %t", version, test.command, test.args, got, test.want)
+				}
+			})
+		}
 	}
 }
 

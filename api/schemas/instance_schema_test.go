@@ -158,6 +158,36 @@ runConditions:
     implementation: 4
   claimsLockTimeout: 30s
 `},
+		{"schemaVersion 2 runners inventory", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: self
+    host: self
+    provides:
+      os: linux
+      cpu: 8000m
+      memory: 16Gi
+      disk: 100Gi
+      capabilities: [go@1.26, make, gcc]
+  - name: ci-linux
+    host: ghcr.io/example/goobers-ci:v0.7.0
+    provides:
+      os: linux
+      cpu: 4000m
+      memory: 8Gi
+      disk: 60Gi
+      capabilities: [go@1.26]
+    restrictions: [network:allowlist, tmp:ephemeral]
+  - name: win-pool
+    host: win-runner-pool
+    provides:
+      os: windows
+engine:
+  hostPort: temporal.goobers-system:7233
+`},
 		{"credentials stores and telemetry", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
@@ -346,6 +376,56 @@ credentials:
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
 `, "repos"},
+		{"unsupported schemaVersion", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 3
+repos: []
+`, "enum"},
+		{"runner entry without host", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci-linux
+`, "host"},
+		{"runner name that kubernetes could not carry", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: CI_Linux
+    host: self
+`, "pattern"},
+		{"runner os outside the enum", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: mac
+    host: self
+    provides:
+      os: darwin
+`, "enum"},
+		{"runner quantity that is not a quantity", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci
+    host: self
+    provides:
+      cpu: fast
+`, "pattern"},
+		{"runner restriction outside the closed list", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+runners:
+  - name: ci
+    host: self
+    restrictions: [network:proxy]
+`, "enum"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

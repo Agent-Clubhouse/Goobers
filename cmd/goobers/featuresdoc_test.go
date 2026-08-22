@@ -123,6 +123,12 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GaggleSpec.Workcopies":       {"gaggle.spec.workcopies.root"},
 		"GaggleSpec.RequireLabels":    {"gaggle.spec.requireLabels"},
 		"GaggleSpec.Siblings":         {"gaggle.spec.siblings"},
+		"GaggleSpec.RunsOn": {
+			"gaggle.spec.runsOn",
+			"gaggle.spec.runsOn.os",
+			"gaggle.spec.runsOn.capabilities",
+			"gaggle.spec.runsOn.restrictions",
+		},
 
 		"GooberSpec.Gaggle":                   {"goober.spec.gaggle"},
 		"GooberSpec.Role":                     {"goober.spec.role"},
@@ -179,6 +185,17 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"Task.OutboxMirrorPath":     {"task.outboxMirrorPath"},
 		"Task.Workspace":            {"stage.workspace"},
 		"Task.Next":                 {"task.next"},
+		"Task.RunsOn": {
+			"task.runsOn",
+			"task.runsOn.os",
+			"task.runsOn.cpu",
+			"task.runsOn.memory",
+			"task.runsOn.disk",
+			"task.runsOn.capabilities",
+			"task.runsOn.restrictions",
+		},
+		"Task.RepoFrom":    {"task.repoFrom"},
+		"Task.CommitsRepo": {"task.commitsRepo"},
 	}
 	// The feature registry covers EVERY author-facing spec field (#3292, the
 	// PO-ruled reversal of #3003's operational-metadata exclusion): an
