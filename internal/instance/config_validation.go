@@ -486,7 +486,7 @@ func (c *Config) validateDaemonIdentity(stores map[string]bool) error {
 // is opaque and config alone cannot say which owner it belongs to. So the
 // message names every owner in play and states the arithmetic.
 func (c *Config) validateDaemonIdentityOwnerCoverage() error {
-	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.InstallationID == "" {
+	if !c.DaemonIdentity.GitHubApp() {
 		return nil
 	}
 	seen := make(map[string]bool)
@@ -501,14 +501,35 @@ func (c *Config) validateDaemonIdentityOwnerCoverage() error {
 			owners = append(owners, repo.Owner)
 		}
 	}
-	if len(owners) < 2 {
+	sort.Strings(owners)
+
+	// #3415's per-owner form: every owner the instance acts on must be bound,
+	// because a missing binding fails the same way the single-installation
+	// form does — a 422 at first use, mid-run, rather than at load.
+	if len(c.DaemonIdentity.Installations) > 0 {
+		var uncovered []string
+		for _, owner := range owners {
+			if _, ok := c.DaemonIdentity.InstallationForOwner(owner); !ok {
+				uncovered = append(uncovered, owner)
+			}
+		}
+		if len(uncovered) == 0 {
+			return nil
+		}
+		return fmt.Errorf(
+			"daemonIdentity.installations: no installation bound for %d owner(s) this instance targets (%s) — "+
+				"the daemon identity backs the daemon-mutation capability set for every repo, so an unbound "+
+				"owner fails at first use; add a binding for each or remove those repos",
+			len(uncovered), strings.Join(uncovered, ", "))
+	}
+
+	if c.DaemonIdentity.InstallationID == "" || len(owners) < 2 {
 		return nil
 	}
-	sort.Strings(owners)
 	return fmt.Errorf(
 		"daemonIdentity: kind %q with a single installationId cannot cover repos across %d owners (%s) — "+
 			"a GitHub App installation belongs to exactly one owner, so at most one of these can mint and "+
-			"the rest fail at first use; configure a per-owner installation binding or split the instance",
+			"the rest fail at first use; use installations: to bind one per owner (#3415), or split the instance",
 		GitHubAuthApp, len(owners), strings.Join(owners, ", "))
 }
 

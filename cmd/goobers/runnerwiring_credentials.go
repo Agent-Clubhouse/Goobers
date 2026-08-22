@@ -100,7 +100,7 @@ func buildCredentials(cfg *instance.Config, stores credentials.StoreResolver, ga
 	var daemonIdentityOverrides []credentials.Grant
 	if cfg.DaemonIdentity != nil {
 		if cfg.DaemonIdentity.GitHubApp() {
-			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleName, registrar, stores)
+			mint, err := newDaemonIdentityGitHubAppTokenSource(cfg.DaemonIdentity, gaggleOwner, gaggleName, registrar, stores)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build credentials: daemonIdentity: %w", err)
 			}
@@ -243,15 +243,32 @@ var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.
 // is (MGV-5 #1012) — a shared App installation must not hand one gaggle's
 // stages a token that reaches a sibling gaggle's repo. A package var, like
 // newGitHubAppTokenSource, so CLI tests substitute an httptest-backed source.
-var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
+var newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, gaggleOwner, gaggleRepoName string, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ResolveFunc, error) {
 	const keyRefName = "daemon-identity-private-key"
+	// #3415: which installation mints depends on which owner this gaggle acts
+	// on, and that is known HERE -- buildCredentials receives the gaggle's
+	// owner and builds one resolver per gaggle. Selecting at wiring time is
+	// why the per-owner form needs no change to credentials.ResolveFunc, which
+	// takes only a context and could not otherwise learn the target.
+	//
+	// A gaggle whose owner has no binding is refused rather than defaulted:
+	// falling back to some other owner's installation reproduces exactly the
+	// 422-at-first-use this feature exists to prevent, only later and with a
+	// less obvious cause. Config validation already rejects this shape at
+	// load, so reaching here means the two disagree.
+	installationID, ok := d.InstallationForOwner(gaggleOwner)
+	if !ok {
+		return nil, fmt.Errorf(
+			"daemon identity has no GitHub App installation bound for owner %q; "+
+				"add it to daemonIdentity.installations", gaggleOwner)
+	}
 	keyResolver, err := credentials.NewResolverWith([]credentials.TokenRef{d.PrivateKey.CredentialTokenRef(keyRefName)}, stores, nil)
 	if err != nil {
 		return nil, fmt.Errorf("configure daemon identity App key source: %w", err)
 	}
 	source, err := githubapp.New(githubapp.Config{
 		AppID:          string(d.AppID),
-		InstallationID: string(d.InstallationID),
+		InstallationID: string(installationID),
 		Repositories:   []string{gaggleRepoName},
 		Key: func(ctx context.Context) (string, error) {
 			return keyResolver.Resolve(ctx, keyRefName)
