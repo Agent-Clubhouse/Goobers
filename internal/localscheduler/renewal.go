@@ -105,6 +105,17 @@ const claimProbeConcurrency = 4
 // value.
 var claimProbeBudget = 30 * time.Second
 
+// instantLivenessProbe marks a probe answerable from process memory with an
+// authoritative not-live: it bypasses the budget/pool entirely. The budget
+// exists to bound NETWORK probes (a hung engine frontend must not stall
+// startup); wrapping an in-memory probe in it inverts the guarantee — a
+// pure mode-1 pass whose parent context arrived short of 30s resolved every
+// untracked holder fail-live and RENEWED claims the pre-DS6 daemon would
+// have reaped (caught by TestUpRecoversExpiredClaimAtStartup under -race).
+type instantLivenessProbe interface {
+	InstantLiveness() bool
+}
+
 // ProbeLiveClaimHolders probes each distinct RunID holding an entry and
 // returns the set renewal must treat as live. A probe ERROR fails live — the
 // run is included in the returned set — with the error joined into the second
@@ -118,17 +129,6 @@ var claimProbeBudget = 30 * time.Second
 // startup rebuild runs synchronously before the scheduler starts). Results
 // and error text are assembled in sorted run-id order so they stay
 // deterministic regardless of completion order.
-// instantLivenessProbe marks a probe answerable from process memory with an
-// authoritative not-live: it bypasses the budget/pool entirely. The budget
-// exists to bound NETWORK probes (a hung engine frontend must not stall
-// startup); wrapping an in-memory probe in it inverts the guarantee — a
-// pure mode-1 pass whose parent context arrived short of 30s resolved every
-// untracked holder fail-live and RENEWED claims the pre-DS6 daemon would
-// have reaped (caught by TestUpRecoversExpiredClaimAtStartup under -race).
-type instantLivenessProbe interface {
-	InstantLiveness() bool
-}
-
 func ProbeLiveClaimHolders(ctx context.Context, entries []ClaimEntry, probe RunLivenessProbe) (map[string]bool, error) {
 	runIDs := make([]string, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
