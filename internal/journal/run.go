@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 
 // ErrClosed is returned by writer operations after Close.
 var ErrClosed = errors.New("journal: run is closed")
+
+// ErrTerminalGenerationChanged means a continuation was checked against an
+// older terminal event than the source currently records.
+var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 
 // Run is a writer over a single run journal. It owns the append handle to
 // events.jsonl and enforces the durability contract: every Append scrubs, writes
@@ -204,6 +209,10 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	// the scrubbed digests.
 	id.Inputs = id.Inputs[:0:0]
 	for _, name := range sortedKeys(inputs) {
+		if name == "" || name == "." || name == ".." || path.Base(name) != name || strings.ContainsAny(name, `/\`) {
+			releaseRunLock(lock)
+			return nil, fmt.Errorf("journal: invalid input name %q", name)
+		}
 		ref, err := writeContent(dir, path.Join(dirInputs, name), inputs[name], cfg.scrubber)
 		if err != nil {
 			releaseRunLock(lock)
@@ -247,11 +256,16 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		lock:     lock,
 		phase:    PhaseRunning,
 	}
-	if err := r.append(Event{Type: EventRunStarted, Status: string(PhaseRunning)}); err != nil {
+	if err := r.append(Event{
+		Type: EventRunStarted, Status: string(PhaseRunning),
+		SourceRunID: id.ContinuedFromRunID, SourceTerminalSeq: id.SourceTerminalSeq,
+		Actor: id.Operator, Target: id.RequestedTarget,
+	}); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
 		return nil, err
 	}
+
 	if err := r.checkpoint(); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
@@ -280,6 +294,74 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		published.observer(published.id.RunID, published.seq)
 	}
 	return published, nil
+}
+
+// ContinuationRequest is the journal-side creation contract for a continuation.
+// Inputs are copied into the new journal and never read from the source journal.
+type ContinuationRequest struct {
+	RunID               string
+	SourceRunID         string
+	ExpectedTerminalSeq uint64
+	Operator            string
+	Target              string
+	Inputs              map[string][]byte
+	InputIntegrity      map[string]apiv1.Integrity
+}
+
+// CreateContinuation creates a distinct journal from a terminal source
+// generation. The source is opened read-only and is never rewritten.
+func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option) (*Run, error) {
+	if !apiv1.ValidRunID(req.SourceRunID) {
+		return nil, fmt.Errorf("journal: invalid source run id %q", req.SourceRunID)
+	}
+	if !apiv1.ValidRunID(req.RunID) {
+		return nil, fmt.Errorf("journal: invalid continuation run id %q", req.RunID)
+	}
+	if req.ExpectedTerminalSeq == 0 {
+		return nil, errors.New("journal: expected terminal sequence is required")
+	}
+	if strings.TrimSpace(req.Operator) == "" {
+		return nil, errors.New("journal: operator is required")
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		return nil, errors.New("journal: continuation target is required")
+	}
+	sourceDir := filepath.Join(runsDir, req.SourceRunID)
+	reader, err := OpenRead(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open continuation source: %w", err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source phase: %w", err)
+	}
+	if phase != PhaseCompleted && phase != PhaseFailed && phase != PhaseAborted && phase != PhaseEscalated {
+		return nil, fmt.Errorf("journal: continuation source %q is not terminal (phase=%s)", req.SourceRunID, phase)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source events: %w", err)
+	}
+	var terminalSeq uint64
+	for _, event := range events {
+		if event.Type == EventRunFinished {
+			terminalSeq = event.Seq
+		}
+	}
+	if terminalSeq != req.ExpectedTerminalSeq {
+		return nil, fmt.Errorf("%w: source %q is at sequence %d, expected %d", ErrTerminalGenerationChanged, req.SourceRunID, terminalSeq, req.ExpectedTerminalSeq)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
+	}
+	id.RunID = req.RunID
+	id.ContinuedFromRunID = req.SourceRunID
+	id.SourceTerminalSeq = req.ExpectedTerminalSeq
+	id.Operator = strings.TrimSpace(req.Operator)
+	id.RequestedTarget = strings.TrimSpace(req.Target)
+	id.Trigger = Trigger{Kind: TriggerManual, Ref: req.SourceRunID}
+	return Create(runsDir, id, req.Inputs, append(opts, WithInputIntegrity(req.InputIntegrity))...)
 }
 
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are

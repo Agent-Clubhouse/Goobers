@@ -346,6 +346,10 @@ type Event struct {
 	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
+	// SourceRunID and SourceTerminalSeq identify a continuation's source
+	// generation. They are present on the new run's run.started event.
+	SourceRunID       string `json:"sourceRunId,omitempty"`
+	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
 	// Reason is a short, stable explanation for an instance-level scheduler or
 	// daemon lifecycle event.
 	Reason string `json:"reason,omitempty"`

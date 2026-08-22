@@ -203,6 +203,18 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "x-conformance": "normative"
     },
+    "sourceRunId": {
+      "description": "Source run for a continuation provenance record.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "x-conformance": "normative"
+    },
+    "sourceTerminalSeq": {
+      "description": "Selected terminal source sequence for a continuation.",
+      "type": "integer",
+      "minimum": 1,
+      "x-conformance": "normative"
+    },
     "outputs": {
       "description": "Small, named scalar values a stage.finished's ResultEnvelope.Outputs carried (docs/stage-contract.md) — journaled so a resumed run can reconstruct a finished stage's result (its lastStage/lastResult, or a resumed gate's subject) without it having lived only in the runner's process memory.",
       "type": "object",

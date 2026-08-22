@@ -130,6 +130,26 @@ type InvocationEnvelope struct {
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
 }
 
+// ContinuationRequest creates a new run journal linked to a terminal source
+// run. It intentionally describes creation only; execution from Target is a
+// later workflow slice.
+type ContinuationRequest struct {
+	From                string              `json:"from"`
+	ExpectedTerminalSeq uint64              `json:"expectedTerminalSeq"`
+	Target              string              `json:"target"`
+	Operator            string              `json:"operator"`
+	Inputs              []ContinuationInput `json:"inputs,omitempty"`
+}
+
+// ContinuationInput is an injected immutable input reference. Content is
+// supplied by the API caller and snapshotted by the journal creator.
+type ContinuationInput struct {
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source"`
+	Integrity Integrity `json:"integrity"`
+}
+
 // AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
 // alongside its primary Workspace (MGV-11 #1286). Name is the reference repo's
 // name (from GaggleSpec.AdditionalRepos), Path is the absolute on-disk location
