@@ -247,7 +247,8 @@ type Scheduler struct {
 	// capability the runner does not claim. Empty (the default) claims nothing,
 	// which only matters for entries that declare RequiredCapabilities — an
 	// entry that declares none is never refused on this axis.
-	runnerCapabilities runnercap.Claimed
+	runnerCapabilities  runnercap.Claimed
+	targetedPRValidator func(context.Context, WorkflowEntry, int) error
 }
 
 // Option configures a Scheduler.
@@ -337,6 +338,15 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 func WithRunnerCapabilities(caps []string) Option {
 	return func(s *Scheduler) {
 		s.runnerCapabilities = runnercap.NewClaimed(caps)
+	}
+}
+
+// WithTargetedPRValidator validates a manually targeted pull request before a
+// signal trigger is admitted. It is optional so the scheduler package remains
+// independent of provider construction.
+func WithTargetedPRValidator(validate func(context.Context, WorkflowEntry, int) error) Option {
+	return func(s *Scheduler) {
+		s.targetedPRValidator = validate
 	}
 }
 
@@ -1635,6 +1645,43 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 		"manual")
 }
 
+// TriggerSignal fires one unqualified workflow with an external signal
+// reference, using the same ambiguity rules as Trigger.
+func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalWithDispatchContext(ctx, ctx, workflow, signal, ref, now)
+}
+
+// TriggerSignalWithDispatchContext validates with ctx while starting an
+// admitted run with dispatchCtx. Delegated triggers use this to bound provider
+// validation by the client request without tying the run's lifetime to that
+// short-lived request.
+func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	var gaggles []string
+	for identity := range s.workflows {
+		if identity.Workflow == workflow {
+			gaggles = append(gaggles, identity.Gaggle)
+		}
+	}
+	s.mu.Unlock()
+	if len(gaggles) == 0 {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q", workflow)
+	}
+	if len(gaggles) > 1 {
+		sort.Strings(gaggles)
+		commands := make([]string, 0, len(gaggles))
+		for _, gaggle := range gaggles {
+			commands = append(commands, fmt.Sprintf("%q", "goobers run "+gaggle+"/"+workflow))
+		}
+		return "", fmt.Errorf(
+			"localscheduler: workflow %q is ambiguous; candidate gaggles: %s; retry with %s",
+			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
+		)
+	}
+	return s.TriggerSignalExactWithDispatchContext(ctx, dispatchCtx,
+		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
+}
+
 // TriggerExact manually fires one workflow identified by its gaggle and name.
 func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
 	s.mu.Lock()
@@ -1646,6 +1693,48 @@ func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity,
 	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
+}
+
+// TriggerSignalExact fires one exact workflow with an external signal
+// reference, retaining normal run-condition admission.
+func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalExactWithDispatchContext(ctx, ctx, identity, signal, ref, now)
+}
+
+// TriggerSignalExactWithDispatchContext is TriggerSignalExact with separate
+// validation and run-lifetime contexts.
+func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	s.mu.Lock()
+	entry, ok := s.workflows[identity]
+	s.mu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
+	}
+	subscribed := false
+	for _, configuredSignal := range entry.Signals {
+		if configuredSignal == signal {
+			subscribed = true
+			break
+		}
+	}
+	if !subscribed {
+		return "", fmt.Errorf("localscheduler: workflow %q in gaggle %q is not subscribed to signal %q", identity.Workflow, identity.Gaggle, signal)
+	}
+	if pullNumber, targeted := webhookhttp.PullNumberFromTriggerRef(ref); targeted && s.targetedPRValidator != nil {
+		number, convErr := strconv.Atoi(pullNumber)
+		if convErr != nil {
+			return "", fmt.Errorf("localscheduler: invalid targeted pull request %q: %w", pullNumber, convErr)
+		}
+		if err := s.targetedPRValidator(ctx, entry, number); err != nil {
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+	return s.triggerWorkflow(dispatchCtx, entry, now,
+		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
+		"signal")
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run
@@ -1667,6 +1756,9 @@ func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdenti
 }
 
 func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string) (runID string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	tick := TickResult{Fire: true, LastEval: now}
 	if reason == "" {
 		reason = fireReason(tick, trigger.Kind)

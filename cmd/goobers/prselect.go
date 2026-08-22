@@ -272,6 +272,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -279,6 +280,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -488,6 +490,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -495,6 +498,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -549,6 +553,23 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		noneIfEmpty(joinPRNumbers(fairness.Starved)),
 	)
 	return 0
+}
+
+func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
+	if !targeted {
+		return candidates
+	}
+	number, err := strconv.Atoi(pullID)
+	if err != nil {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if candidate.Number == number {
+			return []providers.PullRequestSummary{candidate}
+		}
+	}
+	return nil
 }
 
 // adoSelectProvider is the minimal mandatory-Provider surface pr-select's ADO
