@@ -43,6 +43,28 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestContinuationRequestRoundTrip(t *testing.T) {
+	in := ContinuationRequest{
+		From: "0af7651916cd43dd8448eb211c80319c", ExpectedTerminalSeq: 7,
+		Target: "implement", Operator: "operator@example.test",
+		Inputs: []ContinuationInput{{
+			Name: "issue", Content: "issue body", Source: "github:issue/42",
+			Integrity: IntegrityMaintainer,
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out ContinuationRequest
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("continuation request round-trip mismatch:\n in: %#v\nout: %#v", in, out)
+	}
+}
+
 func TestResultEnvelopeRoundTrip(t *testing.T) {
 	in := ResultEnvelope{
 		Status:     ResultFailure,
