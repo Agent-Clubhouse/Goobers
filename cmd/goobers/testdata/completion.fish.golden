@@ -231,7 +231,7 @@ complete -c goobers -n '__fish_seen_subcommand_from set-milestone' -l milestone 
 complete -c goobers -n '__fish_seen_subcommand_from reconcile-post-merge' -l max -r -d 'Maximum pull requests to reconcile'
 complete -c goobers -n '__fish_seen_subcommand_from reconcile-post-merge' -l lookback -r -d 'Merge lookback duration'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l window -r -d 'Lookback window (e.g. 24h)'
-complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l aggregate -r -a 'all stage-failure-rate error-signature ci-check-failure gate-noise' -d 'Aggregate to detect'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l aggregate -r -a 'all stage-failure-rate error-signature ci-check-failure gate-noise credit-assignment' -d 'Aggregate to detect'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l threshold -r -d 'Threshold override k=v'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l format -r -a 'candidate-findings' -d 'Artifact format'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry-query' -l gaggle -r -d 'Gaggle to query'

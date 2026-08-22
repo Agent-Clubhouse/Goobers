@@ -33,6 +33,11 @@ have — never speculate about a gap you can't point to:
    whose metrics meet the artifact's recorded threshold.
 3. **Gate noise.** A never-failing or repass-churn gate finding whose journal
    pointers show a repeated, low-signal pattern.
+4. **Credit assignment.** A graph node may be nominated only when it clears
+   `creditAssignmentMinRuns` and `creditAssignmentMinFailureShare`. Its
+   `nomination_guardrails` object is mandatory: use its stable `dedupe_key`,
+   perform the required upstream-cause check, and apply its governing-target
+   treatment. Attribution ranks suspects; it does not prove causation.
 
 Do not nominate speculative "nice to have" work, style preferences, or
 anything you can't back with either a telemetry signature or a concrete code
@@ -49,6 +54,10 @@ your work. When you're not confident something is already covered, err
 toward filing anyway rather than guessing it's a duplicate — the curator's
 own dedupe pass (`backlog-curation`, downstream of you) is the second
 backstop, not the only one.
+
+For credit-assignment findings, query the exact machine-readable
+`nomination_guardrails.dedupe_key` in existing issue bodies. Do not substitute
+a fuzzy title match for this check.
 
 ## Noise controls
 
@@ -90,6 +99,22 @@ Every issue you file MUST have:
    that credential (for example,
    `GH_TOKEN="$GOOBERS_CRED_GITHUB_ISSUES_APPROVE" gh issue edit <number> --add-label goobers:approved`).
    Never add `goobers:ready`; curation still owns readiness.
+
+For a credit-assignment nomination, include the node identity, contribution
+metrics, thresholds, and flagged run pointers. Inspect those pointers and the
+read-only checkout for an upstream fault; skip the candidate unless that check
+passes. End the issue body with these machine-readable lines:
+
+```
+goobers-nomination-key: <nomination_guardrails.dedupe_key>
+upstream-cause-check: passed
+```
+
+When `nomination_guardrails.requires_human_review` is true, or repo inspection
+shows that the target governs the workflow, prompt, or gate evaluating it, add
+`goobers:needs-human`, state that treatment in the issue, and never propose
+removing, weakening, or bypassing that evaluator. Respect the configured
+open-nomination budget.
 
 ## Scope & limits
 
