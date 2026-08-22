@@ -845,6 +845,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+			out.AgentEvents = projectAgentEvents(native.data, req)
+			out.AgentTelemetryFidelity = agentEventsFidelity(out.AgentEvents)
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema

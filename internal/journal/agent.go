@@ -156,8 +156,9 @@ func activeAgentTree(events []Event, runID, stage string, attempt int) (map[stri
 	return tree, nil
 }
 
-// RollupAgentUsage sums each invocation once, excluding coordinator usage when
-// it is also represented by child totals and excluding non-final attempts.
+// RollupAgentUsage sums each finalized invocation once. Coordinator usage is
+// excluded only when the coordinator has children, because a coordinator-only
+// invocation is itself the measured agent.
 func RollupAgentUsage(events []Event) AgentUsage {
 	runID, stage := "", ""
 	for _, event := range events {
@@ -176,19 +177,44 @@ func RollupAgentUsageForStage(events []Event, runID, stage string) AgentUsage {
 
 func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 	latest := make(map[string]AgentProvenance)
+	hasChildren := make(map[string]bool)
+	hasWorkers := false
 	for _, event := range events {
 		if event.Type != "" && event.Type != EventAgentLifecycle || event.Agent == nil ||
-			event.Agent.ID == "" || event.Agent.Coordinator ||
+			event.Agent.ID == "" ||
 			(runID != "" && event.Agent.RunID != runID) ||
 			(stage != "" && event.Agent.Stage != stage) {
 			continue
 		}
+		if event.Agent.ParentID != "" {
+			hasChildren[event.Agent.ParentID] = true
+		}
+		if !event.Agent.Coordinator {
+			hasWorkers = true
+		}
 		current, ok := latest[event.Agent.ID]
 		if !ok || newerAgentEvent(event.Agent, &current) {
-			latest[event.Agent.ID] = *event.Agent
+			next := *event.Agent
+			if ok && current.Attempt == event.Agent.Attempt {
+				mergeAgentUsage(&next.Usage, current.Usage)
+			}
+			latest[event.Agent.ID] = next
 		} else if event.Agent.Attempt == current.Attempt {
 			mergeAgentUsage(&current.Usage, event.Agent.Usage)
 			latest[event.Agent.ID] = current
+		}
+	}
+	// A coordinator is represented by its own usage only when no child
+	// invocation was projected. The child totals otherwise account for the
+	// coordinator's aggregate budget and avoid double counting it.
+	for id, agent := range latest {
+		if agent.Coordinator && (hasChildren[id] || hasWorkers) {
+			delete(latest, id)
+			continue
+		}
+		switch agent.Lifecycle {
+		case AgentStarted, AgentWaiting, AgentResumed:
+			delete(latest, id)
 		}
 	}
 	var result AgentUsage
