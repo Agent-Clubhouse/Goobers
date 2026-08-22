@@ -367,11 +367,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	// DS6 (distributed-state-and-coordination.md §10): the gate keeps every
+	// expired-claim reap — setup's included — a no-op until the renewal set
+	// has been rebuilt from ledger + liveness below.
+	claimRecoveryGate := localscheduler.NewRecoveryGate()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
 		withStartupProgress(func(message string) {
 			pf(stdout, "startup: %s\n", message)
 		}),
+		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
 		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
@@ -519,6 +524,31 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
+	// any reap is permitted — DS6's load-bearing ordering
+	// (distributed-state-and-coordination.md §10): this process's in-memory
+	// run tracking is empty right now, but a distributed run dispatched by
+	// the previous daemon process is still executing on the engine, and its
+	// claims must be renewed — not reaped — across the restart. Only a
+	// renewal pass whose ledger write completed opens the gate; a failed pass
+	// leaves it closed and the periodic tick below retries both halves.
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	if err != nil {
+		pf(stderr, "error: build claim liveness probe: %v\n", err)
+		return 1
+	}
+	defer closeClaimLiveness()
+	if _, probeErr, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); renewErr != nil {
+		if !isJournaledClaimsLockTimeout(renewErr) {
+			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+		}
+	} else {
+		if probeErr != nil {
+			pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
+		}
+		claimRecoveryGate.MarkRenewalRebuilt()
+	}
+
 	// Claim recovery (#131/#793): released once now and periodically thereafter
 	// to recover expired leases and claim cleanup deferred by a terminal
 	// finalizer's bounded lock timeout — before the scheduler starts admitting
@@ -530,7 +560,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -763,11 +793,15 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recovery sweep above already ran BEFORE resume tracked anything, on the
 	// prior process's now possibly-stale leases, so a resumed run's claim
 	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. Best-effort,
+	// interval right when a restart just made that most likely. The resumed
+	// runs are tracked by the registry now, so the ledger-driven pass covers
+	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
-	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
-		pf(stdout, "warning: renew resumed claims: %v\n", err)
+	if len(resumed) > 0 {
+		if _, _, err := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+			pf(stdout, "warning: renew resumed claims: %v\n", err)
+		}
 	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
@@ -864,17 +898,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
-				// Renew before reaping (#2014): both run in the same tick, and a
-				// still-tracked run's lease must be pushed back into the future
+				// Renew before reaping (#2014/DS6): both run in the same tick,
+				// and a live run's lease must be pushed back into the future
 				// before recoverExpiredClaims below checks it against now — doing
-				// it in the other order would let a run this process is still
-				// actively driving get reaped on the exact tick its lease was due
-				// to be renewed, on nothing worse than ordinary ticker jitter.
-				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				// it in the other order would let a run that is still live get
+				// reaped on the exact tick its lease was due to be renewed, on
+				// nothing worse than ordinary ticker jitter.
+				_, probeErr, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease)
 				if isJournaledClaimsLockTimeout(renewErr) {
 					claimRenewErrors.report(nil)
-				} else {
+				} else if renewErr != nil {
 					claimRenewErrors.report(renewErr)
+				} else {
+					claimRenewErrors.report(probeErr)
+					// Self-heal DS6's startup ordering: if the startup rebuild
+					// failed (gate still closed), this completed pass is the
+					// rebuild — recovery below is permitted from here on.
+					claimRecoveryGate.MarkRenewalRebuilt()
 				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
