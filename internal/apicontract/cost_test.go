@@ -68,7 +68,12 @@ func TestEveryRouteIsClassified(t *testing.T) {
 // shed under read load, which is the wrong policy for a user pressing Approve.
 func TestMutationsAreNotClassifiedAsReads(t *testing.T) {
 	for _, route := range V1Routes() {
-		isMutationAction := route.ActionClass == ActionRuntimeMutation || route.ActionClass == ActionMaintenance
+		// Workflow-execution routes joined the write surface with the §7
+		// planes (claims, trigger ingestion): they write runtime state and
+		// must be pooled as mutations, not shed with read traffic.
+		isMutationAction := route.ActionClass == ActionRuntimeMutation ||
+			route.ActionClass == ActionMaintenance ||
+			route.ActionClass == ActionWorkflowExecution
 		switch {
 		case isMutationAction && route.Cost != CostMutation:
 			t.Errorf("route %s is a mutation but carries cost class %q; it would be "+

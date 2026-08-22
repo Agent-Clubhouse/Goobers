@@ -109,16 +109,55 @@ func (p Principal) HasRole(required Role) bool {
 	return false
 }
 
+// PodPrincipalIssuer marks a principal authenticated through the pod-to-daemon
+// seam (a per-run bearer minted by the daemon; internal/podauth is the v1
+// implementation). Pod principals hold no instance roles: authorization for
+// them is plane-scoped, not role-ranked.
+const PodPrincipalIssuer = "goobers/pod"
+
+// IsPodPrincipal reports whether principal was authenticated as a stage pod.
+func IsPodPrincipal(principal Principal) bool {
+	return principal.Issuer == PodPrincipalIssuer
+}
+
+// claimsPlanePath reports whether path is one of the claims-plane write routes
+// — the only part of the versioned surface a pod principal may reach.
+// Everything else (reads, triggers, HITL, interventions) stays human-only: a
+// stage pod has no business resolving escalations or minting runs.
+func claimsPlanePath(path string) bool {
+	switch path {
+	case apicontract.ClaimAcquirePath,
+		apicontract.ClaimRenewPath,
+		apicontract.ClaimReleasePath,
+		apicontract.ClaimSettlePath:
+		return true
+	default:
+		return false
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
 // paired with a real Authenticator — under NullAuthenticator every request
 // stays anonymous and would be refused.
+//
+// Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
+// to the claims plane: their token proves "I am run X's stage pod", which
+// authorizes ledger operations for that run and nothing else. Per-run
+// containment (the claim request's runId matching the pod's run) is enforced
+// by the claims handlers, which can see the request body.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
 		if !ok {
 			return errors.New("no authenticated principal")
+		}
+		if IsPodPrincipal(principal) {
+			if claimsPlanePath(request.URL.Path) && request.Method == http.MethodPost {
+				return nil
+			}
+			return fmt.Errorf("pod principal %q may only call the claims plane", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -192,6 +231,9 @@ type handlerConfig struct {
 	interventions       InterventionService
 	interventionContext context.Context
 	runRevealer         func(context.Context, string) error
+	claims              ClaimService
+	triggers            TriggerService
+	escalations         EscalationService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -428,6 +470,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
+	registerWritePlaneRoutes(router, config, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {

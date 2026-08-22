@@ -1,0 +1,409 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+)
+
+// writeplanes.go implements the daemon side of the write API's claims and
+// trigger planes (distributed-state-and-coordination.md §7) plus the HITL
+// resolution adapter. Nothing here is a second coordinator: the claims plane
+// opens the same claims.json under the same cross-process flock the CLI
+// claimants use (withClaimLock, providercmd.go), and the trigger plane calls
+// the same Scheduler.Trigger* methods the pending-triggers sweep dispatches
+// through (rundelegate.go) — the file seams remain for local/mode-1 callers.
+
+// API claims-plane lock operation labels, alongside providercmd.go's.
+const (
+	claimLockOperationAPIAcquire = "api.claims.acquire"
+	claimLockOperationAPIRenew   = "api.claims.renew"
+	claimLockOperationAPIRelease = "api.claims.release"
+	claimLockOperationAPISettle  = "api.claims.settle"
+)
+
+// claimSettleOutcomes is the closed vocabulary for settle's outcome field.
+var claimSettleOutcomes = map[string]bool{"completed": true, "abandoned": true}
+
+// daemonClaimService is the claims plane over the daemon's claim ledger. The
+// ledger file stays the store (DS3): every operation opens it fresh under the
+// cross-process claims lock, exactly as the CLI provider-chain subcommands
+// do, so API callers and subprocess callers share one atomicity domain.
+type daemonClaimService struct {
+	layout instance.Layout
+	log    *journal.InstanceLog
+}
+
+func newDaemonClaimService(layout instance.Layout, log *journal.InstanceLog) *daemonClaimService {
+	return &daemonClaimService{layout: layout, log: log}
+}
+
+func (s *daemonClaimService) lockPath() string {
+	return filepath.Join(s.layout.SchedulerDir(), claimLockFileName)
+}
+
+func (s *daemonClaimService) ledgerPath() string {
+	return filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName)
+}
+
+func (s *daemonClaimService) leaseDuration(request httpapi.ClaimRequest) (time.Duration, error) {
+	if request.LeaseSeconds < 0 {
+		return 0, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_lease", "leaseSeconds must not be negative", nil)
+	}
+	if request.LeaseSeconds == 0 {
+		return DefaultClaimLease, nil
+	}
+	return time.Duration(request.LeaseSeconds) * time.Second, nil
+}
+
+func claimKey(request httpapi.ClaimRequest) localscheduler.ClaimKey {
+	return localscheduler.ClaimKey{
+		Gaggle:     request.Gaggle,
+		Provider:   request.Provider,
+		ExternalID: request.ItemID,
+	}
+}
+
+// withLedger runs fn against a freshly-opened ledger under the cross-process
+// claims lock — the same fresh-open-under-flock discipline every subprocess
+// claimant uses, which is what makes the API and the file-seam callers one
+// atomicity domain rather than two.
+func (s *daemonClaimService) withLedger(operation string, request httpapi.ClaimRequest, fn func(*localscheduler.ClaimLedger) error) error {
+	return withClaimLockForRun(s.lockPath(), operation, request.Gaggle, request.RunID, func() error {
+		opts := []localscheduler.LedgerOption{}
+		if s.log != nil {
+			opts = append(opts, localscheduler.WithInstanceLog(s.log))
+		}
+		ledger, err := localscheduler.OpenClaimLedger(s.ledgerPath(), opts...)
+		if err != nil {
+			return err
+		}
+		return fn(ledger)
+	})
+}
+
+// Acquire claims the item for the requesting run. Refusal (a live lease held
+// by another run) is not an error: it answers Ok=false with the holder, and
+// journals claim.refused so both outcomes of a two-claimant race are
+// observable (§13 item 2). An idempotent re-claim by the same run renews.
+func (s *daemonClaimService) Acquire(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	lease, err := s.leaseDuration(request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	var response httpapi.ClaimResponse
+	err = s.withLedger(claimLockOperationAPIAcquire, request, func(ledger *localscheduler.ClaimLedger) error {
+		ok, holder, err := ledger.ClaimScoped(claimKey(request), request.RunID, request.Workflow, lease)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			response = httpapi.ClaimResponse{Ok: false, Holder: holder}
+			s.journalRefusal(request, holder)
+			return nil
+		}
+		expires := time.Now().Add(lease)
+		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
+		return nil
+	})
+	return response, err
+}
+
+// Renew extends the requesting run's own lease. Ok=false reports a claim
+// that is no longer the run's to renew (released, reaped, or reassigned) —
+// stale work for the caller to stop, not an error (RenewEntry's contract).
+func (s *daemonClaimService) Renew(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	lease, err := s.leaseDuration(request)
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	var response httpapi.ClaimResponse
+	err = s.withLedger(claimLockOperationAPIRenew, request, func(ledger *localscheduler.ClaimLedger) error {
+		ok, err := ledger.RenewEntry(localscheduler.ClaimEntry{
+			Gaggle:     request.Gaggle,
+			Provider:   request.Provider,
+			ExternalID: request.ItemID,
+			ItemID:     request.ItemID,
+			RunID:      request.RunID,
+			Workflow:   request.Workflow,
+		}, lease)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			holder := ""
+			if entry, held := ledger.LookupScoped(claimKey(request)); held {
+				holder = entry.RunID
+			}
+			response = httpapi.ClaimResponse{Ok: false, Holder: holder}
+			return nil
+		}
+		expires := time.Now().Add(lease)
+		response = httpapi.ClaimResponse{Ok: true, ExpiresAt: &expires}
+		return nil
+	})
+	return response, err
+}
+
+// Release gives the item back mid-run. Releasing a claim not held is a
+// no-op, not an error — the ledger's own idempotency contract.
+func (s *daemonClaimService) Release(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	return s.release(claimLockOperationAPIRelease, request, nil)
+}
+
+// Settle is the exactly-once terminal release: the run concluded its work on
+// the item (outcome completed/abandoned) and surrenders the lease. The lease
+// plus the ledger's release idempotency are what make it exactly-once — a
+// retried settle after the release is a no-op, and a settle by a run that
+// lost the lease cannot release the new holder's claim. The provider-visible
+// marker stays owned by the provider-chain stages (it mirrors the ledger and
+// is never the source of truth).
+func (s *daemonClaimService) Settle(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	outcome := strings.TrimSpace(request.Outcome)
+	if outcome == "" {
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "outcome_required", "settle requires an outcome", nil)
+	}
+	if !claimSettleOutcomes[outcome] {
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_outcome", "settle outcome must be completed or abandoned", nil)
+	}
+	return s.release(claimLockOperationAPISettle, request, map[string]any{
+		"settled":       true,
+		"settleOutcome": outcome,
+	})
+}
+
+func (s *daemonClaimService) release(operation string, request httpapi.ClaimRequest, settleRunner map[string]any) (httpapi.ClaimResponse, error) {
+	var response httpapi.ClaimResponse
+	err := s.withLedger(operation, request, func(ledger *localscheduler.ClaimLedger) error {
+		entry, held := ledger.LookupScoped(claimKey(request))
+		releases := held && entry.RunID == request.RunID
+		if err := ledger.ReleaseScoped(claimKey(request), request.RunID); err != nil {
+			return err
+		}
+		response = httpapi.ClaimResponse{Ok: true}
+		if settleRunner != nil && releases && s.log != nil {
+			// The ledger journals claim.released; the settle disposition is
+			// the plane's own annotation on the same instance journal, and
+			// only the settle that actually surrendered the lease records it
+			// — a retried settle is a silent no-op, which is the exactly-once
+			// contract.
+			_ = s.log.Append(journal.Event{
+				Type:     journal.EventClaimReleased,
+				Name:     request.ItemID,
+				Gaggle:   request.Gaggle,
+				RunID:    request.RunID,
+				Workflow: request.Workflow,
+				Runner:   settleRunner,
+			})
+		}
+		return nil
+	})
+	return response, err
+}
+
+// journalRefusal records the losing side of a claim race. Best-effort like
+// the ledger's own claim journaling: the refusal answer is authoritative
+// either way.
+func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder string) {
+	if s.log == nil {
+		return
+	}
+	_ = s.log.Append(journal.Event{
+		Type:     journal.EventClaimRefused,
+		Name:     request.ItemID,
+		Gaggle:   request.Gaggle,
+		RunID:    request.RunID,
+		Workflow: request.Workflow,
+		Runner: map[string]any{
+			"claimProvider":   request.Provider,
+			"claimExternalId": request.ItemID,
+			"holder":          holder,
+		},
+	})
+}
+
+// workflowTriggerer is the slice of *localscheduler.Scheduler the trigger
+// plane dispatches through — the same methods the pending-triggers sweep
+// calls, seam-shaped for tests.
+type workflowTriggerer interface {
+	Trigger(ctx context.Context, workflow string, now time.Time) (string, error)
+	TriggerExact(ctx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+}
+
+// maxTriggerDedupeRecords bounds the trigger plane's delivery-dedupe memory,
+// mirroring the webhook handler's bounded in-memory set (daemon-local is
+// sound under DS1).
+const maxTriggerDedupeRecords = 10000
+
+// daemonTriggerService ingests external triggers: validate, dedupe, and mint
+// through the exact scheduler path the poll-loop/sweep uses. The scheduler
+// is attached after construction (the HTTP handler is built before the
+// scheduler exists at daemon startup), mirroring
+// runInterventionService.AttachScheduler.
+type daemonTriggerService struct {
+	sched atomic.Pointer[localscheduler.Scheduler]
+	now   func() time.Time
+	// dispatch overrides the scheduler dispatch seam in tests; nil dispatches
+	// through the attached scheduler.
+	dispatch workflowTriggerer
+
+	mu    sync.Mutex
+	seen  map[string]string // requestId -> minted run id
+	order []string
+}
+
+func newDaemonTriggerService() *daemonTriggerService {
+	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
+}
+
+func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) {
+	if s != nil {
+		s.sched.Store(sched)
+	}
+}
+
+func (s *daemonTriggerService) triggerer() workflowTriggerer {
+	if s.dispatch != nil {
+		return s.dispatch
+	}
+	if sched := s.sched.Load(); sched != nil {
+		return sched
+	}
+	return nil
+}
+
+// Trigger validates, dedupes, and mints. A redelivered RequestID whose
+// original delivery minted a run answers that run without minting a second
+// one; a delivery that failed does not poison its RequestID, so the caller
+// may retry it.
+func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
+	dispatch := s.triggerer()
+	if dispatch == nil {
+		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
+		)
+	}
+	requestID := strings.TrimSpace(request.RequestID)
+	if requestID != "" {
+		if runID, duplicate := s.recorded(requestID); duplicate {
+			return httpapi.TriggerResponse{RunID: runID, Duplicate: true}, nil
+		}
+	}
+
+	var runID string
+	var err error
+	if request.Gaggle != "" {
+		runID, err = dispatch.TriggerExact(ctx, localscheduler.WorkflowIdentity{
+			Gaggle: request.Gaggle, Workflow: request.Workflow,
+		}, s.now())
+	} else {
+		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
+	}
+	if err != nil {
+		return httpapi.TriggerResponse{}, triggerPlaneError(err)
+	}
+	if requestID != "" {
+		s.record(requestID, runID)
+	}
+	return httpapi.TriggerResponse{RunID: runID}, nil
+}
+
+func (s *daemonTriggerService) recorded(requestID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runID, duplicate := s.seen[requestID]
+	return runID, duplicate
+}
+
+func (s *daemonTriggerService) record(requestID, runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.seen[requestID]; exists {
+		return
+	}
+	s.seen[requestID] = runID
+	s.order = append(s.order, requestID)
+	if len(s.order) > maxTriggerDedupeRecords {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.seen, oldest)
+	}
+}
+
+// triggerPlaneError maps scheduler trigger failures onto typed API refusals:
+// a transient capacity refusal is retryable (429), any other conditions
+// refusal is a conflict (409), an unknown/ambiguous workflow is the caller's
+// error, and everything else surfaces as a server fault.
+func triggerPlaneError(err error) error {
+	var rejected *localscheduler.TriggerRejectedError
+	if errors.As(err, &rejected) {
+		if rejected.Transient() {
+			return httpapi.NewInterventionError(http.StatusTooManyRequests, "trigger_capacity", err.Error(), err)
+		}
+		return httpapi.NewInterventionError(http.StatusConflict, "trigger_rejected", err.Error(), err)
+	}
+	switch {
+	case strings.Contains(err.Error(), "unknown workflow"):
+		return httpapi.NewInterventionError(http.StatusNotFound, "workflow_not_found", err.Error(), err)
+	case strings.Contains(err.Error(), "is ambiguous"):
+		return httpapi.NewInterventionError(http.StatusBadRequest, "workflow_ambiguous", err.Error(), err)
+	default:
+		return err
+	}
+}
+
+// escalationResolutionAdapter maps the HITL plane's resolution vocabulary
+// (approve/deny/redirect) onto the intervention service's existing escalated-
+// run operations, so the plane reuses the resume/override machinery — and its
+// journaling — rather than forking it.
+type escalationResolutionAdapter struct {
+	interventions *runInterventionService
+}
+
+func newEscalationResolutionAdapter(interventions *runInterventionService) *escalationResolutionAdapter {
+	return &escalationResolutionAdapter{interventions: interventions}
+}
+
+func (a *escalationResolutionAdapter) AcceptResolve(admission, execution context.Context, input httpapi.EscalationResolutionRequest) (httpapi.InterventionResult, error) {
+	request := httpapi.InterventionRequest{
+		RunID:          input.RunID,
+		Stage:          input.Gate,
+		IdempotencyKey: input.IdempotencyKey,
+		Actor:          input.Actor,
+		Decision:       input.Decision,
+		Rationale:      input.Rationale,
+	}
+	switch input.Resolution {
+	case httpapi.EscalationResolutionApprove:
+		if strings.TrimSpace(input.Gate) == "" {
+			return httpapi.InterventionResult{}, interventionBadRequest("gate_required", "approve requires the escalated gate")
+		}
+		return a.interventions.AcceptApprove(admission, execution, request)
+	case httpapi.EscalationResolutionRedirect:
+		if strings.TrimSpace(input.Gate) == "" {
+			return httpapi.InterventionResult{}, interventionBadRequest("gate_required", "redirect requires the escalated gate")
+		}
+		if strings.TrimSpace(input.Decision) == "" {
+			return httpapi.InterventionResult{}, interventionBadRequest("decision_required", "redirect requires a branch decision")
+		}
+		return a.interventions.AcceptOverride(admission, execution, request)
+	case httpapi.EscalationResolutionDeny:
+		return a.interventions.AcceptDenyEscalation(admission, execution, request)
+	default:
+		return httpapi.InterventionResult{}, interventionBadRequest(
+			"invalid_resolution",
+			fmt.Sprintf("resolution %q must be approve, deny, or redirect", input.Resolution),
+		)
+	}
+}

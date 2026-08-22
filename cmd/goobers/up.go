@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -480,9 +481,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// The write planes (#3509, distributed-state-and-coordination.md §7):
+	// claims over the same ledger + flock the CLI claimants use, triggers
+	// through the same scheduler path the pending-triggers sweep dispatches,
+	// HITL resolution over the intervention machinery. The file seams remain
+	// for local/mode-1 callers.
+	triggerPlane := newDaemonTriggerService()
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
@@ -502,7 +512,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(authenticator))
+		// Pod-to-daemon authn (#3509 §14 open point, resolved as per-run
+		// minted bearers): chain the pod-token verifier in front of the human
+		// OIDC authenticator. The registry is daemon-local (sound under DS1);
+		// the mode-3 dispatcher mints into it at stage dispatch (#3482).
+		podTokens := podauth.NewRegistry()
+		chained, err := podauth.NewAuthenticator(podTokens, authenticator)
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -640,6 +660,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 	interventions.AttachScheduler(sched)
+	triggerPlane.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {

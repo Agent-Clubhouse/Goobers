@@ -14,7 +14,12 @@ import (
 const scheduleDemandStateFileName = "schedule-demand.json"
 
 type scheduleDemandStateFile struct {
-	Workflows []scheduleDemandWorkflow `json:"workflows"`
+	// Owner/Generation are the M5 ownership stamp (stateguard.go). Readers
+	// ignore them; the writing scheduler's stateOwner checks them so a second
+	// daemon trips ErrStateSeized instead of silently interleaving writes.
+	Owner      string                   `json:"owner,omitempty"`
+	Generation int64                    `json:"generation,omitempty"`
+	Workflows  []scheduleDemandWorkflow `json:"workflows"`
 }
 
 type scheduleDemandWorkflow struct {
@@ -51,9 +56,15 @@ func readScheduleDemandState(schedulerDir string) (map[WorkflowIdentity]bool, er
 	return outstanding, nil
 }
 
-func writeScheduleDemandState(schedulerDir string, outstanding map[WorkflowIdentity]bool) error {
+func writeScheduleDemandState(schedulerDir string, owner *stateOwner, outstanding map[WorkflowIdentity]bool) error {
+	stamp, err := owner.stamp(schedulerDir, scheduleDemandStateFileName)
+	if err != nil {
+		return err
+	}
 	state := scheduleDemandStateFile{
-		Workflows: make([]scheduleDemandWorkflow, 0, len(outstanding)),
+		Owner:      stamp.Owner,
+		Generation: stamp.Generation,
+		Workflows:  make([]scheduleDemandWorkflow, 0, len(outstanding)),
 	}
 	for identity, pending := range outstanding {
 		if !pending {

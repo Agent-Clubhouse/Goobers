@@ -44,6 +44,21 @@ const (
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
+
+	// Write-plane routes (distributed-state-and-coordination.md §7, DS2/DS3):
+	// the claims plane wraps the daemon-owned claim ledger's existing
+	// operations (claim ≙ acquire, renew, release, settle) so ledger-touching
+	// stages in non-daemon pods stop needing GOOBERS_INSTANCE_ROOT; the
+	// trigger plane ingests external triggers through the same
+	// validate/dedupe/mint path the pending-triggers sweep uses; the HITL
+	// plane resolves an escalated run (approve/deny/redirect). Modes 1/2 keep
+	// their file seams — these routes are the non-local path.
+	ClaimAcquirePath         = V1Prefix + "/claims/acquire"
+	ClaimRenewPath           = V1Prefix + "/claims/renew"
+	ClaimReleasePath         = V1Prefix + "/claims/release"
+	ClaimSettlePath          = V1Prefix + "/claims/settle"
+	TriggerIngestPath        = V1Prefix + "/triggers"
+	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -74,6 +89,13 @@ const (
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
+
+	RouteClaimAcquire      RouteID = "claimAcquire"
+	RouteClaimRenew        RouteID = "claimRenew"
+	RouteClaimRelease      RouteID = "claimRelease"
+	RouteClaimSettle       RouteID = "claimSettle"
+	RouteTriggerIngest     RouteID = "triggerIngest"
+	RouteResolveEscalation RouteID = "resolveEscalation"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -169,6 +191,20 @@ var v1Routes = []Route{
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+
+	// The claims and trigger planes advance the workflow machinery rather than
+	// intervene in one existing run, so they are workflow-execution actions —
+	// the same class the CLI's `run` carries — and stay outside the
+	// runtime-mutation parity contract (they are machine seams, not operator
+	// capabilities every surface must expose). Escalation resolution is
+	// operator recovery of a terminal run, classified like `run abort`
+	// (maintenance) until the portal grows a first-class escalation surface.
+	{ID: RouteClaimAcquire, Method: http.MethodPost, Path: ClaimAcquirePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimRenew, Method: http.MethodPost, Path: ClaimRenewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimRelease, Method: http.MethodPost, Path: ClaimReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
@@ -261,6 +297,19 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 			}
 			return nil, fmt.Errorf(
 				"%s route %q uses method %q for a maintenance action",
+				name,
+				route.ID,
+				route.Method,
+			)
+		case ActionWorkflowExecution:
+			// The write planes (§7) made workflow execution an API action:
+			// trigger ingestion and the claims plane start or advance the
+			// machinery over the wire. Still never a read method.
+			if route.Method != http.MethodGet && route.Method != http.MethodHead {
+				break
+			}
+			return nil, fmt.Errorf(
+				"%s route %q uses method %q for a workflow-execution action",
 				name,
 				route.ID,
 				route.Method,
