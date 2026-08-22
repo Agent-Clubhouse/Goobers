@@ -143,7 +143,7 @@
   },
   "$defs": {
     "tokenRef": {
-      "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, or a secret in a declared secretStores entry. An inline secret value is rejected at load.",
+      "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
@@ -162,6 +162,26 @@
           "minLength": 1,
           "description": "Secret in a declared secret store, written as `<storeName>/<secretName>`. The store name must match a secretStores entry; the secret name is interpreted by that store's resolver.",
           "examples": ["prod-kv/github-token"]
+        },
+        "githubCLI": {
+          "description": "One explicitly selected GitHub CLI account. The daemon resolves and verifies this account at startup, caches only the token in memory, and never follows later ambient account switches.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostname", "user"],
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub hostname whose CLI credential store is queried explicitly, independent of the ambient `gh auth switch` selection.",
+              "examples": ["github.com"]
+            },
+            "user": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub login selected with `gh auth token --hostname ... --user ...` and verified against the provider identity before work is admitted.",
+              "examples": ["octocat"]
+            }
+          }
         }
       }
     },

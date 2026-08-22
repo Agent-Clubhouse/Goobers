@@ -49,6 +49,7 @@ func exitForPhase(phase journal.RunPhase) int {
 const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
+	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
 	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
@@ -74,6 +75,9 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow>
 	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "continue" {
+		return runRunContinue(args[1:], stdout, stderr)
+	}
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")

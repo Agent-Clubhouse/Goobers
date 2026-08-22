@@ -50,6 +50,7 @@ type Trigger struct {
 type InputRef struct {
 	Name      string          `json:"name"`
 	Ref       Ref             `json:"ref"`
+	Source    string          `json:"source,omitempty"`
 	Integrity apiv1.Integrity `json:"integrity"`
 }
 
@@ -85,6 +86,14 @@ type RunIdentity struct {
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.
 	Inputs []InputRef `json:"inputs,omitempty"`
+	// ContinuedFromRunID links this run to the terminal run it continues.
+	ContinuedFromRunID string `json:"continuedFromRunId,omitempty"`
+	// SourceTerminalSeq is the terminal event generation selected by the
+	// operator when this continuation was created.
+	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
+	// Operator and RequestedTarget are immutable continuation provenance.
+	Operator        string `json:"operator,omitempty"`
+	RequestedTarget string `json:"requestedTarget,omitempty"`
 	// StartedAt is when the run was created and anchors maxRunDuration.
 	StartedAt time.Time `json:"startedAt"`
 }
