@@ -1,5 +1,33 @@
 // Package providerstage describes the capabilities used by built-in
 // provider-chain commands.
+//
+// # DSL-version linkage
+//
+// The manifest is the admission contract for every already-shipped config:
+// each interpreter package compiles workflows against it, so an unversioned
+// requirement edit used to land on every DSL version at once, with no
+// deprecation window. That is the ed11ae81 incident class (TBH-1/#2386):
+// narrowing backlog-dedupe's requirement broke every existing config in one
+// commit, on every DSL version simultaneously. To keep that class impossible
+// the table carries per-entry version linkage (dsl-3.0.md D7/§8, issue
+// #3504): a Command and each of its CapabilityUse rows may declare the DSL
+// version window in which they exist — sinceDSL inclusive, untilDSL
+// exclusive, both empty meaning baseline (every version). Interpreters never
+// read the table directly; each resolves the view for its own version via
+// ForVersion, so a requirement change gated to a later DSL version is
+// invisible to earlier interpreters: the old requirement keeps admitting
+// old-version workflows while the new one applies only from the version that
+// introduced it. A requirement swap at a version boundary is written as two
+// rows — the old use closed with untilDSL, the new use opened with sinceDSL.
+//
+// Version windows fail closed: a bound that does not parse as a
+// "<major>.<minor>" DSL version hides the gated element, and a view resolved
+// for an unparseable version sees only baseline (unbounded) elements.
+//
+// Commands, Lookup, and ResultFile deliberately ignore the version linkage:
+// they are the runtime/tooling surface (result-file defaults, CLI dispatch
+// conformance, the builtincmd inventory parity), which must cover the union
+// of every version's entries. Admission is the only version-gated consumer.
 package providerstage
 
 import (
@@ -8,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 // CapabilityUse describes one capability a built-in command can use.
@@ -20,6 +49,15 @@ type CapabilityUse struct {
 	flagValue   string
 	anyFlags    []string
 	unlessFlags []string
+
+	// sinceDSL/untilDSL bound the DSL versions in which this requirement
+	// exists ([sinceDSL, untilDSL); empty bounds are open). A requirement
+	// change at a version boundary is two rows: the old use closed with
+	// untilDSL, its replacement opened with sinceDSL — earlier interpreters
+	// keep resolving the old row, so the change cannot re-break shipped
+	// configs (the ed11ae81 class; see the package comment).
+	sinceDSL string
+	untilDSL string
 }
 
 // Command describes one built-in provider-chain command.
@@ -29,6 +67,15 @@ type Command struct {
 
 	mutatesClaimLedger bool
 	claimMutationFlags []string
+
+	// sinceDSL/untilDSL bound the DSL versions in which the command exists,
+	// with the same window semantics as CapabilityUse. Entry metadata
+	// (ResultFile, the claim-ledger bits) is not versionable within one
+	// window: changing it at a version boundary needs the table to grow
+	// non-overlapping windowed entries per command name, deliberately
+	// deferred until a real change needs it.
+	sinceDSL string
+	untilDSL string
 }
 
 func required(cap capability.Capability, consequence string) CapabilityUse {
@@ -306,29 +353,34 @@ var commands = map[string]Command{
 	},
 }
 
-// Commands returns every command declared by the provider-stage manifest.
-func Commands() []string {
-	names := make([]string, 0, len(commands))
-	for name := range commands {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+// Manifest is the manifest resolved at one DSL version: the view an
+// interpreter compiles and admits workflows against. Two interpreters
+// resolving different versions may disagree about a command's requirements —
+// that disagreement is the deprecation window the unversioned table lacked.
+type Manifest struct {
+	dslVersion string
 }
 
-// Lookup returns the manifest entry for command.
-func Lookup(command string) (Command, bool) {
-	entry, ok := commands[command]
-	if !ok {
-		return Command{}, false
-	}
-	entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
-	return entry, true
+// ForVersion resolves the version-filtered manifest view for dslVersion.
+// Each interpreter resolves exactly one view, at its own DSLVersion constant.
+func ForVersion(dslVersion string) Manifest {
+	return Manifest{dslVersion: dslVersion}
 }
 
-// RequiredCapabilities returns the capabilities command must declare for args.
-func RequiredCapabilities(command string, args []string) []CapabilityUse {
-	entry, ok := Lookup(command)
+// RequiredCapabilities returns the capabilities command must declare for args
+// as seen at this view's DSL version.
+func (m Manifest) RequiredCapabilities(command string, args []string) []CapabilityUse {
+	return requiredCapabilitiesIn(commands, m.dslVersion, command, args)
+}
+
+// MutatesClaimLedger reports whether a built-in invocation can write
+// claims.json as seen at this view's DSL version.
+func (m Manifest) MutatesClaimLedger(command string, args []string) bool {
+	return mutatesClaimLedgerIn(commands, m.dslVersion, command, args)
+}
+
+func requiredCapabilitiesIn(table map[string]Command, dslVersion, command string, args []string) []CapabilityUse {
+	entry, ok := lookupIn(table, dslVersion, command)
 	if !ok {
 		return nil
 	}
@@ -341,22 +393,91 @@ func RequiredCapabilities(command string, args []string) []CapabilityUse {
 	return required
 }
 
-// ResultFile returns the default result file for a guarded provider stage.
+func mutatesClaimLedgerIn(table map[string]Command, dslVersion, command string, args []string) bool {
+	entry, ok := lookupIn(table, dslVersion, command)
+	if !ok {
+		return false
+	}
+	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
+}
+
+// lookupIn resolves command's entry in table as seen at dslVersion: an entry
+// outside its version window is absent, and capability uses outside theirs
+// are filtered out. The resolved entry is version-less — window metadata is
+// stripped, because a resolved view answers "what exists at this version",
+// never "when" — which also makes two tables' views directly comparable. The
+// table parameter exists so tests can prove the filtering against synthetic
+// version-gated tables.
+func lookupIn(table map[string]Command, dslVersion, command string) (Command, bool) {
+	entry, ok := table[command]
+	if !ok || !activeAt(dslVersion, entry.sinceDSL, entry.untilDSL) {
+		return Command{}, false
+	}
+	uses := make([]CapabilityUse, 0, len(entry.Capabilities))
+	for _, use := range entry.Capabilities {
+		if !activeAt(dslVersion, use.sinceDSL, use.untilDSL) {
+			continue
+		}
+		use.sinceDSL, use.untilDSL = "", ""
+		uses = append(uses, use)
+	}
+	entry.Capabilities = uses
+	entry.sinceDSL, entry.untilDSL = "", ""
+	return entry, true
+}
+
+// activeAt reports whether an element with version window [since, until)
+// exists at dslVersion; empty bounds are open. Malformed versions fail
+// closed: a bound that does not parse hides the gated element, and an
+// unparseable view version sees only baseline (unbounded) elements.
+func activeAt(dslVersion, since, until string) bool {
+	if since != "" {
+		order, ok := supportmatrix.CompareDSLVersions(dslVersion, since)
+		if !ok || order < 0 {
+			return false
+		}
+	}
+	if until != "" {
+		order, ok := supportmatrix.CompareDSLVersions(dslVersion, until)
+		if !ok || order >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Commands returns every command declared by the provider-stage manifest at
+// any DSL version. Like Lookup and ResultFile it ignores the version linkage:
+// the runtime/tooling surface covers the union of every version's entries.
+func Commands() []string {
+	names := make([]string, 0, len(commands))
+	for name := range commands {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// Lookup returns the manifest entry for command, ignoring version linkage
+// (see Commands). Admission resolves entries through ForVersion instead.
+func Lookup(command string) (Command, bool) {
+	entry, ok := commands[command]
+	if !ok {
+		return Command{}, false
+	}
+	entry.Capabilities = append([]CapabilityUse(nil), entry.Capabilities...)
+	return entry, true
+}
+
+// ResultFile returns the default result file for a guarded provider stage,
+// ignoring version linkage (see Commands): the executor consults it for
+// whatever command an admitted workflow of any version actually runs.
 func ResultFile(command string) (string, bool) {
 	entry, ok := Lookup(command)
 	if !ok || entry.ResultFile == "" {
 		return "", false
 	}
 	return entry.ResultFile, true
-}
-
-// MutatesClaimLedger reports whether a built-in invocation can write claims.json.
-func MutatesClaimLedger(command string, args []string) bool {
-	entry, ok := Lookup(command)
-	if !ok {
-		return false
-	}
-	return entry.mutatesClaimLedger || anyFlagEnabled(args, entry.claimMutationFlags)
 }
 
 func (u CapabilityUse) required(args []string) bool {

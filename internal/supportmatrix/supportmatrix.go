@@ -178,6 +178,31 @@ func cloneVersionSupport(support VersionSupport) VersionSupport {
 	return support
 }
 
+// CompareDSLVersions orders two DSL version strings by numeric major then
+// minor — the same ordering Versions uses. ok is false when either operand is
+// not a well-formed "<major>.<minor>" version; callers own the fail-closed
+// (or fail-loud) posture instead of this package guessing an order.
+func CompareDSLVersions(left, right string) (order int, ok bool) {
+	leftMajor, leftMinor, leftOK := parseDSLVersion(left)
+	rightMajor, rightMinor, rightOK := parseDSLVersion(right)
+	if !leftOK || !rightOK {
+		return 0, false
+	}
+	if leftMajor != rightMajor {
+		if leftMajor < rightMajor {
+			return -1, true
+		}
+		return 1, true
+	}
+	if leftMinor != rightMinor {
+		if leftMinor < rightMinor {
+			return -1, true
+		}
+		return 1, true
+	}
+	return 0, true
+}
+
 func parseDSLVersion(version string) (major, minor int, ok bool) {
 	majorText, minorText, found := strings.Cut(version, ".")
 	if !found || majorText == "" || minorText == "" || strings.Contains(minorText, ".") {
