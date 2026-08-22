@@ -144,7 +144,8 @@ func insertLearningEpisodes(ctx context.Context, tx *sql.Tx, id runIdentity, eve
 			"runId": id.RunID, "seq": event.Seq, "gate": gate,
 			"verdict": verdict, "sourceAttempt": attempt,
 			"nextAttempt": nextAttempt, "artifacts": event.Artifacts,
-			"error": event.Error, "findingIdentities": findingIdentities,
+			"verdictRef": event.Ref,
+			"error":      event.Error, "findingIdentities": findingIdentities,
 		})
 		if err != nil {
 			return fmt.Errorf("rollup: encode learning evidence: %w", err)

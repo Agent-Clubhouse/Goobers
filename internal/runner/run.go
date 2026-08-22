@@ -1894,19 +1894,27 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
-		if err := recordLearningInjection(ws.jr, g.Name, retryTarget, gr.Attempt, injected, gr.Verdict); err != nil {
+		episode, err := recordLearningInjection(ws.jr, ws.in.RunID, g.Name, retryTarget, gr.Attempt, injected, gr.Verdict)
+		if err != nil {
 			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
 				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
 			return gr, false, terminal, true, failErr
+		}
+		if episode != nil {
+			if ws.parallel != nil {
+				ws.parallel.recordCurrentPointer(*episode)
+			} else {
+				ws.pointers = append(ws.pointers, *episode)
+			}
 		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
 }
 
-func recordLearningInjection(jr executionJournal, gate, target string, attempt int, pointer *apiv1.ContextPointer, verdict *apiv1.Verdict) error {
+func recordLearningInjection(jr executionJournal, runID, gate, target string, attempt int, pointer *apiv1.ContextPointer, verdict *apiv1.Verdict) (*apiv1.ContextPointer, error) {
 	if jr == nil {
-		return nil
+		return nil, nil
 	}
 	runner := map[string]any{
 		"kind":   "learning.episode.injected",
@@ -1922,26 +1930,66 @@ func recordLearningInjection(jr executionJournal, gate, target string, attempt i
 				Class    string `json:"class,omitempty"`
 			}{finding.Message, finding.Location, string(finding.Class)})
 			if err != nil {
-				return fmt.Errorf("encode finding identity: %w", err)
+				return nil, fmt.Errorf("encode finding identity: %w", err)
 			}
 			sum := sha256.Sum256(payload)
 			identities = append(identities, "sha256:"+hex.EncodeToString(sum[:]))
 		}
 		runner["findingIdentities"] = identities
-		runner["episode"] = verdict
-		runner["correctionFeedback"] = verdict.Rationale
+		runner["correctionFeedback"] = strings.TrimSpace(verdict.Rationale)
+	}
+	episode := map[string]any{
+		"schema":        "goobers.learning.episode/v1",
+		"sourceRunID":   runID,
+		"gate":          gate,
+		"target":        target,
+		"sourceAttempt": attempt,
+		"verdict":       verdict,
+	}
+	if verdict != nil {
+		episode["correctionFeedback"] = strings.TrimSpace(verdict.Rationale)
+		episode["findingIdentities"] = runner["findingIdentities"]
 	}
 	if pointer != nil && pointer.Artifact != nil {
 		runner["source"] = pointer.Name
 		runner["sourcePath"] = pointer.Artifact.Path
 		runner["sourceDigest"] = pointer.Artifact.Digest
+		episode["evidence"] = []apiv1.ArtifactPointer{*pointer.Artifact}
 	}
-	return jr.Append(journal.Event{
+	if verdict != nil && len(verdict.Evidence) > 0 {
+		evidence, ok := episode["evidence"].([]apiv1.ArtifactPointer)
+		if !ok {
+			evidence = nil
+		}
+		episode["evidence"] = append(evidence, verdict.Evidence...)
+	}
+	data, err := json.Marshal(episode)
+	if err != nil {
+		return nil, fmt.Errorf("encode learning episode: %w", err)
+	}
+	ref, err := jr.RecordArtifact(fmt.Sprintf("learning/episode-%s-%d.json", gate, attempt), data)
+	if err != nil {
+		return nil, fmt.Errorf("record learning episode: %w", err)
+	}
+	episodePointer := &apiv1.ContextPointer{
+		Name:      "learning.episode",
+		Integrity: ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: ref.Integrity,
+		},
+	}
+	runner["episodePath"] = ref.Path
+	runner["episodeDigest"] = ref.Digest
+	if err := jr.Append(journal.Event{
 		Type:    journal.EventRunnerAnnotation,
 		Stage:   target,
 		Attempt: attempt,
 		Runner:  runner,
-	})
+	}); err != nil {
+		return nil, err
+	}
+	return episodePointer, nil
 }
 
 // closeParallelForLoudExit journals the current branch's terminal settlement,
