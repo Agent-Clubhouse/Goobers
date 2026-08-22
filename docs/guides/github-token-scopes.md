@@ -102,15 +102,19 @@ the first agentic stage when preflight is disabled) even when ordinary
 repository operations work.
 
 Goobers still models model access as **`agent:model`**. When no token grant is
-configured, the Copilot adapter uses the stored CLI session. A code-authoring
-stage may also declare `repo:push`: its repository token stays out of the
-Copilot subprocess, and the later deterministic push stage receives that scoped
-credential under `GOOBERS_CRED_REPO_PUSH`. Any other capability that would put
+configured, the Copilot adapter uses the stored CLI session and removes ambient
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` values even if
+`runner.envPassthrough` names them. A code-authoring stage may also declare
+`repo:push`: its repository token stays out of the Copilot subprocess, and the
+later deterministic push stage receives that scoped credential under
+`GOOBERS_CRED_REPO_PUSH`. Any other capability that would materialize
 `GH_TOKEN` in the Copilot subprocess requires an explicit, distinct
 `agent:model` credential; admission rejects the workflow before an agentic
-attempt or workflow budget can be consumed. When a model grant is configured,
-Goobers injects `COPILOT_GITHUB_TOKEN` alongside the repository `GH_TOKEN`, so
-the existing explicit two-token behavior is unchanged.
+attempt or workflow budget can be consumed. Tokenless Azure DevOps identity
+modes remain valid because they authenticate dynamically and do not materialize
+a repository token in the harness environment. When a model grant is
+configured, Goobers injects `COPILOT_GITHUB_TOKEN` alongside the repository
+`GH_TOKEN`, so the existing explicit two-token behavior is unchanged.
 
 The production harness auth preflight runs before the configured capability
 credential is resolved, but since #1996 it can authenticate a clean service or

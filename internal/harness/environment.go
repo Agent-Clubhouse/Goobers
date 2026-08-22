@@ -90,24 +90,13 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			}
 		}
 	}
+	if storedCopilotAuth {
+		env = withoutEnvVars(env, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+	}
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := cfg.envCapabilities[capability]
 		if !ok {
 			continue
-		}
-		if storedCopilotAuth && envVar == "GH_TOKEN" {
-			if capability == string(capabilitypkg.RepoPush) {
-				// Shipped authoring workflows commit locally and publish through
-				// a later deterministic push stage. Keep that stage's scoped
-				// credential in the materialized Set, but never expose it as
-				// GH_TOKEN to a Copilot subprocess using stored model auth.
-				continue
-			}
-			return nil, fmt.Errorf(
-				"harness: %s: stored Copilot login cannot be used with capability %s because it injects GH_TOKEN; configure a distinct agent:model credential",
-				cfg.adapterName,
-				capability,
-			)
 		}
 		if req.Credentials == nil {
 			return nil, fmt.Errorf("harness: %s: resolve %s: no credential set", cfg.adapterName, capability)
@@ -132,7 +121,46 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			}
 			return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, capability, err)
 		}
+		if storedCopilotAuth && isCopilotModelFallbackEnv(envVar) {
+			if capability == string(capabilitypkg.RepoPush) {
+				// Shipped authoring workflows commit locally and publish through
+				// a later deterministic push stage. Keep that stage's scoped
+				// credential in the materialized Set, but never expose it as
+				// GH_TOKEN to a Copilot subprocess using stored model auth.
+				continue
+			}
+			return nil, fmt.Errorf(
+				"harness: %s: stored Copilot login cannot be used with capability %s because it injects %s; configure a distinct agent:model credential",
+				cfg.adapterName,
+				capability,
+				envVar,
+			)
+		}
 		env = append(env, envVar+"="+token)
 	}
 	return env, nil
+}
+
+func withoutEnvVars(env []string, names ...string) []string {
+	filtered := env[:0]
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		reserved := false
+		for _, candidate := range names {
+			if strings.EqualFold(name, candidate) {
+				reserved = true
+				break
+			}
+		}
+		if !reserved {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func isCopilotModelFallbackEnv(name string) bool {
+	return strings.EqualFold(name, "COPILOT_GITHUB_TOKEN") ||
+		strings.EqualFold(name, "GH_TOKEN") ||
+		strings.EqualFold(name, "GITHUB_TOKEN")
 }

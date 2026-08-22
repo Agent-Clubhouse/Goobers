@@ -118,7 +118,7 @@ func buildEnvCapabilities() map[string]string {
 // would intercept Copilot's stored-login fallback. repo:push is the deliberate
 // exception: shipped agentic authoring stages commit locally, while a separate
 // deterministic stage receives the scoped token and publishes the branch.
-func validateStoredCopilotAuthBoundaries(cfg *instance.Config, workflows []apiv1.Workflow, goobers map[string]apiv1.GooberSpec) error {
+func validateStoredCopilotAuthBoundaries(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) error {
 	for _, grant := range cfg.Credentials {
 		if grant.Capability == string(capability.AgentModel) {
 			return nil
@@ -126,6 +126,7 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, workflows []apiv1
 	}
 
 	envCaps := buildEnvCapabilities()
+	grantedCapabilitiesByGaggle := make(map[string]map[string]bool)
 	validate := func(workflowName, workflowGaggle, stageKind, stageName, gooberName string, capabilities []string) error {
 		spec, ok := goobers[gooberName]
 		if !ok {
@@ -142,11 +143,20 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, workflows []apiv1
 			!slices.Contains(capabilities, string(capability.AgentModel)) {
 			return nil
 		}
+		grantedCapabilities, ok := grantedCapabilitiesByGaggle[workflowGaggle]
+		if !ok {
+			var err error
+			grantedCapabilities, err = configuredCredentialGrants(cfg, gaggleProjectRef(set, workflowGaggle))
+			if err != nil {
+				return fmt.Errorf("workflow %q: resolve configured credential grants: %w", workflowName, err)
+			}
+			grantedCapabilitiesByGaggle[workflowGaggle] = grantedCapabilities
+		}
 		for _, declared := range capabilities {
 			if declared == string(capability.RepoPush) {
 				continue
 			}
-			if envCaps[declared] == credentialGrantEnv {
+			if envCaps[declared] == credentialGrantEnv && grantedCapabilities[declared] {
 				return fmt.Errorf(
 					"workflow %q %s %q (goober %q) cannot use stored Copilot login with capability %q because it injects GH_TOKEN; configure a distinct agent:model credential",
 					workflowName,
@@ -160,8 +170,8 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, workflows []apiv1
 		return nil
 	}
 
-	for i := range workflows {
-		wf := &workflows[i]
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
 		for _, task := range wf.Spec.Tasks {
 			if task.Type != apiv1.TaskAgentic {
 				continue
@@ -181,6 +191,54 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, workflows []apiv1
 		}
 	}
 	return nil
+}
+
+func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (map[string]bool, error) {
+	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
+	for _, repo := range cfg.Repos {
+		owner := repo.Owner
+		if repo.Provider == string(apiv1.ProviderADO) && repo.Project != "" {
+			owner += "/" + repo.Project
+		}
+		tokenRef := ""
+		if repo.Token.Configured() || repo.GitHubAppAuth() {
+			tokenRef = owner + "/" + repo.Name
+		}
+		bindings = append(bindings, credentials.RepoBinding{
+			Owner:    owner,
+			Name:     repo.Name,
+			TokenRef: tokenRef,
+		})
+	}
+
+	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
+	if cfg.DaemonIdentity != nil {
+		for _, c := range daemonIdentityCapabilities {
+			overrides = append(overrides, credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName})
+		}
+	}
+	for i, credential := range cfg.Credentials {
+		key, err := credentialGrantKey(credential)
+		if err != nil {
+			return nil, fmt.Errorf("credential %d: %w", i, err)
+		}
+		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
+	}
+
+	owner := project.Owner
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		owner += "/" + project.Project
+	}
+	caps := make([]string, len(credentialedCapabilities))
+	for i, c := range credentialedCapabilities {
+		caps[i] = string(c)
+	}
+	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	result := make(map[string]bool, len(grants))
+	for _, grant := range grants {
+		result[grant.Capability] = true
+	}
+	return result, nil
 }
 
 var copilotModelLister harness.CopilotModelLister

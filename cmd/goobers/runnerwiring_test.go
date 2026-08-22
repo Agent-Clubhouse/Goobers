@@ -430,19 +430,25 @@ func TestBuildEnvCapabilities(t *testing.T) {
 }
 
 func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
-	workflowWithTask := func(capabilities ...string) []apiv1.Workflow {
-		return []apiv1.Workflow{{
-			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
-			Spec: apiv1.WorkflowSpec{
-				Gaggle: "example",
-				Tasks: []apiv1.Task{{
-					Name:         "implement",
-					Type:         apiv1.TaskAgentic,
-					Goober:       "implementer",
-					Capabilities: capabilities,
-				}},
-			},
-		}}
+	configSetWithTask := func(project apiv1.RepoRef, capabilities ...string) *instance.ConfigSet {
+		return &instance.ConfigSet{
+			Gaggles: []apiv1.Gaggle{{
+				ObjectMeta: metav1.ObjectMeta{Name: "example"},
+				Spec:       apiv1.GaggleSpec{Project: project},
+			}},
+			Workflows: []apiv1.Workflow{{
+				ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Tasks: []apiv1.Task{{
+						Name:         "implement",
+						Type:         apiv1.TaskAgentic,
+						Goober:       "implementer",
+						Capabilities: capabilities,
+					}},
+				},
+			}},
+		}
 	}
 	copilotGoober := apiv1.GooberSpec{
 		Gaggle:       "example",
@@ -453,7 +459,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	t.Run("repo push remains a legitimate stored-login authoring workflow", func(t *testing.T) {
 		err := validateStoredCopilotAuthBoundaries(
 			&instance.Config{},
-			workflowWithTask("agent:model", "repo:push"),
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "repo:push"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
 		)
 		if err != nil {
@@ -463,8 +469,17 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 
 	t.Run("github tool token is rejected at admission", func(t *testing.T) {
 		err := validateStoredCopilotAuthBoundaries(
-			&instance.Config{},
-			workflowWithTask("agent:model", "github:issues:write"),
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "github",
+				Owner:    "acme",
+				Name:     "web",
+				Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+			}}},
+			configSetWithTask(apiv1.RepoRef{
+				Provider: apiv1.ProviderGitHub,
+				Owner:    "acme",
+				Name:     "web",
+			}, "agent:model", "github:issues:write"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
 		)
 		if err == nil ||
@@ -481,7 +496,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 				Capability: "agent:model",
 				Token:      instance.TokenRef{Env: "COPILOT_TOKEN"},
 			}}},
-			workflowWithTask("agent:model", "github:issues:write"),
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "github:issues:write"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
 		)
 		if err != nil {
@@ -492,7 +507,7 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 	t.Run("unused goober authority does not overbroaden the stage boundary", func(t *testing.T) {
 		err := validateStoredCopilotAuthBoundaries(
 			&instance.Config{},
-			workflowWithTask("agent:model"),
+			configSetWithTask(apiv1.RepoRef{}, "agent:model"),
 			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
 		)
 		if err != nil {
@@ -505,11 +520,70 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 		claudeGoober.Harness = apiv1.HarnessClaudeCode
 		err := validateStoredCopilotAuthBoundaries(
 			&instance.Config{},
-			workflowWithTask("agent:model", "github:issues:write"),
+			configSetWithTask(apiv1.RepoRef{}, "agent:model", "github:issues:write"),
 			map[string]apiv1.GooberSpec{"implementer": claudeGoober},
 		)
 		if err != nil {
 			t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+		}
+	})
+
+	for _, authKind := range []string{
+		instance.ADOAuthAzureCLI,
+		instance.ADOAuthWorkloadIdentity,
+		instance.ADOAuthManagedIdentity,
+	} {
+		t.Run("tokenless ADO "+authKind+" auth is accepted", func(t *testing.T) {
+			err := validateStoredCopilotAuthBoundaries(
+				&instance.Config{Repos: []instance.RepoRef{
+					{
+						Provider: "github",
+						Owner:    "other",
+						Name:     "repo",
+						Token:    instance.TokenRef{Env: "OTHER_REPO_TOKEN"},
+					},
+					{
+						Provider: "ado",
+						Owner:    "acme",
+						Project:  "widgets",
+						Name:     "web",
+						Auth:     &instance.RepoAuthConfig{Kind: authKind},
+					},
+				}},
+				configSetWithTask(apiv1.RepoRef{
+					Provider: apiv1.ProviderADO,
+					Owner:    "acme",
+					Project:  "widgets",
+					Name:     "web",
+				}, "agent:model", "provider:pr:write"),
+				map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+			)
+			if err != nil {
+				t.Fatalf("validateStoredCopilotAuthBoundaries: %v", err)
+			}
+		})
+	}
+
+	t.Run("materialized ADO PAT is rejected", func(t *testing.T) {
+		err := validateStoredCopilotAuthBoundaries(
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "ado",
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+				Auth:     &instance.RepoAuthConfig{Kind: instance.ADOAuthPAT},
+				Token:    instance.TokenRef{Env: "ADO_PAT"},
+			}}},
+			configSetWithTask(apiv1.RepoRef{
+				Provider: apiv1.ProviderADO,
+				Owner:    "acme",
+				Project:  "widgets",
+				Name:     "web",
+			}, "agent:model", "provider:pr:write"),
+			map[string]apiv1.GooberSpec{"implementer": copilotGoober},
+		)
+		if err == nil || !strings.Contains(err.Error(), `capability "provider:pr:write"`) {
+			t.Fatalf("admission error = %v, want materialized ADO PAT rejection", err)
 		}
 	})
 
@@ -526,8 +600,13 @@ func TestValidateStoredCopilotAuthBoundaries(t *testing.T) {
 			},
 		}}
 		err := validateStoredCopilotAuthBoundaries(
-			&instance.Config{},
-			workflows,
+			&instance.Config{Repos: []instance.RepoRef{{
+				Provider: "github",
+				Owner:    "acme",
+				Name:     "web",
+				Token:    instance.TokenRef{Env: "GITHUB_TOKEN"},
+			}}},
+			&instance.ConfigSet{Workflows: workflows},
 			map[string]apiv1.GooberSpec{"reviewer": copilotGoober},
 		)
 		if err == nil || !strings.Contains(err.Error(), `workflow "review" gate "quality"`) {

@@ -596,7 +596,7 @@ func buildSchedulerDefinitions(
 ) (*schedulerDefinitions, error) {
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
-	if err := validateStoredCopilotAuthBoundaries(cfg, set.Workflows, goobers); err != nil {
+	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
 		return nil, err
 	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
