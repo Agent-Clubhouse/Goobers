@@ -1808,11 +1808,11 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 	prev := newGitHubAppTokenSource
 	mints := 0
 	var gotRepo instance.RepoRef
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepo = repo
-		return func(context.Context) (string, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("minted-token-%d", mints), nil
+			return fmt.Sprintf("minted-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -1847,7 +1847,7 @@ func TestBuildCredentialsGitHubAppMintsRepoToken(t *testing.T) {
 
 func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		return nil, errors.New("store-backed key not resolvable here")
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -1871,8 +1871,8 @@ func TestBuildCredentialsGitHubAppSourceFailureFailsClosed(t *testing.T) {
 // the last entry's minting source and hand it the first's grants.
 func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 	prev := newGitHubAppTokenSource
-	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ResolveFunc, error) {
-		return func(context.Context) (string, error) { return "minted", nil }, nil
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		return func(context.Context) (string, time.Time, error) { return "minted", time.Time{}, nil }, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
 
@@ -1898,10 +1898,10 @@ func TestBuildCredentialsDuplicateGitHubAppReposFailClosed(t *testing.T) {
 func TestGitHubWorktreeGitEnvironmentMintsForGitHubAppRepo(t *testing.T) {
 	prev := newGitHubAppTokenSource
 	mints := 0
-	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
-		return func(context.Context) (string, error) {
+	newGitHubAppTokenSource = func(repo instance.RepoRef, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("ghs_minted_%d", mints), nil
+			return fmt.Sprintf("ghs_minted_%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newGitHubAppTokenSource = prev })
@@ -2595,11 +2595,11 @@ func TestBuildCredentialsDaemonIdentityGitHubAppMintsToken(t *testing.T) {
 	prev := newDaemonIdentityGitHubAppTokenSource
 	mints := 0
 	var gotRepoName string
-	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ResolveFunc, error) {
+	newDaemonIdentityGitHubAppTokenSource = func(d *instance.DaemonIdentityConfig, _ string, gaggleRepoName string, _ credentials.SecretRegistrar, _ credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 		gotRepoName = gaggleRepoName
-		return func(context.Context) (string, error) {
+		return func(context.Context) (string, time.Time, error) {
 			mints++
-			return fmt.Sprintf("minted-daemon-token-%d", mints), nil
+			return fmt.Sprintf("minted-daemon-token-%d", mints), time.Time{}, nil
 		}, nil
 	}
 	t.Cleanup(func() { newDaemonIdentityGitHubAppTokenSource = prev })

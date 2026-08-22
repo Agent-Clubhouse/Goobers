@@ -456,7 +456,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 		if err != nil {
 			return nil, err
 		}
-		resolve = mint
+		resolve = mint.DropExpiry()
 	case repo.Token.Configured():
 		// A static token ref (env|file|store) resolves through stores; a
 		// store-backed ref can never fall into the unauthenticated arm because
