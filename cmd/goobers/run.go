@@ -305,54 +305,63 @@ type targetedPullRequestReader interface {
 }
 
 func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance.Config, stores credentials.StoreResolver, registrar credentials.SecretRegistrar, entry localscheduler.WorkflowEntry, number int) error {
-	repo := providers.RepositoryRef{
-		Provider: providers.ProviderKind(entry.RepoRef.Provider),
-		Owner:    entry.RepoRef.Owner,
-		Project:  entry.RepoRef.Project,
-		Name:     entry.RepoRef.Name,
-		URL:      entry.RepoRef.BaseURL,
-	}
 	if number <= 0 {
 		return errors.New("pull request number must be a positive integer")
 	}
 	if cfg == nil {
 		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
 	}
-	if _, ok := configuredRepoForProject(cfg, entry.RepoRef); !ok {
+	configured, ok := configuredRepoForProject(cfg, entry.RepoRef)
+	if !ok {
 		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
 	}
+	resolvedRepo := apiv1.RepoRef{
+		Provider: apiv1.Provider(configured.Provider),
+		BaseURL:  configured.BaseURL,
+		Owner:    configured.Owner,
+		Project:  configured.Project,
+		Name:     configured.Name,
+	}
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(resolvedRepo.Provider),
+		Owner:    resolvedRepo.Owner,
+		Project:  resolvedRepo.Project,
+		Name:     resolvedRepo.Name,
+		URL:      resolvedRepo.BaseURL,
+	}
+	repoDisplay := targetedRepoDisplay(resolvedRepo)
 
 	var provider providers.Provider
 	var err error
 	switch repo.Provider {
 	case providers.ProviderGitHub, providers.ProviderGitea:
-		owner := entry.RepoRef.Owner
+		owner := resolvedRepo.Owner
 		credentialCapability := capability.GitHubPRWrite
 		if repo.Provider == providers.ProviderGitea {
 			credentialCapability = capability.ProviderPRWrite
 		}
-		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, entry.RepoRef.Name, nil, registrar)
+		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
 		if buildErr != nil {
-			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
 		injector, buildErr := credentials.NewInjector(resolver, grants, registrar)
 		if buildErr != nil {
-			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
 		set, buildErr := injector.Materialize(ctx, []string{string(credentialCapability)})
 		if buildErr != nil {
-			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
 		token, buildErr := set.Token(ctx, string(credentialCapability))
 		if buildErr != nil {
-			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, targetedRepoDisplay(entry.RepoRef), buildErr)
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
 		}
 		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
 	default:
 		provider, err = newProviderForStage(root, repo, true)
 	}
 	if err != nil {
-		return fmt.Errorf("validate pull request #%d in configured repository: %w", number, err)
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
 	}
 	reader, ok := provider.(targetedPullRequestReader)
 	if !ok {
@@ -360,7 +369,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 	}
 	pr, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(number))
 	if err != nil {
-		return fmt.Errorf("validate pull request #%d in configured repository: %w", number, err)
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
 	}
 	if pr.Number != number {
 		return fmt.Errorf("pull request #%d was not returned by the configured repository", number)
@@ -369,8 +378,8 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 	if !strings.EqualFold(state, "open") {
 		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
 	}
-	if !pullRequestURLMatchesRepository(entry.RepoRef, pr.URL, number) {
-		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, targetedRepoDisplay(entry.RepoRef))
+	if !pullRequestURLMatchesRepository(resolvedRepo, pr.URL, number) {
+		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
 	}
 	return nil
 }
@@ -455,9 +464,9 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 		err       error
 	)
 	if target.PR > 0 {
-		requestID, err = writeTargetedTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
+		requestID, err = writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
 	} else {
-		requestID, err = writeTriggerRequest(l.SchedulerDir(), target.Gaggle, target.Workflow)
+		requestID, err = writeTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow)
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

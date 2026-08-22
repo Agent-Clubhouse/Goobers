@@ -2274,8 +2274,8 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run cancel <run-id> [path]
 

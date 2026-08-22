@@ -1641,6 +1641,14 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 // TriggerSignal fires one unqualified workflow with an external signal
 // reference, using the same ambiguity rules as Trigger.
 func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalWithDispatchContext(ctx, ctx, workflow, signal, ref, now)
+}
+
+// TriggerSignalWithDispatchContext validates with ctx while starting an
+// admitted run with dispatchCtx. Delegated triggers use this to bound provider
+// validation by the client request without tying the run's lifetime to that
+// short-lived request.
+func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	var gaggles []string
 	for identity := range s.workflows {
@@ -1663,7 +1671,8 @@ func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref str
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
 	}
-	return s.TriggerSignalExact(ctx, WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
+	return s.TriggerSignalExactWithDispatchContext(ctx, dispatchCtx,
+		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
 }
 
 // TriggerExact manually fires one workflow identified by its gaggle and name.
@@ -1682,6 +1691,12 @@ func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity,
 // TriggerSignalExact fires one exact workflow with an external signal
 // reference, retaining normal run-condition admission.
 func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalExactWithDispatchContext(ctx, ctx, identity, signal, ref, now)
+}
+
+// TriggerSignalExactWithDispatchContext is TriggerSignalExact with separate
+// validation and run-lifetime contexts.
+func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -1696,10 +1711,13 @@ func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIde
 		if err := s.targetedPRValidator(ctx, entry, number); err != nil {
 			return "", err
 		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 	}
 	for _, subscribed := range entry.Signals {
 		if subscribed == signal {
-			return s.triggerWorkflow(ctx, entry, now,
+			return s.triggerWorkflow(dispatchCtx, entry, now,
 				journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
 				"signal")
 		}
@@ -1726,6 +1744,9 @@ func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdenti
 }
 
 func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string) (runID string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	tick := TickResult{Fire: true, LastEval: now}
 	if reason == "" {
 		reason = fireReason(tick, trigger.Kind)

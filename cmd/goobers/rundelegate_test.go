@@ -221,6 +221,139 @@ func TestRunDelegatedTargetedPullRequestDispatchesExactReference(t *testing.T) {
 	}
 }
 
+func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
+	oldTimeout := triggerDelegationTimeout
+	oldPollInterval := delegationPollInterval
+	triggerDelegationTimeout = 500 * time.Millisecond
+	delegationPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		triggerDelegationTimeout = oldTimeout
+		delegationPollInterval = oldPollInterval
+	})
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	validationStarted := make(chan struct{})
+	releaseValidation := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseValidation) }) }
+	t.Cleanup(release)
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+		select {
+		case <-validationStarted:
+		default:
+			close(validationStarted)
+		}
+		<-releaseValidation
+		// Deliberately ignore cancellation. TriggerSignalExact must still check
+		// the request context before dispatching.
+		return nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	codeDone := make(chan int, 1)
+	go func() {
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "merge-review", PR: 3261}, root, true, &stdout, &stderr)
+	}()
+
+	requestDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	var requestPath string
+	for requestPath == "" {
+		entries, readErr := os.ReadDir(requestDir)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), requestSuffix) {
+				requestPath = filepath.Join(requestDir, entry.Name())
+				break
+			}
+		}
+		if requestPath == "" {
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	var requestData []byte
+	for len(requestData) == 0 {
+		requestData, err = os.ReadFile(requestPath)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(requestData, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Deadline.IsZero() || !req.Deadline.After(req.CreatedAt) {
+		t.Fatalf("request lifetime = created %s deadline %s, want a serialized client deadline", req.CreatedAt, req.Deadline)
+	}
+
+	sweepDone := make(chan error, 1)
+	go func() {
+		sweepDone <- sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, time.Now)
+	}()
+	select {
+	case <-validationStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code != 1 || !strings.Contains(stderr.String(), "timed out") {
+		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want bounded timeout", code, stdout.String(), stderr.String())
+	}
+
+	release()
+	select {
+	case err := <-sweepDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	sched.Wait()
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want no dispatch after the client deadline", starter.count())
+	}
+	if _, err := os.Stat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("consumed request stat error = %v, want no replayable request", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter calls after second sweep = %d, want no duplicate late dispatch", starter.count())
+	}
+}
+
 func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
 	alpha := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}

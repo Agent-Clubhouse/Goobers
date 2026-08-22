@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -39,6 +41,8 @@ spec:
 
 type targetedPullRequestFixture struct {
 	server        *httptest.Server
+	owner         string
+	name          string
 	requiredToken string
 	number        int
 	state         string
@@ -51,8 +55,14 @@ type targetedPullRequestFixture struct {
 }
 
 func newTargetedPullRequestFixture(t *testing.T, number int, state, htmlURL, requiredToken string, status int) *targetedPullRequestFixture {
+	return newTargetedPullRequestFixtureForRepo(t, "your-org", "your-repo", number, state, htmlURL, requiredToken, status)
+}
+
+func newTargetedPullRequestFixtureForRepo(t *testing.T, owner, name string, number int, state, htmlURL, requiredToken string, status int) *targetedPullRequestFixture {
 	t.Helper()
 	fixture := &targetedPullRequestFixture{
+		owner:         owner,
+		name:          name,
 		requiredToken: requiredToken,
 		number:        number,
 		state:         state,
@@ -63,6 +73,8 @@ func newTargetedPullRequestFixture(t *testing.T, number int, state, htmlURL, req
 		fixture.mu.Lock()
 		fixture.requests++
 		fixture.authorization = r.Header.Get("Authorization")
+		owner := fixture.owner
+		name := fixture.name
 		requiredToken := fixture.requiredToken
 		number := fixture.number
 		state := fixture.state
@@ -71,7 +83,7 @@ func newTargetedPullRequestFixture(t *testing.T, number int, state, htmlURL, req
 		fixture.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodGet || r.URL.Path != "/repos/your-org/your-repo/pulls/"+strconv.Itoa(number) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/"+owner+"/"+name+"/pulls/"+strconv.Itoa(number) {
 			http.NotFound(w, r)
 			return
 		}
@@ -113,6 +125,12 @@ func (f *targetedPullRequestFixture) setState(state string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.state = state
+}
+
+func (f *targetedPullRequestFixture) setStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status = status
 }
 
 func initTargetedMergeReviewDemo(t *testing.T, token string) string {
@@ -165,6 +183,50 @@ func targetedRunCount(t *testing.T, root string) int {
 func TestRunTargetRejectsExplicitZeroPR(t *testing.T) {
 	if !flagWasSet([]string{"merge-review", "--pr", "0"}, "pr") {
 		t.Fatal("flagWasSet did not detect an explicit --pr flag")
+	}
+}
+
+func TestValidateTargetedPullRequestUsesSingleConfiguredRepositoryFallback(t *testing.T) {
+	const token = "single-repository-token"
+	t.Setenv("GOOBERS_SINGLE_REPO_TOKEN", token)
+	root := t.TempDir()
+	cfg := &instance.Config{
+		APIVersion: instance.ConfigAPIVersion,
+		Kind:       instance.ConfigKind,
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "fallback-org",
+			Name:     "fallback-repo",
+			Token:    instance.TokenRef{Env: "GOOBERS_SINGLE_REPO_TOKEN"},
+		}},
+	}
+	if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newTargetedPullRequestFixtureForRepo(
+		t,
+		"fallback-org",
+		"fallback-repo",
+		42,
+		"open",
+		"https://github.com/fallback-org/fallback-repo/pull/42",
+		token,
+		http.StatusOK,
+	)
+	entry := localscheduler.WorkflowEntry{Workflow: "merge-review"}
+	registrar := journal.NewRegistryScrubber()
+	if err := validateTargetedPullRequest(context.Background(), root, cfg, nil, registrar, entry, 42); err != nil {
+		t.Fatalf("single-repo fallback validation: %v", err)
+	}
+	requests, authorization := fixture.requestSnapshot()
+	if requests != 1 || authorization != "Bearer "+token {
+		t.Fatalf("requests = %d, authorization = %q, want configured fallback repository and token", requests, authorization)
+	}
+
+	fixture.setStatus(http.StatusNotFound)
+	err := validateTargetedPullRequest(context.Background(), root, cfg, nil, registrar, entry, 42)
+	if err == nil || !strings.Contains(err.Error(), "fallback-org/fallback-repo") {
+		t.Fatalf("fallback repository error = %v, want resolved repository identity", err)
 	}
 }
 

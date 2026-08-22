@@ -510,7 +510,7 @@ func TestRunPRSelectWebhookTargetPreservesUnobservedEligibility(t *testing.T) {
 	t.Fatalf("unobserved PR #%d was pruned from fairness state: %+v", unobservedNumber, state.Candidates)
 }
 
-func TestRunPRSelectWebhookTargetYieldsToUnobservedGuardedPR(t *testing.T) {
+func TestRunPRSelectWebhookTargetNeverSubstitutesUnobservedGuardedPR(t *testing.T) {
 	const (
 		targetedNumber = 1
 		guardedNumber  = 900
@@ -555,8 +555,8 @@ func TestRunPRSelectWebhookTargetYieldsToUnobservedGuardedPR(t *testing.T) {
 
 	t.Chdir(t.TempDir())
 	code, stdout, stderr := runArgs(t, "pr-select", root)
-	if code != 0 || !strings.Contains(stdout, "selected PR #"+strconv.Itoa(guardedNumber)) {
-		t.Fatalf("guarded webhook pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	if code != 0 || !strings.Contains(stdout, "selected PR #"+strconv.Itoa(targetedNumber)) {
+		t.Fatalf("targeted webhook pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	data, err := os.ReadFile("selected-pr.json")
 	if err != nil {
@@ -570,11 +570,12 @@ func TestRunPRSelectWebhookTargetYieldsToUnobservedGuardedPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("maxEligibleWaitSeconds = %q: %v", result["maxEligibleWaitSeconds"], err)
 	}
-	if result["number"] != strconv.Itoa(guardedNumber) ||
-		result["starvationGuarded"] != "true" ||
+	if result["number"] != strconv.Itoa(targetedNumber) ||
+		result["starvationGuarded"] != "false" ||
 		result["starvedEligiblePRsCsv"] != strconv.Itoa(guardedNumber) ||
 		maxWaitSeconds <= int64(prSelectStarvationLimit/time.Second) {
-		t.Fatalf("guarded webhook selection = %#v, want guarded PR #%d and its starvation metrics", result, guardedNumber)
+		t.Fatalf("targeted webhook selection = %#v, want exact PR #%d with guarded PR #%d retained only in fairness metrics",
+			result, targetedNumber, guardedNumber)
 	}
 }
 
