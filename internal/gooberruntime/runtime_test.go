@@ -76,13 +76,16 @@ func (f *fakeEvaluator) Evaluate(_ context.Context, req HarnessRequest) (apiv1.V
 
 func validInvocation() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
-		TaskID:     "run-1:implement",
-		WorkflowID: "default-implement",
-		RunID:      "run-1",
-		Gaggle:     "acme-web",
-		Goal:       "Implement the backlog item",
-		RepoRef:    apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
-		Item:       &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
+		TaskID:            "run-1:implement",
+		WorkflowID:        "default-implement",
+		RunID:             "run-1",
+		Attempt:           1,
+		Gaggle:            "acme-web",
+		Goober:            "coder",
+		Goal:              "Implement the backlog item",
+		OwnershipBoundary: "task:implement",
+		RepoRef:           apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Item:              &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"},
 		Inputs: map[string]interface{}{
 			"instructions": "You are a careful coder.",
 			"draftPr":      true,
@@ -91,6 +94,97 @@ func validInvocation() apiv1.InvocationEnvelope {
 			{Name: "plan", Artifact: &apiv1.ArtifactPointer{Path: "artifacts/plan/plan.md", Digest: apiv1.Digest([]byte("ready"))}},
 		},
 		Limits: apiv1.Limits{MaxDurationSeconds: 1800, MaxTokens: 1000, MaxCostUSD: 1.25},
+	}
+}
+
+func TestInvokeBuildsFreshContextWithSelectedEnvelopeSections(t *testing.T) {
+	preparer := &fakePreparer{}
+	harness := &fakeHarness{invokeResult: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}
+	env := validInvocation()
+	env.Goober = "parent"
+	env.Capabilities = []string{"repo:read"}
+	env.NestedAgentPolicy = &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextExplicit, EnvelopeSections: []string{"run", "objective"}},
+		PermittedProfiles: []string{"worker"},
+		PlatformPolicy:    apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"},
+	}
+	parent := apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"}
+	env.ParentPlatformPolicy = &parent
+
+	rt := New(Options{Preparer: preparer, Harness: harness})
+
+	if _, err := rt.Invoke(context.Background(), env); err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	got := harness.gotInvoke.Context
+	if len(got.ContextPointers) != 0 {
+		t.Fatalf("explicit context unexpectedly retained pointers: %v", got.ContextPointers)
+	}
+	if got.Item != nil || len(got.Inputs) != 0 {
+		t.Fatalf("explicit context retained unselected parent context: item=%+v inputs=%+v", got.Item, got.Inputs)
+	}
+	if got.ExecutionEnvelope == nil || got.ExecutionEnvelope.ParentAgent != "parent" {
+		t.Fatalf("missing mandatory execution envelope: %+v", got.ExecutionEnvelope)
+	}
+	if len(got.EnvelopeSections) != 2 || got.EnvelopeSections["run"] != env.RunID || got.EnvelopeSections["objective"] != env.Goal {
+		t.Fatalf("envelope sections = %+v", got.EnvelopeSections)
+	}
+}
+
+func TestBuildContextFreshAndInheritedOptionalContext(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		mode        apiv1.ContextMode
+		wantContext bool
+	}{
+		{name: "fresh", mode: apiv1.ContextFresh},
+		{name: "inherited", mode: apiv1.ContextInherited, wantContext: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := validInvocation()
+			env.NestedAgentPolicy = &apiv1.NestedAgentPolicy{
+				Version:           apiv1.NestedAgentPolicyVersion,
+				Delegation:        apiv1.DelegationDisabled,
+				Context:           apiv1.NestedContextPolicy{Mode: test.mode},
+				PermittedProfiles: []string{"worker"},
+				PlatformPolicy: apiv1.PlatformPolicy{
+					Sandbox: "workspace", Cancellation: "run", CompletionContract: "result",
+				},
+			}
+			parent := apiv1.PlatformPolicy{
+				Sandbox: "workspace", Cancellation: "run", CompletionContract: "result",
+			}
+			env.ParentPlatformPolicy = &parent
+			got, err := buildContext(context.Background(), env, nil)
+			if err != nil {
+				t.Fatalf("buildContext: %v", err)
+			}
+			hasContext := got.Item != nil || len(got.Inputs) != 0 || len(got.ContextPointers) != 0
+			if hasContext != test.wantContext {
+				t.Fatalf("optional context present = %v, want %v", hasContext, test.wantContext)
+			}
+			if got.ExecutionPolicy == nil || got.ExecutionEnvelope == nil {
+				t.Fatal("mandatory execution policy was omitted")
+			}
+		})
+	}
+}
+
+func TestInvokeRejectsUnavailableExplicitArtifact(t *testing.T) {
+	env := validInvocation()
+	env.NestedAgentPolicy = &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextExplicit, ArtifactNames: []string{"missing"}},
+		PermittedProfiles: []string{"worker"},
+		PlatformPolicy:    apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"},
+	}
+	parent := apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"}
+	env.ParentPlatformPolicy = &parent
+	if _, err := buildContext(context.Background(), env, nil); err == nil || !strings.Contains(err.Error(), `selected artifact "missing"`) {
+		t.Fatalf("buildContext error = %v, want unavailable artifact rejection", err)
 	}
 }
 
@@ -112,12 +206,15 @@ func TestInvokeBuildsContextAndReturnsResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
 	}
+
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %q, want success", result.Status)
 	}
+
 	if harness.gotInvoke.Context.Instructions != "You are a careful coder." {
 		t.Errorf("instructions = %q", harness.gotInvoke.Context.Instructions)
 	}
+
 	if harness.gotInvoke.Context.RepoRef.Name != "web" {
 		t.Errorf("repo name = %q, want web", harness.gotInvoke.Context.RepoRef.Name)
 	}

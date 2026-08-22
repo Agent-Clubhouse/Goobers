@@ -278,7 +278,12 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 			})
 		},
-		Automated:         gate.NewAutomatedEvaluator(),
+		Automated: gate.NewAutomatedEvaluator(),
+		// Placement provenance is recorded only once this instance declares a
+		// runners: inventory (or supplies GOOBERS_RUNNER_* identity env) —
+		// zero-declaration installs keep byte-identical journals
+		// (goobernetes-architecture.md §11 item 1).
+		RunnersDeclared:   len(cfg.Runners) > 0,
 		Worktrees:         wtMgr,
 		PinnedWorkspace:   pinned,
 		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),

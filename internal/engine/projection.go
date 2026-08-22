@@ -36,6 +36,13 @@ var projectableEventTypes = map[journal.EventType]bool{
 	journal.EventRefTouched:    true,
 	journal.EventError:         true,
 	journal.EventSpanRecorded:  true,
+	// Placement provenance (#3515) is non-normative for CONFORMANCE but is
+	// projectable: projectable and conformance-normative are different
+	// questions, and span.recorded is the standing precedent — also excluded
+	// from conformance, also projected. Without this entry a repair/backfill
+	// re-projection of any history carrying a placement op fails closed on a
+	// type the engine itself will emit (#3529).
+	journal.EventRunnerPlacement: true,
 }
 
 // spanUnavailableErrorCode marks the EventError a projection appends in place

@@ -98,11 +98,13 @@ const (
 	// does not claim (RRQ-1/#1101). Schedule-time matching is an exact
 	// string set-membership check (internal/runnercap), so an unclaimed
 	// token means the scheduler refuses placement of every run of that
-	// gaggle and `goobers up` fails closed at startup
-	// (instance.CheckCapabilityRequirements) — a structural no-run state
-	// the config validator can see statically because it reads both files
-	// in the same pass (2026-08-08 cold-start audit, dotnet #7 / swift
-	// probes).
+	// gaggle at schedule time (#2860: the daemon itself starts and every
+	// other gaggle serves) — a structural no-run state the config validator
+	// can see statically because it reads both files in the same pass
+	// (2026-08-08 cold-start audit, dotnet #7 / swift probes). Scope frozen
+	// by dsl-3.0.md §5: 2.0 documents on inventory-less instances only —
+	// the RNR001 constraint solve owns 3.0 documents and every declared
+	// runners: inventory (at error severity there, the #3497 fix).
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
 	// WarningMaxOpenPRsUnenforceable identifies a workflow whose maxOpenPRs
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
@@ -133,6 +135,29 @@ const (
 	// runtime signal (#3360). Informational: the config is still valid and
 	// behaves exactly as it would if the field were omitted.
 	WarningZeroMaxRunsPerHour WarningCode = "WF020"
+	// RunnerStageUnsatisfiable (RNR001) identifies a stage whose effective
+	// placement requirement (runsOn os/capabilities/restrictions plus derived
+	// requirements, or a pre-3.0 requiredCapabilities set) no runner in the
+	// resolved inventory satisfies (dsl-3.0.md §5 checkpoint 1, the shared
+	// solver internal/runnersolve). Severity is ERROR when the instance
+	// declares a runners: inventory — the #3497 fix: a config that cannot
+	// schedule must not exit 0 — and WARNING otherwise (advisory, matching
+	// the never-fatal legacy posture).
+	RunnerStageUnsatisfiable WarningCode = "RNR001"
+	// RunnerEngineMissing (RNR002) identifies a runner entry with a non-self
+	// host on an instance that declares no engine: connection config. The
+	// condition fails first at instance.yaml load
+	// (instance.RunnerEngineMissingError); validate attributes this code.
+	RunnerEngineMissing WarningCode = "RNR002"
+	// RunnerQuantityUnsatisfiable (RNR003) identifies a stage whose resource
+	// minimums exceed every otherwise-eligible runner's declared ceiling on a
+	// distributed-shape inventory. Same severity split as RNR001.
+	RunnerQuantityUnsatisfiable WarningCode = "RNR003"
+	// RunnerQuantityAdvisory (RNR004) identifies a local-mode inventory whose
+	// self runner's declared ceiling cannot cover a stage minimum. Always a
+	// WARNING: resource requirements are advisory on local modes by design
+	// (dsl-3.0.md D4) and never affect eligibility.
+	RunnerQuantityAdvisory WarningCode = "RNR004"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit

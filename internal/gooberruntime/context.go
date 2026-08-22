@@ -25,18 +25,42 @@ const (
 // GooberContext is the complete task or reviewer context delivered to the
 // harness.
 type GooberContext struct {
-	TaskID           string                 `json:"taskId"`
-	WorkflowID       string                 `json:"workflowId"`
-	RunID            string                 `json:"runId"`
-	Gaggle           string                 `json:"gaggle"`
-	Goal             string                 `json:"goal"`
-	Instructions     string                 `json:"instructions,omitempty"`
-	RepoRef          apiv1.RepoRef          `json:"repoRef"`
-	Item             *apiv1.BacklogItem     `json:"item,omitempty"`
-	Inputs           map[string]interface{} `json:"inputs,omitempty"`
-	ContextPointers  []apiv1.ContextPointer `json:"contextPointers,omitempty"`
-	MinimumIntegrity apiv1.Integrity        `json:"minimumIntegrity,omitempty"`
-	Limits           apiv1.Limits           `json:"limits,omitempty"`
+	TaskID           string                      `json:"taskId"`
+	WorkflowID       string                      `json:"workflowId"`
+	RunID            string                      `json:"runId"`
+	Gaggle           string                      `json:"gaggle"`
+	Goal             string                      `json:"goal"`
+	Instructions     string                      `json:"instructions,omitempty"`
+	RepoRef          apiv1.RepoRef               `json:"repoRef"`
+	Item             *apiv1.BacklogItem          `json:"item,omitempty"`
+	Inputs           map[string]interface{}      `json:"inputs,omitempty"`
+	ContextPointers  []apiv1.ContextPointer      `json:"contextPointers,omitempty"`
+	MinimumIntegrity apiv1.Integrity             `json:"minimumIntegrity,omitempty"`
+	Limits           apiv1.Limits                `json:"limits,omitempty"`
+	ExecutionPolicy  *apiv1.ChildExecutionPolicy `json:"executionPolicy,omitempty"`
+	// ExecutionEnvelope is always present for nested agents, including fresh
+	// context children. It carries execution authority without conversation
+	// history or unrelated task context.
+	ExecutionEnvelope *ExecutionEnvelope `json:"executionEnvelope,omitempty"`
+	// EnvelopeSections contains only sections explicitly selected by an
+	// explicit-context child. Mandatory execution policy is not filtered.
+	EnvelopeSections map[string]interface{} `json:"envelopeSections,omitempty"`
+}
+
+// ExecutionEnvelope carries mandatory execution authority to a nested agent.
+type ExecutionEnvelope struct {
+	RunID              string               `json:"runId"`
+	StageID            string               `json:"stageId"`
+	Attempt            int32                `json:"attempt"`
+	ParentAgent        string               `json:"parentAgent"`
+	Objective          string               `json:"objective"`
+	Ownership          string               `json:"ownership"`
+	Capabilities       []string             `json:"capabilities,omitempty"`
+	PolicyActions      []string             `json:"policyActions,omitempty"`
+	PlatformPolicy     apiv1.PlatformPolicy `json:"platformPolicy"`
+	CompletionContract string               `json:"completionContract"`
+	Cancellation       string               `json:"cancellation"`
+	Budget             apiv1.Limits         `json:"budget"`
 }
 
 // InstructionResolver resolves the instruction markdown for an invocation.
@@ -152,6 +176,11 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 	if env.RepoRef.Name == "" {
 		return GooberContext{}, fmt.Errorf("repoRef.name is required")
 	}
+	if env.NestedAgentPolicy != nil {
+		if err := env.NestedAgentPolicy.Validate(); err != nil {
+			return GooberContext{}, err
+		}
+	}
 	if resolver == nil {
 		resolver = InputInstructionResolver{}
 	}
@@ -159,20 +188,121 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 	if err != nil {
 		return GooberContext{}, err
 	}
+	contextPointers := copyContextPointers(env.ContextPointers)
+	item := env.Item
+	inputs := copyInputs(env.Inputs)
+	var envelope *ExecutionEnvelope
+	var executionPolicy *apiv1.ChildExecutionPolicy
+	var envelopeSections map[string]interface{}
+	if env.NestedAgentPolicy != nil {
+		policy := env.NestedAgentPolicy
+		if env.ParentPlatformPolicy == nil {
+			return GooberContext{}, fmt.Errorf("nested agent policy: parent platform authority is required")
+		}
+		parent := apiv1.ChildExecutionPolicy{
+			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt, ParentAgent: env.Goober,
+			Objective: env.Goal, Capabilities: append([]string(nil), env.Capabilities...),
+			Ownership: env.OwnershipBoundary, PolicyActions: append([]string(nil), env.PolicyActions...),
+			PlatformPolicy: *env.ParentPlatformPolicy, Delegation: apiv1.DelegationBounded,
+			MaxDepth: policy.MaxDepth + 1, PeerMessaging: true,
+		}
+		profile := policy.PermittedProfiles[0]
+		model := ""
+		if len(policy.Model.Allowlist) > 0 {
+			model = policy.Model.Allowlist[0]
+		}
+		admitted, err := apiv1.AdmitChild(parent, *policy, profile, model, "")
+		if err != nil {
+			return GooberContext{}, err
+		}
+		executionPolicy = &admitted
+		envelope = &ExecutionEnvelope{
+			RunID: admitted.RunID, StageID: admitted.StageID, Attempt: admitted.Attempt, ParentAgent: admitted.ParentAgent,
+			Objective: admitted.Objective, Capabilities: append([]string(nil), admitted.Capabilities...),
+			Ownership: admitted.Ownership, PolicyActions: append([]string(nil), admitted.PolicyActions...),
+			PlatformPolicy:     admitted.PlatformPolicy,
+			CompletionContract: admitted.PlatformPolicy.CompletionContract,
+			Cancellation:       admitted.PlatformPolicy.Cancellation,
+			Budget:             admitted.PlatformPolicy.Budget,
+		}
+		switch env.NestedAgentPolicy.Context.Mode {
+		case apiv1.ContextFresh:
+			contextPointers = nil
+			item = nil
+			inputs = nil
+		case apiv1.ContextExplicit:
+			for _, name := range env.NestedAgentPolicy.Context.ArtifactNames {
+				found := false
+				for _, pointer := range contextPointers {
+					if pointer.Name == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return GooberContext{}, fmt.Errorf("nested agent policy: selected artifact %q is unavailable", name)
+				}
+			}
+			contextPointers = selectContextPointers(contextPointers, env.NestedAgentPolicy.Context.ArtifactNames)
+			envelopeSections = selectEnvelopeSections(*envelope, env.NestedAgentPolicy.Context.EnvelopeSections)
+			item = nil
+			inputs = nil
+		}
+	}
 	return GooberContext{
-		TaskID:           env.TaskID,
-		WorkflowID:       env.WorkflowID,
-		RunID:            env.RunID,
-		Gaggle:           env.Gaggle,
-		Goal:             env.Goal,
-		Instructions:     instructions,
-		RepoRef:          env.RepoRef,
-		Item:             env.Item,
-		Inputs:           copyInputs(env.Inputs),
-		ContextPointers:  copyContextPointers(env.ContextPointers),
-		MinimumIntegrity: env.MinimumIntegrity,
-		Limits:           env.Limits,
+		TaskID:            env.TaskID,
+		WorkflowID:        env.WorkflowID,
+		RunID:             env.RunID,
+		Gaggle:            env.Gaggle,
+		Goal:              env.Goal,
+		Instructions:      instructions,
+		RepoRef:           env.RepoRef,
+		Item:              item,
+		Inputs:            inputs,
+		ContextPointers:   contextPointers,
+		MinimumIntegrity:  env.MinimumIntegrity,
+		Limits:            env.Limits,
+		ExecutionPolicy:   executionPolicy,
+		ExecutionEnvelope: envelope,
+		EnvelopeSections:  envelopeSections,
 	}, nil
+}
+
+func selectEnvelopeSections(envelope ExecutionEnvelope, names []string) map[string]interface{} {
+	sections := map[string]interface{}{}
+	values := map[string]interface{}{
+		"run":                envelope.RunID,
+		"stage":              envelope.StageID,
+		"attempt":            envelope.Attempt,
+		"parentAgent":        envelope.ParentAgent,
+		"objective":          envelope.Objective,
+		"ownership":          envelope.Ownership,
+		"capabilities":       envelope.Capabilities,
+		"policyActions":      envelope.PolicyActions,
+		"platformPolicy":     envelope.PlatformPolicy,
+		"completionContract": envelope.CompletionContract,
+		"cancellation":       envelope.Cancellation,
+		"budget":             envelope.Budget,
+	}
+	for _, name := range names {
+		if value, ok := values[name]; ok {
+			sections[name] = value
+		}
+	}
+	return sections
+}
+
+func selectContextPointers(pointers []apiv1.ContextPointer, names []string) []apiv1.ContextPointer {
+	selected := make([]apiv1.ContextPointer, 0, len(names))
+	for _, pointer := range pointers {
+		for _, name := range names {
+			if pointer.Name == name {
+				selected = append(selected, pointer)
+				break
+			}
+		}
+	}
+	return selected
 }
 
 func copyInputs(in map[string]interface{}) map[string]interface{} {

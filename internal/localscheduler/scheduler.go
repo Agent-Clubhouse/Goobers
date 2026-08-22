@@ -14,7 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/providersnapshot"
-	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/telemetry"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
@@ -69,6 +69,17 @@ type WorkflowEntry struct {
 	// dispatch refuses the run before admission when the runner does not claim
 	// every entry. Nil/empty imposes no requirement.
 	RequiredCapabilities []string
+	// PlacementRefusal, when non-empty, marks this workflow refused by the
+	// startup constraint solve against the instance's declared runners:
+	// inventory (dsl-3.0.md §5 checkpoint 3, #2860's boot-never-kills
+	// ruling): the daemon starts and every other workflow serves, while this
+	// workflow's runs are refused with this named diagnostic — journaled as
+	// workflow.refused when the scheduler learns the entry, and again as
+	// tick.skipped on any dispatch attempt. Set only when a runners:
+	// inventory is declared; zero-declaration instances never set it, so
+	// their per-run capability check below stays their only refusal path,
+	// byte-identical to previous releases.
+	PlacementRefusal string
 }
 
 func entryIdentity(entry WorkflowEntry) WorkflowIdentity {
@@ -241,13 +252,22 @@ type Scheduler struct {
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
 	lastDispatchedGaggle string
 	hasDispatchedGaggle  bool
-	// runnerCapabilities is the local runner's static advertised capability set
-	// (RRQ-1/#1101). Set once at construction, read-only thereafter, so it needs
-	// no lock. A dispatch is refused before admission when the entry requires a
-	// capability the runner does not claim. Empty (the default) claims nothing,
-	// which only matters for entries that declare RequiredCapabilities — an
-	// entry that declares none is never refused on this axis.
-	runnerCapabilities  runnercap.Claimed
+	// selfRunner is the shared constraint solver's view of the local runner
+	// (RRQ-1/#1101, rehomed onto internal/runnersolve by #3506 so the per-run
+	// admit and the apply/boot solves are one implementation — dsl-3.0.md §5,
+	// open point 8). Set once at construction, read-only thereafter, so it
+	// needs no lock. A dispatch is refused before admission when the entry
+	// requires a capability this runner does not satisfy. The zero value
+	// claims nothing, which only matters for entries that declare
+	// RequiredCapabilities — an entry that declares none is never refused on
+	// this axis.
+	//
+	// CHECKPOINT 2 SEAM (#3513): this is the self-runner half of dispatch
+	// admission only. The Temporal dispatch-time half — deriving the task
+	// queue from the solver's eligible runner set and the bounded
+	// Linux-preferring schedule-to-start wait of dsl-3.0.md D3 — is #3513's,
+	// and consumes runnersolve.Solve placements, not this field.
+	selfRunner          runnersolve.Runner
 	targetedPRValidator func(context.Context, WorkflowEntry, int) error
 }
 
@@ -335,9 +355,12 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 // not in this set is refused before admission, journaling a tick.skipped with a
 // ReasonMissingCapability diagnostic naming the gap. Optional — unset claims
 // nothing, so only entries that declare RequiredCapabilities are ever affected.
+// Internally the claims become the shared solver's self-runner view
+// (runnersolve.SelfRunner), whose match is byte-identical to the former
+// runnercap union check for every declared token.
 func WithRunnerCapabilities(caps []string) Option {
 	return func(s *Scheduler) {
-		s.runnerCapabilities = runnercap.NewClaimed(caps)
+		s.selfRunner = runnersolve.SelfRunner(caps)
 	}
 }
 
@@ -386,6 +409,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		s.triggers[identity] = ts
 		s.idleBackoffs[identity] = make([]idleBackoffState, len(e.Schedules))
 	}
+	s.journalPlacementRefusals(entries)
 	return s
 }
 
@@ -820,6 +844,15 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if s.authCircuitOpen(entryIdentity(entry)) {
 			continue
 		}
+		if entry.PlacementRefusal != "" {
+			// Refused by the startup constraint solve (#2860, checkpoint 3):
+			// journaled as workflow.refused when the entry was learned, and
+			// refused with the named diagnostic on any explicit Trigger.
+			// Skipped silently here (the auth-circuit idiom) so a permanently
+			// refused workflow neither spends provider polls nor floods the
+			// journal with a tick.skipped every tick.
+			continue
+		}
 		identity := entryIdentity(entry)
 		s.mu.Lock()
 		pending := s.pendingScheduleDemand[identity]
@@ -1060,6 +1093,10 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	}); err != nil {
 		return fmt.Errorf("localscheduler: journal config reload: %w", err)
 	}
+	// Re-record refusals for the accepted configuration: the config.reloaded
+	// event above marks the boundary, so a status reader always sees the
+	// refusals current for the configuration now in force (#2860).
+	s.journalPlacementRefusals(entries)
 	evaluations := make(map[WorkflowIdentity]time.Time, len(triggers))
 	for identity, state := range triggers {
 		evaluations[identity] = state.LastEval
@@ -1985,14 +2022,33 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	}
 
 	identity := entryIdentity(entry)
+	// Checkpoint-3 refusal (#2860, dsl-3.0.md §5): a workflow the startup
+	// constraint solve marked unplaceable on the declared inventory is refused
+	// per run with the solver's named diagnostic — the proportionate
+	// replacement for the boot-kill this ruling removed. Permanent for the
+	// pinned inventory (restart-only, accept-and-pin), so not transient.
+	if entry.PlacementRefusal != "" {
+		reason := ReasonPlacementUnsatisfiable + ": " + entry.PlacementRefusal
+		s.journalEvent(journal.Event{
+			Type:     journal.EventTickSkipped,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   reason,
+		})
+		span.Complete(telemetry.OutcomeBlocked, false)
+		return "", false, reason
+	}
 	// Schedule-time runner-capability match (RRQ-1/#1101): refuse the run
-	// before it can consume an admission slot when the runner does not claim a
-	// capability the workflow's gaggle/stages require. This is the runtime,
-	// per-run enforcement of the same invariant the config-load cross-check
-	// (instance.CheckCapabilityRequirements) guards statically — the load-bearing
-	// seam a future dynamic/multi-runner router grows from — so a missing claim
-	// fails a run to schedule rather than scheduling it to fail at run.
-	if missing := s.runnerCapabilities.Missing(entry.RequiredCapabilities); len(missing) > 0 {
+	// before it can consume an admission slot when the runner does not satisfy
+	// a capability the workflow's gaggle/stages require. This is the runtime,
+	// per-run enforcement of the same invariant checkpoint 1 validates
+	// statically, served from the shared solver's self-runner view (#3506) so
+	// the two can never diverge — a missing claim fails a run to schedule
+	// rather than scheduling it to fail at run. Placement across a
+	// multi-runner inventory is dispatch-time work (#3513); until it lands,
+	// every stage of an admitted run executes on this host, which is exactly
+	// what this self-runner check answers for.
+	if missing := s.selfRunner.MissingCapabilities(entry.RequiredCapabilities); len(missing) > 0 {
 		reason := ReasonMissingCapability + ": " + strings.Join(missing, ", ")
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
@@ -2217,6 +2273,26 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		return d
 	}
 	return minPoll
+}
+
+// journalPlacementRefusals records one workflow.refused event per entry the
+// startup constraint solve marked unplaceable (#2860, dsl-3.0.md §5
+// checkpoint 3). Called when the scheduler learns a configuration — New and
+// Reload — so the instance journal and `goobers status` name every refusal
+// without waiting for a dispatch attempt. Best-effort like every other
+// decision record (the refusal is enforced by dispatch regardless).
+func (s *Scheduler) journalPlacementRefusals(entries []WorkflowEntry) {
+	for _, entry := range entries {
+		if entry.PlacementRefusal == "" {
+			continue
+		}
+		s.journalEvent(journal.Event{
+			Type:     journal.EventWorkflowRefused,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Reason:   entry.PlacementRefusal,
+		})
+	}
 }
 
 // journalEvent appends to the instance journal if one is wired; best-effort,

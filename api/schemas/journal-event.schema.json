@@ -48,7 +48,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -71,6 +71,7 @@
         "repaired",
         "runner.annotation",
         "runner.isolation.posture",
+        "runner.placement",
         "notification.requested",
         "notification.delivery.receipt",
         "parallel.started",
@@ -81,6 +82,7 @@
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
+        "workflow.refused",
         "provider.quota.reset",
         "poll.shed",
         "claim.acquired",

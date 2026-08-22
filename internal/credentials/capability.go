@@ -140,6 +140,27 @@ func (i *Injector) Materialize(ctx context.Context, declared []string) (*Set, er
 	}
 	addKeys(declared)
 	addKeys(i.credentialKeys)
+	return i.materialize(ctx, keys)
+}
+
+// MaterializeRestricted resolves exactly the credential keys admitted by an
+// execution policy. Unlike Materialize, it does not implicitly add goober-level
+// credential keys, so a nested child cannot inherit credentials omitted from
+// its effective policy.
+func (i *Injector) MaterializeRestricted(ctx context.Context, admitted []string) (*Set, error) {
+	keys := make([]string, 0, len(admitted))
+	seen := make(map[string]bool, len(admitted))
+	for _, key := range admitted {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return i.materialize(ctx, keys)
+}
+
+func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error) {
 	s := &Set{
 		declared: make(map[string]bool, len(keys)),
 		tokens:   make(map[string]string, len(keys)),

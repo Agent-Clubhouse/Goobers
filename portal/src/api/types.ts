@@ -599,6 +599,31 @@ export interface AttemptList {
   attempts: StageAttempt[];
 }
 
+/**
+ * Placement provenance journaled under runner.* for one stage attempt:
+ * where it physically executed, as far as the executing substrate knew.
+ * Every field except runner is optional — a local attempt has no pod and
+ * never queued.
+ */
+export interface AttemptPlacement {
+  /** Runners-inventory entry name; "self" for the daemon's own host. */
+  runner: string;
+  /** Cluster node the attempt ran on — only ever a real node, never a hostname. */
+  node?: string;
+  /** The executing process's own hostname; inside a pod this is the pod name. */
+  host?: string;
+  /** GOOS of the executing substrate. */
+  os?: string;
+  /** Container image reference the attempt ran under. */
+  image?: string;
+  /** Pod identity for containerized attempts. */
+  pod?: string;
+  /** When the attempt entered the dispatch fabric. */
+  queuedAt?: string;
+  /** When the attempt's pod began executing. */
+  podStartedAt?: string;
+}
+
 export interface StageAttempt {
   id: string;
   visit: number;
@@ -615,6 +640,8 @@ export interface StageAttempt {
   error?: ErrorDetail;
   /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
   model?: string;
+  /** runner.* placement provenance; absent for journals recorded before it existed. */
+  placement?: AttemptPlacement;
 }
 
 export interface ArtifactContent {

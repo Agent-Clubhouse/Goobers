@@ -64,7 +64,7 @@ func TestVersionGatedChangesInvisibleToEarlierViews(t *testing.T) {
 	// replacement opens at 3.0.
 	dedupe := gated["backlog-dedupe"]
 	dedupe.Capabilities = []CapabilityUse{
-		{Capability: capability.GitHubIssuesRead, Consequence: dedupe.Capabilities[0].Consequence, untilDSL: "3.0"},
+		{Capability: capability.GitHubIssuesRead, Consequence: dedupe.Capabilities[0].Consequence, exact: dedupe.Capabilities[0].exact, untilDSL: "3.0"},
 		{Capability: capability.GitHubIssuesWrite, Consequence: "synthetic 3.0 requirement swap", sinceDSL: "3.0"},
 	}
 	gated["backlog-dedupe"] = dedupe

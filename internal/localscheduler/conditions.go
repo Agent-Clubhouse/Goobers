@@ -24,6 +24,14 @@ const (
 	// config (a runner's claimed set is static), so it must not be treated as
 	// transient.
 	ReasonMissingCapability = "conditions: missing-capability"
+	// ReasonPlacementUnsatisfiable prefixes the refusal of a workflow the
+	// boot-time constraint solve marked unplaceable on the declared runners:
+	// inventory (dsl-3.0.md §5 checkpoint 3, #2860: the workflow is refused
+	// per-run with a named diagnostic; the daemon and every other workflow
+	// keep serving). Like ReasonMissingCapability it is a stable prefix with
+	// the solver's diagnostic appended, and the refusal is permanent for the
+	// pinned inventory (restart-only, accept-and-pin — decision record D9).
+	ReasonPlacementUnsatisfiable = "conditions: placement-unsatisfiable"
 	// ReasonProviderQuota prefixes a provider-quota skip's Reason (#712).
 	// Unlike the other Reason consts above (fixed strings), Admit appends the
 	// resume time after this prefix — the acceptance criteria's own phrasing

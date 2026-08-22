@@ -28,6 +28,22 @@ type StatusReader interface {
 type SchedulerStatus struct {
 	ProviderQuotaResumeAt *time.Time
 	DaemonRestart         *DaemonRestartStatus
+	// RefusedWorkflows are the workflows the startup constraint solve marked
+	// unplaceable on the declared runners: inventory (workflow.refused,
+	// #2860/dsl-3.0.md §5 checkpoint 3) for the configuration currently in
+	// force: the set resets at each daemon start and each accepted config
+	// reload, because the scheduler re-journals current refusals at both
+	// boundaries. Empty on zero-declaration instances.
+	RefusedWorkflows []WorkflowRefusalStatus
+}
+
+// WorkflowRefusalStatus is one boot-refused workflow and its solver
+// diagnostic.
+type WorkflowRefusalStatus struct {
+	Gaggle   string    `json:"gaggle,omitempty"`
+	Workflow string    `json:"workflow"`
+	Reason   string    `json:"reason"`
+	At       time.Time `json:"at"`
 }
 
 // DaemonRestartStatus correlates the latest daemon lifetime with runs selected
@@ -234,6 +250,12 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	var restart *DaemonRestartStatus
 	var sawDaemonStart bool
 	var dirtyReason string
+	refusalOrder := make([]string, 0)
+	refusals := make(map[string]WorkflowRefusalStatus)
+	resetRefusals := func() {
+		refusalOrder = refusalOrder[:0]
+		refusals = make(map[string]WorkflowRefusalStatus)
+	}
 	for _, event := range events {
 		if err := ctx.Err(); err != nil {
 			return SchedulerStatus{}, err
@@ -244,9 +266,25 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 				candidate = candidate.UTC()
 				resetAt = &candidate
 			}
+		case journal.EventWorkflowRefused:
+			key := event.Gaggle + "/" + event.Workflow
+			if _, known := refusals[key]; !known {
+				refusalOrder = append(refusalOrder, key)
+			}
+			refusals[key] = WorkflowRefusalStatus{
+				Gaggle:   event.Gaggle,
+				Workflow: event.Workflow,
+				Reason:   event.Reason,
+				At:       event.Time,
+			}
+		case journal.EventConfigReloaded:
+			// The scheduler re-journals current refusals after each accepted
+			// reload, so anything recorded before this boundary is stale.
+			resetRefusals()
 		case journal.EventDaemonDirtyRestart:
 			dirtyReason = event.Reason
 		case journal.EventDaemonStarted:
+			resetRefusals()
 			if sawDaemonStart || dirtyReason != "" {
 				reason := "clean restart"
 				if dirtyReason != "" {
@@ -277,7 +315,11 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	return SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}, nil
+	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	for _, key := range refusalOrder {
+		status.RefusedWorkflows = append(status.RefusedWorkflows, refusals[key])
+	}
+	return status, nil
 }
 
 type restartRun struct {

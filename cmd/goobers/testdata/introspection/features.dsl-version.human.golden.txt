@@ -77,6 +77,7 @@ task.limits.maxDurationSeconds                     1.4          ga              
 task.limits.maxTokens                              1.4          ga               deprecated       dev
 task.minimumIntegrity                              1.4          ga               deprecated       dev
 task.name                                          1.4          ga               deprecated       dev
+task.nestedAgentPolicy                             1.4          ga               deprecated       dev
 task.next                                          1.4          ga               deprecated       dev
 task.onTimeout.fail                                1.4          ga               deprecated       dev
 task.onTimeout.salvage                             1.4          ga               deprecated       dev
@@ -111,4 +112,4 @@ workflow.terminal.abort                            1.4          ga              
 workflow.terminal.complete                         1.4          ga               deprecated       dev
 workflow.terminal.escalate                         1.4          ga               deprecated       dev
 
-111 feature/version row(s)
+112 feature/version row(s)
