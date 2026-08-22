@@ -670,6 +670,10 @@ spec:
                               items:
                                 type: string
                               type: array
+                            policyActions:
+                              items:
+                                type: string
+                              type: array
                             credentials:
                               items:
                                 type: string

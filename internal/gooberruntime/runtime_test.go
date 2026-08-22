@@ -107,6 +107,7 @@ func TestInvokeBuildsFreshContextWithSelectedEnvelopeSections(t *testing.T) {
 		PermittedProfiles: []string{"worker"},
 		PlatformPolicy:    apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"},
 	}
+
 	rt := New(Options{Preparer: preparer, Harness: harness})
 
 	if _, err := rt.Invoke(context.Background(), env); err != nil {
@@ -121,6 +122,20 @@ func TestInvokeBuildsFreshContextWithSelectedEnvelopeSections(t *testing.T) {
 	}
 	if len(got.EnvelopeSections) != 2 || got.EnvelopeSections["run"] != env.RunID || got.EnvelopeSections["objective"] != env.Goal {
 		t.Fatalf("envelope sections = %+v", got.EnvelopeSections)
+	}
+}
+
+func TestInvokeRejectsUnavailableExplicitArtifact(t *testing.T) {
+	env := validInvocation()
+	env.NestedAgentPolicy = &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextExplicit, ArtifactNames: []string{"missing"}},
+		PermittedProfiles: []string{"worker"},
+		PlatformPolicy:    apiv1.PlatformPolicy{Capabilities: []string{"repo:read"}, Sandbox: "workspace", Cancellation: "run", CompletionContract: "result"},
+	}
+	if _, err := buildContext(context.Background(), env, nil); err == nil || !strings.Contains(err.Error(), `selected artifact "missing"`) {
+		t.Fatalf("buildContext error = %v, want unavailable artifact rejection", err)
 	}
 }
 

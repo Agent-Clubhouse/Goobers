@@ -335,13 +335,40 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
 func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, *apiv1.ArtifactPointer, error) {
+	var envEffectivePolicy *apiv1.ChildExecutionPolicy
 	if env.NestedAgentPolicy != nil {
 		if err := ValidateNestedAgentPolicy(e.adapter, *env.NestedAgentPolicy); err != nil {
 			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
 		}
-		if !nestedCapabilitiesSubset(env.NestedAgentPolicy.PlatformPolicy.Capabilities, env.Capabilities) {
-			return Outcome{}, nil, nil, fmt.Errorf("harness: nested-agent capabilities exceed stage authority")
+		parent := apiv1.ChildExecutionPolicy{
+			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt,
+			ParentAgent: env.Goober, Objective: env.Goal, Ownership: env.OwnershipBoundary,
+			Capabilities:  append([]string(nil), env.Capabilities...),
+			PolicyActions: append([]string(nil), env.PolicyActions...),
+			PlatformPolicy: apiv1.PlatformPolicy{
+				Capabilities: env.Capabilities, PolicyActions: env.PolicyActions,
+			},
 		}
+		if env.ParentPlatformPolicy != nil {
+			parent.PlatformPolicy = *env.ParentPlatformPolicy
+		} else {
+			// Older envelopes did not carry a separate authority object. Their
+			// declared platform policy is the only available parent authority.
+			parent.PlatformPolicy = env.NestedAgentPolicy.PlatformPolicy
+		}
+		parent.PlatformPolicy.Capabilities = append([]string(nil), env.Capabilities...)
+		parent.PlatformPolicy.PolicyActions = append([]string(nil), env.PolicyActions...)
+		parent.Delegation = apiv1.DelegationBounded
+		parent.MaxDepth = env.NestedAgentPolicy.MaxDepth + 1
+		parent.PeerMessaging = true
+		profile := env.NestedAgentPolicy.PermittedProfiles[0]
+		effective, err := apiv1.AdmitChild(parent, *env.NestedAgentPolicy, profile, e.model, "")
+		if err != nil {
+			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
+		}
+		// The effective policy is passed separately so adapter translation cannot
+		// accidentally use the un-intersected declaration.
+		envEffectivePolicy = &effective
 	}
 	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
@@ -370,6 +397,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	req := RunRequest{
 		Mode:                  mode,
 		Envelope:              env,
+		ExecutionPolicy:       envEffectivePolicy,
 		Instructions:          e.instructions,
 		Model:                 e.model,
 		HarnessOptions:        e.harnessOptions,

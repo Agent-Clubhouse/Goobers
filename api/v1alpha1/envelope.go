@@ -43,6 +43,8 @@ const StageContractVersion = "v1alpha8"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
+	// Attempt is the scheduler attempt number for this stage.
+	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
@@ -77,6 +79,8 @@ type InvocationEnvelope struct {
 	Goober string `json:"goober,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
+	// OwnershipBoundary is the work this invocation owns and may mutate.
+	OwnershipBoundary string `json:"ownershipBoundary,omitempty"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the
 	// agent's instructions for this invocation. It is never part of the workflow
 	// definition and is empty for ordinary invocations.
@@ -122,6 +126,11 @@ type InvocationEnvelope struct {
 	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
 	// credentials for capabilities not listed here are never materialized (§5).
 	Capabilities []string `json:"capabilities,omitempty"`
+	// PolicyActions are the externally mutating actions authorized for this stage.
+	PolicyActions []string `json:"policyActions,omitempty"`
+	// ParentPlatformPolicy is the authority inherited by a nested child.
+	// It is required when a nested policy grants resources beyond capabilities.
+	ParentPlatformPolicy *PlatformPolicy `json:"parentPlatformPolicy,omitempty"`
 	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`
 	// Inputs are the stage's static config from its definition (plus any values

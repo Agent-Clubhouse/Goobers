@@ -67,6 +67,7 @@ type NestedModelPolicy struct {
 // including children using fresh context.
 type PlatformPolicy struct {
 	Capabilities       []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	PolicyActions      []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
 	Credentials        []string `json:"credentials,omitempty" yaml:"credentials,omitempty"`
 	Sandbox            string   `json:"sandbox" yaml:"sandbox"`
 	FilesystemRoots    []string `json:"filesystemRoots,omitempty" yaml:"filesystemRoots,omitempty"`
@@ -86,6 +87,7 @@ type ChildExecutionPolicy struct {
 	Objective      string              `json:"objective"`
 	Ownership      string              `json:"ownership"`
 	Capabilities   []string            `json:"capabilities,omitempty"`
+	PolicyActions  []string            `json:"policyActions,omitempty"`
 	PlatformPolicy PlatformPolicy      `json:"platformPolicy"`
 	Delegation     DelegationAuthority `json:"delegation"`
 	MaxDepth       int32               `json:"maxDepth,omitempty"`
@@ -99,6 +101,9 @@ type ChildExecutionPolicy struct {
 func (p NestedAgentPolicy) Validate() error {
 	if p.Version != NestedAgentPolicyVersion {
 		return fmt.Errorf("nested agent policy: unsupported version %q", p.Version)
+	}
+	if len(p.PermittedProfiles) == 0 {
+		return fmt.Errorf("nested agent policy: at least one permitted profile is required")
 	}
 	switch p.Delegation {
 	case DelegationDisabled:
@@ -144,7 +149,8 @@ func (p NestedAgentPolicy) Validate() error {
 }
 
 var supportedEnvelopeSections = []string{
-	"run", "stage", "parentAgent", "objective", "capabilities",
+	"run", "stage", "attempt", "parentAgent", "objective", "ownership",
+	"capabilities", "policyActions",
 	"platformPolicy", "completionContract", "cancellation", "budget",
 }
 
@@ -181,6 +187,7 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: child delegation exceeds parent authority")
 	}
 	if !isSubset(policy.PlatformPolicy.Capabilities, parent.PlatformPolicy.Capabilities) ||
+		!isSubset(policy.PlatformPolicy.PolicyActions, parent.PlatformPolicy.PolicyActions) ||
 		!isSubset(policy.PlatformPolicy.Credentials, parent.PlatformPolicy.Credentials) ||
 		!isSubset(policy.PlatformPolicy.FilesystemRoots, parent.PlatformPolicy.FilesystemRoots) ||
 		!isSubset(policy.PlatformPolicy.NetworkEgress, parent.PlatformPolicy.NetworkEgress) {
@@ -202,6 +209,7 @@ func AdmitChild(parent ChildExecutionPolicy, policy NestedAgentPolicy, profile, 
 		return ChildExecutionPolicy{}, fmt.Errorf("nested agent policy: reasoning effort %q exceeds parent ceiling %q", reasoning, parent.Model.MaxReasoningEffort)
 	}
 	child := parent
+	child.PolicyActions = intersection(parent.PolicyActions, policy.PlatformPolicy.PolicyActions)
 	child.Capabilities = intersection(parent.Capabilities, policy.PlatformPolicy.Capabilities)
 	child.PlatformPolicy = intersectPlatform(parent.PlatformPolicy, policy.PlatformPolicy)
 	child.Delegation = policy.Delegation

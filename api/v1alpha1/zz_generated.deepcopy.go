@@ -1249,6 +1249,7 @@ func (in *Task) DeepCopyInto(out *Task) {
 			(*out).Model.Allowlist = append([]string(nil), (*in).Model.Allowlist...)
 		}
 		(*out).PlatformPolicy.Capabilities = append([]string(nil), (*in).PlatformPolicy.Capabilities...)
+		(*out).PlatformPolicy.PolicyActions = append([]string(nil), (*in).PlatformPolicy.PolicyActions...)
 		(*out).PlatformPolicy.Credentials = append([]string(nil), (*in).PlatformPolicy.Credentials...)
 		(*out).PlatformPolicy.FilesystemRoots = append([]string(nil), (*in).PlatformPolicy.FilesystemRoots...)
 		(*out).PlatformPolicy.NetworkEgress = append([]string(nil), (*in).PlatformPolicy.NetworkEgress...)

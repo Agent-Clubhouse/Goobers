@@ -69,6 +69,8 @@ type RunRequest struct {
 	// Envelope is the invocation envelope (goal, context pointers, declared
 	// capabilities, workspace path) the runner built for this stage.
 	Envelope apiv1.InvocationEnvelope
+	// ExecutionPolicy is the parent-intersected policy enforced for a nested run.
+	ExecutionPolicy *apiv1.ChildExecutionPolicy
 	// Instructions is the goober's resolved instructions.md body (persona,
 	// scope, done-criteria) — goober-level, not per-invocation.
 	Instructions string
@@ -266,6 +268,26 @@ type ConfigResolver interface {
 // silently passing policy to an adapter that cannot enforce it is unsafe.
 type NestedPolicyCapability interface {
 	ValidateNestedAgentPolicy(apiv1.NestedAgentPolicy) error
+}
+
+func validateNestedExecution(req RunRequest) error {
+	if req.Envelope.NestedAgentPolicy == nil {
+		if req.ExecutionPolicy != nil {
+			return fmt.Errorf("harness: effective nested policy has no declaration")
+		}
+		return nil
+	}
+	if req.ExecutionPolicy == nil {
+		return fmt.Errorf("harness: nested execution has no admitted child policy")
+	}
+	if req.ExecutionPolicy.Delegation == apiv1.DelegationDisabled && req.Envelope.NestedAgentPolicy.Delegation != apiv1.DelegationDisabled {
+		return fmt.Errorf("harness: child delegation was not reduced to the admitted leaf policy")
+	}
+	if !nestedCapabilitiesSubset(req.ExecutionPolicy.Capabilities, req.Envelope.Capabilities) ||
+		!nestedCapabilitiesSubset(req.ExecutionPolicy.PolicyActions, req.Envelope.PolicyActions) {
+		return fmt.Errorf("harness: effective nested policy exceeds stage authority")
+	}
+	return nil
 }
 
 // ValidateNestedAgentPolicy performs the adapter-side admission check.

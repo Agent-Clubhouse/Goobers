@@ -242,6 +242,9 @@ func (c *ClaudeAdapter) runner() ProcessRunner {
 
 // Run executes one non-interactive Claude Code session.
 func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateNestedExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: claude-code: no command configured")
 	}

@@ -586,6 +586,9 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
 func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateNestedExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}

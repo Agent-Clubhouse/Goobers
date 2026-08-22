@@ -50,9 +50,12 @@ type GooberContext struct {
 type ExecutionEnvelope struct {
 	RunID              string               `json:"runId"`
 	StageID            string               `json:"stageId"`
+	Attempt            int32                `json:"attempt"`
 	ParentAgent        string               `json:"parentAgent"`
 	Objective          string               `json:"objective"`
+	Ownership          string               `json:"ownership"`
 	Capabilities       []string             `json:"capabilities,omitempty"`
+	PolicyActions      []string             `json:"policyActions,omitempty"`
 	PlatformPolicy     apiv1.PlatformPolicy `json:"platformPolicy"`
 	CompletionContract string               `json:"completionContract"`
 	Cancellation       string               `json:"cancellation"`
@@ -191,15 +194,17 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 	if env.NestedAgentPolicy != nil {
 		policy := env.NestedAgentPolicy
 		executionPolicy = &apiv1.ChildExecutionPolicy{
-			RunID: env.RunID, StageID: env.TaskID, ParentAgent: env.Goober,
+			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt, ParentAgent: env.Goober,
 			Objective: env.Goal, Capabilities: append([]string(nil), env.Capabilities...),
+			Ownership: env.OwnershipBoundary, PolicyActions: append([]string(nil), env.PolicyActions...),
 			PlatformPolicy: policy.PlatformPolicy, Delegation: policy.Delegation,
 			MaxDepth: policy.MaxDepth, Context: policy.Context, Model: policy.Model,
 			PeerMessaging: policy.PeerMessaging,
 		}
 		envelope = &ExecutionEnvelope{
-			RunID: env.RunID, StageID: env.TaskID, ParentAgent: env.Goober,
+			RunID: env.RunID, StageID: env.TaskID, Attempt: env.Attempt, ParentAgent: env.Goober,
 			Objective: env.Goal, Capabilities: append([]string(nil), env.Capabilities...),
+			Ownership: env.OwnershipBoundary, PolicyActions: append([]string(nil), env.PolicyActions...),
 			PlatformPolicy:     policy.PlatformPolicy,
 			CompletionContract: policy.PlatformPolicy.CompletionContract,
 			Cancellation:       policy.PlatformPolicy.Cancellation,
@@ -209,6 +214,18 @@ func buildContext(ctx context.Context, env apiv1.InvocationEnvelope, resolver In
 		case apiv1.ContextFresh:
 			contextPointers = nil
 		case apiv1.ContextExplicit:
+			for _, name := range env.NestedAgentPolicy.Context.ArtifactNames {
+				found := false
+				for _, pointer := range contextPointers {
+					if pointer.Name == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return GooberContext{}, fmt.Errorf("nested agent policy: selected artifact %q is unavailable", name)
+				}
+			}
 			contextPointers = selectContextPointers(contextPointers, env.NestedAgentPolicy.Context.ArtifactNames)
 			envelopeSections = selectEnvelopeSections(*envelope, env.NestedAgentPolicy.Context.EnvelopeSections)
 		}
@@ -237,9 +254,12 @@ func selectEnvelopeSections(envelope ExecutionEnvelope, names []string) map[stri
 	values := map[string]interface{}{
 		"run":                envelope.RunID,
 		"stage":              envelope.StageID,
+		"attempt":            envelope.Attempt,
 		"parentAgent":        envelope.ParentAgent,
 		"objective":          envelope.Objective,
+		"ownership":          envelope.Ownership,
 		"capabilities":       envelope.Capabilities,
+		"policyActions":      envelope.PolicyActions,
 		"platformPolicy":     envelope.PlatformPolicy,
 		"completionContract": envelope.CompletionContract,
 		"cancellation":       envelope.Cancellation,
