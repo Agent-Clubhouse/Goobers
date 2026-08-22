@@ -336,7 +336,7 @@ func (p RunnerProvides) validate(i int, name string) error {
 		}
 		parsed, err := resource.ParseQuantity(quantity.value)
 		if err != nil {
-			return fmt.Errorf("runners[%d] (%s): provides.%s %q must be a Kubernetes quantity string (for example \"2000m\", \"4Gi\"): %v",
+			return fmt.Errorf("runners[%d] (%s): provides.%s %q must be a Kubernetes quantity string (for example \"2000m\", \"4Gi\"): %w",
 				i, name, quantity.field, quantity.value, err)
 		}
 		if parsed.Sign() <= 0 {
