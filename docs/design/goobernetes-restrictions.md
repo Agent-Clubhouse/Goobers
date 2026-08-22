@@ -238,9 +238,17 @@ runtime mystery.
   pods, ever" stands); **every** egress grant selects exactly one
   `goobers.dev/runner-class` label, and the reference base's former generic
   `allow-stage-egress` policy is removed. SEC-021 strengthen-only is implemented by
-  NARROWING renders — a stricter mandate renders smaller per-class grant sets — never by
-  adding policies. The dispatcher stamps exactly one `goobers.dev/runner-class` label on
-  every stage pod (zero or two breaks the model; binding on #3513).
+  selecting a stricter CIDR SET for the class — never by adding policies, and **never by
+  prefix subtraction**: narrowing-by-subtraction works only where the sets are
+  prefix-disjoint, and same-provider co-location breaks it (subtracting Copilot from the
+  GitHub grant collapses 10,300 addresses to 60 and drops api.github.com itself — measured;
+  decision 008 accordingly defines the effect as "egress limited to these CIDRs", with
+  endpoint-class exclusion belonging to the #1307 FQDN layer). The
+  `goobers.dev/runner-class` label on every stage pod is **derived by the dispatcher from
+  the resolved restriction set and is non-overridable by workflow, gaggle, or stage input**
+  — asserted at dispatch, refuse-to-create on mismatch; RBAC cannot constrain label
+  values, so an overridable class label is privilege escalation into a broader egress
+  grant (binding on #3513).
 
 ## 7. Who applies what
 
