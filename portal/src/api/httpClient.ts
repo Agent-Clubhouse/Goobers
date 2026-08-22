@@ -88,6 +88,7 @@ const clientRoutes = {
   claimSettle: apiRoutes.claimSettle,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
+  journalEmit: apiRoutes.journalEmit,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
