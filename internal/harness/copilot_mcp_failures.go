@@ -149,7 +149,7 @@ func scanCopilotMCPLogFile(path string, connected, launched map[string]struct{})
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	// Copilot writes the whole ServerPeerInfo — including base64 icon data —
 	// on a single line, so the default 64KiB limit is far too small.
