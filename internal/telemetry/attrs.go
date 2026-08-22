@@ -5,6 +5,13 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
+)
+
+const (
+	NestedAgentLifecycleEventName = "goobers.agent.lifecycle"
+	NestedAgentMessageEventName   = "goobers.agent.message"
 )
 
 // RecordAgentProvenance annotates the active task or gate span. Empty values
@@ -14,6 +21,52 @@ func RecordAgentProvenance(ctx context.Context, model, harnessVersion string) {
 		attribute.String(AttrModel, model),
 		attribute.String(AttrHarnessVersion, harnessVersion),
 	)
+}
+
+// RecordNestedAgent projects structured adapter provenance onto a span without
+// retaining assignment or peer-message content in telemetry.
+func RecordNestedAgent(ctx context.Context, agent journal.AgentProvenance) {
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrAgentID, agent.ID),
+		attribute.String(AttrAgentLifecycle, string(agent.Lifecycle)),
+	}
+	attrs = appendOptionalString(attrs, AttrAgentParentID, agent.ParentID)
+	attrs = appendOptionalString(attrs, AttrAgentPlugin, agent.Plugin)
+	attrs = appendOptionalString(attrs, AttrAgentRequestedModel, agent.RequestedModel)
+	attrs = appendOptionalString(attrs, AttrAgentResolvedModel, agent.ResolvedModel)
+	attrs = appendOptionalString(attrs, AttrAgentRequestedReasoningEffort, agent.RequestedReasoningEffort)
+	attrs = appendOptionalString(attrs, AttrAgentResolvedReasoningEffort, agent.ResolvedReasoningEffort)
+	attrs = appendOptionalString(attrs, AttrAgentFidelity, agent.Fidelity)
+	if agent.Usage.InputTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrGenAIUsageInputTokens, *agent.Usage.InputTokens))
+	}
+	if agent.Usage.OutputTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrGenAIUsageOutputTokens, *agent.Usage.OutputTokens))
+	}
+	if agent.Usage.CostUSD != nil {
+		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, *agent.Usage.CostUSD))
+	}
+	options := []trace.EventOption{trace.WithAttributes(attrs...)}
+	if !agent.UpdatedAt.IsZero() {
+		options = append(options, trace.WithTimestamp(agent.UpdatedAt))
+	}
+	trace.SpanFromContext(ctx).AddEvent(NestedAgentLifecycleEventName, options...)
+}
+
+// RecordNestedAgentMessage retains only orchestration metadata. The normalized
+// contract has no raw message body field.
+func RecordNestedAgentMessage(ctx context.Context, message journal.PeerMessageMetadata) {
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrAgentMessageID, message.ID),
+		attribute.String(AttrAgentMessageSenderID, message.SenderID),
+		attribute.String(AttrAgentMessageRecipientID, message.RecipientID),
+		attribute.String(AttrAgentMessagePurpose, message.Purpose),
+	}
+	options := []trace.EventOption{trace.WithAttributes(attrs...)}
+	if !message.OccurredAt.IsZero() {
+		options = append(options, trace.WithTimestamp(message.OccurredAt))
+	}
+	trace.SpanFromContext(ctx).AddEvent(NestedAgentMessageEventName, options...)
 }
 
 func runAttributeSet(a RunAttributes) []attribute.KeyValue {

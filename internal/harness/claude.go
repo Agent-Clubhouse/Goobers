@@ -236,7 +236,7 @@ func (c *ClaudeAdapter) runner() ProcessRunner {
 }
 
 // Run executes one non-interactive Claude Code session.
-func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
@@ -341,11 +341,20 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		sessionSelectorArg += shift
 	}
 
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "claude", req.Model, req.Model,
+		requestedHarnessOption(req, "effort"), options["effort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	initialCapture := &claudeTerminalCapture{}
 	captures := []*claudeTerminalCapture{initialCapture}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -353,11 +362,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      initialCapture,
 	})
+	runErr = processErr
 	invocationResults := []ProcessResult{result}
 	prompts := []string{prompt}
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			totalTimeout := req.Timeout
@@ -396,7 +406,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		}
 	}
 
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
@@ -422,6 +432,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		// visible — the session otherwise proceeds silently without those
 		// tools, and the resulting stage failure wears an unrelated costume.
 		out.MCPServerFailures = claudeMCPServerFailures(req, native)
+		if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("harness: claude-code: project agent telemetry: %w", err))
+		}
 	}
 	if runErr != nil {
 		return out, runErr

@@ -88,6 +88,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
 		TaskID:              "implement",
+		Attempt:             2,
 		WorkflowID:          "implementation",
 		RunID:               "run-123",
 		TriggerRef:          "github:issue:1704",
@@ -375,6 +376,37 @@ func completeJournalEvent() journal.Event {
 			Status:      apiv1.NotificationDelivered, Unresolved: true,
 			ExternalReference: "delivery-1", Error: "none",
 		}),
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker", ParentID: "coordinator",
+			RunID: "run-123", Stage: "implement", Attempt: 2, Plugin: "copilot",
+			Objective: "implement the issue", Coordinator: true, Worker: true, Leaf: true,
+			RequestedModel: "requested-model", ResolvedModel: "resolved-model",
+			RequestedReasoningEffort: "high", ResolvedReasoningEffort: "medium",
+			Lifecycle: journal.AgentCompleted,
+			StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC),
+			Budget: journal.AgentUsage{
+				InputTokens: pointer(int64(100)), OutputTokens: pointer(int64(50)), CostUSD: pointer(1.5),
+			},
+			Usage: journal.AgentUsage{
+				InputTokens: pointer(int64(80)), OutputTokens: pointer(int64(40)), CostUSD: pointer(1.25),
+			},
+			UsageAggregated: true,
+			Results: []journal.Ref{{
+				Path: "artifacts/result", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Size: 42, MediaType: "application/json", Integrity: apiv1.IntegrityDerived,
+			}},
+			DependsOn: []string{"dependency"}, Fidelity: journal.AgentFidelityFull,
+		},
+		PeerMessage: &journal.PeerMessageMetadata{
+			ID: "message-1", SenderID: "worker", RecipientID: "coordinator",
+			OccurredAt: time.Date(2026, 1, 1, 0, 0, 30, 0, time.UTC), Purpose: "finding",
+			Artifact: &journal.Ref{
+				Path: "artifacts/message", Digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				Size: 12, MediaType: "application/json", Integrity: apiv1.IntegrityDerived,
+			},
+			ContentHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		},
 		Parallel:     "fanout",
 		BranchName:   "east",
 		BranchStatus: journal.BranchSucceeded,

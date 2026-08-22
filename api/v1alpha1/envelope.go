@@ -43,6 +43,9 @@ const StageContractVersion = "v1alpha8"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
+	// Attempt identifies the stage attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
+	Attempt int `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).

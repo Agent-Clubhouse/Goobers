@@ -3443,6 +3443,7 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	env.Attempt = g.attempt
 	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
@@ -4031,6 +4032,7 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
 	env.InstructionAddendum = instructionAddendum
+	env.Attempt = attempt
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {

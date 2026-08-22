@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -22,6 +24,35 @@ const claudeResultStream = `{"type":"system","subtype":"init","model":"claude-so
 {"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"done"}]}}
 {"type":"result","subtype":"success","result":"done","total_cost_usd":0.25,"usage":{"input_tokens":120,"output_tokens":30},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":120,"outputTokens":30,"costUSD":0.25}}}
 `
+
+func TestClaudeAdapterPreservesLifecycleEvents(t *testing.T) {
+	workspace := t.TempDir()
+	var live []journal.Event
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			if len(live) != 1 || live[0].Agent == nil || live[0].Agent.Lifecycle != journal.AgentStarted {
+				return fmt.Errorf("started lifecycle was not emitted before process launch: %#v", live)
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &ClaudeAdapter{Command: []string{"claude-lifecycle-test"}, Runner: runner}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
+		AgentEventSink: func(event journal.Event) error {
+			live = append(live, event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertAdapterLifecycle(t, out, "claude")
+	if len(live) != 2 || live[1].Agent == nil || live[1].Agent.Lifecycle != journal.AgentCompleted {
+		t.Fatalf("live lifecycle = %#v", live)
+	}
+}
 
 func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) {
 	const ambientSecret = "GOOBERS_UNDECLARED_SECRET"
@@ -108,6 +139,13 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 	}
 	if len(out.Payload) == 0 {
 		t.Fatal("completion payload is empty")
+	}
+	assertAdapterLifecycle(t, out, "claude")
+	if got := out.AgentEvents[0].Agent.RequestedReasoningEffort; got != "high" {
+		t.Fatalf("requested reasoning effort = %q, want high", got)
+	}
+	if got := out.AgentEvents[0].Agent.ResolvedReasoningEffort; got != "high" {
+		t.Fatalf("resolved reasoning effort = %q, want high", got)
 	}
 }
 

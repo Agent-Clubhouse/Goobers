@@ -73,6 +73,11 @@ const (
 	EventNotificationRequested EventType = "notification.requested"
 	// EventNotificationReceipt records one sink attempt or suppression result.
 	EventNotificationReceipt EventType = "notification.delivery.receipt"
+	// EventAgentLifecycle records structured nested-agent state transitions.
+	EventAgentLifecycle EventType = "agent.lifecycle"
+	// EventAgentMessage records orchestration-relevant peer communication
+	// without retaining the message body.
+	EventAgentMessage EventType = "agent.message"
 
 	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
 	// All four are conformance-normative: they and the completeness record are
@@ -322,6 +327,10 @@ type Event struct {
 	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
 	// NotificationReceipt is the typed payload on notification.delivery.receipt.
 	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
+	// Agent carries normalized nested-agent provenance on agent events.
+	Agent *AgentProvenance `json:"agent,omitempty"`
+	// PeerMessage carries scrubbed coordination metadata, never raw content.
+	PeerMessage *PeerMessageMetadata `json:"peerMessage,omitempty"`
 
 	// --- parallel/branch payload (§6.2) ---
 

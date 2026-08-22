@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -112,6 +113,12 @@ type RunRequest struct {
 	ContextPaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
+	// Attempt identifies the stage attempt for retry-safe provenance.
+	Attempt int
+	// AgentEventSink durably projects structured events as they are observed.
+	// Adapters call it before returning so active agents are queryable while
+	// the harness process is still running.
+	AgentEventSink func(journal.Event) error
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
@@ -178,6 +185,16 @@ type Outcome struct {
 	// from its own run log (#3456 — no transcript equivalent exists there).
 	// Nil elsewhere, and nil never asserts that servers WERE available.
 	MCPServerFailures []MCPServerFailure
+	// AgentEvents are normalized structured events emitted by an adapter. The
+	// executor journals them after validation; raw transcripts are not parsed
+	// to fabricate nested-agent provenance.
+	AgentEvents []journal.Event
+	// AgentTelemetryFidelity explicitly reports whether structured nested-agent
+	// events are complete, partial, or unavailable.
+	AgentTelemetryFidelity string
+	// AgentTelemetryDetail explains a partial/none fidelity result without
+	// requiring operators to infer adapter limitations from missing events.
+	AgentTelemetryDetail string
 }
 
 // MCPServerFailure identifies one MCP server that was registered for a
