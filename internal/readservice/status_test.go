@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -539,6 +541,79 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 	if status.ProviderQuotaResumeAt == nil || !status.ProviderQuotaResumeAt.Equal(activeReset) {
 		t.Fatalf("ProviderQuotaResumeAt = %v, want %v", status.ProviderQuotaResumeAt, activeReset)
+	}
+}
+
+func TestSchedulerStatusProjectsRefillOccupancyAndBlockingCondition(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Gaggle:   "goobers",
+		Workflow: "implementation",
+		Reason:   "refill blocked: " + localscheduler.ReasonBudget,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	definitions := testDefinitions()
+	definitions.Workflows = []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:    "goobers",
+			Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:     "stage",
+			Tasks:     []apiv1.Task{{Name: "stage", Type: apiv1.TaskDeterministic, Goal: "noop", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 2, MaxConcurrentRuns: 4},
+		},
+	}}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: definitions,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.RefillOccupancy) != 1 {
+		t.Fatalf("RefillOccupancy = %+v", status.RefillOccupancy)
+	}
+	occupancy := status.RefillOccupancy[0]
+	if occupancy.Gaggle != "goobers" || occupancy.Workflow != "implementation" ||
+		occupancy.DesiredRuns != 2 || occupancy.ActiveRuns != 0 ||
+		!occupancy.AdmissionBlocked || occupancy.BlockingCondition != localscheduler.ReasonBudget {
+		t.Fatalf("occupancy = %+v", occupancy)
+	}
+
+	log, _, err = journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTriggerFired,
+		Gaggle:   "goobers",
+		Workflow: "implementation",
+		Reason:   "refill occupancy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RefillOccupancy[0].AdmissionBlocked {
+		t.Fatalf("successful refill attempt retained stale blocker: %+v", status.RefillOccupancy[0])
 	}
 }
 

@@ -42,6 +42,7 @@
           "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",
           "additionalProperties": false,
           "properties": {
+            "desiredConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Opt-in target occupancy for eligible queue work. Refill remains subject to every admission limit and never exceeds maxConcurrentRuns." },
             "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
             "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
             "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },

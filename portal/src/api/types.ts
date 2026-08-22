@@ -236,6 +236,7 @@ export interface WorkflowTrigger {
 }
 
 export interface ReadinessConditions {
+  desiredConcurrentRuns?: number;
   maxConcurrentRuns?: number;
   maxRunsPerHour?: number;
   maxRunsPerDay?: number;
@@ -250,7 +251,10 @@ export interface WorkflowDefinition {
 
 export interface WorkflowConcurrency {
   activeRuns: number;
+  desiredRuns?: number;
   maxConcurrentRuns: number;
+  admissionBlocked?: boolean;
+  blockingCondition?: string;
 }
 
 export interface WorkflowSummary {

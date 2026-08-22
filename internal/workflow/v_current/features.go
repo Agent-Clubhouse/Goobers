@@ -370,6 +370,7 @@ const (
 	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
 	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
+	featureWorkflowDesiredConcurrentRuns  FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
 	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
 	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
 	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
@@ -501,6 +502,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
 		featureWorkflowRunControls,
+		featureWorkflowDesiredConcurrentRuns,
 		featureWorkflowMaxConcurrentRuns,
 		featureWorkflowMaxRunsPerHour,
 		featureWorkflowMaxRunsPerDay,
@@ -705,6 +707,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	)
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns != 0 {
+		used.add(featureWorkflowDesiredConcurrentRuns)
 	}
 	if def.Spec.Readiness.MaxRunsPerDay != 0 {
 		used.add(featureWorkflowMaxRunsPerDay)

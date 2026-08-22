@@ -99,6 +99,7 @@ workflow.spec.displayName                          1.4          ga              
 workflow.spec.gaggle                               1.4          ga               deprecated       dev
 workflow.spec.gates                                1.4          ga               deprecated       dev
 workflow.spec.readiness                            1.4          ga               deprecated       dev
+workflow.spec.readiness.desiredConcurrentRuns      1.4          ga               deprecated       dev
 workflow.spec.readiness.maxChainDepth              1.4          ga               deprecated       dev
 workflow.spec.readiness.maxConcurrentRuns          1.4          ga               deprecated       dev
 workflow.spec.readiness.maxOpenPRs                 1.4          ga               deprecated       dev
@@ -112,4 +113,4 @@ workflow.terminal.abort                            1.4          ga              
 workflow.terminal.complete                         1.4          ga               deprecated       dev
 workflow.terminal.escalate                         1.4          ga               deprecated       dev
 
-112 feature/version row(s)
+113 feature/version row(s)

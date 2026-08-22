@@ -180,8 +180,14 @@ function GaggleSection({
                   </span>
                   <span>{formatTriggers(workflow)}</span>
                   <span>
-                    {workflow.concurrency.activeRuns} active /{" "}
-                    {workflow.concurrency.maxConcurrentRuns} max
+                    {workflow.concurrency.activeRuns} active
+                    {workflow.concurrency.desiredRuns !== undefined
+                      ? ` / ${workflow.concurrency.desiredRuns} desired`
+                      : ""}{" "}
+                    / {workflow.concurrency.maxConcurrentRuns} max
+                    {workflow.concurrency.admissionBlocked && (
+                      <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+                    )}
                   </span>
                   <span className="outcome-cell">
                     {outcome ? (

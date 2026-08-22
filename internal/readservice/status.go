@@ -35,6 +35,7 @@ type SchedulerStatus struct {
 	// reload, because the scheduler re-journals current refusals at both
 	// boundaries. Empty on zero-declaration instances.
 	RefusedWorkflows []WorkflowRefusalStatus
+	RefillOccupancy  []RefillOccupancyStatus
 }
 
 // WorkflowRefusalStatus is one boot-refused workflow and its solver
@@ -44,6 +45,16 @@ type WorkflowRefusalStatus struct {
 	Workflow string    `json:"workflow"`
 	Reason   string    `json:"reason"`
 	At       time.Time `json:"at"`
+}
+
+// RefillOccupancyStatus summarizes desired occupancy state for one workflow.
+type RefillOccupancyStatus struct {
+	Gaggle            string `json:"gaggle"`
+	Workflow          string `json:"workflow"`
+	DesiredRuns       int32  `json:"desiredRuns"`
+	ActiveRuns        int32  `json:"activeRuns"`
+	AdmissionBlocked  bool   `json:"admissionBlocked"`
+	BlockingCondition string `json:"blockingCondition,omitempty"`
 }
 
 // DaemonRestartStatus correlates the latest daemon lifetime with runs selected
@@ -256,15 +267,52 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		refusalOrder = refusalOrder[:0]
 		refusals = make(map[string]WorkflowRefusalStatus)
 	}
+	refillBlocked := make(map[localscheduler.WorkflowIdentity]string)
+	resetRefillBlocked := func() {
+		refillBlocked = make(map[localscheduler.WorkflowIdentity]string)
+	}
 	for _, event := range events {
 		if err := ctx.Err(); err != nil {
 			return SchedulerStatus{}, err
 		}
 		switch event.Type {
+		case journal.EventTriggerFired:
+			if localscheduler.IsRefillTriggerReason(event.Reason) {
+				delete(refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
+			}
+		case journal.EventError:
+			if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
+				refillBlocked[localscheduler.WorkflowIdentity{
+					Gaggle: event.Gaggle, Workflow: event.Workflow,
+				}] = localscheduler.ReasonProviderAuth
+			}
+		case journal.EventPollShed:
+			if event.Workflow != "" {
+				refillBlocked[localscheduler.WorkflowIdentity{
+					Gaggle: event.Gaggle, Workflow: event.Workflow,
+				}] = localscheduler.ReasonProviderQuota
+			}
+		case journal.EventProviderQuotaReset:
+			for identity, blocking := range refillBlocked {
+				if blocking == localscheduler.ReasonProviderQuota {
+					delete(refillBlocked, identity)
+				}
+			}
+		case journal.EventConfigReloaded:
+			// The scheduler re-journals current refusals after each accepted
+			// reload, and refill blockers may have changed with the config.
+			resetRefusals()
+			resetRefillBlocked()
 		case journal.EventTickSkipped:
 			if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 				candidate = candidate.UTC()
 				resetAt = &candidate
+			}
+			if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok {
+				identity := localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow}
+				if identity.Workflow != "" {
+					refillBlocked[identity] = blocking
+				}
 			}
 		case journal.EventWorkflowRefused:
 			key := event.Gaggle + "/" + event.Workflow
@@ -277,14 +325,11 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 				Reason:   event.Reason,
 				At:       event.Time,
 			}
-		case journal.EventConfigReloaded:
-			// The scheduler re-journals current refusals after each accepted
-			// reload, so anything recorded before this boundary is stale.
-			resetRefusals()
 		case journal.EventDaemonDirtyRestart:
 			dirtyReason = event.Reason
 		case journal.EventDaemonStarted:
 			resetRefusals()
+			resetRefillBlocked()
 			if sawDaemonStart || dirtyReason != "" {
 				reason := "clean restart"
 				if dirtyReason != "" {
@@ -319,6 +364,39 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	for _, key := range refusalOrder {
 		status.RefusedWorkflows = append(status.RefusedWorkflows, refusals[key])
 	}
+	activeCounts, err := s.activeRunCounts()
+	if err != nil {
+		return SchedulerStatus{}, err
+	}
+	refill := make([]RefillOccupancyStatus, 0)
+	definitions := s.definitions.Load().inventory.definitions
+	for _, def := range definitions.Workflows {
+		desired := def.Spec.Readiness.DesiredConcurrentRuns
+		if desired <= 0 {
+			continue
+		}
+		identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+		occupancy := RefillOccupancyStatus{
+			Gaggle:      def.Spec.Gaggle,
+			Workflow:    def.Name,
+			DesiredRuns: desired,
+			ActiveRuns:  int32(activeCounts[identity]),
+		}
+		if occupancy.ActiveRuns < occupancy.DesiredRuns {
+			if blocking, ok := refillBlocked[identity]; ok {
+				occupancy.AdmissionBlocked = true
+				occupancy.BlockingCondition = blocking
+			}
+		}
+		refill = append(refill, occupancy)
+	}
+	sort.Slice(refill, func(i, j int) bool {
+		if refill[i].Gaggle == refill[j].Gaggle {
+			return refill[i].Workflow < refill[j].Workflow
+		}
+		return refill[i].Gaggle < refill[j].Gaggle
+	})
+	status.RefillOccupancy = refill
 	return status, nil
 }
 
