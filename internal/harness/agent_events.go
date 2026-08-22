@@ -233,22 +233,3 @@ func normalizedAgentRecord(data []byte) ([]byte, bool) {
 	normalized, err := json.Marshal(event)
 	return normalized, err == nil
 }
-
-func agentEventsFidelity(events []journal.Event) string {
-	if len(events) == 0 {
-		return journal.AgentFidelityNone
-	}
-	fidelity := journal.AgentFidelityFull
-	for _, event := range events {
-		if event.Agent == nil {
-			continue
-		}
-		switch event.Agent.Fidelity {
-		case journal.AgentFidelityNone:
-			return journal.AgentFidelityNone
-		case journal.AgentFidelityPartial:
-			fidelity = journal.AgentFidelityPartial
-		}
-	}
-	return fidelity
-}

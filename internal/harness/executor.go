@@ -601,7 +601,6 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	metrics := telemetry.MergeNestedAgentUsage(out.Metrics, agentEvents)
 	out.Metrics = metrics
 	telemetry.RecordAgentUsage(ctx, metrics, out.ModelUsage)
-	telemetry.RecordNestedAgentUsage(ctx, metrics, nil)
 	invoke.ReportAgentUsage(ctx, metrics)
 	if out.InputInspectionReceiptsCollected {
 		appender, ok := e.recorder.(EventAppender)

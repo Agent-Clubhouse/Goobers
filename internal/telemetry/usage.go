@@ -3,9 +3,10 @@ package telemetry
 import (
 	"context"
 
-	"github.com/goobers/goobers/internal/journal"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // GenAIModelUsageEventName identifies one model's usage on an agentic task
@@ -74,14 +75,6 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 	for _, usage := range measured {
 		span.AddEvent(GenAIModelUsageEventName, trace.WithAttributes(modelUsageAttributes(usage)...))
 	}
-}
-
-// RecordNestedAgentUsage fills measures that are absent from the adapter's
-// aggregate with finalized child usage. Adapter-reported canonical measures
-// remain authoritative, preventing coordinator usage from being counted twice.
-func RecordNestedAgentUsage(ctx context.Context, metrics map[string]float64, events []journal.Event) {
-	merged := MergeNestedAgentUsage(metrics, events)
-	RecordAgentUsage(ctx, merged, nil)
 }
 
 // MergeNestedAgentUsage fills measures absent from an adapter's aggregate with

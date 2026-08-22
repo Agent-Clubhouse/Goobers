@@ -10,6 +10,7 @@ import (
 // AgentLifecycle is the deliberately small, engine-neutral lifecycle taxonomy.
 type AgentLifecycle string
 
+// Agent lifecycle states emitted by harness adapters.
 const (
 	AgentStarted   AgentLifecycle = "started"
 	AgentWaiting   AgentLifecycle = "waiting"
@@ -19,6 +20,7 @@ const (
 	AgentCancelled AgentLifecycle = "cancelled"
 )
 
+// Agent telemetry fidelity levels describe adapter coverage.
 const (
 	AgentFidelityFull    = "full"
 	AgentFidelityPartial = "partial"
@@ -137,26 +139,6 @@ func AgentTree(events []Event) (map[string]AgentProvenance, error) {
 	return tree, nil
 }
 
-// ActiveAgentTree returns agents that have not reached a terminal lifecycle.
-func ActiveAgentTree(events []Event) (map[string]AgentProvenance, error) {
-	scopeRun, scopeStage := "", ""
-	for _, event := range events {
-		if event.Type == EventAgentLifecycle && event.Agent != nil {
-			scopeRun, scopeStage = event.Agent.RunID, event.Agent.Stage
-			break
-		}
-	}
-	latestAttempt := 0
-	for _, event := range events {
-		if event.Type == EventAgentLifecycle && event.Agent != nil &&
-			event.Agent.RunID == scopeRun && event.Agent.Stage == scopeStage &&
-			event.Agent.Attempt > latestAttempt {
-			latestAttempt = event.Agent.Attempt
-		}
-	}
-	return activeAgentTree(events, scopeRun, scopeStage, latestAttempt)
-}
-
 // ActiveAgentTreeForStage reconstructs the active tree for one in-flight stage
 // attempt. Events from other runs and stages are deliberately ignored.
 func ActiveAgentTreeForStage(events []Event, runID, stage string, attempt int) (map[string]AgentProvenance, error) {
@@ -212,33 +194,6 @@ func RollupAgentUsage(events []Event) AgentUsage {
 		}
 	}
 	return rollupAgentUsage(events, runID, stage)
-}
-
-// RollupAgentUsageForStage rolls up the latest attempt for one run and stage.
-func RollupAgentUsageForStage(events []Event, runID, stage string) AgentUsage {
-	return rollupAgentUsage(events, runID, stage)
-}
-
-// RollupAgentUsageForRun sums the independently deduplicated stage totals for
-// one run. Each stage first selects the latest attempt for each invocation.
-func RollupAgentUsageForRun(events []Event, runID string) AgentUsage {
-	stages := make(map[string]struct{})
-	for _, event := range events {
-		if event.Type == EventAgentLifecycle && event.Agent != nil &&
-			event.Agent.RunID == runID && event.Agent.Stage != "" {
-			stages[event.Agent.Stage] = struct{}{}
-		}
-	}
-	names := make([]string, 0, len(stages))
-	for stage := range stages {
-		names = append(names, stage)
-	}
-	sort.Strings(names)
-	var result AgentUsage
-	for _, stage := range names {
-		addAgentUsage(&result, rollupAgentUsage(events, runID, stage))
-	}
-	return result
 }
 
 func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {

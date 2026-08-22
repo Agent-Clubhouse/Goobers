@@ -10,8 +10,10 @@ import (
 )
 
 const (
+	// NestedAgentLifecycleEventName identifies lifecycle telemetry events.
 	NestedAgentLifecycleEventName = "goobers.agent.lifecycle"
-	NestedAgentMessageEventName   = "goobers.agent.message"
+	// NestedAgentMessageEventName identifies peer-message telemetry events.
+	NestedAgentMessageEventName = "goobers.agent.message"
 )
 
 // RecordAgentProvenance annotates the active task or gate span. Empty values

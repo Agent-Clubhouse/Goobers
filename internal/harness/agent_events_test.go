@@ -71,8 +71,8 @@ func TestProjectAgentEventsAcceptsOnlyNormalizedRecords(t *testing.T) {
 		agent.RequestedReasoningEffort != "high" || agent.ResolvedReasoningEffort != "medium" {
 		t.Fatalf("agent = %#v, want invocation defaults", agent)
 	}
-	if got := agentEventsFidelity(events); got != journal.AgentFidelityFull {
-		t.Fatalf("fidelity = %q, want full", got)
+	if events[0].Agent.Fidelity != journal.AgentFidelityFull {
+		t.Fatalf("fidelity = %q, want full", events[0].Agent.Fidelity)
 	}
 }
 

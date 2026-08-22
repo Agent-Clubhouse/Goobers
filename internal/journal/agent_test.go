@@ -80,7 +80,7 @@ func TestActiveAgentTreeKeepsWaitingCoordinatorAndChildren(t *testing.T) {
 	}
 	events[0].Agent.Coordinator = true
 	events[1].Agent.Worker = true
-	tree, err := ActiveAgentTree(events)
+	tree, err := activeAgentTree(events, "run", "work", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,10 +91,10 @@ func TestActiveAgentTreeKeepsWaitingCoordinatorAndChildren(t *testing.T) {
 
 func TestActiveAgentTreeUsesLatestStageAttempt(t *testing.T) {
 	now := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
-	tree, err := ActiveAgentTree([]Event{
+	tree, err := activeAgentTree([]Event{
 		agentLifecycleEvent(now, "old-worker", "", "run", "work", 1, AgentStarted, AgentUsage{}),
 		agentLifecycleEvent(now.Add(time.Second), "new-worker", "", "run", "work", 2, AgentStarted, AgentUsage{}),
-	})
+	}, "run", "work", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestRollupAgentUsageDropsAgentsFromOlderStageAttempt(t *testing.T) {
 	coordinator := agentLifecycleEvent(now, "coordinator", "", "run", "work", 1, AgentCompleted, AgentUsage{InputTokens: &oldCoordinator})
 	coordinator.Agent.Coordinator = true
 	worker := agentLifecycleEvent(now.Add(time.Second), "worker", "", "run", "work", 2, AgentCompleted, AgentUsage{InputTokens: &currentWorker})
-	usage := RollupAgentUsageForStage([]Event{coordinator, worker}, "run", "work")
+	usage := rollupAgentUsage([]Event{coordinator, worker}, "run", "work")
 	if usage.InputTokens == nil || *usage.InputTokens != 20 {
 		t.Fatalf("usage = %#v, want only latest stage attempt", usage.InputTokens)
 	}
@@ -182,13 +182,13 @@ func TestRollupAgentUsageKeepsIndependentCoordinatorButExcludesProvenAggregate(t
 	independent := agentLifecycleEvent(now, "coordinator", "", "run", "work", 1, AgentCompleted, AgentUsage{InputTokens: &coordinatorTokens})
 	independent.Agent.Coordinator = true
 	peer := agentLifecycleEvent(now, "peer", "", "run", "work", 1, AgentCompleted, AgentUsage{InputTokens: &peerTokens})
-	usage := RollupAgentUsageForStage([]Event{independent, peer}, "run", "work")
+	usage := rollupAgentUsage([]Event{independent, peer}, "run", "work")
 	if usage.InputTokens == nil || *usage.InputTokens != 15 {
 		t.Fatalf("independent coordinator usage = %#v, want 15", usage.InputTokens)
 	}
 
 	child := agentLifecycleEvent(now, "worker", "coordinator", "run", "work", 1, AgentCompleted, AgentUsage{InputTokens: &workerTokens})
-	usage = RollupAgentUsageForStage([]Event{independent, child}, "run", "work")
+	usage = rollupAgentUsage([]Event{independent, child}, "run", "work")
 	if usage.InputTokens == nil || *usage.InputTokens != 20 {
 		t.Fatalf("aggregate coordinator usage = %#v, want child-only 20", usage.InputTokens)
 	}
@@ -203,7 +203,9 @@ func TestRollupAgentUsageForRunSumsDeduplicatedStages(t *testing.T) {
 		agentLifecycleEvent(now, "reviewer", "", "run", "review", 1, AgentCompleted, AgentUsage{InputTokens: &review}),
 		agentLifecycleEvent(now, "other", "", "other-run", "implement", 1, AgentCompleted, AgentUsage{InputTokens: &oldAttempt}),
 	}
-	usage := RollupAgentUsageForRun(events, "run")
+	var usage AgentUsage
+	addAgentUsage(&usage, rollupAgentUsage(events, "run", "implement"))
+	addAgentUsage(&usage, rollupAgentUsage(events, "run", "review"))
 	if usage.InputTokens == nil || *usage.InputTokens != 27 {
 		t.Fatalf("run usage = %#v, want 27", usage.InputTokens)
 	}
