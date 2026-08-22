@@ -9,9 +9,12 @@ import (
 const fixtureRoot = "../../test/fixtures/e2e/walking-skeleton"
 
 func TestRegisterGaggleWorkflowsFixture(t *testing.T) {
-	set, _, err := instance.LoadConfigDir(fixtureRoot)
+	set, report, err := instance.LoadConfigDir(fixtureRoot)
 	if err != nil {
 		t.Fatalf("load config dir: %v", err)
+	}
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
 	}
 	if len(set.Gaggles) == 0 || len(set.Workflows) == 0 {
 		t.Fatalf("expected gaggles + workflows in fixture, got %d gaggles, %d workflows", len(set.Gaggles), len(set.Workflows))
@@ -46,9 +49,12 @@ func TestRegisterGaggleWorkflowsFixture(t *testing.T) {
 }
 
 func TestRegisterGaggleWorkflowsUnknownGaggleRegistersNothing(t *testing.T) {
-	set, _, err := instance.LoadConfigDir(fixtureRoot)
+	set, report, err := instance.LoadConfigDir(fixtureRoot)
 	if err != nil {
 		t.Fatalf("load config dir: %v", err)
+	}
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
 	}
 
 	reg, project, err := RegisterGaggleWorkflows(set, "does-not-exist")
