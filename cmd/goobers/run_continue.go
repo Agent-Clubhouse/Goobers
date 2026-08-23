@@ -121,10 +121,11 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 }
 
 func currentWorkflowMachine(root string, source journal.RunIdentity) (*workflow.Machine, error) {
-	set, _, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
 	if err != nil {
 		return nil, err
 	}
+	_ = report
 	for _, definition := range set.Workflows {
 		if definition.Name != source.Workflow || definition.Spec.Gaggle != source.Gaggle {
 			continue
