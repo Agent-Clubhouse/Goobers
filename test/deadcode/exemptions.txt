@@ -221,3 +221,66 @@ github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # O
 github.com/goobers/goobers/internal/livejournal.WithSpanSource # Live-journal span-adoption seam; production wiring lands with the mode-3 dispatcher's blobstore integration (#3513).
 github.com/goobers/goobers/internal/livejournal.WithScrubber # Live-journal writer option exercised by tests; production path uses the default scrubber until #3513 wires per-run scrubbers.
 github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer clock option exercised by tests (idle-close determinism).
+
+# Goobernetes dispatcher (#3513): the pod-per-stage substrate, exercised by its own
+# acceptance tests; the production consumer is the #3482 mode-2-to-dispatcher cutover
+# (architecture section 12 open point 8), which binds Temporal workers onto the dispatch
+# queues and removes these entries.
+github.com/goobers/goobers/internal/dispatcher.Attempt.stageTimeout # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Describe # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Get # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Has # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Put # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.blobURL # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.do # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.httpClient # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.CapacityTimeoutError.Error # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.capacityInterval # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.deadlineMargin # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.linuxScheduleToStart # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.scheduleToStart # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.supervisionInterval # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Config.tmpfsSizeLimit # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Dispatcher.Dispatch # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Dispatcher.SweepOrphans # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Dispatcher.renderFor # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Dispatcher.supervise # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Dispatcher.waitForCapacity # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.EgressTriple.Verdict # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.LabelOverrideError.Error # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.New # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.PodName # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.ProbeTCP # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.QueueName # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.Queues # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.RenderFromTemplate # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.RenderPod # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.ResolveStageCredentials # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.RestrictionMismatchError.Error # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.SelectRunner # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.SelectionError.Error # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.SkewError.Error # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.SpecFromEntry # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.VerifySkew # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.activeDeadlineSeconds # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.assertRestrictionsEnforced # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.commitStamped # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.commitsEqual # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.copyStringMap # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.imageTag # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.isCommitSha # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.nodeSelectorOS # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.refuseOverrides # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.restrictionSet # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.sanitizeNameSegment # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.sleepCtx # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stageEnv # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stampResources # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stampSecurity # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stampVolumes # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stampedLabels # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.sweepSelector # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.templateStageImage # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.windowsToleration # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/runnercap.RunnerClassValue # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.

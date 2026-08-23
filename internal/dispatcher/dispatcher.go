@@ -1,0 +1,488 @@
+package dispatcher
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/goobers/goobers/internal/instance"
+)
+
+// Defaults for Config fields left zero. Each is a named constant so a
+// diagnostic can cite the bound that fired rather than a magic number.
+const (
+	// DefaultLinuxScheduleToStart bounds how long a dispatch waits for
+	// capacity on a Linux runner before failing with a named diagnostic —
+	// the same 15-minute class as the engine's stage schedule-to-start bound
+	// (decision record D4 checkpoint 2: capacity-exhausted is a bounded,
+	// named runtime failure).
+	DefaultLinuxScheduleToStart = 15 * time.Minute
+	// DefaultWindowsScheduleToStart is deliberately HIGHER (decision record
+	// D9/D12, architecture §6): Windows scale-from-zero absorbs node
+	// provisioning and multi-GB image pulls, and a Windows dispatch that
+	// exceeds the Linux default must produce a cause-naming diagnostic, not
+	// a generic timeout.
+	DefaultWindowsScheduleToStart = 45 * time.Minute
+	// DefaultDeadlineMargin pads the stage timeout into the pod's
+	// activeDeadlineSeconds — the always-on orphan backstop (dispatcher §5):
+	// wide enough that the stage's own policy-classed timeout enforcement
+	// always fires first, bounded so a dispatcher crash cannot leak a pod
+	// indefinitely.
+	DefaultDeadlineMargin = 10 * time.Minute
+	// DefaultStageTimeout backs a stage that declares no timeout, so every
+	// pod still carries a finite activeDeadlineSeconds (the backstop is
+	// always-on, never conditional on declaration).
+	DefaultStageTimeout = time.Hour
+	// DefaultSupervisionInterval paces the supervise loop's pod polls and
+	// liveness relays.
+	DefaultSupervisionInterval = 15 * time.Second
+	// DefaultCapacityInterval paces capacity re-probes during the bounded
+	// schedule-to-start wait.
+	DefaultCapacityInterval = 15 * time.Second
+)
+
+// DefaultTmpfsSizeLimit is the tmp:ephemeral tmpfs sizeLimit when the
+// operator configures none. It is ALWAYS stamped explicitly (dispatcher §5,
+// constraint (d)): an absent sizeLimit on a memory-backed emptyDir defaults
+// to half the node's RAM, which no runner ceiling ever accounted for.
+var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
+
+// Config is the dispatcher's per-instance wiring.
+type Config struct {
+	// Namespace is the gaggle namespace stage pods are created in.
+	Namespace string
+	// EmbeddedCommit is this dispatcher binary's embedded commit sha
+	// (internal/version.Commit at wiring) — the left side of the decision-009
+	// version-skew tag comparison.
+	EmbeddedCommit string
+	// EmbeddedVersion is the binary's embedded release version, the
+	// comparison basis for release-tagged images (DI-6's release-time
+	// reading).
+	EmbeddedVersion string
+	// BlobEndpoint is the URL stage pods fetch/put artifact digests against
+	// (decision 010) — stamped into every pod's environment, every runner
+	// class INCLUDED restricted (without it a restricted stage hangs at
+	// materialize; it is the class's own data path, not a grant to withhold).
+	BlobEndpoint string
+	// WriteAPIBase is the daemon write API base URL stage pods emit journal
+	// events to and resolve credentials from (GOOBERS_DAEMON_API).
+	WriteAPIBase string
+	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
+	TmpfsSizeLimit resource.Quantity
+	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
+	DeadlineMargin time.Duration
+	// LinuxScheduleToStart / WindowsScheduleToStart override the capacity
+	// wait bounds; zero uses the defaults.
+	LinuxScheduleToStart   time.Duration
+	WindowsScheduleToStart time.Duration
+	// SupervisionInterval overrides DefaultSupervisionInterval; zero uses
+	// the default.
+	SupervisionInterval time.Duration
+	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
+	// default.
+	CapacityInterval time.Duration
+}
+
+func (c Config) tmpfsSizeLimit() resource.Quantity {
+	if c.TmpfsSizeLimit.IsZero() {
+		return DefaultTmpfsSizeLimit.DeepCopy()
+	}
+	return c.TmpfsSizeLimit
+}
+
+func (c Config) deadlineMargin() time.Duration {
+	if c.DeadlineMargin <= 0 {
+		return DefaultDeadlineMargin
+	}
+	return c.DeadlineMargin
+}
+
+func (c Config) supervisionInterval() time.Duration {
+	if c.SupervisionInterval <= 0 {
+		return DefaultSupervisionInterval
+	}
+	return c.SupervisionInterval
+}
+
+func (c Config) capacityInterval() time.Duration {
+	if c.CapacityInterval <= 0 {
+		return DefaultCapacityInterval
+	}
+	return c.CapacityInterval
+}
+
+// scheduleToStart returns the bounded capacity wait for a runner OS (D12:
+// higher on Windows).
+func (c Config) scheduleToStart(os string) time.Duration {
+	if os == osWindows {
+		if c.WindowsScheduleToStart > 0 {
+			return c.WindowsScheduleToStart
+		}
+		return DefaultWindowsScheduleToStart
+	}
+	if c.LinuxScheduleToStart > 0 {
+		return c.LinuxScheduleToStart
+	}
+	return DefaultLinuxScheduleToStart
+}
+
+// linuxScheduleToStart is the Linux default bound, needed by the Windows
+// cause-naming diagnostic ("over the Linux default bound").
+func (c Config) linuxScheduleToStart() time.Duration {
+	if c.LinuxScheduleToStart > 0 {
+		return c.LinuxScheduleToStart
+	}
+	return DefaultLinuxScheduleToStart
+}
+
+// Attempt is one stage attempt to dispatch: the identity, requirement, and
+// budget facts the pod spec is a pure function of.
+type Attempt struct {
+	// RunID, Gaggle, Workflow, and Stage identify the attempt; Number is the
+	// 1-based attempt ordinal. Together they name the fresh pod — a new
+	// Number is a new pod by construction (decision record D1).
+	RunID    string
+	Gaggle   string
+	Workflow string
+	Stage    string
+	Number   int
+	// LedgerTouching marks a stage that mutates instance-ledger state
+	// (claims, close-out). Such a stage NEVER places on Windows
+	// (architecture §6/§11.7) — the solver refuses it upstream and the
+	// dispatcher re-asserts it with a named diagnostic rather than trusting
+	// that the refusal happened.
+	LedgerTouching bool
+	// CPU, Memory, and Disk are the stage's declared runsOn minimums as
+	// Kubernetes quantity strings ("" = none). They become pod resource
+	// REQUESTS; limits come from the runner ceiling, never from the stage
+	// (dsl-3.0.md D2).
+	CPU    string
+	Memory string
+	Disk   string
+	// Restrictions is the stage's effective restriction requirement
+	// (declared ∪ mandates, as solved). It must be a subset of the resolved
+	// runner's enforced set; the dispatcher refuses the mismatch at create.
+	Restrictions []string
+	// Timeout is the stage's declared timeout; zero uses
+	// DefaultStageTimeout. activeDeadlineSeconds = Timeout + margin.
+	Timeout time.Duration
+	// PodToken is the per-run bearer (internal/podauth) minted at dispatch,
+	// delivered to the pod as GOOBERS_POD_TOKEN.
+	PodToken string
+	// ExtraLabels and ExtraAnnotations carry any workflow/gaggle/stage
+	// -supplied pod metadata. Keys in the goobers.dev/ namespace are REFUSED
+	// at create (§3: the runner-class label is derived and non-overridable;
+	// RBAC cannot constrain label values, so an input-influenced class label
+	// is privilege escalation into a broader egress grant).
+	ExtraLabels      map[string]string
+	ExtraAnnotations map[string]string
+}
+
+func (a Attempt) stageTimeout() time.Duration {
+	if a.Timeout <= 0 {
+		return DefaultStageTimeout
+	}
+	return a.Timeout
+}
+
+// RunnerSpec is the dispatcher's view of one resolved runner: the inventory
+// entry's claims plus its classified host kind.
+type RunnerSpec struct {
+	// Name is the runners-inventory entry name.
+	Name string
+	// OS is the runner's claimed operating system (runnersolve enum:
+	// "linux", "windows", "macOS").
+	OS string
+	// HostKind classifies Host (self | image | deployment).
+	HostKind instance.RunnerHostKind
+	// Host is the raw host value: "self", an image reference, or a
+	// Deployment name.
+	Host string
+	// CPU, Memory, and Disk are the runner's declared ceilings as Kubernetes
+	// quantity strings ("" = no ceiling) — they become pod resource LIMITS.
+	CPU    string
+	Memory string
+	Disk   string
+	// Restrictions are the isolation effects this runner enforces — the
+	// resolved restriction set the runner-class label derives from.
+	Restrictions []string
+}
+
+// SpecFromEntry converts a validated inventory entry into the dispatcher's
+// runner view, classifying its host kind.
+func SpecFromEntry(e instance.RunnerEntry) (RunnerSpec, error) {
+	kind, err := instance.ClassifyRunnerHost(e.Host)
+	if err != nil {
+		return RunnerSpec{}, fmt.Errorf("dispatcher: runner %q: %w", e.Name, err)
+	}
+	restrictions := make([]string, 0, len(e.Restrictions))
+	for _, r := range e.Restrictions {
+		restrictions = append(restrictions, string(r))
+	}
+	return RunnerSpec{
+		Name:         e.Name,
+		OS:           string(e.Provides.OS),
+		HostKind:     kind,
+		Host:         e.Host,
+		CPU:          e.Provides.CPU,
+		Memory:       e.Provides.Memory,
+		Disk:         e.Provides.Disk,
+		Restrictions: restrictions,
+	}, nil
+}
+
+// PodAPI is the narrow Kubernetes surface the dispatcher needs — exactly the
+// §4 verb set (pods create/delete/get/list; apps/deployments GET only, the
+// DI-9 template read). An implementation is wiring; tests use fakes.
+type PodAPI interface {
+	// CreatePod creates the pod in its manifest's namespace.
+	CreatePod(ctx context.Context, pod *corev1.Pod) error
+	// GetPod reads one pod; a NotFound must surface as an error the
+	// supervise loop treats as terminal-unknown.
+	GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error)
+	// DeletePod deletes one pod; deleting an already-absent pod must not
+	// error (disposal is idempotent).
+	DeletePod(ctx context.Context, namespace, name string) error
+	// ListPods lists pods matching every label in selector.
+	ListPods(ctx context.Context, namespace string, selector map[string]string) ([]corev1.Pod, error)
+	// GetDeployment reads a consumer-authored Deployment used as a pod
+	// template by reference (DI-9).
+	GetDeployment(ctx context.Context, namespace, name string) (*appsv1.Deployment, error)
+}
+
+// JournalRelay is the live-journal seam (D5/architecture §4): the dispatcher
+// relays supervision liveness as runner.* facts. Relay failures are
+// deliberately non-fatal to the attempt — the journal is how the run is
+// WATCHED, not how it is executed.
+type JournalRelay interface {
+	// RelayLiveness reports one supervision observation for an attempt's
+	// pod: the pod name and its current phase.
+	RelayLiveness(ctx context.Context, attempt Attempt, pod string, phase corev1.PodPhase) error
+}
+
+// SurrenderGate confirms the disposal gate (architecture §3): blobstore
+// write-through of artifacts and spans, journal emits through the write API,
+// and the ResultEnvelope in the engine. The pod is disposed only work-loss-
+// safe: pod-local state is by definition disposable ONLY once surrender is
+// confirmed.
+type SurrenderGate interface {
+	// Confirmed reports whether the attempt's outputs are fully surrendered.
+	Confirmed(ctx context.Context, attempt Attempt) (bool, error)
+}
+
+// CapacityProber answers whether the cluster can schedule a pod for a runner
+// right now (resourcequotas/limitranges reads per dispatcher §4). nil skips
+// the wait entirely (create-and-let-kubernetes-queue).
+type CapacityProber interface {
+	// Capacity reports whether a pod for runner is schedulable now.
+	Capacity(ctx context.Context, runner RunnerSpec) (bool, error)
+}
+
+// Dispatcher executes stage attempts as fresh pods. Construct with New.
+type Dispatcher struct {
+	cfg      Config
+	pods     PodAPI
+	journal  JournalRelay
+	gate     SurrenderGate
+	capacity CapacityProber
+
+	// now and sleep are test seams; defaults wire the real clock.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// New constructs a Dispatcher. pods and gate are required; journal may be nil
+// (no liveness relay); capacity may be nil (no capacity wait).
+func New(cfg Config, pods PodAPI, journal JournalRelay, gate SurrenderGate, capacity CapacityProber) (*Dispatcher, error) {
+	if pods == nil {
+		return nil, errors.New("dispatcher: PodAPI is required")
+	}
+	if gate == nil {
+		return nil, errors.New("dispatcher: SurrenderGate is required")
+	}
+	if cfg.Namespace == "" {
+		return nil, errors.New("dispatcher: Config.Namespace is required")
+	}
+	return &Dispatcher{
+		cfg:      cfg,
+		pods:     pods,
+		journal:  journal,
+		gate:     gate,
+		capacity: capacity,
+		now:      time.Now,
+		sleep:    sleepCtx,
+	}, nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Report is one Dispatch outcome: the placement facts that feed the
+// journal.Placement provenance event.
+type Report struct {
+	// Runner is the resolved runner name.
+	Runner string
+	// Local marks a self-host resolution: the stage belongs to the local
+	// execution path, and no pod was created.
+	Local bool
+	// Pod is the created pod's name ("" when Local).
+	Pod string
+	// Phase is the pod's terminal phase.
+	Phase corev1.PodPhase
+	// SurrenderConfirmed reports whether the disposal gate confirmed output
+	// surrender before the pod was disposed.
+	SurrenderConfirmed bool
+	// Disposed reports whether the pod was deleted.
+	Disposed bool
+	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
+	// provenance.
+	QueuedAt     time.Time
+	PodStartedAt time.Time
+}
+
+// ErrSurrenderUnconfirmed reports a pod that reached a terminal phase without
+// the disposal gate confirming output surrender. The pod is still disposed
+// (one attempt per pod, D1 — the attempt retries on a FRESH pod, never this
+// one); the caller classifies the attempt as infra.
+var ErrSurrenderUnconfirmed = errors.New("dispatcher: stage outputs not surrendered before pod termination")
+
+// ErrStageFailed reports a pod whose stage terminated in PodFailed. Surrender
+// state and disposal are reported alongside in the Report.
+var ErrStageFailed = errors.New("dispatcher: stage pod terminated in phase Failed")
+
+// Dispatch executes one stage attempt on the eligible runner set (the
+// solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
+// the runner (Linux-preferring), verify the image skew contract, wait
+// bounded for capacity, create ONE fresh pod, supervise it, confirm output
+// surrender, and dispose the pod. The pod is disposed on every path that
+// created it — surrender-unconfirmed and stage-failed attempts return their
+// typed error WITH the pod already deleted, because a retried attempt gets a
+// fresh pod, never a reused one (D1).
+func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
+	runner, err := SelectRunner(attempt, eligible)
+	if err != nil {
+		return Report{}, err
+	}
+	report := Report{Runner: runner.Name, QueuedAt: d.now().UTC()}
+
+	if runner.HostKind == instance.RunnerHostSelf {
+		// host: self — the local execution path (fresh worktree per attempt,
+		// createStageWorkspace semantics). No pod, and none of the pod-plane
+		// contract applies (architecture §3).
+		report.Local = true
+		return report, nil
+	}
+
+	if err := d.waitForCapacity(ctx, runner); err != nil {
+		return report, err
+	}
+
+	pod, err := d.renderFor(ctx, attempt, runner)
+	if err != nil {
+		return report, err
+	}
+
+	if err := d.pods.CreatePod(ctx, pod); err != nil {
+		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	report.Pod = pod.Name
+	report.PodStartedAt = d.now().UTC()
+
+	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name)
+	report.Phase = phase
+
+	if superviseErr == nil {
+		confirmed, gateErr := d.gate.Confirmed(ctx, attempt)
+		report.SurrenderConfirmed = confirmed && gateErr == nil
+		if gateErr != nil {
+			superviseErr = fmt.Errorf("dispatcher: confirm surrender for run %s stage %s attempt %d: %w",
+				attempt.RunID, attempt.Stage, attempt.Number, gateErr)
+		} else if !confirmed {
+			superviseErr = fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
+				ErrSurrenderUnconfirmed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
+		}
+	}
+
+	// Dispose unconditionally: one attempt per pod (D1). A failed disposal
+	// is reported, but activeDeadlineSeconds and the restart reconcile sweep
+	// bound the leak either way (dispatcher §5).
+	if delErr := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); delErr != nil {
+		if superviseErr == nil {
+			superviseErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
+		}
+	} else {
+		report.Disposed = true
+	}
+
+	if superviseErr != nil {
+		return report, superviseErr
+	}
+	if phase == corev1.PodFailed {
+		return report, fmt.Errorf("%w (run %s stage %s attempt %d, pod %s)",
+			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
+	}
+	return report, nil
+}
+
+// renderFor renders the fresh pod for the resolved runner's host kind:
+// image → dispatcher-rendered spec; deployment → instantiated from the named
+// Deployment's template (DI-9). Both paths run the decision-009 skew check
+// against the stage container image before anything is created.
+func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
+	switch runner.HostKind {
+	case instance.RunnerHostImage:
+		if err := VerifySkew(d.cfg.EmbeddedCommit, d.cfg.EmbeddedVersion, runner.Host); err != nil {
+			return nil, err
+		}
+		return RenderPod(d.cfg, attempt, runner)
+	case instance.RunnerHostDeployment:
+		deployment, err := d.pods.GetDeployment(ctx, d.cfg.Namespace, runner.Host)
+		if err != nil {
+			return nil, fmt.Errorf("dispatcher: read template deployment %q for runner %q: %w", runner.Host, runner.Name, err)
+		}
+		if image := templateStageImage(deployment); image != "" {
+			if err := VerifySkew(d.cfg.EmbeddedCommit, d.cfg.EmbeddedVersion, image); err != nil {
+				return nil, err
+			}
+		}
+		return RenderFromTemplate(d.cfg, attempt, runner, deployment)
+	default:
+		return nil, fmt.Errorf("dispatcher: runner %q host kind %q cannot be rendered as a pod", runner.Name, runner.HostKind)
+	}
+}
+
+// supervise polls the pod until it reaches a terminal phase, relaying each
+// observation to the live journal. Errors from the relay are swallowed by
+// design (the journal is observability, not control flow); errors from the
+// pod read are fatal to supervision.
+func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string) (corev1.PodPhase, error) {
+	for {
+		pod, err := d.pods.GetPod(ctx, namespace, name)
+		if err != nil {
+			return "", fmt.Errorf("dispatcher: supervise pod %s/%s: %w", namespace, name, err)
+		}
+		phase := pod.Status.Phase
+		if d.journal != nil {
+			_ = d.journal.RelayLiveness(ctx, attempt, name, phase)
+		}
+		if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
+			return phase, nil
+		}
+		if err := d.sleep(ctx, d.cfg.supervisionInterval()); err != nil {
+			return phase, fmt.Errorf("dispatcher: supervision of pod %s/%s interrupted: %w", namespace, name, err)
+		}
+	}
+}

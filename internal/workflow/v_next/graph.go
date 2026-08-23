@@ -7,6 +7,18 @@ import (
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
+// GraphForDefinition compiles a definition for read-only projections.
+func GraphForDefinition(def Definition) (Graph, []string) {
+	machine, problems := newMachineForCheck(def)
+	if len(problems) != 0 {
+		return Graph{}, problems
+	}
+	if problems := structuralProblems(machine); len(problems) != 0 {
+		return Graph{}, problems
+	}
+	return machine.Graph(), nil
+}
+
 func buildGraph(def Definition) model.Graph {
 	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	edges := make([]model.GraphEdge, 0, graphEdgeCount(def.Spec))
