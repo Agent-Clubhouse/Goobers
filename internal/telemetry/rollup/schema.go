@@ -662,4 +662,53 @@ ON learning_episodes(workflow, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_learning_episodes_action
 ON learning_episodes(recommended_action, occurred_at);
 `,
+	// v21 (#3443): retain a durable, journal-backed classification for every
+	// gate evaluation. This also backfills legacy gate rows whose runner JSON
+	// predates escalation reason annotations.
+	`
+CREATE TABLE IF NOT EXISTS gate_classifications (
+	run_id        TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	gate          TEXT NOT NULL,
+	classification TEXT NOT NULL,
+	reason        TEXT NOT NULL,
+	evidence_json TEXT NOT NULL,
+	occurred_at   TEXT,
+	PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_gate_classifications_gate_time
+ON gate_classifications(gate, occurred_at);
+
+INSERT OR IGNORE INTO gate_classifications
+	(run_id, seq, gate, classification, reason, evidence_json, occurred_at)
+SELECT run_id, seq, gate,
+	CASE
+		WHEN json_extract(runner_json, '$.escalated') IS NOT 1 THEN
+			CASE WHEN verdict = 'pass' THEN 'pass' ELSE 'fail' END
+		WHEN json_extract(runner_json, '$.reason') = 'INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED'
+			OR verdict = 'infra' THEN 'infrastructure'
+		WHEN json_extract(runner_json, '$.reason') = 'UNCHANGED_REPASS' THEN 'unchanged-repass'
+		ELSE 'repass-escalation'
+	END,
+	COALESCE(
+		json_extract(runner_json, '$.reason'),
+		CASE
+			WHEN json_extract(runner_json, '$.escalated') IS NOT 1 THEN
+				CASE WHEN verdict = 'pass' THEN 'PASS' ELSE 'GATE_FAILURE' END
+			WHEN verdict = 'infra' THEN 'INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED'
+			ELSE 'REPASS_BUDGET_EXHAUSTED'
+		END
+	),
+	json_object(
+		'source', 'gate_verdicts',
+		'runId', run_id,
+		'seq', seq,
+		'gate', gate,
+		'verdict', verdict,
+		'target', target,
+		'runner', runner_json
+	),
+	occurred_at
+FROM gate_verdicts;
+`,
 }

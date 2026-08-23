@@ -85,7 +85,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -334,6 +334,17 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				runID, ev.Seq, ev.Gate, nullIfEmpty(telemetry.Redact(ev.Verdict)), nullIfEmpty(ev.Target), formatTime(ev.Time), rj, ev.Branch); err != nil {
 				return fmt.Errorf("rollup: insert gate_verdict seq %d: %w", ev.Seq, err)
+			}
+			classification, reason, evidence, err := classifyGateEvaluation(runID, ev)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO gate_classifications
+					(run_id, seq, gate, classification, reason, evidence_json, occurred_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				runID, ev.Seq, ev.Gate, classification, reason, evidence, formatTime(ev.Time)); err != nil {
+				return fmt.Errorf("rollup: insert gate classification seq %d: %w", ev.Seq, err)
 			}
 
 		case eventSpanRecorded:
@@ -811,6 +822,49 @@ func gateRunnerJSON(ev journalEvent) (sql.NullString, error) {
 		m["verdictRef"] = map[string]any{"name": ev.Name, "digest": ev.Ref.Digest, "size": ev.Ref.Size}
 	}
 	return runnerJSON(m)
+}
+
+func classifyGateEvaluation(runID string, ev journalEvent) (string, string, string, error) {
+	reason, _ := ev.Runner["reason"].(string)
+	escalated := ev.Escalated
+	if runnerEscalated, ok := ev.Runner["escalated"].(bool); ok {
+		escalated = runnerEscalated
+	}
+	classification := "fail"
+	if !escalated {
+		if ev.Verdict == "pass" {
+			classification = "pass"
+			if reason == "" {
+				reason = "PASS"
+			}
+		} else if reason == "" {
+			reason = "GATE_FAILURE"
+		}
+	} else {
+		switch {
+		case reason == "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED" || ev.Verdict == "infra":
+			classification = "infrastructure"
+			if reason == "" {
+				reason = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
+			}
+		case reason == "UNCHANGED_REPASS":
+			classification = "unchanged-repass"
+		default:
+			classification = "repass-escalation"
+			if reason == "" {
+				reason = "REPASS_BUDGET_EXHAUSTED"
+			}
+		}
+	}
+	evidence, err := json.Marshal(map[string]any{
+		"source": "run-journal",
+		"runId":  runID,
+		"event":  ev,
+	})
+	if err != nil {
+		return "", "", "", fmt.Errorf("rollup: marshal gate classification evidence seq %d: %w", ev.Seq, err)
+	}
+	return classification, reason, string(evidence), nil
 }
 
 // schedulerCursor is the incremental-ingest watermark (#1411): how far into the
