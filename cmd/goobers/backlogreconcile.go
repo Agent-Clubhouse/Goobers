@@ -59,6 +59,12 @@ func reconcileBacklogMetadata(
 	stalenessPolicy backlogStalenessPolicy,
 	now func() time.Time,
 ) (int, error) {
+	// Reap terminal and expired ledger leases before inspecting provider labels.
+	// This makes the ledger's liveness decision available to the provider-marker
+	// reconciliation below, so a dead claimant cannot keep its marker forever.
+	if _, err := recoverClaims(l, nil, now(), nil, nil); err != nil {
+		return 0, fmt.Errorf("recover stale claims before metadata reconciliation: %w", err)
+	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository:  repo,
 		Labels:      []string{trustLabel},
