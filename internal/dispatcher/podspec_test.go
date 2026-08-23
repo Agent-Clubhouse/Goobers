@@ -298,6 +298,39 @@ func TestRenderPodBudgetsTmpfsIntoMemoryLimit(t *testing.T) {
 	}
 }
 
+// The runner-class annotation is a non-drifting mirror of the label on the pod
+// itself: the stamped annotation, split back into a restriction set, hashes to
+// the stamped label value — so at 2am a pod that no NetworkPolicy selects (the
+// hard case: nothing to read on the netpol side) still names its restriction
+// set, and the preimage cannot lie without failing this test. An unrestricted
+// pod carries no annotation (its "unrestricted" label needs none).
+func TestRenderPodClassAnnotationMirrorsLabel(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	label := pod.Labels[runnercap.LabelRunnerClass]
+	ann := pod.Annotations[runnercap.AnnotationRunnerClassRestrictions]
+	if ann == "" {
+		t.Fatal("runner-class-restrictions annotation not stamped on a restricted pod")
+	}
+	if got := runnercap.RunnerClassValue(strings.Split(ann, ",")); got != label {
+		t.Fatalf("annotation %q re-derives to %q, want the stamped label %q", ann, got, label)
+	}
+	bare := linuxRunner()
+	bare.Restrictions = nil
+	pod, err = RenderPod(testConfig(), testAttempt(), bare)
+	if err != nil {
+		t.Fatalf("RenderPod (unrestricted): %v", err)
+	}
+	if _, ok := pod.Annotations[runnercap.AnnotationRunnerClassRestrictions]; ok {
+		t.Fatal("unrestricted pod should carry no runner-class-restrictions annotation")
+	}
+	if got := pod.Labels[runnercap.LabelRunnerClass]; got != runnercap.RunnerClassUnrestricted {
+		t.Fatalf("unrestricted label = %q, want %q", got, runnercap.RunnerClassUnrestricted)
+	}
+}
+
 // The workspace emptyDir carries NO per-volume sizeLimit: capping it from
 // attempt.Disk (the floor / request, 10Gi) collapsed usable workspace to the
 // minimum and evicted the pod the moment /workspace crossed it — so declaring
