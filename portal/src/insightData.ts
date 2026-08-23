@@ -66,12 +66,15 @@ export function useInsightStats(
   window: InsightWindow,
   gaggle?: string,
   workflow?: string,
+  scopeRequest = false,
 ): {
   retry: () => void;
   state: QueryState<InsightSnapshot>;
 } {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "");
+  const cacheKey = scopeRequest
+    ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
+    : dataCacheKey("insight-stats", window);
   const [state, setState] = useState<QueryState<InsightSnapshot>>(() => {
     const cached = cache.get<InsightSnapshot>(cacheKey);
     return cached ? { status: "ready", data: cached } : { status: "loading" };
@@ -83,7 +86,9 @@ export function useInsightStats(
     const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
     const controller = new AbortController();
     request.current = controller;
-    const filters = insightStatsFilters(window, gaggle, workflow);
+    const filters = scopeRequest
+      ? insightStatsFilters(window, gaggle, workflow)
+      : insightWindowFilters(window);
     setState((current) =>
       (current.status === "ready" || current.status === "stale") &&
       current.data.window === window
@@ -115,7 +120,7 @@ export function useInsightStats(
         return false;
       },
     );
-  }, [cache, cacheKey, client, gaggle, isFresh, window, workflow]);
+  }, [cache, cacheKey, client, gaggle, isFresh, scopeRequest, window, workflow]);
 
   useEffect(() => {
     const cached = cache.get<InsightSnapshot>(cacheKey);

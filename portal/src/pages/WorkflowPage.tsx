@@ -39,7 +39,7 @@ export function WorkflowPage({
   workflowName: string;
 }) {
   const query = useWorkflowDetail(client, gaggle, workflowName);
-  const analyticsQuery = useInsightStats(client, "all", gaggle, workflowName);
+  const analyticsQuery = useInsightStats(client, "all", gaggle, workflowName, true);
 
   if (query.state.status === "loading") {
     return (
