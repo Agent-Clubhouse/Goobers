@@ -578,7 +578,7 @@ export function insightWindowFilters(
       };
 }
 
-export function insightStatsFilters(
+function insightStatsFilters(
   window: InsightWindow,
   gaggle?: string,
   workflow?: string,
