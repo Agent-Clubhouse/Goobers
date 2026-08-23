@@ -200,6 +200,7 @@ complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcomm
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l gaggle -r -d 'Require the run belong to this gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l expected -r -d 'Topology expectations JSON file'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l out -r -d 'Write the evidence bundle here instead of stdout'
+complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l print-runner-class -r -d 'Print the runner-class label value for a restriction set and exit'
 complete -c goobers -n '__fish_seen_subcommand_from escalations' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show' -l include-verdict -d 'Include review verdict content'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from stats' -l json -d 'Emit JSON'

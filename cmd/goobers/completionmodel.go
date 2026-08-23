@@ -323,6 +323,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Require the run belong to this gaggle"},
 		{name: "expected", takesArg: true, desc: "Topology expectations JSON file"},
 		{name: "out", takesArg: true, desc: "Write the evidence bundle here instead of stdout"},
+		{name: "print-runner-class", takesArg: true, desc: "Print the runner-class label value for a restriction set and exit"},
 	},
 	"escalations": {
 		{name: "json", desc: "Emit JSON"},

@@ -184,7 +184,7 @@ _goobers_completion()
             ;;
         e2e)
             case "${words[3]:-}" in
-                verify) flags+=(--run --gaggle --expected --out) ;;
+                verify) flags+=(--run --gaggle --expected --out --print-runner-class) ;;
             esac
             ;;
         escalations)

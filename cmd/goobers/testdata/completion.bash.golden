@@ -155,7 +155,7 @@ _goobers_completion()
             ;;
         e2e)
             case "${COMP_WORDS[2]:-}" in
-                verify) flags+=" --run --gaggle --expected --out" ;;
+                verify) flags+=" --run --gaggle --expected --out --print-runner-class" ;;
             esac
             ;;
         escalations)

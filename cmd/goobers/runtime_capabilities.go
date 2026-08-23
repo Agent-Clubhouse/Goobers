@@ -449,7 +449,7 @@ func init() {
 			subcommand("e2e verify", "verify", apicontract.ActionReadOnlyNavigation, runE2EVerify).
 				withSynopsis(synopsisByID["e2e verify"]).
 				withHelp("verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data", e2eVerifyHelp).
-				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json"),
+				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json", "goobers e2e verify --print-runner-class network:allowlist"),
 		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",
