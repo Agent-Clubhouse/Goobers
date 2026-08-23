@@ -147,6 +147,12 @@ render the effective instance config (secrets redacted)
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
 .TP
+\fBgoobers e2e\fR
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+.TP
+\fBgoobers e2e verify\fR
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+.TP
 \fBgoobers engine-project\fR
 write a completed engine run's journal into the instance (experimental)
 .TP
@@ -448,6 +454,8 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
+\fBgoobers-e2e\fR(1),
+\fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),
 \fBgoobers-engine-start\fR(1),

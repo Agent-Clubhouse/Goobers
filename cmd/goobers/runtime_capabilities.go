@@ -443,6 +443,14 @@ func init() {
 			withSynopsis(synopsisByID["trace"]).
 			withHelp("show a run's journal events or review verdicts, follow a live run, or show transcripts", traceHelp).
 			withExamples("goobers trace <run-id>", "goobers trace --summary <run-id>", "goobers trace --verdicts <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+		groupCommand(
+			"e2e",
+			runE2E,
+			subcommand("e2e verify", "verify", apicontract.ActionReadOnlyNavigation, runE2EVerify).
+				withSynopsis(synopsisByID["e2e verify"]).
+				withHelp("verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data", e2eVerifyHelp).
+				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json", "goobers e2e verify --print-runner-class network:allowlist"),
+		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",
 			apicontract.ActionReadOnlyNavigation,

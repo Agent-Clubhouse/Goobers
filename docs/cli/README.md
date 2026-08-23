@@ -57,6 +57,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
+| [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
@@ -993,6 +995,135 @@ clear message rather than hanging. Exit codes: 0 = shutdown requested,
 ~~~console
 $ goobers down
 $ goobers down ./instance
+~~~
+
+## `goobers e2e`
+
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+
+~~~text
+Usage: goobers e2e verify [flags]
+
+verify: check the Goobernetes S1-S9 distributed e2e proof harness's
+        assertions (#3517) against one already-completed run's recorded
+        data.
+~~~
+
+## `goobers e2e verify`
+
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+
+~~~text
+Usage: goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [path]
+       goobers e2e verify --print-runner-class <restriction[,restriction...]>
+
+Verify the Goobernetes S1-S9 distributed e2e proof harness's assertions
+(#3517, docs/design/goobernetes-smoke.md) against one already-completed
+run's recorded data — StageAttempt placement provenance and the run
+journal, fetched the same way `goobers trace` and `goobers runs list` do. This
+command drives no cluster, applies no workflow, and kills nothing. It
+verifies a run that already happened; a separate, infra-side orchestration
+(outside this repo, likely shell) produces the run and calls this command
+afterward.
+
+PURE FUNCTION, RE-RUNNABLE FROM ITSELF (goobernetes-smoke.md §5 rule 4):
+every verdict is computed from the run's on-disk journal (via the read
+side), --expected, and whatever captures --expected inlines — never a
+cluster, network, or other live dependency. The emitted bundle records
+--expected's own path (Collateral.S8CapturePath/S9ProbeOutputPath, when
+those items were checked) alongside the run's journal directory
+(Collateral.RunJournalPaths), so every verdict is re-derivable offline
+from the bundle plus those two paths alone.
+
+Always checked, from the run's recorded data alone:
+  S1        fresh pod per stage attempt, never reused
+  S2        at least one Linux and one Windows stage attempt, run completed
+
+Checked only when --expected supplies the needed data; skipped (not
+recorded as a failure) otherwise:
+  S8        a live portal/SSE observation of a stage transition, timestamped
+            before the run's terminal event (needs "liveVisibility"). A
+            JOURNAL timestamp cannot stand in for this: a closed-run
+            projection has the same early stage.started/stage.finished
+            times a genuine live capture would, so it is blind to exactly
+            the failure mode S8 exists to catch (terminal-only visibility)
+            — per goobernetes-smoke.md §5 rule 2, an observer that was not
+            actually exercised is never a pass. Supply the consumer's own
+            recorded portal/SSE capture, or S8 is skipped, never passed.
+  ARCH11-7  no ledger-touching stage attempt placed on Windows (needs
+            "ledgerTouchingStages")
+  ARCH11-8  a declared capability gap was caught (needs "capabilityGap")
+  S9        the network:allowlist negative-control triple (needs
+            "negativeControl")
+
+--expected DECLARES INTENDED TOPOLOGY — what the operator meant to deploy,
+or what the workflow's own DSL declares should happen — never a restatement
+of the run's actual recorded data (that would be circular: checking the
+run against a description of itself). A mismatch between --expected and
+the recorded run is a real FINDING (an item FAILS), never a usage error:
+
+  {
+    "liveVisibility": {
+      "source": "portal",
+      "observations": [
+        {"stage": "implement", "transition": "started", "observedAt": "2026-08-01T12:00:01Z"}
+      ]
+    },
+    "ledgerTouchingStages": ["implement"],
+    "capabilityGap": {
+      "wantUnsatStage": "windows-only-stage",
+      "unsatisfiableStages": [
+        {"stage": "windows-only-stage", "kind": "requirement", "diagnostic": "..."}
+      ]
+    },
+    "negativeControl": {
+      "denial":                            {"endpoint": "blocked.example.com:443", "exitCode": 28},
+      "positiveControl":                   {"endpoint": "allowed.example.com:443", "exitCode": 0},
+      "modelEndpoints":                    ["api.anthropic.com"],
+      "controlVantage":                    {"endpoint": "blocked.example.com:443", "exitCode": 0},
+      "restrictedRunnerRestrictions":      ["network:allowlist"],
+      "controlVantageRunnerRestrictions":  []
+    }
+  }
+
+negativeControl's two "...Restrictions" fields name the RESTRICTION EFFECTS
+(the same closed vocabulary a runners: inventory entry declares) of the
+Denial/PositiveControl leg's restricted runner and the ControlVantage leg's
+second runner, not a runner-class LABEL VALUE — this command GENERATES that
+value itself via internal/runnercap.RunnerClassValue (delivery decision
+015, the dispatcher's own stamping function), the same way
+--print-runner-class does, so a topology file never hand-transcribes a
+class string that could drift from what the dispatcher actually stamps.
+Use --print-runner-class <restriction[,restriction...]> to see the derived
+value before authoring a topology file; it needs no --run, no instance
+root, and touches no cluster.
+
+S3-S7 (declared-edge handoff, artifact materialization, repass, write-API
+trigger/escalation, and the S6 kill matrix) need a live topology-driving
+orchestration to produce their evidence and are not checked by this
+command — see internal/e2e's per-item doc comments.
+
+--out writes the evidence bundle (internal/e2e.Bundle, JSON) there; default
+is stdout. Exit codes distinguish "the design/system is broken" from "the
+observer machinery is broken" — opposite responses (D4/§5 rule 2's
+invalid-is-never-a-pass rule applied to the driver's own control flow):
+  0 = every checked item PASSED
+  1 = at least one item FAILED (act on the design — this wins even if an
+      INVALID item is also present; it still appears in the bundle)
+  2 = usage / IO / --expected parse error / run or gaggle did not resolve
+      (the command itself could not run at all — no bundle was produced)
+  3 = at least one item was INVALID and none FAILED (the observer
+      machinery broke, not necessarily the product — fix instrumentation
+      and re-run; includes an item --expected asked this invocation to
+      check but that came back unproven)
+~~~
+
+**Examples**
+
+~~~console
+$ goobers e2e verify --run <run-id>
+$ goobers e2e verify --run <run-id> --expected topology.json --out bundle.json
+$ goobers e2e verify --print-runner-class network:allowlist
 ~~~
 
 ## `goobers elect-lander`

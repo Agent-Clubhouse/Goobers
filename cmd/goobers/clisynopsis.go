@@ -59,6 +59,7 @@ var synopsisByID = map[string]string{
 	"claims list":            "  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n                                print current claim leases, optionally only expired leases\n",
 	"claims release":         "  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n                                force-release a claim through the live daemon or claims.lock\n",
 	"trace":                  "  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]\n                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts\n",
+	"e2e verify":             "  goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [--print-runner-class <restrictions>] [path]\n                                verify the Goobernetes S1-S9 e2e proof harness's assertions against one completed run's recorded data\n",
 	"escalations":            "  goobers escalations [--json] [path]\n                                list escalated runs newest first\n",
 	"escalations show":       "  goobers escalations show [--json] [--include-verdict] <run-id> [path]\n                                show escalation cause, verdict, and per-stage artifact timeline\n",
 	"completion":             "  goobers completion bash|zsh|fish|powershell  generate a shell completion script\n",

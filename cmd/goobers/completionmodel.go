@@ -318,6 +318,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
 		{name: "transcript", takesArg: true, desc: "Show recorded transcript data for one stage"},
 	},
+	"e2e verify": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id to verify"},
+		{name: "gaggle", takesArg: true, desc: "Require the run belong to this gaggle"},
+		{name: "expected", takesArg: true, desc: "Topology expectations JSON file"},
+		{name: "out", takesArg: true, desc: "Write the evidence bundle here instead of stdout"},
+		{name: "print-runner-class", takesArg: true, desc: "Print the runner-class label value for a restriction set and exit"},
+	},
 	"escalations": {
 		{name: "json", desc: "Emit JSON"},
 	},
