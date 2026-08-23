@@ -59,21 +59,19 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read continuation source identity: %v\n", err)
 		return 1
 	}
-	if sourceIdentity.WorkflowDigest != "" {
-		pinnedMachine, err := runner.PinnedWorkflowMachine(sourceReader, sourceIdentity)
-		if err != nil {
-			pf(stderr, "error: resolve continuation source workflow: %v\n", err)
-			return 1
-		}
-		candidateMachine, err := currentWorkflowMachine(root, sourceIdentity)
-		if err != nil {
-			pf(stderr, "error: resolve continuation candidate workflow: %v\n", err)
-			return 1
-		}
-		if err := runner.ValidateContinuationTarget(pinnedMachine, candidateMachine, *target); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
+	pinnedMachine, err := runner.PinnedWorkflowMachine(sourceReader, sourceIdentity)
+	if err != nil {
+		pf(stderr, "error: resolve continuation source workflow: %v\n", err)
+		return 1
+	}
+	candidateMachine, err := currentWorkflowMachine(root, sourceIdentity)
+	if err != nil {
+		pf(stderr, "error: resolve continuation candidate workflow: %v\n", err)
+		return 1
+	}
+	if err := runner.ValidateContinuationTarget(pinnedMachine, candidateMachine, *target); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	inputs := make(map[string][]byte, len(inputFlags))
 	inputSources := make(map[string]string, len(inputFlags))

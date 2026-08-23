@@ -11,7 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func TestRunRunContinuePersistsInputSource(t *testing.T) {
+func TestRunRunContinueRejectsLegacySourceWithoutWorkflowPin(t *testing.T) {
 	root := t.TempDir()
 	runsDir := instance.NewLayout(root).RunsDir()
 	sourceID := "0af7651916cd43dd8448eb211c80319c"
@@ -40,20 +40,17 @@ func TestRunRunContinuePersistsInputSource(t *testing.T) {
 		"--operator", "operator@example.test", "--integrity", "maintainer",
 		"--input", "issue=" + inputPath, root,
 	}, &stdout, &stderr)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %s", exitCode, stderr.String())
+	if exitCode == 0 {
+		t.Fatalf("legacy source was admitted; stdout = %s", stdout.String())
 	}
-	continuationID := strings.TrimSpace(stdout.String())
-	reader, err := journal.OpenRead(filepath.Join(runsDir, continuationID))
+	if !strings.Contains(stderr.String(), "resolve continuation source workflow") {
+		t.Fatalf("stderr = %s, want source workflow resolution error", stderr.String())
+	}
+	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := reader.Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(id.Inputs) != 1 || id.Inputs[0].Name != "issue" ||
-		id.Inputs[0].Source != inputPath {
-		t.Fatalf("continuation input = %+v, want source %q", id.Inputs, inputPath)
+	if len(entries) != 1 {
+		t.Fatalf("runs directory entries = %d, want only source run", len(entries))
 	}
 }

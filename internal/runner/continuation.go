@@ -24,14 +24,17 @@ func ValidateContinuationTarget(source, candidate *workflow.Machine, target stri
 	if workflow.IsReservedAnyTarget(target) || target == workflow.TerminalComplete {
 		return continuationTargetError(sourceDigest, candidateDigest, target, "target is reserved or terminal")
 	}
-	sourceKind, sourceOK := graphNodeKind(source, target)
-	candidateKind, candidateOK := graphNodeKind(candidate, target)
+	sourceNode, sourceOK := graphNode(source, target)
+	candidateNode, candidateOK := graphNode(candidate, target)
 	if !sourceOK || !candidateOK {
 		return continuationTargetError(sourceDigest, candidateDigest, target, "target is not a resumable task or gate")
 	}
-	if sourceKind != candidateKind {
+	if sourceNode.Kind != candidateNode.Kind {
 		return continuationTargetError(sourceDigest, candidateDigest, target,
-			fmt.Sprintf("target kind changed from %q to %q", sourceKind, candidateKind))
+			fmt.Sprintf("target kind changed from %q to %q", sourceNode.Kind, candidateNode.Kind))
+	}
+	if sourceNode.Owner != candidateNode.Owner || sourceNode.Evaluator != candidateNode.Evaluator {
+		return continuationTargetError(sourceDigest, candidateDigest, target, "target execution semantics changed")
 	}
 	if !sameOutgoingEdges(source, candidate, target) {
 		return continuationTargetError(sourceDigest, candidateDigest, target, "target transition changed")
@@ -51,20 +54,20 @@ func continuationTargetError(sourceDigest, candidateDigest, target, reason strin
 		target, reason, sourceDigest, candidateDigest)
 }
 
-func graphNodeKind(machine *workflow.Machine, target string) (string, bool) {
+func graphNode(machine *workflow.Machine, target string) (workflow.GraphNode, bool) {
 	graph := machine.Graph()
 	for _, node := range graph.Nodes {
 		if node.ID != target {
 			continue
 		}
 		switch node.Kind {
-		case "deterministic", "agentic", "gate":
-			return string(node.Kind), true
+		case workflow.GraphNodeDeterministic, workflow.GraphNodeAgentic, workflow.GraphNodeGate:
+			return node, true
 		default:
-			return string(node.Kind), false
+			return workflow.GraphNode{}, false
 		}
 	}
-	return "", false
+	return workflow.GraphNode{}, false
 }
 
 func sameOutgoingEdges(source, candidate *workflow.Machine, target string) bool {
