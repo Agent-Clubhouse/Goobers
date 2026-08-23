@@ -182,6 +182,11 @@ _goobers_completion()
         trace)
             flags+=(--json --follow --summary --verdicts --transcripts --transcript)
             ;;
+        e2e)
+            case "${words[3]:-}" in
+                verify) flags+=(--run --gaggle --expected --out) ;;
+            esac
+            ;;
         escalations)
             flags+=(--json)
             case "${words[3]:-}" in
@@ -364,6 +369,13 @@ _goobers_completion()
                 candidates=()
                 candidates+=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
+                return
+            fi
+            ;;
+        e2e)
+            if (( CURRENT == 3 )); then
+                candidates=(verify)
+                _describe -V 'command' candidates
                 return
             fi
             ;;

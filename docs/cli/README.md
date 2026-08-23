@@ -57,6 +57,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
+| [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
@@ -993,6 +995,86 @@ clear message rather than hanging. Exit codes: 0 = shutdown requested,
 ~~~console
 $ goobers down
 $ goobers down ./instance
+~~~
+
+## `goobers e2e`
+
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+
+~~~text
+Usage: goobers e2e verify [flags]
+
+verify: check the Goobernetes S1-S9 distributed e2e proof harness's
+        assertions (#3517) against one already-completed run's recorded
+        data.
+~~~
+
+## `goobers e2e verify`
+
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+
+~~~text
+Usage: goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [path]
+
+Verify the Goobernetes S1-S9 distributed e2e proof harness's assertions
+(#3517, docs/design/goobernetes-smoke.md) against one already-completed
+run's recorded data — StageAttempt placement provenance and the run
+journal, fetched the same way `goobers trace` and `goobers runs list` do. This
+command drives no cluster, applies no workflow, and kills nothing. It
+verifies a run that already happened; a separate, infra-side orchestration
+(outside this repo, likely shell) produces the run and calls this command
+afterward.
+
+Always checked, from the run's recorded data alone:
+  S1        fresh pod per stage attempt, never reused
+  S2        at least one Linux and one Windows stage attempt, run completed
+  S8        stage-transition journal events precede the run's terminal event
+            — a RECORDED-DATA PROXY for S8's real observer (a live
+            portal/SSE capture): it proves the journal trail is genuinely
+            incremental, not that the portal rendered a transition live.
+
+Checked only when --expected supplies the needed data; skipped (not
+recorded as a failure) otherwise:
+  ARCH11-7  no ledger-touching stage attempt placed on Windows (needs
+            "ledgerTouchingStages")
+  ARCH11-8  a declared capability gap was caught (needs "capabilityGap")
+  S9        the network:allowlist negative-control triple (needs
+            "negativeControl")
+
+--expected is a JSON file supplying deployment-specific expectations this
+command hardcodes none of:
+
+  {
+    "ledgerTouchingStages": ["implement"],
+    "capabilityGap": {
+      "wantUnsatStage": "windows-only-stage",
+      "unsatisfiableStages": [
+        {"stage": "windows-only-stage", "kind": "requirement", "diagnostic": "..."}
+      ]
+    },
+    "negativeControl": {
+      "denial":          {"endpoint": "blocked.example.com:443", "exitCode": 28},
+      "positiveControl": {"endpoint": "allowed.example.com:443", "exitCode": 0},
+      "modelEndpoints":  ["api.anthropic.com"],
+      "controlVantage":  {"endpoint": "blocked.example.com:443", "exitCode": 0}
+    }
+  }
+
+S3-S7 (declared-edge handoff, artifact materialization, repass, write-API
+trigger/escalation, and the S6 kill matrix) need a live topology-driving
+orchestration to produce their evidence and are not checked by this
+command — see internal/e2e's per-item doc comments.
+
+--out writes the evidence bundle (internal/e2e.Bundle, JSON) there; default
+is stdout. Exit codes: 0 = every checked item passed, 1 = at least one
+checked item failed or was invalid / business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers e2e verify --run <run-id>
+$ goobers e2e verify --run <run-id> --expected topology.json --out bundle.json
 ~~~
 
 ## `goobers elect-lander`

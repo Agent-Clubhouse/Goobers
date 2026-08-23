@@ -240,3 +240,32 @@ github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # Pod-side su
 github.com/goobers/goobers/internal/dispatcher.ProbeTCP # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ResolveStageCredentials # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/runnercap.ParseRunnerClassPreimage # #3568 decodes the runner-class-restrictions annotation back to a restriction set (inverse of RunnerClassPreimage); exercised by the renderer round-trip tests, no in-binary caller yet — a diagnostic decode helper for operators/preflight.
+
+# internal/e2e (#3517, graduated from test/goobernetes): `goobers e2e verify`
+# (cmd/goobers/e2everify.go) wires the assertion helpers checkable from one
+# run's RECORDED data alone or from --expected topology input — S1, S2, S8
+# (journal proxy), ARCH11-7, ARCH11-8, S9. The symbols below need a live
+# topology-driving orchestration this command deliberately does not do
+# (S3-S7's declared-edge handoff/artifact-materialization/repass/write-API
+# evidence, and S6's six-cell kill matrix, all TOPOLOGY-PENDING per
+# internal/e2e/doc.go and each file's own doc comment) — the consumer-side
+# orchestration named in #3517 is their eventual caller. All are unit-tested
+# against fixtures today.
+github.com/goobers/goobers/internal/e2e.AssertArtifactMaterialization # S4, topology-pending: needs a live cross-node materialize-before-start record no run journal carries yet.
+github.com/goobers/goobers/internal/e2e.AssertDeclaredEdgeHandoff # S3, topology-pending: needs the runtime-half continuity record (#3505) a live driver reads at the two repo boundaries.
+github.com/goobers/goobers/internal/e2e.AssertRepassFreshNodeWithVerdict # S5, topology-pending: needs the repass attempt's recorded input pointers, runner-internal state no read-model field exposes today.
+github.com/goobers/goobers/internal/e2e.AssertTriggerAndEscalationViaWriteAPI # S7, topology-pending: needs the live procedure's own operator transcript, which only a live smoke run produces.
+github.com/goobers/goobers/internal/e2e.GateVerdictPointerName # S5 helper, called only by the topology-pending AssertRepassFreshNodeWithVerdict above.
+github.com/goobers/goobers/internal/e2e.AllStageClasses # S6 kill-matrix axis enumeration; topology-pending (no live CellDriver implementation exists — internal/e2e/killmatrix.go's own doc comment).
+github.com/goobers/goobers/internal/e2e.AllFailureKinds # S6 kill-matrix axis enumeration; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.KillMatrix # S6 kill-matrix cell enumeration; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.ClassifyCellResult # S6 kill-matrix per-cell classifier; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.RunKillMatrix # S6 kill-matrix driver loop; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.NewStaticCellDriver # S6 kill-matrix fixture double for RunKillMatrix's own tests; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.StaticCellDriver.FailAt # S6 kill-matrix fixture double method; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.StaticCellDriver.Inject # S6 kill-matrix fixture double method; topology-pending, see AllStageClasses above.
+github.com/goobers/goobers/internal/e2e.Violation.String # §5 rule 1 "no kubectl exec" guard formatter; not wired into any lint/CI entrypoint yet, only its own tests.
+github.com/goobers/goobers/internal/e2e.matchLine # §5 rule 1 guard's shared pattern match; unreachable once its two exported callers (below) are, only its own tests exercise it.
+github.com/goobers/goobers/internal/e2e.ScanTextForKubectlExec # S7's transcript half of the §5 rule 1 guard; topology-pending with AssertTriggerAndEscalationViaWriteAPI above (its only intended caller).
+github.com/goobers/goobers/internal/e2e.ScanGoStringLiteralsForKubectlExec # §5 rule 1 guard over this package's own Go source; not wired into any lint/CI entrypoint yet, only its own tests.
+github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip counterpart; no consumer reads a written evidence bundle back yet (a future re-run/comparison feature), only its own tests.

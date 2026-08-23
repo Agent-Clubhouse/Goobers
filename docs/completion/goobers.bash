@@ -153,6 +153,11 @@ _goobers_completion()
         trace)
             flags+=" --json --follow --summary --verdicts --transcripts --transcript"
             ;;
+        e2e)
+            case "${COMP_WORDS[2]:-}" in
+                verify) flags+=" --run --gaggle --expected --out" ;;
+            esac
+            ;;
         escalations)
             flags+=" --json"
             case "${COMP_WORDS[2]:-}" in
@@ -306,6 +311,11 @@ _goobers_completion()
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        e2e)
+            if (( COMP_CWORD == 2 )); then
+                candidates="verify"
             fi
             ;;
         escalations)
