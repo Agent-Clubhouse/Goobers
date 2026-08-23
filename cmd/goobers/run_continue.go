@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,7 +11,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const runContinueHelp = "Usage: goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n\n" +
@@ -46,6 +49,30 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	sourceID := filepath.Base(sourceDir)
+	sourceReader, err := journal.OpenReadOnly(sourceDir)
+	if err != nil {
+		pf(stderr, "error: inspect continuation source: %v\n", err)
+		return 1
+	}
+	sourceIdentity, err := sourceReader.Identity()
+	if err != nil {
+		pf(stderr, "error: read continuation source identity: %v\n", err)
+		return 1
+	}
+	pinnedMachine, err := runner.PinnedWorkflowMachine(sourceReader, sourceIdentity)
+	if err != nil {
+		pf(stderr, "error: resolve continuation source workflow: %v\n", err)
+		return 1
+	}
+	candidateMachine, err := currentWorkflowMachine(root, sourceIdentity)
+	if err != nil {
+		pf(stderr, "error: resolve continuation candidate workflow: %v\n", err)
+		return 1
+	}
+	if err := runner.ValidateContinuationTarget(pinnedMachine, candidateMachine, *target); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	inputs := make(map[string][]byte, len(inputFlags))
 	inputSources := make(map[string]string, len(inputFlags))
 	for _, value := range inputFlags {
@@ -91,6 +118,26 @@ func runRunContinue(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "%s\n", runID)
 	return 0
+}
+
+func currentWorkflowMachine(root string, source journal.RunIdentity) (*workflow.Machine, error) {
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return nil, err
+	}
+	_ = report
+	for _, definition := range set.Workflows {
+		if definition.Name != source.Workflow || definition.Spec.Gaggle != source.Gaggle {
+			continue
+		}
+		return workflow.Compile(workflow.Definition{
+			Name: definition.Name, Version: source.WorkflowVersion,
+			DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		}, workflow.WithPreviewFeatures(
+			set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations),
+		))
+	}
+	return nil, fmt.Errorf("workflow %q for gaggle %q is not configured", source.Workflow, source.Gaggle)
 }
 
 type stringListFlag []string
