@@ -487,7 +487,9 @@ type gateAggregate struct {
 func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "g.occurred_at", req)
 	query := fmt.Sprintf(`
-		SELECT g.gate, g.verdict, g.runner_json FROM gate_verdicts g
+		SELECT g.gate, g.verdict, g.runner_json, c.classification
+		FROM gate_verdicts g
+		LEFT JOIN gate_classifications c ON c.run_id = g.run_id AND c.seq = g.seq
 		JOIN runs r ON r.run_id = g.run_id
 		%s`, where)
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
@@ -500,8 +502,8 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 	var order []string
 	for rows.Next() {
 		var gate string
-		var verdict, runnerJSON sql.NullString
-		if err := rows.Scan(&gate, &verdict, &runnerJSON); err != nil {
+		var verdict, runnerJSON, classification sql.NullString
+		if err := rows.Scan(&gate, &verdict, &runnerJSON, &classification); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
 		a, ok := agg[gate]
@@ -514,7 +516,11 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 		if verdict.String != gateOutcomePass {
 			a.nonPass++
 		}
-		if runnerJSON.Valid && gateEscalated(runnerJSON.String) {
+		if classification.Valid {
+			if classification.String == "repass-escalation" || classification.String == "unchanged-repass" {
+				a.escalated++
+			}
+		} else if runnerJSON.Valid && gatePolicyEscalated(runnerJSON.String) {
 			a.escalated++
 		}
 	}
@@ -565,16 +571,21 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 	return out, nil
 }
 
-// gateEscalated reports whether a gate_verdicts.runner_json blob carries
-// "escalated":true (#89's repass-budget-exhausted signal).
-func gateEscalated(runnerJSON string) bool {
+// gatePolicyEscalated excludes infrastructure retry exhaustion from repass
+// churn. Older journals have no reason annotation and retain the historical
+// escalated behavior.
+func gatePolicyEscalated(runnerJSON string) bool {
 	var m struct {
-		Escalated bool `json:"escalated"`
+		Escalated bool   `json:"escalated"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(runnerJSON), &m); err != nil {
 		return false
 	}
-	return m.Escalated
+	if !m.Escalated {
+		return false
+	}
+	return m.Reason != "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
 }
 
 // gateRuns returns the runs (newest first, bounded by limit) where gate
@@ -587,7 +598,9 @@ func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string,
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	query := fmt.Sprintf(`
-		SELECT g.run_id, g.occurred_at, g.runner_json FROM gate_verdicts g
+		SELECT g.run_id, g.occurred_at, g.runner_json, c.classification
+		FROM gate_verdicts g
+		LEFT JOIN gate_classifications c ON c.run_id = g.run_id AND c.seq = g.seq
 		JOIN runs r ON r.run_id = g.run_id
 		WHERE %s
 		ORDER BY g.occurred_at DESC, g.run_id DESC`, clause)
@@ -601,12 +614,18 @@ func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string,
 	var out []JournalPointer
 	for rows.Next() {
 		var runID, occurredAt sql.NullString
-		var runnerJSON sql.NullString
-		if err := rows.Scan(&runID, &occurredAt, &runnerJSON); err != nil {
+		var runnerJSON, classification sql.NullString
+		if err := rows.Scan(&runID, &occurredAt, &runnerJSON, &classification); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate run: %w", err)
 		}
-		if mode == "escalated" && (!runnerJSON.Valid || !gateEscalated(runnerJSON.String)) {
-			continue
+		if mode == "escalated" {
+			if classification.Valid {
+				if classification.String != "repass-escalation" && classification.String != "unchanged-repass" {
+					continue
+				}
+			} else if !runnerJSON.Valid || !gatePolicyEscalated(runnerJSON.String) {
+				continue
+			}
 		}
 		if seen[runID.String] {
 			continue

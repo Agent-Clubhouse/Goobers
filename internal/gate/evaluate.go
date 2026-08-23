@@ -160,6 +160,13 @@ const ReasonFindingResolved = "REVIEW_FINDING_RESOLVED"
 // up under the same one.
 const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
 
+// Escalation reason codes are journaled so telemetry can distinguish policy
+// repass churn from an exhausted infrastructure retry budget.
+const (
+	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"
+	ReasonInfrastructureBudgetExhausted = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
+)
+
 func (c RepassCause) String() string {
 	switch c.Kind {
 	case "stage-failure":
@@ -531,6 +538,12 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		repassCause = e.RepassCause
 		reason = ReasonUnchangedRepass
 	}
+	if escalated && reason == "" {
+		reason = ReasonRepassBudgetExhausted
+		if outcome == OutcomeInfra {
+			reason = ReasonInfrastructureBudgetExhausted
+		}
+	}
 	r := Result{
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
 		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
@@ -564,6 +577,7 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 		GateAttempt: attempt,
 		Escalated:   true,
 		Interrupted: true,
+		Reason:      ReasonRepassBudgetExhausted,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
