@@ -207,6 +207,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 			NodeSelector:                 map[string]string{NodeSelectorOSKey: nodeSelectorOS(runner.OS)},
 		},
 	}
+	stampClassRestrictionsAnnotation(pod.Annotations, runner)
 
 	stampResources(cfg, attempt, runner, &container, class, windows)
 	stampVolumes(cfg, attempt, &pod.Spec, &container, class, windows)
@@ -297,6 +298,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		}
 	}
 
+	stampClassRestrictionsAnnotation(annotations, runner)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
@@ -366,6 +368,21 @@ func stampedLabels(attempt Attempt, runner RunnerSpec) map[string]string {
 		LabelRun:                   sanitizeNameSegment(attempt.RunID, 63),
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
+	}
+}
+
+// stampClassRestrictionsAnnotation records the human-readable preimage of the
+// runner-class label on the pod (runnercap.AnnotationRunnerClassRestrictions),
+// so an opaque class value — or, more importantly, a pod that hangs at
+// materialize because NO NetworkPolicy selects it (case A, a class with nothing
+// rendered) — still names its restriction set at diagnosis without a preimage
+// search. Both the value and this annotation derive from the same restriction
+// set through runnercap, so the annotation is a mirror, not a copy that can
+// drift (round-trip asserted in the tests). Empty (unrestricted) writes
+// nothing — the "unrestricted" label needs no preimage.
+func stampClassRestrictionsAnnotation(annotations map[string]string, runner RunnerSpec) {
+	if ann := runnercap.RunnerClassAnnotation(runner.Restrictions); ann != "" {
+		annotations[runnercap.AnnotationRunnerClassRestrictions] = ann
 	}
 }
 
