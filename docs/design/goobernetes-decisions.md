@@ -202,6 +202,33 @@ API; live stage-transition visibility. **The volume scale test is deferred**; it
 explicit next rung, gated on the #2871 parity items (notably #2875 cumulative budgets) so a real
 scale run cannot burn spend invisibly.
 
+## Delivery decisions 015–016 — the runner-class label VALUE is one shared function (#3513)
+
+Recorded here with the delivery-decision numbering the design documents cite (003–013 live in
+the documents that needed them; these two land with the dispatcher implementation).
+
+- **015 — RunnerClassValue is the single producer of runner-class label values.** The dispatcher
+  design pins the label KEY (`goobers.dev/runner-class`) and says the value is "derived from the
+  resolved restriction set" — but the derived VALUE string is a contract with TWO producers that
+  must agree: the dispatcher STAMPS it on every stage pod, and the per-runner-class NetworkPolicy
+  reference manifests SELECT on it (restrictions doc §7: the product renders those manifests from
+  the `runners:` inventory; §12: one manifest set per distinct restriction-set). If they disagree,
+  the pod matches only `default-deny` and fails closed into the decision-010 materialize HANG —
+  which looks nothing like a label mismatch. Ruling: ONE exported deterministic function,
+  `internal/runnercap.RunnerClassValue(restrictions)`, derived from the SORTED resolved
+  restriction set, always a valid Kubernetes label value, is the only producer; the dispatcher
+  stamps with it, any renderer selects with it, and a round-trip test asserts stamp == selector.
+  The coupled label constants (`goobers.dev/runner-class`; `goobers.dev/role=stage`; the
+  namespace marker `goobers.dev/gaggle-namespace=true` the blob ingress selects on) are shared
+  exported constants in the same package — never string literals in two places.
+- **016 — Rendered manifests are the only authoritative copy.** The per-runner-class
+  NetworkPolicy manifests are a RENDERED PRODUCT ARTIFACT; no repository hand-authors an
+  authoritative parallel copy. A downstream repo that cannot import the Go function (e.g.
+  Goobernetes-Infra) CONSUMES the rendered output — otherwise 015's by-construction agreement is
+  just displaced one repo over. Until the full YAML renderer ships, downstream hand-authored
+  per-class manifests (the current "general"/"restricted" files) are NON-AUTHORITATIVE
+  placeholders, and those two strings are explicitly NOT the contract.
+
 ## D12 — Issue strategy
 
 Epic **#2889 remains the umbrella**, re-scoped to this design. Overlapping issues are folded in,
