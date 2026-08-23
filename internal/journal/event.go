@@ -102,6 +102,14 @@ const (
 	// EventAgentMessage records orchestration-relevant peer communication
 	// without retaining the message body.
 	EventAgentMessage EventType = "agent.message"
+	// EventBanditAssignment records the deterministic arm selected for a stage.
+	EventBanditAssignment EventType = "bandit.assignment"
+	// EventBanditObservation records the outcome used by an experiment.
+	EventBanditObservation EventType = "bandit.observation"
+	// EventBanditRetired records an arm removed by the failure-rate kill switch.
+	EventBanditRetired EventType = "bandit.retired"
+	// EventBanditPromotionProposed records a promotion awaiting normal approval.
+	EventBanditPromotionProposed EventType = "bandit.promotion.proposed"
 
 	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
 	// All four are conformance-normative: they and the completeness record are

@@ -520,6 +520,59 @@ spec:
                         Goober names the goober invoked for an agentic task. Required when
                         type=agentic; must be empty when type=deterministic (TSK-010).
                       type: string
+                    experiment:
+                      description: |-
+                        Experiment routes this task across two or three declared safety arms.
+                        Variants overlay task inputs; selection and outcomes are journaled by the
+                        runner and promotion remains an external approval decision.
+                      properties:
+                        arms:
+                          items:
+                            properties:
+                              gateLevel:
+                                type: integer
+                              name:
+                                type: string
+                              variant:
+                                additionalProperties:
+                                  type: string
+                                type: object
+                            required:
+                            - gateLevel
+                            - name
+                            type: object
+                          type: array
+                        confidence:
+                          type: number
+                        defaultGateLevel:
+                          type: integer
+                        evalWindow:
+                          type: integer
+                        explorationBudget:
+                          type: integer
+                        maxFailureRate:
+                          type: number
+                        minLift:
+                          type: number
+                        minSamples:
+                          type: integer
+                        seed:
+                          format: int64
+                          type: integer
+                        trainWindow:
+                          type: integer
+                      required:
+                      - arms
+                      - confidence
+                      - defaultGateLevel
+                      - evalWindow
+                      - explorationBudget
+                      - maxFailureRate
+                      - minLift
+                      - minSamples
+                      - seed
+                      - trainWindow
+                      type: object
                     inputs:
                       additionalProperties:
                         type: string
