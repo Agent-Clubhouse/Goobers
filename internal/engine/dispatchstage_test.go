@@ -186,6 +186,36 @@ func TestDispatchStageStageFailedReturnsSurrenderedEnvelope(t *testing.T) {
 	}
 }
 
+// Defense-in-depth for #3588: a dispatcher error that is NOT ErrStageFailed
+// but arrives with surrender CONFIRMED — e.g. a post-surrender dispose fault —
+// must still project the pod's authoritative surrendered envelope, never be
+// bypassed into an infra retry that discards the result and re-dispatches an
+// already-settled (possibly MUTATING) stage. Keyed off report.SurrenderConfirmed.
+func TestDispatchStageSurrenderConfirmedErrorReadsEnvelope(t *testing.T) {
+	store := surrenderStore(t)
+	fake := &fakeStageDispatcher{
+		report: dispatcher.Report{
+			Runner: "win-ci", Pod: "p", Phase: corev1.PodSucceeded,
+			SurrenderConfirmed: true, Disposed: false,
+			DisposeErr: errors.New("dispatcher: dispose pod ns/p: apiserver conflict"),
+		},
+		// A generic (non-typed, non-ErrStageFailed) dispatcher error that would
+		// classify as infra if it bypassed the envelope.
+		err: errors.New("dispatcher: dispose pod ns/p: apiserver conflict"),
+	}
+	putSurrendered(t, store, "run-d", "build", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "surrendered before the dispose fault"},
+	})
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	result, err := a.DispatchStage(context.Background(), dispatchInput("run-d", "build", 1))
+	if err != nil {
+		t.Fatalf("a confirmed surrender must project the envelope despite a dispose fault, got error: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess || result.Summary != "surrendered before the dispose fault" {
+		t.Fatalf("result = %+v, want the surrendered envelope", result.ResultEnvelope)
+	}
+}
+
 // Dispatch-plane failures classify per the design of record: deterministic
 // refusals are policy-classed (identical redispatch reproduces them), and
 // everything else — capacity, pod loss, unconfirmed surrender — is an infra

@@ -153,7 +153,17 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	}
 
 	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
-	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) {
+	// Defense-in-depth for the settled-outcome invariant (#3588): once the
+	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
+	// authoritative outcome — so ANY dispatcher error that arrives with
+	// SurrenderConfirmed (a confirmed ErrStageFailed, a post-surrender dispose
+	// fault, or any future post-surrender fault) must still be projected from
+	// that envelope, never bypassed into an infra/policy retry that would
+	// discard the result and re-dispatch an already-settled (possibly MUTATING)
+	// stage. Only an error that left surrender UNconfirmed classifies as a
+	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
+	// kind alone closes the whole class of post-surrender dispatcher errors.
+	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
 		return stageActivityResult{}, classifyDispatchError(err)
 	}
 	if err == nil && report.Local {
