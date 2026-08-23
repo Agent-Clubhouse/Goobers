@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -51,9 +52,9 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 	server.authenticatedLogin = "shared-review-bot"
 	server.addIssue(50, "Instance A PR")
 	server.addIssue(51, "Instance B PR")
-	server.addOpenPR(50, "goobers/implementation/run-a", "main", "sha50head", "shamainbase",
+	server.addOpenPR(50, "feature/instance-a", "main", "sha50head", "shamainbase",
 		false, []string{"goobers:instance-a"}, nil)
-	server.addOpenPR(51, "goobers/implementation/run-b", "main", "sha51head", "shamainbase",
+	server.addOpenPR(51, "feature/instance-b", "main", "sha51head", "shamainbase",
 		false, []string{"goobers:instance-b"}, nil)
 	server.setPRIdentities(50, "contributor-a", []string{"instance-a"}, nil)
 	server.setPRIdentities(51, "contributor-b", []string{"instance-b"}, nil)
@@ -63,6 +64,7 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-a")
 	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
 	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-a")
+	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", "any")
 	dirA := t.TempDir()
 	t.Chdir(dirA)
 	if code, stdout, stderr := runArgs(t, "pr-select", rootA); code != 0 {
@@ -76,6 +78,7 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-b")
 	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
 	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-b")
+	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", "any")
 	dirB := t.TempDir()
 	t.Chdir(dirB)
 	if code, stdout, stderr := runArgs(t, "pr-select", rootB); code != 0 {
@@ -85,11 +88,15 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 	}
 
 	for _, check := range []struct {
-		dir    string
-		number string
+		dir       string
+		number    string
+		numberInt int
+		head      string
+		base      string
+		runID     string
 	}{
-		{dirA, "50"},
-		{dirB, "51"},
+		{dirA, "50", 50, "sha50head", "shamainbase", "instance-a-run"},
+		{dirB, "51", 51, "sha51head", "shamainbase", "instance-b-run"},
 	} {
 		data, err := os.ReadFile(filepath.Join(check.dir, "selected-pr.json"))
 		if err != nil {
@@ -101,6 +108,34 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 		}
 		if selected["number"] != check.number {
 			t.Fatalf("selection for instance %s = %q, want %s", check.number, selected["number"], check.number)
+		}
+		if selected["advisoryMode"] != "true" {
+			t.Fatalf("selection for instance %s advisoryMode = %q, want true", check.number, selected["advisoryMode"])
+		}
+
+		providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", check.runID)
+		seedGateVerdictJournal(t, check.dir, check.runID, apiv1.Verdict{
+			Decision: apiv1.VerdictPass,
+			Summary:  "advisory result",
+			HeadSHA:  check.head,
+			BaseSHA:  check.base,
+		})
+		t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", selected["number"])
+		t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", selected["headSha"])
+		t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", selected["baseSha"])
+		t.Setenv("GOOBERS_INPUT_ADVISORYMODE", selected["advisoryMode"])
+		t.Setenv("GOOBERS_INPUT_PUBLISHADVISORY", "false")
+		t.Chdir(t.TempDir())
+		if code, stdout, stderr := runArgs(t, "apply-verdict", check.dir); code != 0 {
+			t.Fatalf("instance %s apply-verdict: code = %d, stdout = %q, stderr = %q", check.number, code, stdout, stderr)
+		} else if !strings.Contains(stdout, "public publication disabled by policy") {
+			t.Fatalf("instance %s apply-verdict stdout = %q, want read-only advisory diagnostic", check.number, stdout)
+		}
+		server.mu.Lock()
+		commentCount := len(server.issues[check.numberInt].comments)
+		server.mu.Unlock()
+		if commentCount != 0 {
+			t.Fatalf("instance %s advisory comments = %d, want no unsolicited public comments", check.number, commentCount)
 		}
 	}
 }
