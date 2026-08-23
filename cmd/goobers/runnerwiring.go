@@ -101,6 +101,8 @@ type runnerCompositionInput struct {
 	ProviderQuota        *localscheduler.ProviderQuotaState
 }
 
+var runnerLookPath = exec.LookPath
+
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
 	cfg := input.Config
@@ -328,7 +330,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
-		LookPathFunc: exec.LookPath,
+		LookPathFunc: runnerLookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel

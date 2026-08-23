@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -2108,12 +2109,21 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 				Gaggle:   gaggle,
 				Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
 				Start:    "deploy",
-				Tasks: []apiv1.Task{{
-					Name: "deploy",
-					Type: apiv1.TaskDeterministic,
-					Goal: "Deploy.",
-					Run:  &apiv1.DeterministicRun{Command: []string{testBin, "-test.run=^$"}, Workspace: apiv1.WorkspaceScratch},
-				}},
+				Tasks: []apiv1.Task{
+					{
+						Name: "deploy",
+						Type: apiv1.TaskDeterministic,
+						Goal: "Deploy.",
+						Run:  &apiv1.DeterministicRun{Command: []string{testBin, "-test.run=^$"}, Workspace: apiv1.WorkspaceScratch},
+						Next: "local-ci",
+					},
+					{
+						Name: "local-ci",
+						Type: apiv1.TaskDeterministic,
+						Goal: "Run CI.",
+						Run:  &apiv1.DeterministicRun{Command: []string{"missing-ci-command"}, Workspace: apiv1.WorkspaceScratch},
+					},
+				},
 			},
 		}
 	}
@@ -2122,8 +2132,14 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 			Annotations: map[string]string{workflow.PreviewFeaturesAnnotation: "true"},
 		}},
 		Gaggles: []apiv1.Gaggle{
-			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "alpha"}}},
-			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"}}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{
+				Project:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "alpha"},
+				CICommand: []string{testBin, "-test.run=^$"},
+			}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{
+				Project:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "beta"},
+				CICommand: []string{testBin, "-test.run=^$"},
+			}},
 		},
 		Workflows: []apiv1.Workflow{
 			workflowDefinition("alpha", "2.0"),
@@ -2164,6 +2180,13 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 	var wg sync.WaitGroup
+	var lookedUp []string
+	previousLookPath := runnerLookPath
+	runnerLookPath = func(name string) (string, error) {
+		lookedUp = append(lookedUp, name)
+		return exec.LookPath(name)
+	}
+	t.Cleanup(func() { runnerLookPath = previousLookPath })
 	definitions, err := buildSchedulerDefinitions(
 		layout,
 		&instance.Config{},
@@ -2185,6 +2208,10 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	localCI := definitions.Machines[alpha].Def.Spec.Tasks[1]
+	if got := localCI.Run.Command; len(got) != 2 || got[0] != testBin || got[1] != "-test.run=^$" {
+		t.Fatalf("alpha local-ci command = %v, want gaggle override %v", got, []string{testBin, "-test.run=^$"})
+	}
 	if definitions.WorktreesByGaggle["alpha"].Root == definitions.WorktreesByGaggle["beta"].Root {
 		t.Fatal("gaggles share a workcopy root")
 	}
@@ -2204,6 +2231,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(layout.ForGaggle(identity.Gaggle).RunsDir(), runID, "run.yaml")); err != nil {
 			t.Fatalf("%s run journal: %v", identity.Gaggle, err)
 		}
+	}
+	if len(lookedUp) != 2 || lookedUp[0] != testBin || lookedUp[1] != testBin {
+		t.Fatalf("CI preflight lookups = %v, want one lookup of the resolved gaggle override per run", lookedUp)
 	}
 }
 
