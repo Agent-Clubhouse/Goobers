@@ -226,9 +226,3 @@ github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # O
 github.com/goobers/goobers/internal/livejournal.WithSpanSource # Live-journal span-adoption seam; production wiring lands with the mode-3 dispatcher's blobstore integration (#3513).
 github.com/goobers/goobers/internal/livejournal.WithScrubber # Live-journal writer option exercised by tests; production path uses the default scrubber until #3513 wires per-run scrubbers.
 github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer clock option exercised by tests (idle-close determinism).
-
-# Sandbox policy validation (#3546). validate and resolveDirectory are called from
-# platform-specific implementations (native_darwin.go, native_linux.go) but appear
-# dead on unsupported platforms (Windows, etc.) where native_other.go applies.
-github.com/goobers/goobers/internal/sandbox.validate # Policy validation helper reachable from platform-specific sandbox implementations (darwin/linux only; compiled out on Windows).
-github.com/goobers/goobers/internal/sandbox.resolveDirectory # Directory resolution helper reachable from policy validation and platform-specific sandbox implementations (darwin/linux only).
