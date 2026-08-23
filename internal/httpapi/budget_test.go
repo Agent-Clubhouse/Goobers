@@ -74,14 +74,18 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 				t.Errorf("%s has a non-positive budget %s", route.ID, budget)
 			}
 			// §7.1: "every server budget is strictly below the client's 10s
-			// abort", so the server decides rather than the client. Blob
-			// routes are the known defect (apicontract cost_test); the
-			// credential plane's resolve route is exempt BY DESIGN — its
-			// budget contains an outbound GitHub App mint (30s ceiling) and
-			// its only callers are stage pods, never the portal client whose
-			// abort this rule is about (apicontract.CredentialResolveBudget).
+			// abort", so the server decides rather than the client. RunArtifact
+			// and RunTranscript are the known defect (apicontract cost_test) —
+			// the portal DOES fetch them, through the same 10s client. The
+			// credential plane's resolve route and the blob plane's digest GET
+			// are exempt BY DESIGN rather than defect: both serve stage pods
+			// only (decision 010/012, DS9) and are never called through the
+			// portal client this rule is about, so there is no client to race
+			// in the first place. Credential resolve additionally contains an
+			// outbound GitHub App mint (30s ceiling); blob GET's budget is the
+			// shared CostBlob transfer-bound ceiling (apicontract.BlobBudget).
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
-				route.ID != apicontract.RouteCredentialResolve &&
+				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteBlobGet &&
 				budget >= clientAbortBackstop {
 				t.Errorf("%s budget %s is not strictly below the client's %s abort; the client would "+
 					"give up first and the server would keep working",

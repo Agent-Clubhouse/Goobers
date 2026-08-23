@@ -90,6 +90,13 @@ const clientRoutes = {
   resolveEscalation: apiRoutes.resolveEscalation,
   journalEmit: apiRoutes.journalEmit,
   credentialResolve: apiRoutes.credentialResolve,
+  // The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+  // fetches and puts content-addressed artifacts by digest. Pod-only, like
+  // the credential plane — the portal never calls these and never will (the
+  // daemon refuses a human principal outright) — but the exhaustiveness
+  // check requires the full contract here as it grows.
+  blobGet: apiRoutes.blobGet,
+  blobPut: apiRoutes.blobPut,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
