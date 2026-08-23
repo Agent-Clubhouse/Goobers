@@ -96,7 +96,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runPRSelectADO(root, repo, stdout, stderr)
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 	)
@@ -431,7 +431,7 @@ func pullRequestsForSelection(
 //     satisfy, and several would otherwise issue a PR-as-work-item write against
 //     wit/workitems (wrong-object hazard). No sibling is parked here.
 func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newProviderForStage(root, repo, true)
+	adoProvider, err := newMergeReviewProvider(root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

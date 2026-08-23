@@ -1,8 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 func issueHasLabel(server *fakeGitHubServer, number int, label string) bool {
@@ -127,6 +134,7 @@ func TestRecordMergeRefusalSkipsMergeReviewOptOut(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
+
 	server.mu.Lock()
 	comments := append([]string(nil), server.issues[82].comments...)
 	labels := append([]string(nil), server.issues[82].labels...)
@@ -134,6 +142,7 @@ func TestRecordMergeRefusalSkipsMergeReviewOptOut(t *testing.T) {
 	if len(comments) != 0 || len(labels) != 0 {
 		t.Fatalf("opt-out refusal mutated PR: comments=%v issue labels=%v", comments, labels)
 	}
+
 }
 
 // TestRecordMergeRefusalResetsOnHeadAdvance proves a refusal at a NEW head resets
@@ -150,6 +159,7 @@ func TestRecordMergeRefusalResetsOnHeadAdvance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergeDemotionComment: %v", err)
 	}
+
 	server.addComment(81, prior)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "81")
@@ -168,5 +178,91 @@ func TestRecordMergeRefusalResetsOnHeadAdvance(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "1/") {
 		t.Errorf("stdout = %q, want the counter reset to attempt 1", stdout)
+	}
+}
+
+func TestRecordMergeRefusalADOUsesADOProviderPath(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "head-sha")
+	t.Setenv("GOOBERS_INPUT_REASON", "base moved")
+	t.Chdir(t.TempDir())
+
+	code, _, stderr := runArgs(t, "record-merge-refusal", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want provider failure after ADO dispatch; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, "does not support merge refusal recording") {
+		t.Fatalf("stderr = %q, ADO refusal path must dispatch before provider failure", stderr)
+	}
+}
+
+func TestRecordMergeRefusalDispatchesADOAndRecordsComment(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	commentsPath := "/" + repo.Owner + "/" + repo.Project + "/_apis/wit/workItems/359/comments"
+	var posted bool
+	mux := http.NewServeMux()
+	mux.HandleFunc(commentsPath, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"comments":[]}`))
+		case http.MethodPost:
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode comment request: %v", err)
+			}
+			if body["text"] == "" {
+				t.Error("comment request has empty text")
+			}
+			posted = true
+			_, _ = w.Write([]byte(`{"id":1,"text":"recorded"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/359", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"id":359,"rev":1,"url":"https://ado.test/workitems/359","fields":{"System.Title":"ADO refusal","System.Description":"","System.State":"Active","System.WorkItemType":"Bug","System.Tags":""}}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitemtypes/Bug/states", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"value":[{"name":"Active","category":"InProgress"}]}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "ado-token", func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		}), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "head-sha")
+	t.Setenv("GOOBERS_INPUT_REASON", "base moved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "record-merge-refusal", root)
+	if code != 0 {
+		t.Fatalf("record-merge-refusal: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !posted {
+		t.Fatal("ADO work-item comment endpoint was not called")
+	}
+	if !strings.Contains(stdout, "recorded merge refusal 1/") {
+		t.Fatalf("stdout = %q, want refusal recorded message", stdout)
 	}
 }

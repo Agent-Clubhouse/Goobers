@@ -278,3 +278,31 @@ func TestGatherSiblingContextAdvisoryModeConsistentWithDaemonIdentity(t *testing
 		t.Fatalf("gather-sibling-context: code = %d, stdout = %q, stderr = %q — want its own advisoryMode consistency check to agree with pr-select's daemon-identity-aware decision", code, stdout, stderr)
 	}
 }
+
+func TestPRSelectDispatchesADOAndSelectsPR(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	server := adoPRSelectServer(t, "approved")
+	adoPRSelectEnv(t, repo, server)
+	t.Setenv("GOOBERS_INPUT_HEADPREFIXES", "goobers/tb-ado-implementation/")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "selected PR #359") {
+		t.Fatalf("stdout = %q, want PR #359 selected from ADO provider", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatalf("read selected-pr.json: %v", err)
+	}
+	var selected map[string]string
+	if err := json.Unmarshal(data, &selected); err != nil {
+		t.Fatalf("unmarshal selected-pr.json: %v", err)
+	}
+	if selected["number"] != "359" {
+		t.Fatalf("selected number = %q, want 359", selected["number"])
+	}
+}

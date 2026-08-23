@@ -117,9 +117,9 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 
 	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
 	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
-	// non-GitHub providers, where both helpers are gated OFF. dispatcher is the provider-neutral
-	// landing seam (CONF-1 #2074) every poll/compare/detect/enqueue/merge call
-	// flows through, so every registered provider runs one shared code path.
+	// non-GitHub providers, where both helpers are gated OFF. Dispatcher is the
+	// capability guard and pass-through around the provider selected above; it
+	// does not perform provider selection itself.
 	var providerCapability = capability.GitHubPRMerge
 	if isADO {
 		// Merge/completion authority on ADO rides on the dedicated
@@ -136,7 +136,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		providerCapability = capability.ADOPRComplete
 	}
-	stageProvider, err := newProviderForStage(root, repo, false,
+	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
 		withStageProviderCache(),
 		withStageProviderMutations("pr"),
@@ -573,7 +573,7 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return out
 	}
 
-	branchProvider, err := newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), *headRepository, false,
+	branchProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](providerStageRoot(""), *headRepository, false,
 		withStageProviderCapability(capability.GitHubBranchDelete),
 		withStageProviderMutations("branch"),
 	)

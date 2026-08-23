@@ -122,7 +122,10 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+	if repo.Provider == providers.ProviderADO {
+		return runReconcilePostMergeADO(root, repo, *limit, *lookback, stdout, stderr)
+	}
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderMutations("pr"),
 	)
@@ -130,7 +133,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+	issuesProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderMutations("issue"),
 	)
@@ -138,7 +141,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := newProviderForStage(root, repo, false,
+	if _, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(capability.GitHubBranchDelete),
 	); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -162,6 +165,78 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	if len(unparkErrs) > 0 {
 		return failProviderStage(stderr, "reconcile open pull request parks", errors.Join(unparkErrs...), "")
 	}
+	return 0
+}
+
+func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit int, lookback time.Duration, stdout, stderr io.Writer) int {
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false,
+		withStageProviderCapability(capability.ADOPRWrite),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
+	var report postMergeReconcileReport
+	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		cutoff := time.Now().UTC().Add(-lookback)
+		keys := pendingPostMergeReconcileKeys(ledger, repo)
+		if len(keys) > limit {
+			keys = keys[:limit]
+		}
+		for _, key := range keys {
+			entry := ledger.Entries[key]
+			report.Scanned++
+			if entry.TimedOutAt.Before(cutoff) {
+				delete(ledger.Entries, key)
+				report.Expired++
+				continue
+			}
+			poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+				Repository: entry.Repository, PullID: entry.PullNumber,
+			})
+			if err != nil {
+				return fmt.Errorf("poll pull request #%s: %w", entry.PullNumber, err)
+			}
+			checkedAt := time.Now().UTC()
+			entry.LastCheckedAt = &checkedAt
+			if !poll.Merged {
+				ledger.Entries[key] = entry
+				report.Pending++
+				continue
+			}
+			actionErrs := performPostMergeADO(ctx, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, stdout, stderr)
+			if len(actionErrs) > 0 {
+				report.Pending++
+				ledger.Entries[key] = entry
+				continue
+			}
+			// ADO's post-merge path closes work items only. Do not checkpoint
+			// GitHub PR branch/fan-out actions that this path did not perform.
+			closed := closingIssueNumbers(poll.Body)
+			entry.Actions.ClosedIssueNumbers = make(map[string]bool, len(closed))
+			for _, id := range closed {
+				entry.Actions.ClosedIssueNumbers[id] = true
+			}
+			entry.State = postMergeReconcileCompleted
+			completedAt := time.Now().UTC()
+			entry.CompletedAt = &completedAt
+			ledger.Entries[key] = entry
+			report.Reconciled++
+		}
+		return writePostMergeReconcileLedger(ledgerPath, ledger)
+	})
+	if err != nil {
+		return failProviderStage(stderr, "reconcile timed-out merge queue entries", err, "")
+	}
+	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
+		report.Scanned, report.Reconciled, report.Pending, report.Expired)
 	return 0
 }
 
