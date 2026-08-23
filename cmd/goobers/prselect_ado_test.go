@@ -269,3 +269,33 @@ func TestPRSelectADOAdvisoryModeMisfireWhenHeadPrefixMismatch(t *testing.T) {
 		t.Fatalf("stdout = %q, want no-work: default headPrefixes must not recognize the ADO run branch as own", stdout)
 	}
 }
+
+func TestPRSelectADOEnforcesOptInAndAssigneePolicy(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	server := adoPRSelectServer(t, "approved")
+	adoPRSelectEnv(t, repo, server)
+	t.Setenv("GOOBERS_INPUT_HEADPREFIXES", "goobers/tb-ado-implementation/")
+	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:merge-review")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "goobers-bot")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "missing required opt-in label") {
+		t.Fatalf("stdout = %q, want ADO candidate rejected by opt-in policy", stdout)
+	}
+	if !strings.Contains(stdout, "no eligible PR") {
+		t.Fatalf("stdout = %q, want no eligible ADO PR", stdout)
+	}
+	if data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json")); err == nil {
+		if strings.Contains(string(data), `"number"`) {
+			t.Fatalf("no-work result = %q, want no selected PR", data)
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+}
