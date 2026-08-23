@@ -2,9 +2,11 @@ package runner
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -33,13 +35,42 @@ func ValidateContinuationTarget(source, candidate *workflow.Machine, target stri
 		return continuationTargetError(sourceDigest, candidateDigest, target,
 			fmt.Sprintf("target kind changed from %q to %q", sourceNode.Kind, candidateNode.Kind))
 	}
-	if sourceNode.Owner != candidateNode.Owner || sourceNode.Evaluator != candidateNode.Evaluator {
+	if !sameExecutionSemantics(source, candidate, target, sourceNode.Kind) {
 		return continuationTargetError(sourceDigest, candidateDigest, target, "target execution semantics changed")
 	}
 	if !sameOutgoingEdges(source, candidate, target) {
 		return continuationTargetError(sourceDigest, candidateDigest, target, "target transition changed")
 	}
 	return nil
+}
+
+type continuationExecutionProjection struct {
+	Kind workflow.GraphNodeKind
+	Task *apiv1.Task
+	Gate *apiv1.Gate
+}
+
+func sameExecutionSemantics(source, candidate *workflow.Machine, target string, kind workflow.GraphNodeKind) bool {
+	return reflect.DeepEqual(executionProjection(source, target, kind), executionProjection(candidate, target, kind))
+}
+
+func executionProjection(machine *workflow.Machine, target string, kind workflow.GraphNodeKind) continuationExecutionProjection {
+	projection := continuationExecutionProjection{Kind: kind}
+	switch kind {
+	case workflow.GraphNodeDeterministic, workflow.GraphNodeAgentic:
+		task, ok := machine.Task(target)
+		if ok {
+			task.Name = ""
+			projection.Task = &task
+		}
+	case workflow.GraphNodeGate:
+		gate, ok := machine.Gate(target)
+		if ok {
+			gate.Name = ""
+			projection.Gate = &gate
+		}
+	}
+	return projection
 }
 
 func machineDigest(machine *workflow.Machine) string {

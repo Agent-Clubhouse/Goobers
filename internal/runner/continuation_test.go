@@ -71,6 +71,34 @@ func TestValidateContinuationTargetRejectsChangedExecutionSemantics(t *testing.T
 	}
 }
 
+func TestValidateContinuationTargetRejectsChangedDeterministicExecution(t *testing.T) {
+	source := continuationMachine(t, "finish")
+	candidate, err := workflow.Compile(workflow.Definition{
+		Name: "continuation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "start",
+			Tasks: []apiv1.Task{
+				{Name: "infra", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{
+					Command: []string{"different-command"}, Workspace: apiv1.WorkspaceScratch,
+				}, Next: "finish"},
+				{Name: "finish", Type: apiv1.TaskDeterministic,
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "start", Evaluator: apiv1.EvaluatorAutomated,
+				Branches: map[string]string{"pass": "infra", "fail": "finish"},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ValidateContinuationTarget(source, candidate, "infra"); err == nil {
+		t.Fatal("target with changed deterministic execution was admitted")
+	}
+}
+
 func continuationMachineWithMetadata(t *testing.T, owner string, evaluator apiv1.EvaluatorKind) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{
