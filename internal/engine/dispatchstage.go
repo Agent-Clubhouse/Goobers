@@ -1,0 +1,231 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"go.temporal.io/sdk/workflow"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/invoke"
+)
+
+// dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
+// which a stage whose pinned placement resolved to a non-self runner executes
+// in a dispatcher-created pod (goobernetes-architecture.md §3/§5,
+// goobernetes-dispatcher.md) instead of in-process on the worker.
+//
+// The determinism constraint is load-bearing and shapes everything here
+// (architecture D8: "placement visible to the workflow function must be a
+// pure function of declared inputs"): the WORKFLOW never solves, never reads
+// instance config, never touches Kubernetes. Placement is resolved once at
+// run start (bootstrap.PinStagePlacements — the same WF-016 snapshot that
+// pins the definition) and carried in RunInput; runTask reads it as data and
+// routes the dispatch ACTIVITY, which is where all K8s I/O lives.
+
+// PinnedPlacement is one task's resolved execution placement, pinned into
+// RunInput at run start. The zero value never occurs in a pinned list; an
+// absent entry (or an empty Placements list — every zero-declaration and
+// local-mode instance) leaves the stage on the legacy self path, byte for
+// byte.
+type PinnedPlacement struct {
+	// Stage is the task name the placement binds to.
+	Stage string `json:"stage"`
+	// Self marks a placement that resolved to the daemon/worker host: the
+	// stage executes through the existing InvokeGoober / RunDeterministic
+	// arms, exactly as before this field existed. The dispatcher models the
+	// same outcome as Local=true/no-pod, so self stays a first-class
+	// placement rather than a special case.
+	Self bool `json:"self,omitempty"`
+	// Queue is the per-(gaggle × runner-type) task queue the dispatch
+	// activity is routed onto (dispatcher.QueueName of the runner
+	// SelectRunner picks — D9). Empty inherits the workflow's queue.
+	Queue string `json:"queue,omitempty"`
+	// Eligible is the solver's eligible runner set for this stage, in
+	// inventory order — dispatch consumes eligibility, it never re-derives it
+	// (goobernetes-dispatcher.md §2).
+	Eligible []dispatcher.RunnerSpec `json:"eligible,omitempty"`
+	// LedgerTouching, CPU, Memory, Disk, and Restrictions are the
+	// dispatcher.Attempt requirement facts, carried from the run-start solve
+	// (runnersolve.StageRequirement) because the workflow cannot recompute
+	// them mid-run.
+	LedgerTouching bool     `json:"ledgerTouching,omitempty"`
+	CPU            string   `json:"cpu,omitempty"`
+	Memory         string   `json:"memory,omitempty"`
+	Disk           string   `json:"disk,omitempty"`
+	Restrictions   []string `json:"restrictions,omitempty"`
+}
+
+// remotePlacementFor returns the stage's pinned placement and whether it
+// routes to the dispatch activity. A stage with no pinned placement, or one
+// pinned to self, reports false — the caller's existing arms then run
+// untouched, which is the zero-declaration invariance guard
+// (goobernetes-architecture.md §11 item 1).
+func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
+	for i := range in.Placements {
+		if in.Placements[i].Stage == stage {
+			return in.Placements[i], !in.Placements[i].Self
+		}
+	}
+	return PinnedPlacement{}, false
+}
+
+// dispatchStageInput is ActDispatchStage's activity input: the stage's fully
+// built invocation envelope plus the pinned placement facts. Pure data — the
+// workflow resolves nothing at dispatch time.
+type dispatchStageInput struct {
+	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
+	Placement PinnedPlacement          `json:"placement"`
+}
+
+// dispatchRemoteTask drives one non-self task through the dispatch activity
+// under the same retry loop, journaling, and integrity grading as the local
+// arms. It re-asserts the deterministic-task fail-closed guards (#626/#156)
+// with the local arm's exact diagnostics: a stage with no command is refused
+// here too, never shipped to a pod.
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity) (apiv1.ResultEnvelope, error) {
+	if t.Type == apiv1.TaskDeterministic {
+		if t.Run == nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
+		}
+		if len(t.Run.Command) == 0 && t.Run.Script == "" {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
+		}
+	}
+	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+		var result stageActivityResult
+		attemptEnv := env
+		attemptEnv.Attempt = int32(attempt)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement}).Get(ctx, &result)
+		result.Integrity = produced
+		return result, err
+	})
+}
+
+// StageDispatcher is the mode-3 substrate seam the dispatch activity executes
+// through: place one stage attempt on the eligible runner set, supervise it,
+// confirm surrender, dispose the pod. *dispatcher.Dispatcher satisfies it;
+// tests fake it.
+type StageDispatcher interface {
+	Dispatch(ctx context.Context, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.Report, error)
+}
+
+// DispatchStage executes one mode-3 stage attempt: it hands the attempt to
+// the dispatcher (which creates, supervises, and disposes the pod) and then
+// marshals the pod's surrendered blob back into the stageActivityResult the
+// engine consumes — the same shape InvokeGoober / RunDeterministic produce
+// for a local stage, so everything downstream (gate verdict routing, mutation
+// journaling, repass state, scrubbing) is substrate-blind.
+//
+// No workspace is provisioned here, on purpose: the pod provisions its own
+// (architecture §5 item 5); a local working copy would be dead weight the
+// remote stage never sees.
+func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput) (stageActivityResult, error) {
+	if a.Dispatcher == nil || a.Surrenders == nil {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
+	}
+	if err := a.refuseLeakedEnvelope(input.Envelope); err != nil {
+		return stageActivityResult{}, err
+	}
+	if input.Placement.Self {
+		// The workflow routes self placements to the local arms; reaching this
+		// activity with one means the routing was tampered with or mis-built.
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
+	}
+	attempt := dispatcher.Attempt{
+		RunID:          input.Envelope.RunID,
+		Gaggle:         input.Envelope.Gaggle,
+		Workflow:       input.Envelope.WorkflowID,
+		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
+		Number:         int(input.Envelope.Attempt),
+		LedgerTouching: input.Placement.LedgerTouching,
+		CPU:            input.Placement.CPU,
+		Memory:         input.Placement.Memory,
+		Disk:           input.Placement.Disk,
+		Restrictions:   input.Placement.Restrictions,
+	}
+	if input.Envelope.Limits.MaxDurationSeconds > 0 {
+		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second
+	}
+
+	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
+	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) {
+		return stageActivityResult{}, classifyDispatchError(err)
+	}
+	if err == nil && report.Local {
+		// SelectRunner resolved self inside an eligible set the workflow routed
+		// remotely — the pin and the dispatcher disagree. Fail closed rather
+		// than silently executing nothing.
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", input.Envelope.TaskID))
+	}
+
+	// ErrStageFailed arrives with surrender CONFIRMED (the dispatcher checks
+	// the gate before classifying the phase), so both the success and the
+	// stage-failed paths read the pod's own surrendered envelope: a failed
+	// stage's ResultFailure is a business outcome the definition routes, with
+	// exact parity to the local executor returning a failure envelope rather
+	// than an error.
+	surrendered, rerr := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.Number)
+	if rerr != nil {
+		// The gate confirmed surrender yet the result is unreadable: the
+		// substrate lost or garbled the outputs after the stage did its work.
+		// Infra-classed — the attempt retries on a fresh pod (D1), never
+		// burning the policy budget on a data-plane fault.
+		if errors.Is(rerr, dispatcher.ErrNoSurrender) {
+			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr)))
+		}
+		return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(rerr))
+	}
+	if surrendered.Result.Status == "" {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
+	}
+	return a.scrubStageActivityResult(stageActivityResult{
+		ResultEnvelope: surrendered.Result,
+		Mutations:      surrenderedMutationFacts(surrendered.Mutations),
+		MutationIssues: surrendered.MutationIssues,
+	})
+}
+
+// surrenderedMutationFacts converts the surrendered wire shape to the
+// engine's own mutation facts, field for field.
+func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []mutationFact {
+	if len(mutations) == 0 {
+		return nil
+	}
+	facts := make([]mutationFact, 0, len(mutations))
+	for _, m := range mutations {
+		facts = append(facts, mutationFact{
+			Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
+		})
+	}
+	return facts
+}
+
+// classifyDispatchError commits a dispatcher error's attempt class into the
+// typed application error the workflow's retry loop reads back (#622).
+//
+// Deterministic dispatch refusals — selection, image skew, restriction or
+// label mismatches — are policy-classed: redispatching the identical attempt
+// reproduces them byte for byte, so an infra retry would only burn budget.
+// EVERYTHING ELSE on this seam is infrastructure by design: "a pod or node
+// killed mid-stage classifies as an infra attempt (non-normative, retried on
+// the infra budget with a fresh pod)" (goobernetes-architecture.md §5
+// item 8) — capacity timeouts, pod create/supervise/dispose failures, and an
+// unconfirmed surrender are all substrate faults, never the stage's own
+// report. The business outcome only ever arrives via the surrendered
+// envelope, so the local seam's "everything unmarked is policy" convention
+// does not transplant here.
+func classifyDispatchError(err error) error {
+	var selection *dispatcher.SelectionError
+	var skew *dispatcher.SkewError
+	var restriction *dispatcher.RestrictionMismatchError
+	var label *dispatcher.LabelOverrideError
+	if errors.As(err, &selection) || errors.As(err, &skew) || errors.As(err, &restriction) || errors.As(err, &label) {
+		return classifySeamError(err)
+	}
+	return classifySeamError(invoke.InfrastructureFailure(err))
+}

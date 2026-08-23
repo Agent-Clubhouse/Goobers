@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -30,7 +31,12 @@ const (
 	ActRunDeterministic   = "RunDeterministic"
 	ActEvaluateAutomated  = "EvaluateAutomated"
 	ActReconcileSchedules = "ReconcileSchedules"
-	mutationsSidecarFile  = "mutations.jsonl"
+	// ActDispatchStage is the mode-3 dispatch activity (#3588,
+	// dispatchstage.go): the stage executes in a dispatcher-created pod and
+	// its surrendered outputs marshal back into the same stageActivityResult
+	// the in-process activities return.
+	ActDispatchStage     = "DispatchStage"
+	mutationsSidecarFile = "mutations.jsonl"
 )
 
 // Activities bundles the engine's side-effecting operations as Temporal
@@ -72,6 +78,16 @@ type Activities struct {
 	// it. Nil disables the canary (the local runner path, which never
 	// serializes an envelope off-process).
 	Canary journal.Scrubber
+	// Dispatcher is the mode-3 substrate seam (#3588, dispatchstage.go):
+	// *dispatcher.Dispatcher in production, a fake in tests. Required only by
+	// DispatchStage; a run with no pinned non-self placement never reaches
+	// it, and a nil seam fails that activity closed with a clear error.
+	Dispatcher StageDispatcher
+	// Surrenders is the plane DispatchStage reads surrendered stage results
+	// from (dispatcher.ReadSurrenderedResult) — the same plane the
+	// dispatcher's SurrenderGate confirms against. Required alongside
+	// Dispatcher.
+	Surrenders dispatcher.SurrenderPlane
 }
 
 type stageActivityResult struct {

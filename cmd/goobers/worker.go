@@ -54,7 +54,16 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"  --daemon-api <url>         daemon write API base URL; wires live journal\n" +
 	"                             emission through the journal plane, with the\n" +
 	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
-	"                             set (default $GOOBERS_DAEMON_API)\n\n" +
+	"                             set (default $GOOBERS_DAEMON_API)\n" +
+	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
+	"                             wires the dispatcher behind the stage-dispatch\n" +
+	"                             seam and serves the per-(gaggle x runner)\n" +
+	"                             dispatch queues derived from the instance's\n" +
+	"                             runners: inventory. Requires --instance and\n" +
+	"                             --blob-store (the surrender plane rides the\n" +
+	"                             same volume); cluster access uses in-cluster\n" +
+	"                             credentials or the standard kubeconfig rules\n" +
+	"                             (default $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
@@ -90,6 +99,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
+	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -124,6 +134,21 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
+	// The fleet's content-addressed store, if one is configured. Without it
+	// a run is only safely served by a SINGLE worker: stage artifacts stay
+	// on the node that produced them, and the first ContextPointer resolved
+	// somewhere else fails closed (#2866).
+	var store blobstore.Store
+	if *blobRoot != "" {
+		dirStore, berr := blobstore.NewDir(*blobRoot)
+		if berr != nil {
+			pf(stderr, "error: %v\n", berr)
+			return 1
+		}
+		store = dirStore
+		pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+	}
+
 	// The runtime wiring slice. Without --instance the worker keeps its
 	// previous shape: workspaces and automated gates only, every real stage
 	// failing closed with "not configured". With it, the agentic and
@@ -131,20 +156,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// the same buildRunnerConfig — which is what journal conformance between
 	// the two tiers rests on.
 	if *instanceRoot != "" {
-		// The fleet's content-addressed store, if one is configured. Without it
-		// a run is only safely served by a SINGLE worker: stage artifacts stay
-		// on the node that produced them, and the first ContextPointer resolved
-		// somewhere else fails closed (#2866).
-		var store blobstore.Store
-		if *blobRoot != "" {
-			dirStore, berr := blobstore.NewDir(*blobRoot)
-			if berr != nil {
-				pf(stderr, "error: %v\n", berr)
-				return 1
-			}
-			store = dirStore
-			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
-		}
 		seams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)
@@ -175,6 +186,28 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
 		}
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
+	}
+
+	if *dispatchNamespace != "" {
+		// Mode-3 stage dispatch (#3588): wire the #3513 dispatcher behind the
+		// engine's DispatchStage seam and serve the per-(gaggle ×
+		// runner-type) dispatch queues beside the workflow queue(s). Requires
+		// --instance: the runner inventory is what names the queues and the
+		// eligible runners.
+		if *instanceRoot == "" {
+			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
+			return 2
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot)
+		if derr != nil {
+			pf(stderr, "error: %v\n", derr)
+			return 1
+		}
+		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
+		engineRuntime.deps.Surrenders = dispatch.Surrenders
+		queues = mergeQueues(queues, dispatch.Queues)
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s; dispatch queues %s\n",
+			*dispatchNamespace, strings.Join(dispatch.Queues, ", "))
 	}
 
 	host, err := workerhost.New(workerhost.Config{

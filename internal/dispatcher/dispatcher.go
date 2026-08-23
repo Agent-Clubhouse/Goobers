@@ -191,26 +191,29 @@ func (a Attempt) stageTimeout() time.Duration {
 }
 
 // RunnerSpec is the dispatcher's view of one resolved runner: the inventory
-// entry's claims plus its classified host kind.
+// entry's claims plus its classified host kind. JSON tags are part of the
+// contract: the #3588 cutover pins the eligible set into engine.RunInput at
+// run start (the WF-016 snapshot), so this shape is serialized into workflow
+// input and history and must stay replay-decodable.
 type RunnerSpec struct {
 	// Name is the runners-inventory entry name.
-	Name string
+	Name string `json:"name"`
 	// OS is the runner's claimed operating system (runnersolve enum:
 	// "linux", "windows", "macOS").
-	OS string
+	OS string `json:"os,omitempty"`
 	// HostKind classifies Host (self | image | deployment).
-	HostKind instance.RunnerHostKind
+	HostKind instance.RunnerHostKind `json:"hostKind"`
 	// Host is the raw host value: "self", an image reference, or a
 	// Deployment name.
-	Host string
+	Host string `json:"host"`
 	// CPU, Memory, and Disk are the runner's declared ceilings as Kubernetes
 	// quantity strings ("" = no ceiling) — they become pod resource LIMITS.
-	CPU    string
-	Memory string
-	Disk   string
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+	Disk   string `json:"disk,omitempty"`
 	// Restrictions are the isolation effects this runner enforces — the
 	// resolved restriction set the runner-class label derives from.
-	Restrictions []string
+	Restrictions []string `json:"restrictions,omitempty"`
 }
 
 // SpecFromEntry converts a validated inventory entry into the dispatcher's

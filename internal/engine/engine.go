@@ -106,6 +106,16 @@ type RunInput struct {
 	// exactly as before. False (the zero value) preserves today's behavior
 	// byte for byte.
 	LiveJournal bool `json:"liveJournal,omitempty"`
+	// Placements pins each task's resolved execution placement (#3588): the
+	// run-start constraint solve's outcome, snapshotted like the definition
+	// itself (WF-016), because a Temporal workflow can never read
+	// instance.Config or call the solver mid-run (architecture D8 — a
+	// mid-run solve is a silent replay-nondeterminism bug). Built by
+	// bootstrap.PinStagePlacements; consumed by runTask as data. Empty —
+	// every zero-declaration and local-mode instance, and every input
+	// persisted before this field existed — leaves every stage on the legacy
+	// self path, byte for byte.
+	Placements []PinnedPlacement `json:"placements,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -512,6 +522,20 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey)
 		}
 		env.Inputs[inputKey] = v
+	}
+	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
+	// non-self runner dispatches through ActDispatchStage on its pinned
+	// per-(gaggle × runner-type) queue (architecture D9, subsuming the
+	// os-suffix scheme below for placed stages). Everything is read from
+	// RunInput — no solve, no config, no I/O — so the routing is a pure
+	// function of pinned data and replay-deterministic. A stage with no
+	// pinned placement, or one pinned to self, takes the arms below exactly
+	// as before this branch existed (zero-declaration invariance,
+	// architecture §11 item 1).
+	if placement, remote := remotePlacementFor(in, t.Name); remote {
+		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+		produced := engineProducedIntegrity(t, env, upstreamResult)
+		return dispatchRemoteTask(ctx, t, rec, env, placement, produced)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)

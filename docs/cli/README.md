@@ -3405,6 +3405,15 @@ Flags:
                              emission through the journal plane, with the
                              per-run bearer from $GOOBERS_POD_TOKEN when
                              set (default $GOOBERS_DAEMON_API)
+  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
+                             wires the dispatcher behind the stage-dispatch
+                             seam and serves the per-(gaggle x runner)
+                             dispatch queues derived from the instance's
+                             runners: inventory. Requires --instance and
+                             --blob-store (the surrender plane rides the
+                             same volume); cluster access uses in-cluster
+                             credentials or the standard kubeconfig rules
+                             (default $GOOBERS_DISPATCH_NAMESPACE)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

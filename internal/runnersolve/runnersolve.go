@@ -234,22 +234,25 @@ func (inv Inventory) LocalMode() bool {
 	return true
 }
 
-// ExecutableSubstrate returns the sub-inventory of runners the CURRENT
+// ExecutableSubstrate returns the sub-inventory of runners the DAEMON's
 // execution substrate can actually run a stage on: the self entries only,
 // in inventory order, with the mandate floor carried over.
 //
-// THIS IS THE SEAM the #3513 dispatcher widens. Today every admitted stage
-// executes on the daemon host through the local execution path — there is
-// no dispatcher that can route a stage to an image- or Deployment-hosted
-// runner — so checkpoints 2 and 3 (boot refusal and per-run admission,
-// which decide EXECUTION placement) must solve against this substrate, not
-// the declared inventory: a stage green-lit because a remote runner
-// satisfies it would still execute on the daemon host that does not.
-// Checkpoint 1 (config VALIDITY) deliberately keeps the whole inventory —
-// a config satisfiable by its declared inventory is a valid config. When
-// distributed dispatch lands (#3513), this function grows to return the
-// dispatch-reachable runner set and the checkpoints widen with it, without
-// touching the match.
+// THIS IS THE SEAM the dispatcher widens, and the #3588 engine cutover
+// widened it for ENGINE-started runs only: an engine run's placement pin
+// (bootstrap.PinStagePlacements) solves the FULL declared inventory with
+// Solve, because the engine's dispatch activity can reach image- and
+// Deployment-hosted runners. The daemon's own local execution path still
+// cannot dispatch — it runs stages in-process through internal/runner — so
+// checkpoints 2 and 3 (boot refusal and per-run admission, which decide the
+// DAEMON's execution placement) keep solving against this self-only
+// substrate: a stage green-lit because a remote runner satisfies it would
+// still execute on the daemon host that does not. Checkpoint 1 (config
+// VALIDITY) deliberately keeps the whole inventory — a config satisfiable
+// by its declared inventory is a valid config. When the daemon moves behind
+// the same dispatch seam (#3482 increment 1), this function grows to return
+// the dispatch-reachable runner set and the checkpoints widen with it,
+// without touching the match.
 func (inv Inventory) ExecutableSubstrate() Inventory {
 	substrate := Inventory{Mandates: inv.Mandates}
 	for _, r := range inv.Runners {

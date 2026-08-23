@@ -142,6 +142,11 @@ type StartSpec struct {
 	// LiveJournal pins live journal authorship (DS4) into the run: the
 	// starter sets it when the daemon's journal plane serves this instance.
 	LiveJournal bool
+	// Placements pins each task's resolved execution placement (#3588) —
+	// bootstrap.PinStagePlacements' output for this definition. Nil for
+	// every zero-declaration and local-mode instance, which leaves every
+	// stage on the legacy self path byte for byte.
+	Placements []PinnedPlacement
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -177,5 +182,6 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		BranchNamespace:        s.BranchNamespace,
 		GateGooberCapabilities: s.GateGooberCapabilities,
 		LiveJournal:            s.LiveJournal,
+		Placements:             s.Placements,
 	}, nil
 }
