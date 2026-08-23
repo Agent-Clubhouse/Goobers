@@ -350,6 +350,14 @@ type Report struct {
 	SurrenderConfirmed bool
 	// Disposed reports whether the pod was deleted.
 	Disposed bool
+	// DisposeErr records a DeletePod failure encountered while disposing the
+	// pod. It is a leak signal only — a dispose failure NEVER masks a settled
+	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
+	// returned error still reflects the settled result and this field carries
+	// the disposal failure alongside it. Disposed==false is the paired signal;
+	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
+	// sweep (dispatcher §5).
+	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
 	QueuedAt     time.Time
@@ -419,13 +427,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		}
 	}
 
-	// Dispose unconditionally: one attempt per pod (D1). A failed disposal
-	// is reported, but activeDeadlineSeconds and the restart reconcile sweep
-	// bound the leak either way (dispatcher §5).
+	// Dispose unconditionally: one attempt per pod (D1). A dispose failure
+	// must NOT mask a settled outcome. By the time we reach here superviseErr
+	// == nil means the outcome is settled: supervision reached a terminal
+	// phase (PodSucceeded or PodFailed) AND the gate confirmed surrender — the
+	// pod's output is authoritative and downstream must read it. A dispose
+	// failure in that state would otherwise turn a confirmed success or a
+	// confirmed stage-failure into an infra error, discarding the surrendered
+	// result and spending an infra retry re-dispatching an already-settled
+	// (possibly MUTATING) stage. So record the disposal failure on the report
+	// as the leak signal (report.Disposed stays false; the leak is bounded by
+	// activeDeadlineSeconds and the restart reconcile sweep, dispatcher §5) and
+	// let the settled path fall through: PodFailed → ErrStageFailed, success →
+	// nil. When superviseErr is already non-nil there is no settled outcome to
+	// protect; that infra error is returned unchanged and DisposeErr rides
+	// alongside on the report. superviseErr is never overwritten here, because
+	// there is no superviseErr == nil state that is not a settled outcome.
 	if delErr := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); delErr != nil {
-		if superviseErr == nil {
-			superviseErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
-		}
+		report.DisposeErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
 	} else {
 		report.Disposed = true
 	}

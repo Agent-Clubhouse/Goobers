@@ -224,6 +224,70 @@ func TestDispatchFailedStage(t *testing.T) {
 	}
 }
 
+// A dispose failure must NOT mask a settled SUCCESS: the confirmed surrender
+// is authoritative, so Dispatch returns nil and records the disposal failure
+// on the report as a leak signal (Disposed stays false, DisposeErr set) rather
+// than fabricating an infra error that would discard the surrendered result
+// and burn an infra retry on an already-succeeded (possibly MUTATING) stage.
+func TestDispatchDisposeFailureDoesNotMaskSettledSuccess(t *testing.T) {
+	pods := &fakePodAPI{deleteErrFor: map[string]error{}}
+	relay := &recordingRelay{}
+	d, err := New(testConfig(), pods, relay, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	// Arm DeletePod to fail for the one pod this attempt creates. Its name is
+	// deterministic from the attempt identity, so precompute it.
+	podName := PodName(testAttempt())
+	pods.deleteErrFor[podName] = errors.New("apiserver conflict")
+
+	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	if err != nil {
+		t.Fatalf("Dispatch returned %v: a dispose failure must not mask a settled success", err)
+	}
+	if !report.SurrenderConfirmed || report.Phase != corev1.PodSucceeded {
+		t.Fatalf("report = %+v: the settled success must be preserved", report)
+	}
+	if report.Disposed {
+		t.Fatal("report.Disposed must stay false when DeletePod failed — it is the leak signal")
+	}
+	if report.DisposeErr == nil {
+		t.Fatal("report.DisposeErr must record the disposal failure")
+	}
+}
+
+// A dispose failure must NOT mask a settled FAILURE either: the confirmed
+// PodFailed result is authoritative, so ErrStageFailed still surfaces (not a
+// dispose-masked infra error) with the disposal failure recorded on the report.
+func TestDispatchDisposeFailureDoesNotMaskSettledFailure(t *testing.T) {
+	pods := &fakePodAPI{terminalPhase: corev1.PodFailed, deleteErrFor: map[string]error{}}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	podName := PodName(testAttempt())
+	pods.deleteErrFor[podName] = errors.New("apiserver conflict")
+
+	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	if !errors.Is(err, ErrStageFailed) {
+		t.Fatalf("got %v, want ErrStageFailed — a dispose failure must not mask the settled failure", err)
+	}
+	if report.Disposed {
+		t.Fatal("report.Disposed must stay false when DeletePod failed")
+	}
+	if report.DisposeErr == nil {
+		t.Fatal("report.DisposeErr must record the disposal failure")
+	}
+}
+
 // host: self resolves to the local execution path: no pod, no k8s calls.
 func TestDispatchSelfHostIsLocal(t *testing.T) {
 	pods := &fakePodAPI{}
