@@ -186,3 +186,130 @@ func TestTickBacklogCounterErrorDoesNotCrashOrDispatch(t *testing.T) {
 		t.Fatalf("expected a backlog_count_failed error event journaled, got: %+v", events)
 	}
 }
+
+func TestTickRefillMaintainsDesiredConcurrencyWithoutExternalTrigger(t *testing.T) {
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	counter := &fakeBacklogCounter{count: 10}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:              "goobers",
+		Workflow:            "implementation",
+		Readiness:           apiv1.ReadinessConditions{MaxConcurrentRuns: 4, DesiredConcurrentRuns: 2},
+		RefillDemandCounter: counter,
+		Starter:             starter,
+	}})
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+
+	scheduler.Tick(context.Background(), now)
+	waitForCount(t, starter.count, 2)
+	if got := counter.polls(); got != 1 {
+		t.Fatalf("refill eligibility polls = %d, want one bounded provider read", got)
+	}
+	close(block)
+	scheduler.Wait()
+
+	if got := starter.count(); got != 2 {
+		t.Fatalf("refill starts = %d, want 2 runs at desired occupancy", got)
+	}
+}
+
+func TestTerminalRunWakesDesiredConcurrencyRefill(t *testing.T) {
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	counter := &fakeBacklogCounter{count: 10}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:              "goobers",
+		Workflow:            "implementation",
+		Readiness:           apiv1.ReadinessConditions{MaxConcurrentRuns: 4, DesiredConcurrentRuns: 2},
+		RefillDemandCounter: counter,
+		Starter:             starter,
+	}})
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+
+	scheduler.Tick(context.Background(), now)
+	waitForCount(t, starter.count, 2)
+	block <- struct{}{}
+	select {
+	case <-scheduler.wake:
+	case <-time.After(time.Second):
+		t.Fatal("terminal run did not wake desired-concurrency refill")
+	}
+
+	scheduler.Tick(context.Background(), now.Add(time.Second))
+	waitForCount(t, starter.count, 3)
+	if got := counter.polls(); got != 2 {
+		t.Fatalf("refill eligibility polls = %d, want immediate terminal-driven repoll", got)
+	}
+	close(block)
+	scheduler.Wait()
+}
+
+func TestTickRefillBudgetRejectionUsesJitteredBackoff(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	counter := &fakeBacklogCounter{count: 10}
+	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:              "goobers",
+		Workflow:            "implementation",
+		Readiness:           apiv1.ReadinessConditions{MaxConcurrentRuns: 4, MaxRunsPerHour: 1, DesiredConcurrentRuns: 2},
+		RefillDemandCounter: counter,
+		Starter:             starter,
+	}})
+	identity := WorkflowIdentity{Gaggle: "goobers", Workflow: "implementation"}
+	scheduler.refillBackoff = 30 * time.Second
+	scheduler.refillBackoffJitter = 10 * time.Second
+	scheduler.refillRandN = func(int64) int64 { return int64(5 * time.Second) }
+	started := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+
+	scheduler.Tick(context.Background(), started)
+	scheduler.Wait()
+	waitForCount(t, starter.count, 1)
+	scheduler.mu.Lock()
+	retryAt := scheduler.refillBlockedUntil[identity]
+	scheduler.mu.Unlock()
+	if !retryAt.Equal(started.Add(35 * time.Second)) {
+		t.Fatalf("refill retryAt = %s, want %s", retryAt, started.Add(35*time.Second))
+	}
+	countFired := func() int {
+		events, err := journal.ReadInstanceLog(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fired := 0
+		sawRefillSkip := false
+		for _, event := range events {
+			if event.Type == journal.EventTriggerFired && event.Workflow == "implementation" {
+				fired++
+			}
+			if event.Type == journal.EventTickSkipped &&
+				event.Workflow == "implementation" &&
+				event.Reason == "refill blocked: "+ReasonBudget {
+				sawRefillSkip = true
+			}
+		}
+		if !sawRefillSkip {
+			t.Fatalf("events = %+v, want refill blocked reason", events)
+		}
+		return fired
+	}
+	if got := countFired(); got != 2 {
+		t.Fatalf("first tick trigger.fired = %d, want 2 (one admitted + one budget refusal)", got)
+	}
+
+	scheduler.Tick(context.Background(), started.Add(31*time.Second))
+	scheduler.Wait()
+	if got := countFired(); got != 2 {
+		t.Fatalf("trigger.fired during backoff = %d, want unchanged", got)
+	}
+	if got := counter.polls(); got != 1 {
+		t.Fatalf("eligibility polls during backoff = %d, want unchanged", got)
+	}
+
+	scheduler.Tick(context.Background(), started.Add(36*time.Second))
+	scheduler.Wait()
+	if got := countFired(); got != 3 {
+		t.Fatalf("trigger.fired after backoff = %d, want one retry", got)
+	}
+	if got := counter.polls(); got != 2 {
+		t.Fatalf("eligibility polls after backoff = %d, want 2", got)
+	}
+}

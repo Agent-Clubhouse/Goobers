@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -85,6 +86,62 @@ func (f *receiptFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, 
 type mcpFailureFakeAdapter struct {
 	FakeAdapter
 	failures []MCPServerFailure
+}
+
+type liveAgentAdapter struct {
+	FakeAdapter
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *liveAgentAdapter) Run(_ context.Context, req RunRequest) (Outcome, error) {
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	tokens := int64(12)
+	started := journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker", RunID: req.Envelope.RunID,
+		Stage: req.Envelope.TaskID, Attempt: req.Attempt, Worker: true,
+		Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+		Fidelity: journal.AgentFidelityFull,
+	}}
+	if err := req.AgentEventSink(started); err != nil {
+		return Outcome{}, err
+	}
+	close(a.started)
+	<-a.release
+	message := journal.Event{Type: journal.EventAgentMessage, PeerMessage: &journal.PeerMessageMetadata{
+		ID: "message-1", SenderID: "worker", RecipientID: "coordinator",
+		OccurredAt: now.Add(time.Second), Purpose: "completion",
+	}}
+	completed := started
+	completed.Agent = &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker", RunID: req.Envelope.RunID,
+		Stage: req.Envelope.TaskID, Attempt: req.Attempt, Worker: true,
+		Lifecycle: journal.AgentCompleted, StartedAt: now, UpdatedAt: now.Add(2 * time.Second),
+		Usage: journal.AgentUsage{InputTokens: &tokens}, Fidelity: journal.AgentFidelityFull,
+	}
+	for _, event := range []journal.Event{message, completed} {
+		if err := req.AgentEventSink(event); err != nil {
+			return Outcome{}, err
+		}
+	}
+	payload, _ := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	return Outcome{
+		Payload: payload, AgentEvents: []journal.Event{started, message, completed},
+		AgentTelemetryFidelity: journal.AgentFidelityFull,
+	}, nil
+}
+
+type agentPayloadAdapter struct {
+	FakeAdapter
+	payload []byte
+}
+
+func (a *agentPayloadAdapter) Run(_ context.Context, req RunRequest) (Outcome, error) {
+	result, _ := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	return Outcome{
+		Payload: result, AgentEvents: projectAgentEvents(a.payload, req),
+		AgentTelemetryFidelity: journal.AgentFidelityFull,
+	}, nil
 }
 
 func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
@@ -531,6 +588,121 @@ func TestExecutorUsesOnlyAdapterCanonicalUsage(t *testing.T) {
 				t.Fatalf("result metrics = %v, want agent custom metric retained", result.Metrics)
 			}
 		})
+	}
+}
+
+func TestExecutorProjectsLiveTreeAndNestedUsageToStageSpan(t *testing.T) {
+	adapter := &liveAgentAdapter{
+		FakeAdapter: FakeAdapter{},
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exporter := telemetrytest.NewMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	ctx, span := provider.Tracer("nested-agent-live-test").Start(context.Background(), "attempt")
+	type invocationResult struct {
+		result apiv1.ResultEnvelope
+		err    error
+	}
+	done := make(chan invocationResult, 1)
+	env := testEnvelope(t.TempDir())
+	env.Attempt = 3
+	go func() {
+		result, err := exec.Invoke(ctx, env)
+		done <- invocationResult{result: result, err: err}
+	}()
+
+	<-adapter.started
+	tree, err := journal.ActiveAgentTreeForStage(rec.events, env.RunID, env.TaskID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 1 || tree["worker"].Lifecycle != journal.AgentStarted {
+		t.Fatalf("in-flight tree = %#v", tree)
+	}
+	close(adapter.release)
+	invocation := <-done
+	span.End()
+	if invocation.err != nil {
+		t.Fatalf("Invoke: %v", invocation.err)
+	}
+	if got := invocation.result.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 12 {
+		t.Fatalf("result nested usage = %v, want 12", got)
+	}
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("telemetry spans = %d, want 1", len(spans))
+	}
+	var spanTokens int64
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == telemetry.AttrGenAIUsageInputTokens {
+			spanTokens = attr.Value.AsInt64()
+		}
+	}
+	if spanTokens != 12 {
+		t.Fatalf("stage span nested usage = %d, want 12", spanTokens)
+	}
+	var lifecycleEvents, messageEvents int
+	for _, event := range spans[0].Events() {
+		switch event.Name {
+		case telemetry.NestedAgentLifecycleEventName:
+			lifecycleEvents++
+		case telemetry.NestedAgentMessageEventName:
+			messageEvents++
+		}
+	}
+	if lifecycleEvents != 2 || messageEvents != 1 {
+		t.Fatalf("nested telemetry events = lifecycle %d message %d", lifecycleEvents, messageEvents)
+	}
+}
+
+func TestExecutorRedactsNormalizedAdapterPayloadBeforeProjection(t *testing.T) {
+	const secret = "adapter-secret-value"
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	payload := []byte(`{"type":"agent.lifecycle","agent":{"id":"worker-` + secret + `","runId":"spoofed","stage":"spoofed","attempt":99,"plugin":"plugin-` + secret + `","objective":"assignment-` + secret + `","requestedModel":"requested-` + secret + `","resolvedModel":"resolved-` + secret + `","requestedReasoningEffort":"high-` + secret + `","resolvedReasoningEffort":"medium-` + secret + `","lifecycle":"completed","startedAt":"` + now + `","updatedAt":"` + now + `","results":[{"path":"artifacts/` + secret + `","digest":"sha256:` + secret + `","size":1}],"dependsOn":["dependency-` + secret + `"],"fidelity":"full"}}
+{"type":"agent.message","peerMessage":{"id":"message-` + secret + `","senderId":"sender-` + secret + `","recipientId":"recipient-` + secret + `","occurredAt":"` + now + `","purpose":"dependency-` + secret + `","artifact":{"path":"artifacts/` + secret + `","digest":"sha256:` + secret + `","size":1},"contentHash":"sha256:` + secret + `","content":"raw-` + secret + `"},"content":"raw-` + secret + `"}`)
+	adapter := &agentPayloadAdapter{payload: payload}
+	rec := &fakeRecorder{}
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		scrubber,
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	raw, err := json.Marshal(rec.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "raw-"+secret) {
+		t.Fatalf("adapter payload reached projection unsanitized: %s", raw)
+	}
+	if !strings.Contains(string(raw), journal.Redacted) {
+		t.Fatalf("adapter payload did not retain redaction marker: %s", raw)
 	}
 }
 

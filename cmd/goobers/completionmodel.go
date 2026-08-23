@@ -188,6 +188,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
 		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
 	"engine-project": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
@@ -197,6 +198,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
@@ -382,9 +384,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
-		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "credit-assignment"}, desc: "Aggregate to detect"},
+		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "workflow-untriggered", "stage-unreached", "credit-assignment", "learning-episode"}, desc: "Aggregate to detect"},
+		{name: "learning-action", takesArg: true, values: []string{"instruction-or-skill", "workflow-or-gate", "targeted-test-mapping", "code-issue"}, desc: "Governed learning action to include"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
-		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "format", takesArg: true, values: []string{"candidate-findings", "effective-version-efficacy", "tutor-live-verification"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},

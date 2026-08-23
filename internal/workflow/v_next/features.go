@@ -426,6 +426,7 @@ const (
 	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
 	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
+	featureWorkflowDesiredConcurrentRuns  FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
 	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
 	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
 	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
@@ -629,6 +630,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
 		featureWorkflowRunControls,
+		featureWorkflowDesiredConcurrentRuns,
 		featureWorkflowMaxConcurrentRuns,
 		featureWorkflowMaxRunsPerHour,
 		featureWorkflowMaxRunsPerDay,
@@ -973,8 +975,8 @@ func addRunControlFeatures(used featureSet, controls *apiv1.RunControls, ids run
 // providerFeatureIDs parameterizes the per-enum-value provider features per
 // declaration site (project, backlog, additionalRepos), so the sites cannot
 // drift in spelling. Provider enum values select distinct implementations
-// (internal/bootstrap/providers.go switches on them), so each value carries
-// its own FeatureID, following the goober.spec.harness.* precedent.
+// (the provider wiring in cmd/goobers switches on them), so each value
+// carries its own FeatureID, following the goober.spec.harness.* precedent.
 type providerFeatureIDs struct {
 	github FeatureID
 	ado    FeatureID
@@ -1033,6 +1035,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	)
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns != 0 {
+		used.add(featureWorkflowDesiredConcurrentRuns)
 	}
 	if def.Spec.Readiness.MaxRunsPerDay != 0 {
 		used.add(featureWorkflowMaxRunsPerDay)

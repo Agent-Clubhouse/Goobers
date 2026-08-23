@@ -194,9 +194,11 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 		CompletionPath: DefaultResultPath,
 		Credentials:    creds,
 	}
-	if _, err := adapter.Run(context.Background(), req); err != nil {
+	out, err := adapter.Run(context.Background(), req)
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	assertAdapterLifecycle(t, out, "copilot")
 	gotModel, gotGitHub := false, false
 	for _, kv := range runner.lastReq.Env {
 		switch kv {
@@ -213,6 +215,35 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 		if strings.Contains(arg, "copilot-pat") || strings.Contains(arg, "org-repo-token") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
 		}
+	}
+}
+
+func TestCopilotAdapterPreservesLifecycleEvents(t *testing.T) {
+	workspace := t.TempDir()
+	var live []journal.Event
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if len(live) != 1 || live[0].Agent == nil || live[0].Agent.Lifecycle != journal.AgentStarted {
+				return fmt.Errorf("started lifecycle was not emitted before process launch: %#v", live)
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot-lifecycle-test"}, Runner: runner}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
+		AgentEventSink: func(event journal.Event) error {
+			live = append(live, event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertAdapterLifecycle(t, out, "copilot")
+	if len(live) != 2 || live[1].Agent == nil || live[1].Agent.Lifecycle != journal.AgentCompleted {
+		t.Fatalf("live lifecycle = %#v", live)
 	}
 }
 

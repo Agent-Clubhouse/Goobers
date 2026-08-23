@@ -431,10 +431,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
-| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path), `cmd/scheduler` | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2 |
+| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
-| `cmd/goober-runtime` | **Superseded** by the local runner's stage execution; folds into the `goobers` binary |
+| `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
 ## 12. Roadmap
 

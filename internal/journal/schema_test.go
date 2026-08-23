@@ -86,6 +86,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			"posture": "enforced", "mechanism": "seatbelt", "workspace": "/work/run-1/impl",
 		}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
+		{Type: EventAgentLifecycle, Agent: &AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: testIdentity().RunID,
+			Stage: "impl", Attempt: 1, Lifecycle: AgentCompleted,
+			StartedAt: fixedClock()(), UpdatedAt: fixedClock()(),
+		}},
+		{Type: EventAgentMessage, PeerMessage: &PeerMessageMetadata{
+			ID: "message-1", SenderID: "worker-1", RecipientID: "coordinator",
+			OccurredAt: fixedClock()(), Purpose: "completion",
+		}},
 	} {
 		if err := run.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)

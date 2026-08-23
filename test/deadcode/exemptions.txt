@@ -96,7 +96,6 @@ github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpret
 github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.RepoFromCoverage # WF022 coverage projection consumed by the dslmigrate --to 3.0 target (#3516) and pinned today by the golden discriminator fixture (#3505).
-github.com/goobers/goobers/cmd/goober-runtime.run # Superseded runtime wrapper retained to test the tier-3 reference binary.
 github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
@@ -147,7 +146,7 @@ github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development
 github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
-github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by scheduler and registry package tests.
+github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by registry package tests.
 github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
 github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
@@ -155,30 +154,13 @@ github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Tempor
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
 github.com/goobers/goobers/internal/engine.WithSpanSource # Span-adoption seam (#2907) shipped ahead of its caller: no process wires a fleet blob store into the projection driver yet, so only projection tests configure a SpanSource today. Exercised by spanprojection_test.go; goes stale when a production caller (e.g. cmd/goobers's projection driver) lands.
-github.com/goobers/goobers/internal/gooberruntime.StaticProviderResolver.RepoProvider # Quarantined runtime provider seam retained for tier 3.
-github.com/goobers/goobers/internal/gooberruntime.KubernetesPreparer.Prepare # Quarantined Kubernetes workspace seam retained for tier 3.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
-github.com/goobers/goobers/internal/journal.ConformanceView # Cross-runner conformance projection retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.projectNormative # Cross-runner conformance helper retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.encodeArtifactRefs # Cross-runner conformance helper (stage artifact references) retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.isContextManifestArtifact # Cross-runner conformance helper retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.NormativeEvent.String # Cross-runner conformance formatter retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.encodeCompleteness # Cross-runner conformance helper (branch completeness record) retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.encodeOutputs # Cross-runner conformance helper (stage Outputs) retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
-github.com/goobers/goobers/internal/scheduler.ReadinessFunc.Name # Scheduler readiness adapter retained for pluggable policy checks.
-github.com/goobers/goobers/internal/scheduler.ReadinessFunc.Ready # Scheduler readiness adapter retained for pluggable policy checks.
-github.com/goobers/goobers/internal/scheduler.ConcurrencyLimiter.Name # Scheduler concurrency policy retained for alternate scheduler composition.
-github.com/goobers/goobers/internal/scheduler.ConcurrencyLimiter.Ready # Scheduler concurrency policy retained for alternate scheduler composition.
-github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Name # Schedule trigger adapter retained for alternate scheduler composition.
-github.com/goobers/goobers/internal/scheduler.ScheduleTrigger.Watch # Schedule trigger adapter retained for alternate scheduler composition.
-github.com/goobers/goobers/internal/scheduler.EventTrigger.Name # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
-github.com/goobers/goobers/internal/scheduler.EventTrigger.Watch # Provider-event scheduling is a reserved V1 trigger exercised by its package tests.
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
@@ -241,6 +223,9 @@ github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definitio
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
 github.com/goobers/goobers/internal/temporaltest.StartDevServer # Dev-server acquisition seam used only from engine/bootstrap _test.go files (#3393).
 github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # Offline-vs-download resolution helper for the test-only dev-server seam (#3393).
+github.com/goobers/goobers/internal/livejournal.WithSpanSource # Live-journal span-adoption seam; production wiring lands with the mode-3 dispatcher's blobstore integration (#3513).
+github.com/goobers/goobers/internal/livejournal.WithScrubber # Live-journal writer option exercised by tests; production path uses the default scrubber until #3513 wires per-run scrubbers.
+github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer clock option exercised by tests (idle-close determinism).
 
 # Sandbox policy validation (#3546). validate and resolveDirectory are called from
 # platform-specific implementations (native_darwin.go, native_linux.go) but appear

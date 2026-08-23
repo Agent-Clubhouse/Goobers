@@ -93,6 +93,21 @@ type Result struct {
 	// persisted — instead of re-inferring "something needs to change" from
 	// git alone.
 	VerdictArtifact *apiv1.ArtifactPointer
+	// ResolvedFindingIDs were present in the latest injected episode but are
+	// absent from this verdict. They are durable proof that a repass cleared
+	// those finding identities even when another finding still blocks.
+	ResolvedFindingIDs []string
+	// SuppressedFindingIDs tried to reopen a previously resolved identity
+	// without new finding-specific evidence and were removed fail-closed.
+	SuppressedFindingIDs []string
+	// ReopenedFindingIDs were previously resolved but carried a genuinely new
+	// evidence digest, so the reviewer was allowed to raise them again.
+	ReopenedFindingIDs []string
+	// DisprovenFindingIDs were removed by deterministic source evidence.
+	DisprovenFindingIDs []string
+	// DisprovenFindings retain the complete finding-level contract so a
+	// same-evaluation deterministic disproval projects as false-finding.
+	DisprovenFindings []apiv1.Finding
 }
 
 // RepassCause is the machine-readable upstream reason for a repass.
@@ -130,6 +145,11 @@ const ReasonUnchangedRepass = "UNCHANGED_REPASS"
 // converted to pass because deterministic source evidence disproved every
 // finding.
 const ReasonFindingDisproven = "REVIEW_FINDING_DISPROVEN"
+
+// ReasonFindingResolved marks a needs-changes verdict whose only findings
+// attempted to reopen identities already resolved by an earlier repass without
+// supplying new finding-specific evidence.
+const ReasonFindingResolved = "REVIEW_FINDING_RESOLVED"
 
 // ReasonRemediationEvidenceNotInspected is both the ErrorInfo code the runner
 // rejects an unchanged remediation under, and Result.Reason's value when
@@ -350,7 +370,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
 			if e.invalidNeedsHumanVerdict(g, *verdict) {
-				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "", findingResolution{})
 			}
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
@@ -385,23 +405,42 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			verdict = &v
 			outcome = string(v.Decision)
 			if invalidNeedsHuman {
-				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "")
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "", findingResolution{})
 			}
 		}
 
 	}
 
 	outcomeReason := ""
+	var learningResolution findingResolution
+	// Empty/duplicate-diff verdicts are synthesized by the runner without a
+	// reviewer evaluation. Their empty finding sets cannot prove that findings
+	// from the prior episode were corrected.
+	if verdict != nil && !duplicateDiff && !emptyDiff {
+		normalized, resolution := reconcileLearningFindings(
+			*verdict, env.ContextPointers, journalDir(e.Journal), g.Name, diffDigest,
+		)
+		verdict = &normalized
+		learningResolution = resolution
+		outcome = string(normalized.Decision)
+		if resolution.AllSuppressed {
+			outcomeReason = ReasonFindingResolved
+		}
+	}
 	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
+		beforeFindings := append([]apiv1.Finding(nil), verdict.Findings...)
+		before := findingIDs(beforeFindings)
 		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
 		verdict = &normalized
 		outcome = string(normalized.Decision)
+		learningResolution.Disproven = removedFindingIDs(before, normalized.Findings)
+		learningResolution.DisprovenFindings = removedFindings(beforeFindings, normalized.Findings)
 		if allDisproven {
 			outcomeReason = ReasonFindingDisproven
 		}
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason, learningResolution)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -464,10 +503,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "")
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "", findingResolution{})
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool, outcomeReason string) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool, outcomeReason string, resolution findingResolution) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -496,6 +535,9 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
 		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
+		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
+		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
+		DisprovenFindings: resolution.DisprovenFindings,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {

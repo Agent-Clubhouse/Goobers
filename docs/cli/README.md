@@ -1046,6 +1046,12 @@ Usage: goobers engine-start [flags] <workflow> [path]
 Dispatch one run onto the tier-3 engine (experimental). The run id is
 derived from gaggle, workflow, and --dedupe-key.
 
+--live-journal pins live journal authorship into the run: workers emit
+journal events through the daemon's journal plane as they happen, so the
+run is visible mid-flight; without it the journal is projected from
+history at close, as before. Requires the daemon's write API to be
+reachable from every worker serving the run (worker --daemon-api).
+
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 ~~~
 
@@ -3046,12 +3052,13 @@ $ goobers telemetry stats --json
 emit versioned candidate findings (a connector stage)
 
 ~~~text
-Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
 
 Query the instance telemetry rollup for threshold-crossing failure and gate
 patterns. The built-in connector stage writes a versioned candidate-findings
 artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.
-With no --aggregate, all supported aggregates are evaluated. Threshold rates
+With no --aggregate, all supported aggregates are evaluated. --learning-action
+filters learning-episode findings to governed action families. Threshold rates
 are fractions from 0 through 1; count thresholds are positive integers.
 
 --format effective-version-efficacy (requires --workflow) instead assesses
@@ -3331,6 +3338,10 @@ Flags:
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
+  --daemon-api <url>         daemon write API base URL; wires live journal
+                             emission through the journal plane, with the
+                             per-run bearer from $GOOBERS_POD_TOKEN when
+                             set (default $GOOBERS_DAEMON_API)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

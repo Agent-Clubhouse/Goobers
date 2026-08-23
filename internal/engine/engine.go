@@ -97,6 +97,15 @@ type RunInput struct {
 	// RunControls pins inherited workflow policy. MaxRepasses above remains a
 	// compatibility field for persisted inputs created before this block.
 	RunControls apiv1.RunControls `json:"runControls,omitempty"`
+	// LiveJournal pins whether this run's journal is authored live through
+	// the daemon's journal plane (DS4): activities emit journal events as
+	// they happen, and the deterministic accumulation behind JournalQuery
+	// becomes the repair/cross-check source rather than the authority (DS5).
+	// Pinned input rather than worker config so replay is deterministic and
+	// runs started before the live journal service existed keep projecting
+	// exactly as before. False (the zero value) preserves today's behavior
+	// byte for byte.
+	LiveJournal bool `json:"liveJournal,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -231,7 +240,16 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	}
 	rec.recordRunBranchUpfront(ctx, in)
 
-	res, err := walk(ctx, in, m, rec)
+	var res RunResult
+	// The opening emission creates the run journal at the daemon (first-emit
+	// creation, §8) — from here the run is live: stall detection, SSE, and
+	// the portal see it mid-flight. Failure to open the live journal fails
+	// the run, the same stance the local runner takes when journal.Create
+	// fails: a run whose product output cannot be authored does not execute.
+	err = rec.emitPending(ctx)
+	if err == nil {
+		res, err = walk(ctx, in, m, rec)
+	}
 	if err != nil {
 		// A walk-level error is the engine's failTerminal (#305): record the
 		// cause and the failed terminal in the projection, then fail the
@@ -239,6 +257,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error())
 			rec.runFinished(ctx, journal.PhaseFailed)
+			rec.emitTerminal(ctx)
 		}
 		return RunResult{}, err
 	}
@@ -252,6 +271,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runFinished(ctx, phase)
+	rec.emitTerminal(ctx)
 	return res, nil
 }
 
@@ -339,6 +359,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr
+			}
+			// Gate boundary emission: the verdict (and its artifact) become
+			// live before the walk moves on. Exhausting the emit budget here
+			// fails the run — a gate decision that cannot be journaled must
+			// not silently route the run (§8's fail-closed stance); the
+			// terminal is then backfilled by the repair projection.
+			if err := rec.emitPending(ctx); err != nil {
+				return RunResult{}, err
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
@@ -491,9 +519,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
 		// the journal ungraded and diverge from the local runner.
-		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 			var result stageActivityResult
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env, workspaceBranch).Get(ctx, &result)
+			attemptEnv := env
+			attemptEnv.Attempt = int32(attempt)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
 		})
@@ -509,9 +539,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 	}
 	run := *t.Run
-	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run, workspaceBranch).Get(ctx, &result)
+		attemptEnv := env
+		attemptEnv.Attempt = int32(attempt)
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	})
@@ -546,6 +578,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
+		// Pre-evaluation emission: gate.paused + gate.started go live before
+		// the evaluator dispatches, so a run waiting at a gate is visible
+		// waiting at that gate.
+		if err := rec.emitPending(ctx); err != nil {
+			return "", nil, err
+		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
@@ -568,6 +606,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
+		// Pre-evaluation emission, as on the automated arm above.
+		if err := rec.emitPending(ctx); err != nil {
+			return "", nil, err
+		}
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch).Get(ctx, &verdict)

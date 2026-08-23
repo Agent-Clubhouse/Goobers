@@ -13,7 +13,7 @@ import (
 
 func TestEngineProjectionIsInertWithoutTemporalConfiguration(t *testing.T) {
 	root := t.TempDir()
-	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), &instance.Config{}, nil, nil, nil, nil)
+	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), &instance.Config{}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startEngineProjection: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestEngineProjectionIsInertWithNamespaceAndTaskQueueOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { dialEngineProjection = previousDial })
 
-	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), cfg, nil, nil, nil, nil)
+	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), cfg, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startEngineProjection: %v", err)
 	}

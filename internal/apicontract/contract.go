@@ -59,6 +59,11 @@ const (
 	ClaimSettlePath          = V1Prefix + "/claims/settle"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
+	// events for one run, idempotent per op, sequence assigned at acceptance
+	// by the daemon's single writer. Span adoption by digest rides the same
+	// route as a span-kind op rather than a second endpoint.
+	RunJournalEmitPath = V1Prefix + "/runs/{run}/journal/emit"
 
 	// CredentialResolvePath is the credential plane's resolve endpoint
 	// (distributed-state-and-coordination.md §11, DS9/DS10): a stage pod,
@@ -105,6 +110,7 @@ const (
 	RouteClaimSettle       RouteID = "claimSettle"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
+	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
 )
 
@@ -223,6 +229,11 @@ var v1Routes = []Route{
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+
+	// The journal plane (§8, DS4) is machinery advancing a run's own record —
+	// a machine seam like the claims plane, not an operator capability, so it
+	// shares the workflow-execution class and stays outside runtime parity.
+	{ID: RouteJournalEmit, Method: http.MethodPost, Path: RunJournalEmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The credential plane (§11, DS9/DS10) is a machine seam like the claims
 	// plane — a stage pod advancing its own execution — so it shares the

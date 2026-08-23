@@ -597,7 +597,24 @@ func formatEvent(ev journal.Event) string {
 		}
 		return s
 	case journal.EventGateEvaluated:
-		return fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
+		s := fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
+		if reason, _ := ev.Runner["reason"].(string); reason != "" {
+			s += " reason=" + reason
+		}
+		for _, field := range []struct {
+			key   string
+			label string
+		}{
+			{"resolvedFindingIdentities", "resolved"},
+			{"suppressedFindingIdentities", "suppressed"},
+			{"reopenedFindingIdentities", "reopened"},
+			{"disprovenFindingIdentities", "disproven"},
+		} {
+			if ids := runnerStringList(ev.Runner[field.key]); len(ids) > 0 {
+				s += fmt.Sprintf(" %s=%s", field.label, strings.Join(ids, ","))
+			}
+		}
+		return s
 	case journal.EventArtifactRecorded, journal.EventInputSnapshot:
 		s := fmt.Sprintf("%s name=%s", prefix, ev.Name)
 		if ev.Ref != nil {
@@ -642,6 +659,16 @@ func formatEvent(ev journal.Event) string {
 		if stage, _ := ev.Runner["stage"].(string); stage != "" {
 			s += " stage=" + stage
 		}
+		if kind == "learning.episode.injected" {
+			for _, field := range []string{"episodeId", "sourceRunId", "sourceSeq", "gate", "target", "sourceAttempt", "nextAttempt", "classification", "recommendedAction"} {
+				if value, ok := ev.Runner[field]; ok && fmt.Sprint(value) != "" {
+					s += fmt.Sprintf(" %s=%v", field, value)
+				}
+			}
+			if ids := runnerStringList(ev.Runner["findingIdentities"]); len(ids) > 0 {
+				s += " findings=" + strings.Join(ids, ",")
+			}
+		}
 		return s
 	case journal.EventRunnerPlacement:
 		s := prefix
@@ -658,6 +685,23 @@ func formatEvent(ev journal.Event) string {
 		return prefix
 	default:
 		return prefix
+	}
+}
+
+func runnerStringList(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

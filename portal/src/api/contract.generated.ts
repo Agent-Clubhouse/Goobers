@@ -29,6 +29,7 @@ export const apiRoutes = {
   "claimSettle": { method: "POST", path: "/api/v1/claims/settle", actionClass: "workflow-execution" },
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
+  "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
   "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
 } as const;
 

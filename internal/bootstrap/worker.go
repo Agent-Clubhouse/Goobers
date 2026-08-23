@@ -9,10 +9,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// DefaultTaskQueue is the Temporal task queue the engine worker and the
-// scheduler's TemporalStarter agree on.
-const DefaultTaskQueue = "goobers-engine"
-
 // EngineDeps are the execution seams a goober runtime provides to the engine
 // worker. Goober is required (agentic tasks/reviews); Det and Auto are optional
 // (deterministic tasks / automated gates) and may be nil. Workspaces provisions
@@ -25,6 +21,12 @@ type EngineDeps struct {
 	Auto       invoke.Automated
 	Workspaces engine.WorkspaceProvisioner
 	Scrubber   journal.Scrubber
+	// Journal is the live-journal emission seam (DS4): in the daemon it is
+	// the *livejournal.Writer itself, on a remote worker it is
+	// livejournal.HTTPEmitter at the daemon write API's journal plane. Only
+	// runs pinned with RunInput.LiveJournal need it; without one such a run's
+	// attempts fail closed as infra.
+	Journal engine.JournalEmitter
 	// Canary is the #2931 fail-closed dispatch canary: the exact-value secret
 	// registry (journal.RegistryScrubber) the activities assert serialized
 	// dispatch envelopes against before executing a stage. Wire the SAME
@@ -44,17 +46,9 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		ScheduleService: temporalClient.WorkflowService(),
 		Workspaces:      deps.Workspaces,
 		Scrubber:        deps.Scrubber,
+		Journal:         deps.Journal,
 		Canary:          deps.Canary,
 	})
-}
-
-// NewStarter builds the scheduler's run Starter over a Temporal client and task
-// queue. Pass the result as SchedulerDeps.Starter.
-func NewStarter(c client.Client, taskQueue string) engine.Starter {
-	if taskQueue == "" {
-		taskQueue = DefaultTaskQueue
-	}
-	return engine.NewTemporalStarter(c, taskQueue)
 }
 
 // DialTemporal connects to a Temporal frontend. A thin wrapper so the cmd

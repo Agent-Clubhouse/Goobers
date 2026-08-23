@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // FindingKind classifies a candidate finding's detection family (TUT-010).
@@ -48,14 +50,17 @@ const (
 	// FindingCreditAssignment flags a graph node whose adverse-outcome
 	// attribution clears the evidence floor for nomination.
 	FindingCreditAssignment FindingKind = "credit-assignment"
+	// FindingLearningEpisode flags a repeated finding-level learning
+	// signature across distinct runs and carries exactly one governed action.
+	FindingLearningEpisode FindingKind = "learning-episode"
 )
 
-// JournalPointer names a flagged run whose journal a diagnosis step can
-// resolve for evidence. T2 only needs to name the run; T3 builds the
-// agentic read surface that actually resolves it (cross-run journal:read,
-// #121-extended).
+// JournalPointer names an exact event in a run journal that a diagnosis step
+// can resolve for evidence. Seq is optional for older projections that only
+// retained the run identifier.
 type JournalPointer struct {
 	RunID string `json:"runId"`
+	Seq   uint64 `json:"seq,omitempty"`
 }
 
 // CreditGoverningTargetTreatment is the required treatment when repo
@@ -78,11 +83,14 @@ type NominationGuardrails struct {
 // first; empty for a coverage gap, since the whole point is that no run
 // exists to point at).
 type Finding struct {
-	Kind        FindingKind        `json:"kind"`
-	Subject     string             `json:"subject"`
-	Metrics     map[string]float64 `json:"metrics"`
-	Threshold   float64            `json:"threshold"`
-	FlaggedRuns []JournalPointer   `json:"flagged_runs"`
+	Kind              FindingKind                  `json:"kind"`
+	Subject           string                       `json:"subject"`
+	Metrics           map[string]float64           `json:"metrics"`
+	Threshold         float64                      `json:"threshold"`
+	FlaggedRuns       []JournalPointer             `json:"flagged_runs"`
+	Signature         string                       `json:"signature,omitempty"`
+	Classification    apiv1.LearningClassification `json:"classification,omitempty"`
+	RecommendedAction string                       `json:"recommendedAction,omitempty"`
 	// NominationGuardrails is required for credit-assignment findings and
 	// omitted for detection families that do not enter the self-healing loop.
 	NominationGuardrails *NominationGuardrails `json:"nomination_guardrails,omitempty"`
@@ -120,6 +128,9 @@ type Thresholds struct {
 	// MinCreditFailureShare is the minimum failure share for an attributed
 	// node. Default 0.3.
 	MinCreditFailureShare float64
+	// MinLearningEpisodeRuns requires the same finding signature to appear in
+	// at least this many distinct runs before a durable action is nominated.
+	MinLearningEpisodeRuns int
 }
 
 // DefaultThresholds returns the sane-defaults Thresholds a Tutor goober
@@ -135,6 +146,7 @@ func DefaultThresholds() Thresholds {
 		MaxFlaggedRuns:         10,
 		MinCreditRuns:          5,
 		MinCreditFailureShare:  0.3,
+		MinLearningEpisodeRuns: 2,
 	}
 }
 
@@ -160,8 +172,8 @@ type DetectRequest struct {
 
 // Detect runs every detection family Detect supports — failure patterns
 // (stage failure rate, error-code clustering, recurring CI check failures), gate noise
-// (never-fails, repass churn), and coverage gaps (untriggered workflows,
-// unreached stages) — against req's window/filter and Thresholds, and
+// (never-fails, repass churn), durable learning clusters, and coverage gaps
+// (untriggered workflows, unreached stages) — against req's window/filter and Thresholds, and
 // returns candidate Findings sorted by (Kind, Subject, Stage) for a
 // deterministic result given a fixed telemetry.db snapshot. The waste
 // family (duration/token/cost percentiles, retry waste) is deferred to
@@ -204,6 +216,12 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 	}
 	findings = append(findings, gateFindings...)
 
+	learningFindings, err := db.detectLearningEpisodes(ctx, req.StatsRequest, th)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, learningFindings...)
+
 	if len(req.Coverage.Workflows) > 0 {
 		coverageFindings, err := db.detectCoverageGaps(req.Coverage)
 		if err != nil {
@@ -217,8 +235,55 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 		if a.Kind != b.Kind {
 			return a.Kind < b.Kind
 		}
-		return a.Subject < b.Subject
+		if a.Subject != b.Subject {
+			return a.Subject < b.Subject
+		}
+		if a.Classification != b.Classification {
+			return a.Classification < b.Classification
+		}
+		return a.RecommendedAction < b.RecommendedAction
 	})
+	return findings, nil
+}
+
+func (db *DB) detectLearningEpisodes(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
+	minRuns := th.MinLearningEpisodeRuns
+	if minRuns <= 0 {
+		minRuns = DefaultThresholds().MinLearningEpisodeRuns
+	}
+	clusters, err := db.LearningClusters(ctx, LearningEpisodeRequest{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rollup: detect learning episodes: %w", err)
+	}
+	var findings []Finding
+	for _, cluster := range clusters {
+		if cluster.RunCount < minRuns {
+			continue
+		}
+		// LearningEpisodes is chronological; candidate evidence is newest
+		// first, matching the Finding.FlaggedRuns contract.
+		pointers := make([]JournalPointer, len(cluster.Episodes))
+		for i := range cluster.Episodes {
+			pointers[len(cluster.Episodes)-1-i] = cluster.Episodes[i]
+		}
+		if len(pointers) > th.MaxFlaggedRuns {
+			pointers = pointers[:th.MaxFlaggedRuns]
+		}
+		findings = append(findings, Finding{
+			Kind: FindingLearningEpisode, Subject: cluster.Signature,
+			Metrics: map[string]float64{
+				"episodes":     float64(cluster.Count),
+				"distinctRuns": float64(cluster.RunCount),
+			},
+			Threshold:         float64(minRuns),
+			FlaggedRuns:       pointers,
+			Signature:         cluster.Signature,
+			Classification:    cluster.Classification,
+			RecommendedAction: cluster.RecommendedAction,
+		})
+	}
 	return findings, nil
 }
 

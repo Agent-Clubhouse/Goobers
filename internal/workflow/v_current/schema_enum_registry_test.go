@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/learning"
 )
 
 // This file is the single, registry-driven guard against a whole class of bug
@@ -62,7 +63,7 @@ func goConsts(relPath, typeName string) func(t *testing.T) []string {
 func TestEnvelopeIsValidMatchesGoConsts(t *testing.T) {
 	const envelope = "api/v1alpha1/envelope.go"
 	srcFile := filepath.Join(moduleRoot(t), filepath.FromSlash(envelope))
-	for _, typeName := range []string{"FindingClass", "ResultStatus", "VerdictDecision"} {
+	for _, typeName := range []string{"FindingClass", "LearningClassification", "ResultStatus", "VerdictDecision"} {
 		t.Run(typeName, func(t *testing.T) {
 			declared := typedStringConsts(t, srcFile, typeName)
 			accepted := isValidStringCases(t, srcFile, typeName)
@@ -109,6 +110,15 @@ func runnerOnlyCapabilities(_ *testing.T) []string {
 // enums.
 func policyActionVocabulary(_ *testing.T) []string { return knownPolicyActions() }
 
+func learningActionVocabulary(_ *testing.T) []string {
+	return []string{
+		learning.ActionInstructionOrSkill,
+		learning.ActionWorkflowOrGate,
+		learning.ActionTargetedTest,
+		learning.ActionCodeIssue,
+	}
+}
+
 var constBackedEnums = []enumRule{
 	// --- capabilities (4 locations, one vocabulary). The runner-only entries
 	// StageDeclarable withholds are subtracted via exclude, exercising the
@@ -129,6 +139,7 @@ var constBackedEnums = []enumRule{
 	{schema: "journal-event.schema.json", path: "properties/attemptClass/enum", source: "internal/journal.AttemptClass", want: goConsts("internal/journal/event.go", "AttemptClass")},
 	{schema: "journal-event.schema.json", path: "properties/branchStatus/enum", source: "internal/journal.BranchStatus", want: goConsts("internal/journal/event.go", "BranchStatus")},
 	{schema: "journal-event.schema.json", path: "properties/completeness/items/properties/status/enum", source: "internal/journal.BranchStatus", want: goConsts("internal/journal/event.go", "BranchStatus")},
+	{schema: "journal-event.schema.json", path: "$defs/agentProvenance/properties/lifecycle/enum", source: "internal/journal.AgentLifecycle", want: goConsts("internal/journal/agent.go", "AgentLifecycle")},
 	{schema: "journal-run.schema.json", path: "properties/trigger/properties/kind/enum", source: "internal/journal.TriggerKind", want: goConsts("internal/journal/identity.go", "TriggerKind")},
 
 	// --- api/v1alpha1 envelope types ---
@@ -136,6 +147,10 @@ var constBackedEnums = []enumRule{
 	{schema: "verdict.schema.json", path: "properties/decision/enum", source: "api/v1alpha1.VerdictDecision", want: goConsts("api/v1alpha1/envelope.go", "VerdictDecision")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/severity/enum", source: "api/v1alpha1.Severity", want: goConsts("api/v1alpha1/envelope.go", "Severity")},
 	{schema: "verdict.schema.json", path: "$defs/finding/properties/class/enum", source: "api/v1alpha1.FindingClass", want: goConsts("api/v1alpha1/envelope.go", "FindingClass")},
+	{schema: "verdict.schema.json", path: "$defs/finding/properties/learningClassification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/classification/enum", source: "api/v1alpha1.LearningClassification", want: goConsts("api/v1alpha1/envelope.go", "LearningClassification")},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/finding/properties/recommendedAction/enum", source: "internal/learning action vocabulary", want: learningActionVocabulary},
+	{schema: "candidate-findings-v1.schema.json", path: "$defs/causalCredit/properties/identification/enum", source: "internal/readmodel.CausalIdentification", want: goConsts("internal/readmodel/causal.go", "CausalIdentification")},
 	{schema: "notification-request.schema.json", path: "properties/severity/enum", source: "api/v1alpha1.NotificationSeverity", want: goConsts("api/v1alpha1/notification.go", "NotificationSeverity")},
 	{schema: "notification-receipt.schema.json", path: "properties/status/enum", source: "api/v1alpha1.NotificationDeliveryStatus", want: goConsts("api/v1alpha1/notification.go", "NotificationDeliveryStatus")},
 
@@ -212,6 +227,7 @@ var constBackedEnums = []enumRule{
 // anything. Each value is the reason it is not const-backed.
 var notConstBackedEnums = map[string]string{
 	"explain.schema.json\x00properties/stability/enum":                                              "lifecycle values are drawn from two sources with no shared Go type: only \"ga\" has a const (untyped schemas.StabilityGA), and preview/deprecated/removed come from the DSL feature registry; internal/authoring.Explanation.Stability is a plain string",
+	"journal-event.schema.json\x00$defs/agentProvenance/properties/fidelity/enum":                   "adapter fidelity values are untyped journal constants because AgentProvenance.Fidelity remains an open string for forward-compatible readers",
 	"journal-schema.schema.json\x00properties/version/enum":                                         "structural domain combining the stable schema version with the in-progress migration sentinel",
 	"workflow.schema.json\x00$defs/task/properties/onTimeout/enum":                                  "backing consts TaskOnTimeoutFail/Salvage are untyped string constants — no named enum type to bind",
 	"workflow.schema.json\x00$defs/gate/properties/human/properties/onTimeout/enum":                 "human-gate timeout actions are schema-only string literals; no Go const source",

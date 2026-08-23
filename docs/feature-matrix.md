@@ -110,6 +110,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.gaggle` | 1.4 | ga | deprecated | dev |
 | `workflow.spec.gates` | 1.4 | ga | deprecated | dev |
 | `workflow.spec.readiness` | 1.4 | ga | deprecated | dev |
+| `workflow.spec.readiness.desiredConcurrentRuns` | 1.4 | ga | deprecated | dev |
 | `workflow.spec.readiness.maxChainDepth` | 1.4 | ga | deprecated | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 1.4 | ga | deprecated | dev |
 | `workflow.spec.readiness.maxOpenPRs` | 1.4 | ga | deprecated | dev |
@@ -281,6 +282,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.parallels.maxConcurrentBranches` | 2.0 | ga | supported | dev |
 | `workflow.spec.parallels.onFailure` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness` | 2.0 | ga | supported | dev |
+| `workflow.spec.readiness.desiredConcurrentRuns` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxChainDepth` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 2.0 | ga | supported | dev |
 | `workflow.spec.readiness.maxOpenPRs` | 2.0 | ga | supported | dev |
@@ -468,6 +470,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `workflow.spec.parallels.maxConcurrentBranches` | 3.0 | ga | preview | dev |
 | `workflow.spec.parallels.onFailure` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness` | 3.0 | ga | preview | dev |
+| `workflow.spec.readiness.desiredConcurrentRuns` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness.maxChainDepth` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness.maxConcurrentRuns` | 3.0 | ga | preview | dev |
 | `workflow.spec.readiness.maxOpenPRs` | 3.0 | ga | preview | dev |

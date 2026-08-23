@@ -124,7 +124,6 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	}
 
 	finalDir := filepath.Join(runsDir, proj.Identity.RunID)
-	replacePartial := false
 	if journal.Recorded(finalDir) {
 		complete, err := projectedJournalComplete(finalDir)
 		if err != nil {
@@ -133,7 +132,6 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		if complete {
 			return finalDir, nil
 		}
-		replacePartial = true
 	}
 	if err := os.MkdirAll(runsDir, 0o755); err != nil {
 		return "", fmt.Errorf("engine: create projected runs directory: %w", err)
@@ -155,19 +153,31 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	if err != nil {
 		return "", err
 	}
-	if replacePartial {
-		if err := os.RemoveAll(finalDir); err != nil {
-			return "", fmt.Errorf("engine: remove partial projection for run %q: %w", proj.Identity.RunID, err)
+	// Publication goes through journal.ReplaceRun: the whole
+	// recheck→remove→rename span runs under the run publication lock, a live
+	// writer holding the run-dir lock refuses the replacement
+	// (journal.ErrRunActive — deleting its directory would strand
+	// acknowledged emits in unlinked inodes), and the completeness recheck
+	// happens under those locks, so a journal another owner finished while we
+	// staged is kept, never clobbered.
+	replaced, err := journal.ReplaceRun(finalDir, projectedDir, func() (bool, error) {
+		if !journal.Recorded(finalDir) {
+			return false, nil
 		}
-	}
-	if err := os.Rename(projectedDir, finalDir); err != nil {
-		if journal.Recorded(finalDir) {
-			complete, inspectErr := projectedJournalComplete(finalDir)
-			if inspectErr == nil && complete {
-				return finalDir, nil
-			}
+		complete, inspectErr := projectedJournalComplete(finalDir)
+		if inspectErr != nil {
+			return false, fmt.Errorf("engine: re-inspect projected journal for run %q: %w", proj.Identity.RunID, inspectErr)
 		}
+		return complete, nil
+	})
+	if err != nil {
 		return "", fmt.Errorf("engine: publish projected journal for run %q: %w", proj.Identity.RunID, err)
+	}
+	if !replaced {
+		// The recheck found a complete journal already in place: another
+		// owner (the live writer's terminal emit, a concurrent projector)
+		// finished it while we staged. Keep theirs.
+		return finalDir, nil
 	}
 	if err := durability.SyncDir(runsDir); err != nil {
 		return "", fmt.Errorf("engine: sync projected runs directory: %w", err)

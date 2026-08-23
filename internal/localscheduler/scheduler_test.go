@@ -631,6 +631,7 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 		{name: "signal", kind: journal.TriggerSignal},
 		{name: "backlog item", kind: journal.TriggerItem},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reason := fireReason(tt.tick, tt.kind)
@@ -638,6 +639,19 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 				t.Fatalf("scheduledTriggerFired(%q) = %t, want %t", reason, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefillBlockedReason(t *testing.T) {
+	if !IsRefillTriggerReason("refill occupancy") || IsRefillTriggerReason("scheduled") {
+		t.Fatal("refill trigger reason classification mismatch")
+	}
+	blocking, ok := RefillBlockedReason("refill blocked: " + ReasonBudget)
+	if !ok || blocking != ReasonBudget {
+		t.Fatalf("RefillBlockedReason returned (%q, %t), want (%q, true)", blocking, ok, ReasonBudget)
+	}
+	if _, ok := RefillBlockedReason("scheduled"); ok {
+		t.Fatal("non-refill reason parsed as refill block")
 	}
 }
 
@@ -1570,7 +1584,8 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 // when WithTelemetry is configured, a dispatched tick opens exactly one
 // scheduler decision span, attributed to the firing workflow. Before this
 // fix, Scheduler had no telemetry seam at all — dispatch() never called
-// StartSchedulerSpan, the direct parity gap vs internal/scheduler.Scheduler.
+// StartSchedulerSpan, the direct parity gap vs the since-deleted tier-3
+// scheduler fork.
 func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	spans := &fakeSpanStarter{}

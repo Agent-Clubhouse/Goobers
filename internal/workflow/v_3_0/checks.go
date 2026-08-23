@@ -372,8 +372,8 @@ func CheckGateOutcomes(def Definition) []string {
 // #125 also flagged type=backlog-item with no Selector — deliberately NOT
 // enforced here: Selector (WF-040/SCH-010) has no runtime consumer anywhere
 // in the codebase yet (nothing matches on it), and a huge fraction of
-// existing test fixtures across internal/engine, internal/scheduler (a
-// quarantined tier-3 package), internal/runner, and test/e2e declare a
+// existing test fixtures across internal/engine, internal/runner, and
+// test/e2e declare a
 // selector-less backlog-item trigger as ordinary scaffolding. Requiring it
 // would mean touching fixtures repo-wide for a field with zero behavioral
 // effect today — a disproportionate cost for a "minor" item; revisit once

@@ -22,7 +22,9 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -240,9 +242,8 @@ func (h stageHeartbeat) Stop() error {
 
 // SpanStarter is the slice of the telemetry client the runner needs to open
 // run/task/gate spans (issue #126). *telemetry.Client satisfies it
-// structurally, mirroring internal/scheduler.SpanStarter's narrow-interface
-// pattern for the same reason: no import cycle, and the runner never depends
-// on telemetry's full surface.
+// structurally — the narrow-interface pattern keeps the import direction
+// clean, and the runner never depends on telemetry's full surface.
 type SpanStarter interface {
 	StartRun(ctx context.Context, attrs telemetry.RunAttributes) (context.Context, telemetry.Span, error)
 	StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error)
@@ -526,6 +527,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// Remediation is the read-only, read-model-backed institutional-memory
+	// index used to augment agentic remediation instructions.
+	Remediation *remediation.Index
 	// JournalAdvanced reports each durable journal append to derived readers.
 	// Optional; the callback owns failure reporting and must not fail the run.
 	JournalAdvanced func(runID string, seq uint64)
@@ -616,6 +620,13 @@ func New(cfg Config) (*Runner, error) {
 	}
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
+	}
+	if cfg.Remediation == nil {
+		index, err := remediation.LoadIndex(cfg.RunsDir, nil)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		cfg.Remediation = index
 	}
 	toolchains := cfg.ToolchainVerifier
 	if toolchains == nil {
@@ -918,7 +929,7 @@ func runSpanOutcome(phase journal.RunPhase) (string, bool) {
 
 // startRunSpan opens the run's root span, if telemetry is configured. A zero
 // telemetry.Span is safe to use (its methods no-op), so callers need no nil
-// checks — mirrors internal/scheduler.Scheduler.startSpan. The returned ctx
+// checks. The returned ctx
 // carries the run's trace id (RunID, per telemetry.Client.StartRun) so every
 // task/gate span opened while walking this run joins the same trace.
 func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Context, telemetry.Span) {
@@ -1887,19 +1898,244 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
+		var injected *apiv1.ContextPointer
 		if gr.VerdictArtifact != nil {
 			pointer := apiv1.ContextPointer{
 				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 			}
+			injected = &pointer
 			if ws.parallel != nil {
 				ws.parallel.recordCurrentPointer(pointer)
 			} else {
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
+		episode, err := recordLearningInjection(
+			ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, injected,
+		)
+		if err != nil {
+			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+			return gr, false, terminal, true, failErr
+		}
+		if episode != nil {
+			if ws.parallel != nil {
+				ws.parallel.recordCurrentPointer(*episode)
+			} else {
+				ws.pointers = append(ws.pointers, *episode)
+			}
+		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
+}
+
+func recordLearningInjection(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	result gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	pointer *apiv1.ContextPointer,
+) (*apiv1.ContextPointer, error) {
+	if jr == nil {
+		return nil, nil
+	}
+	sourceSeq, sourceAttempt := learningSourceEvent(jr.Dir(), gateName, sourceStage, result.Verdict != nil)
+	if sourceAttempt == 0 {
+		sourceAttempt = result.Attempt
+	}
+	if sourceAttempt == 0 {
+		sourceAttempt = 1
+	}
+	findings := learningFindingsForRepass(gateName, sourceStage, result.Verdict, sourceResult)
+	evidence := learningEvidence(pointer, result.Verdict, sourceResult)
+	classification := apiv1.LearningValidation
+	if len(findings) > 0 {
+		classification = findings[0].LearningClassification
+	}
+	correction := strings.TrimSpace(sourceResult.Summary)
+	if sourceResult.Error != nil && strings.TrimSpace(sourceResult.Error.Message) != "" {
+		correction = strings.TrimSpace(sourceResult.Error.Message)
+	}
+	if result.Verdict != nil {
+		correction = strings.TrimSpace(result.Verdict.Rationale)
+	}
+
+	episode := learning.Episode{
+		Schema:             learning.EpisodeSchema,
+		SourceRunID:        in.RunID,
+		SourceSeq:          sourceSeq,
+		Workflow:           in.Machine.Def.Name,
+		Stage:              sourceStage,
+		Gate:               gateName,
+		SourceAttempt:      sourceAttempt,
+		NextAttempt:        sourceAttempt + 1,
+		WorkflowDigest:     in.Machine.Digest(),
+		GooberDigest:       in.GooberDigest,
+		EffectiveVersion:   learning.EffectiveVersion(in.Machine.Digest(), in.GooberDigest),
+		Signature:          learning.CombinedSignature(findings),
+		Classification:     classification,
+		RecommendedAction:  learning.RecommendedAction(classification),
+		CorrectionFeedback: correction,
+		Findings:           findings,
+		Actions:            learning.ActionsForFindings(findings),
+		Evidence:           evidence,
+		Outcome:            learning.OutcomeUnresolved,
+	}
+	episode.ID = learning.EpisodeID(episode)
+	data, err := json.Marshal(episode)
+	if err != nil {
+		return nil, fmt.Errorf("encode learning episode: %w", err)
+	}
+	name := fmt.Sprintf("learning/episode-%s-%d.json", gateName, sourceSeq)
+	ref, err := jr.RecordArtifact(name, data)
+	if err != nil {
+		return nil, fmt.Errorf("record learning episode: %w", err)
+	}
+	episodePointer := &apiv1.ContextPointer{
+		Name:      fmt.Sprintf("learning.episode[%d]", sourceSeq),
+		Integrity: ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: ref.Integrity,
+		},
+	}
+	identities := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		identities = append(identities, finding.ID)
+	}
+	runner := map[string]any{
+		"kind":               "learning.episode.injected",
+		"episodeId":          episode.ID,
+		"sourceRunId":        in.RunID,
+		"sourceSeq":          sourceSeq,
+		"gate":               gateName,
+		"target":             target,
+		"sourceAttempt":      sourceAttempt,
+		"nextAttempt":        sourceAttempt + 1,
+		"signature":          episode.Signature,
+		"classification":     classification,
+		"recommendedAction":  episode.RecommendedAction,
+		"findingIdentities":  identities,
+		"correctionFeedback": correction,
+		"episodePath":        ref.Path,
+		"episodeDigest":      ref.Digest,
+	}
+	if err := jr.Append(journal.Event{
+		Type:      journal.EventRunnerAnnotation,
+		Stage:     target,
+		Attempt:   sourceAttempt + 1,
+		Name:      name,
+		Ref:       &ref,
+		Integrity: ref.Integrity,
+		Runner:    runner,
+	}); err != nil {
+		return nil, err
+	}
+	return episodePointer, nil
+}
+
+func learningSourceEvent(runDir, gateName, stage string, reviewer bool) (uint64, int) {
+	rd, err := journal.OpenRead(runDir)
+	if err != nil {
+		return 0, 0
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return 0, 0
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if reviewer && event.Type == journal.EventGateEvaluated && event.Gate == gateName {
+			attempt, _ := runnerInt(event.Runner["repassAttempt"])
+			return event.Seq, attempt
+		}
+		if !reviewer && event.Type == journal.EventStageFinished && event.Stage == stage {
+			return event.Seq, event.Attempt
+		}
+	}
+	return 0, 0
+}
+
+func learningFindingsForRepass(gateName, stage string, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.Finding {
+	if verdict != nil && len(verdict.Findings) > 0 {
+		findings := append([]apiv1.Finding(nil), verdict.Findings...)
+		for i := range findings {
+			learning.NormalizeFinding(&findings[i], gateName, findings[i].EvidenceDigest)
+		}
+		return findings
+	}
+	message := strings.TrimSpace(result.Summary)
+	if result.Error != nil {
+		if result.Error.Message != "" {
+			message = result.Error.Message
+		}
+		if message == "" {
+			message = result.Error.Code
+		}
+	}
+	if message == "" {
+		message = "validation failed"
+	}
+	finding := apiv1.Finding{
+		Severity:               apiv1.SeverityError,
+		Message:                message,
+		Location:               stage,
+		LearningClassification: apiv1.LearningValidation,
+	}
+	learning.NormalizeFinding(&finding, stage, learningEvidenceDigest(result.Artifacts))
+	return []apiv1.Finding{finding}
+}
+
+func learningEvidence(pointer *apiv1.ContextPointer, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.ArtifactPointer {
+	var evidence []apiv1.ArtifactPointer
+	if pointer != nil && pointer.Artifact != nil {
+		evidence = append(evidence, *pointer.Artifact)
+	}
+	if verdict != nil {
+		evidence = append(evidence, verdict.Evidence...)
+	}
+	evidence = append(evidence, result.Artifacts...)
+	seen := map[string]bool{}
+	out := evidence[:0]
+	for _, artifact := range evidence {
+		key := artifact.Digest + "\x00" + artifact.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, artifact)
+	}
+	return out
+}
+
+func learningEvidenceDigest(artifacts []apiv1.ArtifactPointer) string {
+	digests := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Digest != "" {
+			digests = append(digests, artifact.Digest)
+		}
+	}
+	slices.Sort(digests)
+	if len(digests) == 0 {
+		return ""
+	}
+	return apiv1.Digest([]byte(strings.Join(digests, "\n")))
+}
+
+func runnerInt(value any) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	case json.Number:
+		value, err := n.Int64()
+		return int(value), err == nil
+	}
+	return 0, false
 }
 
 // closeParallelForLoudExit journals the current branch's terminal settlement,
@@ -3450,6 +3686,7 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	env.Attempt = int32(g.attempt)
 	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
@@ -4066,6 +4303,18 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		env.ParentPlatformPolicy = &parent
 	}
 	env.InstructionAddendum = instructionAddendum
+	if t.Type == apiv1.TaskAgentic {
+		errorClass := ""
+		failureExcerpt := instructionAddendum + " " + upstreamResult.Summary
+		if upstreamResult.Error != nil {
+			errorClass = upstreamResult.Error.Code
+			failureExcerpt += " " + upstreamResult.Error.Message
+		}
+		env = remediation.AugmentInvocation(env, r.cfg.Remediation, remediation.Query{
+			Stage: t.Name, ErrorClass: errorClass, FailureExcerpt: failureExcerpt,
+			ConfigDigest: in.Machine.Digest(),
+		}, remediation.Options{})
+	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {

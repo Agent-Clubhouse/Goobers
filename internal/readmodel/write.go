@@ -87,8 +87,24 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
 		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node_parent WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear node parents for %s: %w", p.Run.RunID, err)
+	}
 	for _, node := range p.Nodes {
 		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
+	for _, parent := range p.NodeParents {
+		if err := insertNodeParentRow(ctx, tx, parent); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM remediation_example WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear remediation examples for %s: %w", p.Run.RunID, err)
+	}
+	for _, example := range p.Remediation {
+		if err := insertRemediationExampleRow(ctx, tx, example); err != nil {
 			return err
 		}
 	}
@@ -249,12 +265,42 @@ func insertStageRow(
 func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_node (
-			run_id, kind, name, identity, attempts, retry_waste_attempts
-		) VALUES (?, ?, ?, ?, ?, ?)`,
-		node.RunID, node.Kind, node.Name, node.Identity, node.Attempts, node.RetryWasteAttempts,
+			run_id, kind, name, identity, randomized, arm, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity,
+		boolInt(node.Randomized), node.Arm, node.Attempts, node.RetryWasteAttempts,
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
+	}
+	return nil
+}
+
+func insertRemediationExampleRow(ctx context.Context, tx *sql.Tx, example RemediationExampleRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO remediation_example (
+			run_id, stage, attempt, error_class, failure_excerpt, fix_excerpt, did_it_help, observed_at, config_digest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		example.RunID, example.Stage, example.Attempt, example.ErrorClass,
+		example.FailureExcerpt, example.FixExcerpt, boolInt(example.DidItHelp),
+		nullTimeValue(example.ObservedAt), example.ConfigDigest,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert remediation example %s/%s/%d: %w",
+			example.RunID, example.Stage, example.Attempt, err)
+	}
+	return nil
+}
+
+func insertNodeParentRow(ctx context.Context, tx *sql.Tx, parent NodeParentRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node_parent (
+			run_id, kind, name, identity, parent_kind, parent_name
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		parent.RunID, parent.Kind, parent.Name, parent.Identity, parent.ParentKind, parent.ParentName,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node parent %s/%s: %w", parent.RunID, parent.Name, err)
 	}
 	return nil
 }

@@ -431,9 +431,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	ws := newWalkState(jr, StartInput{
-		RunID:   in.RunID,
-		Machine: in.Machine,
-		RepoRef: in.RepoRef,
+		RunID:        in.RunID,
+		Machine:      in.Machine,
+		GooberDigest: in.GooberDigest,
+		Gaggle:       id.Gaggle,
+		Trigger:      id.Trigger,
+		RepoRef:      in.RepoRef,
 	}, registrar, "")
 	ws.pointers = reconstructPointers(pointerEvents, in.Machine)
 	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
@@ -1178,6 +1181,19 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 					MediaType: "application/json", Integrity: e.Ref.Integrity,
 				},
 			}})
+		case journal.EventRunnerAnnotation:
+			kind, _ := e.Runner["kind"].(string)
+			if kind != "learning.episode.injected" || e.Ref == nil {
+				continue
+			}
+			record(e.Branch, []apiv1.ContextPointer{{
+				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+				Integrity: e.Ref.Integrity,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+					MediaType: "application/json", Integrity: e.Ref.Integrity,
+				},
+			}})
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1198,6 +1214,26 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+func runnerUint64(value any) uint64 {
+	switch n := value.(type) {
+	case uint64:
+		return n
+	case int:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case json.Number:
+		if parsed, err := n.Int64(); err == nil && parsed >= 0 {
+			return uint64(parsed)
+		}
+	}
+	return 0
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest

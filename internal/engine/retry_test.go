@@ -305,13 +305,15 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var calls int
+			var attempts []int
 			var ts testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&ts)
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
 				task := retrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
 				task.PolicyActions = []string{"external-mutation"}
-				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(workflow.Context) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(_ workflow.Context, attempt int) (stageActivityResult, error) {
 					calls++
+					attempts = append(attempts, attempt)
 					if calls == 1 {
 						return stageActivityResult{}, temporal.NewTimeoutError(test.timeoutType, nil)
 					}
@@ -330,6 +332,11 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 			}
 			if calls != test.wantCalls {
 				t.Fatalf("dispatches = %d, want %d", calls, test.wantCalls)
+			}
+			for i, attempt := range attempts {
+				if attempt != i+1 {
+					t.Fatalf("attempt sequence = %v, want 1..%d", attempts, len(attempts))
+				}
 			}
 		})
 	}

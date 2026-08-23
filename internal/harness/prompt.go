@@ -187,8 +187,9 @@ On a "blocked" status, if you can name specific blocking issue numbers, set outp
 // verdictShapeHint shows finding.severity as an explicit enum: the schema's
 // finding is additionalProperties:false with severity ∈
 // {info,warning,error,critical}, so an unconstrained "severity": "..." let a
-// model guess an out-of-enum value ("Medium") and add extra per-finding fields,
-// failing validation with no journaled explanation (#304, same shape-gap class
-// as #297). A finding carries only severity/message/location — evidence is a
-// separate top-level array of artifact pointers, not per-finding.
-const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "info"|"warning"|"error"|"critical", "message": "...", "location": "..."}], "summary": "..."}`
+// model guess an out-of-enum value ("Medium") and add unsupported per-finding
+// fields, failing validation with no journaled explanation (#304, same
+// shape-gap class as #297).
+const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"id": "...", "learningSignature": "...", "learningClassification": "instruction"|"skill"|"workflow"|"gate"|"validation"|"code-defect", "evidenceDigest": "sha256:...", "severity": "info"|"warning"|"error"|"critical", "message": "...", "location": "..."}], "summary": "..."}
+
+The learning fields are optional on a finding's first occurrence. On a repass, read any learning.episode context artifacts: preserve id and learningSignature for the same unresolved finding, omit identities that are fixed, and set a different evidenceDigest only when genuinely new evidence reopens a previously resolved identity.`

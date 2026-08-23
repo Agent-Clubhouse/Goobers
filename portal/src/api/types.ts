@@ -236,6 +236,7 @@ export interface WorkflowTrigger {
 }
 
 export interface ReadinessConditions {
+  desiredConcurrentRuns?: number;
   maxConcurrentRuns?: number;
   maxRunsPerHour?: number;
   maxRunsPerDay?: number;
@@ -250,7 +251,10 @@ export interface WorkflowDefinition {
 
 export interface WorkflowConcurrency {
   activeRuns: number;
+  desiredRuns?: number;
   maxConcurrentRuns: number;
+  admissionBlocked?: boolean;
+  blockingCondition?: string;
 }
 
 export interface WorkflowSummary {
@@ -674,6 +678,9 @@ export interface TelemetryStatsResult {
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
   creditAssignment: NodeCredit[];
+  causalCredit: CausalNodeCredit[] | null;
+  promotionSignals?: PromotionSignal[];
+  promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
 }
@@ -689,6 +696,40 @@ export interface NodeCredit {
   failureShare: number;
   escalationRuns: number;
   retryWasteAttempts: number;
+  effect?: number;
+  lower?: number;
+  upper?: number;
+  identification: string;
+  caveat?: string;
+}
+
+export interface CausalNodeCredit {
+  node: string;
+  effect: number;
+  lower: number;
+  upper: number;
+  identification:
+    | "randomized"
+    | "observational-difference-in-differences"
+    | "unidentifiable";
+  caveat: string;
+  treatedBefore: number;
+  treatedAfter: number;
+  controlBefore: number;
+  controlAfter: number;
+  intervalAvailable: boolean;
+  promotionEligible: boolean;
+  promotionSource: string;
+}
+
+export interface PromotionSignal {
+  node: string;
+  value: number;
+  lower?: number;
+  upper?: number;
+  source: string;
+  caveat: string;
+  promotionEligible: boolean;
 }
 
 export interface TelemetryCurationStats {

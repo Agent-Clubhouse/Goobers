@@ -26,7 +26,7 @@ spec:
       type: deterministic
       goal: Materialize threshold-crossing telemetry findings with journal evidence.
       run:
-        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--workflow", "work-nomination", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--aggregate", "learning-episode", "--learning-action", "code-issue", "--format", "candidate-findings"]
       inputs:
         resultFile: "candidate-findings.json"
       capabilities:
@@ -39,9 +39,11 @@ spec:
       goober: nominator
       goal: >-
         Propose backlog items from the candidate findings and file them. For
-        credit findings, require the machine-readable upstream-cause check,
-        dedupe by the exact nomination key, and apply the governing-target
-        treatment.
+        credit findings, require a matching node in the machine-filtered
+        promotionCandidates boundary; never nominate from promotionSignals or
+        a correlational fallback. Then require the machine-readable upstream-
+        cause check, dedupe by the exact nomination key, and apply the
+        governing-target treatment.
       capabilities:
         - repo:read
         - telemetry:read

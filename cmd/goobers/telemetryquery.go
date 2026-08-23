@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,19 +18,25 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
 type candidateFindingsArtifact struct {
-	Schema   string           `json:"schema"`
-	Window   string           `json:"window"`
-	Since    time.Time        `json:"since"`
-	Findings []rollup.Finding `json:"findings"`
-	NoWork   bool             `json:"noWork,omitempty"`
-	Note     string           `json:"note,omitempty"`
+	Schema              string                        `json:"schema"`
+	Window              string                        `json:"window"`
+	Since               time.Time                     `json:"since"`
+	Findings            []rollup.Finding              `json:"findings"`
+	CausalCredit        []readmodel.CausalNodeCredit  `json:"causalCredit,omitempty"`
+	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
+	NoWork              bool                          `json:"noWork,omitempty"`
+	Note                string                        `json:"note,omitempty"`
 }
 
 const (
@@ -97,6 +104,7 @@ const (
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
 	telemetryAggregateCreditAssignment    telemetryAggregate = "credit-assignment"
+	telemetryAggregateLearningEpisode     telemetryAggregate = "learning-episode"
 )
 
 type telemetryAggregateValues []telemetryAggregate
@@ -107,6 +115,33 @@ func (v *telemetryAggregateValues) String() string {
 		values[i] = string(aggregate)
 	}
 	return strings.Join(values, ",")
+}
+
+type telemetryLearningActionValues []string
+
+func (v *telemetryLearningActionValues) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *telemetryLearningActionValues) Set(raw string) error {
+	switch raw {
+	case learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+		learning.ActionTargetedTest, learning.ActionCodeIssue:
+	default:
+		return fmt.Errorf(
+			"unknown learning action %q (allowed: %s, %s, %s, %s)",
+			raw, learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+			learning.ActionTargetedTest, learning.ActionCodeIssue,
+		)
+	}
+	if !slices.Contains(*v, raw) {
+		*v = append(*v, raw)
+	}
+	return nil
+}
+
+func (v telemetryLearningActionValues) includes(action string) bool {
+	return len(v) == 0 || slices.Contains(v, action)
 }
 
 func (v *telemetryAggregateValues) Set(raw string) error {
@@ -128,8 +163,10 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateStageUnreached
 	case string(telemetryAggregateCreditAssignment):
 		aggregate = telemetryAggregateCreditAssignment
+	case string(telemetryAggregateLearningEpisode), "learning-episodes":
+		aggregate = telemetryAggregateLearningEpisode
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -174,6 +211,10 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateCreditAssignment:
 			if kind == rollup.FindingCreditAssignment {
+				return true
+			}
+		case telemetryAggregateLearningEpisode:
+			if kind == rollup.FindingLearningEpisode {
 				return true
 			}
 		}
@@ -267,17 +308,24 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MinCreditFailureShare = rate
+	case "min-learning-episode-runs", "minLearningEpisodeRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinLearningEpisodeRuns = n
 	default:
 		return fmt.Errorf("unknown threshold %q", key)
 	}
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
-	"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n" +
+	"With no --aggregate, all supported aggregates are evaluated. --learning-action\n" +
+	"filters learning-episode findings to governed action families. Threshold rates\n" +
 	"are fractions from 0 through 1; count thresholds are positive integers.\n\n" +
 	"--format effective-version-efficacy (requires --workflow) instead assesses\n" +
 	"the workflow's most recent EffectiveVersion transition — the version-\n" +
@@ -302,10 +350,12 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)")
+	var learningActions telemetryLearningActionValues
+	fs.Var(&learningActions, "learning-action", "learning action to include; repeat for multiple (instruction-or-skill, workflow-or-gate, targeted-test-mapping, code-issue)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share, min-learning-episode-runs)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -445,7 +495,10 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
 		return 1
 	}
-	result, err := detectCandidateFindingsWithCredit(db, creditStore, *window, since, queryGaggle, aggregates, thresholds)
+	result, err := detectCandidateFindingsWithCausalCredit(
+		db, creditStore, *window, since, root, queryGaggle, *workflow,
+		aggregates, learningActions, thresholds,
+	)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -477,13 +530,16 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 	return "", nil
 }
 
-func detectCandidateFindingsWithCredit(
+func detectCandidateFindingsWithCausalCredit(
 	db *rollup.DB,
 	creditStore *readmodel.Store,
 	window time.Duration,
 	since time.Time,
+	root string,
 	gaggle string,
+	workflowName string,
 	aggregates telemetryAggregateValues,
+	learningActions telemetryLearningActionValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
 	if thresholds == (rollup.Thresholds{}) {
@@ -496,6 +552,7 @@ func detectCandidateFindingsWithCredit(
 	if err != nil {
 		return candidateFindingsArtifact{}, err
 	}
+	correlationalValues := map[string]float64{}
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
 		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
 			Gaggle: gaggle, Since: since,
@@ -510,6 +567,10 @@ func detectCandidateFindingsWithCredit(
 			failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
 			if failureShare < thresholds.MinCreditFailureShare {
 				continue
+			}
+			node := credit.Kind + ":" + credit.Stage
+			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
+				correlationalValues[node] = failureShare
 			}
 			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
 				Gaggle: gaggle, Since: since,
@@ -551,6 +612,10 @@ func detectCandidateFindingsWithCredit(
 		if !aggregates.includes(finding.Kind) {
 			continue
 		}
+		if finding.Kind == rollup.FindingLearningEpisode &&
+			!learningActions.includes(finding.RecommendedAction) {
+			continue
+		}
 		if finding.FlaggedRuns == nil {
 			finding.FlaggedRuns = []rollup.JournalPointer{}
 		}
@@ -560,7 +625,73 @@ func detectCandidateFindingsWithCredit(
 	if len(filtered) == 0 {
 		note = telemetryQueryNoFindingsNote
 	}
-	return newCandidateFindingsArtifact(window, since, filtered, note), nil
+	result := newCandidateFindingsArtifact(window, since, filtered, note)
+	if creditStore == nil {
+		return result, nil
+	}
+
+	graph, err := candidateWorkflowGraph(root, gaggle, workflowName)
+	if err != nil {
+		return candidateFindingsArtifact{}, err
+	}
+	result.CausalCredit, err = creditStore.CausalCredit(context.Background(), readmodel.CausalOptions{
+		Gaggle: gaggle, Workflow: workflowName, Since: since, WorkflowGraph: graph,
+	})
+	if err != nil {
+		return candidateFindingsArtifact{}, fmt.Errorf("query causal credit: %w", err)
+	}
+	causalByNode := make(map[string]readmodel.CausalNodeCredit, len(result.CausalCredit))
+	for _, estimate := range result.CausalCredit {
+		causalByNode[estimate.Node] = estimate
+	}
+	nodes := make([]string, 0, len(correlationalValues))
+	for node := range correlationalValues {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	for _, node := range nodes {
+		fallback := correlationalValues[node]
+		estimate, identified := causalByNode[node]
+		if identified && estimate.PromotionEligible && estimate.IntervalAvailable &&
+			estimate.Identification != readmodel.CausalUnidentifiable {
+			result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+				Node: node, Value: estimate.Effect, Lower: estimate.Lower, Upper: estimate.Upper,
+				Source: estimate.PromotionSource, Caveat: estimate.Caveat, PromotionEligible: true,
+			})
+			continue
+		}
+		caveat := "no identified causal intervention; correlational rollup retained"
+		if identified && estimate.Caveat != "" {
+			caveat = estimate.Caveat
+		}
+		result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+			Node: node, Value: fallback, Source: "correlational-fallback", Caveat: caveat,
+		})
+	}
+	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	return result, nil
+}
+
+func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {
+	if root == "" || workflowName == "" {
+		return nil, nil
+	}
+	definitions, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("load workflow graph: %w (report: %+v)", err, report)
+	}
+	for _, definition := range definitions.Workflows {
+		if definition.Spec.Gaggle != gaggle || definition.Name != workflowName {
+			continue
+		}
+		compiled, err := workflow.Compile(workflow.Definition{Spec: definition.Spec})
+		if err != nil {
+			return nil, fmt.Errorf("compile workflow graph %q: %w", workflowName, err)
+		}
+		graph := compiled.Graph()
+		return &graph, nil
+	}
+	return nil, nil
 }
 
 func creditAssignmentDedupeKey(credit readmodel.NodeCredit) string {
@@ -588,12 +719,13 @@ func newCandidateFindingsArtifact(window time.Duration, since time.Time, finding
 		findings = []rollup.Finding{}
 	}
 	return candidateFindingsArtifact{
-		Schema:   candidateFindingsSchemaVersion,
-		Window:   window.String(),
-		Since:    since,
-		Findings: findings,
-		NoWork:   len(findings) == 0,
-		Note:     note,
+		Schema:              candidateFindingsSchemaVersion,
+		Window:              window.String(),
+		Since:               since,
+		Findings:            findings,
+		PromotionCandidates: []readservice.PromotionSignal{},
+		NoWork:              len(findings) == 0,
+		Note:                note,
 	}
 }
 

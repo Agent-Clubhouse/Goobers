@@ -602,7 +602,17 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 	lastEvals := map[localscheduler.WorkflowIdentity]time.Time{
 		{Gaggle: "fleet", Workflow: "scheduled"}: now,
 	}
-	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, now, time.UTC)
+	refill := map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus{
+		{Gaggle: "fleet", Workflow: "scheduled"}: {
+			Gaggle:            "fleet",
+			Workflow:          "scheduled",
+			DesiredRuns:       2,
+			ActiveRuns:        1,
+			AdmissionBlocked:  true,
+			BlockingCondition: localscheduler.ReasonBudget,
+		},
+	}
+	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,6 +630,9 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 		scheduled.SuccessRate == nil || *scheduled.SuccessRate != 0.5 {
 		t.Fatalf("scheduled summary = %+v", scheduled)
 	}
+	if scheduled.DesiredRuns != 2 || scheduled.AdmissionBlocked != localscheduler.ReasonBudget {
+		t.Fatalf("scheduled refill summary = %+v", scheduled)
+	}
 	wantNext := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)
 	if scheduled.NextFire.Kind != statusNextFireScheduled || scheduled.NextFire.At == nil ||
 		!scheduled.NextFire.At.Equal(wantNext) {
@@ -628,6 +641,10 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 
 	var text bytes.Buffer
 	renderStatusFleetSummary(&text, got, now)
+	if !strings.Contains(text.String(), "1/2/2") ||
+		!strings.Contains(text.String(), "blocked: "+localscheduler.ReasonBudget) {
+		t.Fatalf("summary text = %q, want desired/active/max and blocking condition", text.String())
+	}
 	for _, line := range strings.Split(text.String(), "\n") {
 		if len(line) > 80 {
 			t.Fatalf("summary line is %d columns, want at most 80: %q", len(line), line)
@@ -684,7 +701,7 @@ func TestStatusIntervalNextFireMatchesSchedulerAfterManualFire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, nil, now, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +757,7 @@ func TestStatusIntervalNextFireMatchesSchedulerAfterReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, reloadedAt, time.UTC)
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, nil, reloadedAt, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}

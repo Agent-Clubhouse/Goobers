@@ -19,6 +19,26 @@ func singleTaskSpec(task apiv1.Task) apiv1.WorkflowSpec {
 	}
 }
 
+func TestCompileRejectsDesiredConcurrencyAboveMax(t *testing.T) {
+	task := apiv1.Task{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}
+	spec := singleTaskSpec(task)
+	spec.Readiness = apiv1.ReadinessConditions{MaxConcurrentRuns: 2, DesiredConcurrentRuns: 3}
+	_, err := compileAcknowledged(Definition{Name: "bad-refill", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "desiredConcurrentRuns (3) must be less than or equal to spec.readiness.maxConcurrentRuns (2)") {
+		t.Fatalf("Compile error = %v, want desired/max readiness rejection", err)
+	}
+}
+
+func TestCompileRejectsDesiredConcurrencyAboveDefaultMax(t *testing.T) {
+	task := apiv1.Task{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}
+	spec := singleTaskSpec(task)
+	spec.Readiness = apiv1.ReadinessConditions{DesiredConcurrentRuns: 2}
+	_, err := compileAcknowledged(Definition{Name: "bad-refill-default", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "desiredConcurrentRuns (2) must be less than or equal to spec.readiness.maxConcurrentRuns (1)") {
+		t.Fatalf("Compile error = %v, want desired/default-max readiness rejection", err)
+	}
+}
+
 func TestCompileRejectsUnknownBuiltinSubcommand(t *testing.T) {
 	task := apiv1.Task{
 		Name: "publish",

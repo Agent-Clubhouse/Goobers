@@ -44,7 +44,8 @@ const StageContractVersion = "v1alpha9"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
-	// Attempt is the scheduler attempt number for this stage.
+	// Attempt identifies the scheduler attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
 	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
@@ -396,6 +397,36 @@ func (c FindingClass) RequiresCodeChange() bool {
 	return false
 }
 
+// LearningClassification names the durable action family a repeated finding
+// belongs to. It is optional on a fresh verdict; the runner derives a
+// conservative default when the reviewer does not supply one.
+type LearningClassification string
+
+const (
+	// LearningInstruction routes a finding to instruction remediation.
+	LearningInstruction LearningClassification = "instruction"
+	// LearningSkill routes a finding to skill remediation.
+	LearningSkill LearningClassification = "skill"
+	// LearningWorkflow routes a finding to workflow remediation.
+	LearningWorkflow LearningClassification = "workflow"
+	// LearningGate routes a finding to gate remediation.
+	LearningGate LearningClassification = "gate"
+	// LearningValidation routes a finding to targeted validation remediation.
+	LearningValidation LearningClassification = "validation"
+	// LearningCodeDefect routes a finding to an unapproved code issue.
+	LearningCodeDefect LearningClassification = "code-defect"
+)
+
+// IsValid reports whether c is a supported durable-learning classification.
+func (c LearningClassification) IsValid() bool {
+	switch c {
+	case LearningInstruction, LearningSkill, LearningWorkflow, LearningGate,
+		LearningValidation, LearningCodeDefect:
+		return true
+	}
+	return false
+}
+
 // Verdict is the structured result a gate evaluator — or, at PR altitude,
 // the merge-review workflow (issue #358) — produces. An in-run gate maps
 // Decision to a branch; merge-review maps it to a label
@@ -464,6 +495,18 @@ type Verdict struct {
 
 // Finding is a single issue raised by an evaluator.
 type Finding struct {
+	// ID is the stable identity of this finding across repasses. Reviewers
+	// copy it from an injected learning episode when the same finding remains
+	// unresolved; the runner assigns one on the first occurrence.
+	ID string `json:"id,omitempty"`
+	// LearningSignature is the normalized cross-run clustering key. The
+	// runner derives one when absent.
+	LearningSignature string `json:"learningSignature,omitempty"`
+	// LearningClassification selects the governed durable action family.
+	LearningClassification LearningClassification `json:"learningClassification,omitempty"`
+	// EvidenceDigest is finding-specific evidence for reopening a finding
+	// that a prior repass resolved. Reusing old evidence is suppressed.
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 	// Severity ranks the finding.
 	Severity Severity `json:"severity"`
 	// Message describes the issue.
@@ -492,6 +535,9 @@ type Finding struct {
 // an unusable record.
 func (f Finding) IsValid() bool {
 	if f.Class != "" && !f.Class.IsValid() {
+		return false
+	}
+	if f.LearningClassification != "" && !f.LearningClassification.IsValid() {
 		return false
 	}
 	if f.Class == FindingCrossPRBlocked && len(f.BlockingPRs) == 0 {

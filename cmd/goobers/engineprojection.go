@@ -8,6 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -17,7 +18,7 @@ var (
 	dialEngineProjection     = bootstrap.DialTemporal
 )
 
-func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client) (func(), error) {
+func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer) (func(), error) {
 	if !cfg.EngineProjectionEnabled() {
 		return func() {}, nil
 	}
@@ -43,6 +44,14 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 	// completed run is written, backdated to the run's own timestamps. nil when
 	// telemetry is disabled, which the synthesizer treats as a no-op.
 	reconciler = reconciler.WithSpans(newEngineSpanSink(tel))
+	if liveJournals != nil {
+		// DS5: the reconciler is repair/verify, never a second writer, for
+		// runs the live writer authored — skip open journals, verify complete
+		// ones, and file divergences to the named parity channel.
+		reconciler = reconciler.
+			WithLiveJournals(liveJournals).
+			WithDivergenceReporter(liveJournalDivergenceReporter(instanceLog))
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	reporter := newSweepErrorReporter(instanceLog, "engine_projection_failed")
@@ -51,6 +60,9 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 		ticker := time.NewTicker(engineProjectionInterval)
 		defer ticker.Stop()
 		for {
+			if liveJournals != nil {
+				liveJournals.CloseIdle(liveJournalIdleClose)
+			}
 			_, err := reconciler.Reconcile(runCtx)
 			reporter.report(err)
 			select {
