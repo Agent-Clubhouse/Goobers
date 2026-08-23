@@ -14,6 +14,17 @@ type Definition = model.Definition
 
 // Machine is the shared compiled runtime machine.
 type Machine = model.Machine
+type Graph = model.Graph
+type GraphEdge = model.GraphEdge
+type GraphNode = model.GraphNode
+type GraphNodeKind = model.GraphNodeKind
+
+const (
+	GraphNodeDeterministic = model.GraphNodeDeterministic
+	GraphNodeAgentic       = model.GraphNodeAgentic
+	GraphNodeGate          = model.GraphNodeGate
+	GraphNodeParallel      = model.GraphNodeParallel
+)
 
 const (
 	// TerminalComplete ends a run successfully.
