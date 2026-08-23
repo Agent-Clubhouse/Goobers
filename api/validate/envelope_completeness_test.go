@@ -386,7 +386,7 @@ func completeJournalEvent() journal.Event {
 		// (internal/harness/executor.go defaults TranscriptSchema to
 		// telemetry.GenAIEventSchema whenever the adapter leaves it empty).
 		DataSchema:  "goobers.dev/telemetry/genai-event/v1",
-		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42"},
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		Error:       &journal.ErrorDetail{Code: "boom", Message: "detail"},
 		Redaction: &journal.RedactionInfo{
 			Target:    "artifacts/sha256/cc/leak.txt",

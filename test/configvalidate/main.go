@@ -72,6 +72,8 @@ var checkedInTrees = []checkedInTree{
 		strict:     true,
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
+			"WARNING DOCS003 Workflow/docs-updater: declared docs root \"docs\" not verified: config tree is not the target repository Agent-Clubhouse/Goobers",
+			"WARNING DOCS003 Workflow/docs-updater: declared docs root \"README.md\" not verified: config tree is not the target repository Agent-Clubhouse/Goobers",
 		},
 	},
 	{path: "config-examples"},

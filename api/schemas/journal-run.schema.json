@@ -37,6 +37,49 @@
     },
     "operator": { "type": "string", "minLength": 1, "description": "Operator who requested the continuation." },
     "requestedTarget": { "type": "string", "minLength": 1, "description": "Workflow state selected for the continuation." },
+    "workspaceBranch": { "type": "string", "minLength": 1, "description": "Existing repository branch reused by this run." },
+    "workspaceBranchSha": { "type": "string", "minLength": 1, "description": "Commit pinned for the reused branch." },
+    "contextPointers": {
+      "type": "array",
+      "description": "Explicit continuation inputs; no ambient source context is copied.",
+      "items": {
+        "type": "object",
+        "description": "One explicitly selected source context pointer made available to the continuation.",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "description": "Artifact or context name from the source run." },
+          "branch": { "type": "integer", "minimum": 0, "description": "Numeric branch identifier from the source run." },
+          "branchName": { "type": "string", "minLength": 1, "description": "Named branch path from the source run." },
+          "runId": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Source run identifier for this context." },
+          "integrity": { "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "description": "Provenance grade of this context pointer." },
+          "artifact": {
+            "type": "object",
+            "description": "Immutable source artifact referenced by this context pointer.",
+            "additionalProperties": false,
+            "required": ["path", "digest"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "description": "Path to the artifact relative to the source run directory." },
+              "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "SHA-256 content digest of the artifact." },
+              "mediaType": { "type": "string", "description": "Optional media type describing the artifact bytes." },
+              "size": { "type": "integer", "minimum": 0, "description": "Artifact length in bytes." },
+              "integrity": { "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "description": "Provenance grade of the referenced artifact." }
+              }
+            },
+            "external": {
+              "type": "object",
+              "description": "External source reference represented by this context pointer.",
+              "additionalProperties": false,
+              "required": ["kind", "uri"],
+              "properties": {
+                "kind": { "type": "string", "minLength": 1, "description": "Kind of external object reference." },
+                "uri": { "type": "string", "minLength": 1, "description": "Provider URI identifying the external object." },
+                "description": { "type": "string", "description": "Human-readable description of the external reference." }
+              }
+          }
+        }
+      }
+    },
     "gaggle": { "type": "string", "minLength": 1, "description": "Gaggle that owns the run." },
     "runControls": {
       "description": "Effective inherited run-control policy pinned when the run started. Omitted only on legacy journals.",

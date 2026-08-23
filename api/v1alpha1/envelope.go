@@ -155,6 +155,9 @@ type ContinuationRequest struct {
 	Target              string              `json:"target"`
 	Operator            string              `json:"operator"`
 	Inputs              []ContinuationInput `json:"inputs,omitempty"`
+	// ContextPointers are the explicitly selected source artifacts. No other
+	// source-run context is implicitly inherited.
+	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
 }
 
 // ContinuationInput is an injected immutable input reference. Content is

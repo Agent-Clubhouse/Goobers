@@ -430,15 +430,23 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := newWalkState(jr, StartInput{
-		RunID:        in.RunID,
-		Machine:      in.Machine,
-		GooberDigest: in.GooberDigest,
-		Gaggle:       id.Gaggle,
-		Trigger:      id.Trigger,
-		RepoRef:      in.RepoRef,
-	}, registrar, "")
-	ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	resumeInput := StartInput{
+		RunID:              in.RunID,
+		Machine:            in.Machine,
+		GooberDigest:       in.GooberDigest,
+		Gaggle:             id.Gaggle,
+		Trigger:            id.Trigger,
+		RepoRef:            in.RepoRef,
+		WorkspaceBranch:    id.WorkspaceBranch,
+		WorkspaceBranchSHA: id.WorkspaceBranchSHA,
+		ContextPointers:    append([]apiv1.ContextPointer(nil), id.ContextPointers...),
+	}
+	ws := newWalkState(jr, resumeInput, registrar, "")
+	if id.ContinuedFromRunID != "" {
+		ws.pointers = append(ws.pointers, id.ContextPointers...)
+	} else {
+		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	}
 	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
 	ws.visitedStages = stageVisitSeed(seedEvents)
 	ws.parallel = activeParallel
@@ -456,7 +464,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	ws.lastStage, ws.lastResult = lastStage, lastResult
 	ws.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, ws.lastResult)
-	ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	ws.workspaceBranch = id.WorkspaceBranch
+	if ws.workspaceBranch == "" {
+		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	}
 	ws.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
 	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)

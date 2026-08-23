@@ -180,6 +180,7 @@ func TestCreateContinuationRejectsMissingSourceLockWithoutMutation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := source.Append(Event{Type: EventRunFinished, Status: string(PhaseCompleted)}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +207,129 @@ func TestCreateContinuationRejectsMissingSourceLockWithoutMutation(t *testing.T)
 	after := snapshotJournalTree(t, sourceDir)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("source journal changed while refusing missing lock:\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+func TestCreateContinuationRetainsBranchAndExplicitContext(t *testing.T) {
+	root := t.TempDir()
+	sourceID := "0af7651916cd43dd8448eb211c80319c"
+	source, err := Create(root, RunIdentity{RunID: sourceID, Workflow: "wf", Gaggle: "g"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRefTouched, ExternalRef: &ExternalRef{
+		Provider: "github", Kind: "branch", ID: "goobers/wf/source", CommitSHA: "abc123",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRunFinished, Status: string(PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := CreateContinuation(root, ContinuationRequest{
+		RunID: "1af7651916cd43dd8448eb211c80319c", SourceRunID: sourceID,
+		ExpectedTerminalSeq: 3, Operator: "operator", Target: "implement",
+		Inputs:         map[string][]byte{"issue": []byte("body")},
+		InputIntegrity: map[string]apiv1.Integrity{"issue": apiv1.IntegrityMaintainer},
+		ContextPointers: []apiv1.ContextPointer{{
+			Name: "prior.diff", RunID: sourceID,
+			Artifact: &apiv1.ArtifactPointer{Path: "artifacts/review/diff", Digest: Digest([]byte("diff"))},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenRead(filepath.Join(root, "1af7651916cd43dd8448eb211c80319c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.WorkspaceBranch != "goobers/wf/source" || id.WorkspaceBranchSHA != "abc123" {
+		t.Fatalf("continuation branch = %q@%q", id.WorkspaceBranch, id.WorkspaceBranchSHA)
+	}
+	if len(id.ContextPointers) != 2 || id.ContextPointers[0].Name != "prior.diff" ||
+		id.ContextPointers[1].Name != "issue" || id.ContextPointers[1].Artifact.Path != "inputs/issue" {
+		t.Fatalf("continuation context = %+v", id.ContextPointers)
+	}
+}
+
+func TestCreateContinuationRejectsMismatchedSourceCommit(t *testing.T) {
+	root := t.TempDir()
+	sourceID := "0af7651916cd43dd8448eb211c80319c"
+	source, err := Create(root, RunIdentity{RunID: sourceID, Workflow: "wf", Gaggle: "g"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRefTouched, ExternalRef: &ExternalRef{
+		Kind: "branch", ID: "goobers/wf/source", CommitSHA: "actual",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRunFinished, Status: string(PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = CreateContinuation(root, ContinuationRequest{
+		RunID: "1af7651916cd43dd8448eb211c80319c", SourceRunID: sourceID,
+		ExpectedTerminalSeq: 3, Operator: "operator", Target: "implement",
+		SourceBranch: "goobers/wf/source", ExpectedSourceSHA: "stale",
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected") {
+		t.Fatalf("mismatched commit error = %v", err)
+	}
+}
+
+func TestCreateContinuationDoesNotInheritSourceContext(t *testing.T) {
+	root := t.TempDir()
+	sourceID := "0af7651916cd43dd8448eb211c80319c"
+	source, err := Create(root, RunIdentity{
+		RunID: sourceID, Workflow: "wf", Gaggle: "g",
+		ContextPointers: []apiv1.ContextPointer{{
+			Name: "ambient", Artifact: &apiv1.ArtifactPointer{
+				Path: "artifacts/ambient", Digest: Digest([]byte("ambient")),
+			},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Append(Event{Type: EventRunFinished, Status: string(PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	continuation, err := CreateContinuation(root, ContinuationRequest{
+		RunID: "1af7651916cd43dd8448eb211c80319c", SourceRunID: sourceID,
+		ExpectedTerminalSeq: 2, Operator: "operator", Target: "implement",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := continuation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenRead(filepath.Join(root, "1af7651916cd43dd8448eb211c80319c"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(id.ContextPointers) != 0 {
+		t.Fatalf("continuation context = %+v, want no inherited pointers", id.ContextPointers)
 	}
 }
 

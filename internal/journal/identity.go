@@ -94,6 +94,16 @@ type RunIdentity struct {
 	// Operator and RequestedTarget are immutable continuation provenance.
 	Operator        string `json:"operator,omitempty"`
 	RequestedTarget string `json:"requestedTarget,omitempty"`
+	// WorkspaceBranch is the repository branch whose state this run executes.
+	// Continuations retain the source branch instead of creating a new run branch.
+	WorkspaceBranch string `json:"workspaceBranch,omitempty"`
+	// WorkspaceBranchSHA is the commit observed for WorkspaceBranch at creation.
+	WorkspaceBranchSHA string `json:"workspaceBranchSha,omitempty"`
+	// WorkspaceRepository identifies the repository containing WorkspaceBranch.
+	WorkspaceRepository *apiv1.RepoRef `json:"workspaceRepository,omitempty"`
+	// ContextPointers are the explicitly admitted cross-run and injected inputs
+	// available to a continuation. Ambient source-run context is never copied.
+	ContextPointers []apiv1.ContextPointer `json:"contextPointers,omitempty"`
 	// StartedAt is when the run was created and anchors maxRunDuration.
 	StartedAt time.Time `json:"startedAt"`
 }

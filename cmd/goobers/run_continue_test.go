@@ -12,7 +12,28 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestContinuationRepositoryIdentityRequiresEveryComponent(t *testing.T) {
+	configured := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub, Owner: "Acme", Name: "Web",
+	}
+	source := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}
+	if !sameContinuationRepository(source, configured) {
+		t.Fatal("matching repository identity was rejected")
+	}
+	source.Name = "other"
+	if sameContinuationRepository(source, configured) {
+		t.Fatal("repository name mismatch was accepted")
+	}
+}
+
+func TestContinuationBranchNamespaceNormalizesConfiguredPrefix(t *testing.T) {
+	if got := providers.NormalizeBranchNamespace("goobers/implementation"); got != "goobers/implementation/" {
+		t.Fatalf("normalized namespace = %q", got)
+	}
+}
 
 func TestRunRunContinueRejectsLegacySourceWithoutWorkflowPin(t *testing.T) {
 	root := t.TempDir()

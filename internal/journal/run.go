@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -334,6 +335,12 @@ type ContinuationRequest struct {
 	Inputs              map[string][]byte
 	InputIntegrity      map[string]apiv1.Integrity
 	InputSource         map[string]string
+	SourceBranch        string
+	ExpectedSourceSHA   string
+	SourceRepository    *apiv1.RepoRef
+	ContextPointers     []apiv1.ContextPointer
+	// VerifySourceBranch checks the provider's current branch head before reuse.
+	VerifySourceBranch func(branch, sha string) error
 }
 
 // CreateContinuation creates a distinct journal from a terminal source
@@ -390,19 +397,105 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 	if terminalSeq != req.ExpectedTerminalSeq {
 		return nil, fmt.Errorf("%w: source %q is at sequence %d, expected %d", ErrTerminalGenerationChanged, req.SourceRunID, terminalSeq, req.ExpectedTerminalSeq)
 	}
+	var recordedBranch, recordedSHA string
+	for _, event := range events {
+		if event.Type == EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			recordedBranch = event.ExternalRef.ID
+			recordedSHA = event.ExternalRef.CommitSHA
+		}
+	}
 	id, err := reader.Identity()
 	if err != nil {
 		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
+	}
+	if recordedBranch == "" {
+		recordedBranch = strings.TrimSpace(id.WorkspaceBranch)
+	}
+	if recordedSHA == "" {
+		recordedSHA = strings.TrimSpace(id.WorkspaceBranchSHA)
+	}
+	if (req.SourceBranch != "" || req.ExpectedSourceSHA != "") &&
+		(recordedBranch == "" || recordedSHA == "") {
+		return nil, fmt.Errorf("journal: continuation source %q has no recorded branch and commit", req.SourceRunID)
+	}
+	if req.SourceBranch != "" && req.SourceBranch != recordedBranch {
+		return nil, fmt.Errorf("journal: continuation source branch changed from %q to %q", req.SourceBranch, recordedBranch)
+	}
+	if req.ExpectedSourceSHA != "" && !strings.EqualFold(req.ExpectedSourceSHA, recordedSHA) {
+		return nil, fmt.Errorf("journal: continuation source branch %q is at commit %q, expected %q", recordedBranch, recordedSHA, req.ExpectedSourceSHA)
+	}
+	if req.VerifySourceBranch != nil && (recordedBranch == "" || recordedSHA == "") {
+		return nil, fmt.Errorf("journal: continuation source %q has no recorded branch and commit", req.SourceRunID)
+	}
+	if req.VerifySourceBranch != nil {
+		if err := req.VerifySourceBranch(recordedBranch, recordedSHA); err != nil {
+			return nil, fmt.Errorf("journal: verify continuation source branch %q: %w", recordedBranch, err)
+		}
 	}
 	id.RunID = req.RunID
 	id.ContinuedFromRunID = req.SourceRunID
 	id.SourceTerminalSeq = req.ExpectedTerminalSeq
 	id.Operator = strings.TrimSpace(req.Operator)
 	id.RequestedTarget = strings.TrimSpace(req.Target)
+	id.WorkspaceBranch = strings.TrimSpace(req.SourceBranch)
+	id.WorkspaceBranchSHA = strings.TrimSpace(req.ExpectedSourceSHA)
+	if req.SourceRepository != nil {
+		repository := *req.SourceRepository
+		id.WorkspaceRepository = &repository
+	}
+	if id.WorkspaceBranch == "" {
+		id.WorkspaceBranch = recordedBranch
+	}
+	if id.WorkspaceBranchSHA == "" {
+		id.WorkspaceBranchSHA = recordedSHA
+	}
+	// The request is the complete allowlist; never inherit ambient source context.
+	id.ContextPointers = make([]apiv1.ContextPointer, len(req.ContextPointers))
+	copy(id.ContextPointers, req.ContextPointers)
+	for i := range id.ContextPointers {
+		p := &id.ContextPointers[i]
+		if p.RunID == "" {
+			p.RunID = req.SourceRunID
+		}
+		if p.Artifact == nil || p.External != nil {
+			return nil, fmt.Errorf("journal: continuation context pointer %q is not an explicit source artifact", p.Name)
+		}
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("journal: invalid continuation context pointer %q: %w", p.Name, err)
+		}
+	}
 	id.Trigger = Trigger{Kind: TriggerManual, Ref: req.SourceRunID}
-	return Create(runsDir, id, req.Inputs, append(opts,
+	// Inputs are immutable snapshots; expose each injected snapshot only through
+	// an artifact pointer, alongside the explicitly selected source pointers.
+	if len(req.Inputs) > 0 {
+		updated := make([]apiv1.ContextPointer, 0, len(id.ContextPointers)+len(req.Inputs))
+		updated = append(updated, id.ContextPointers...)
+		names := make([]string, 0, len(req.Inputs))
+		for name := range req.Inputs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			grade := req.InputIntegrity[name]
+			if grade == "" {
+				grade = apiv1.IntegrityTrusted
+			}
+			updated = append(updated, apiv1.ContextPointer{
+				Name: name, Integrity: grade,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: "inputs/" + name, Digest: apiv1.Digest(req.Inputs[name]), Integrity: grade,
+				},
+			})
+		}
+		id.ContextPointers = updated
+	}
+	created, err := Create(runsDir, id, req.Inputs, append(opts,
 		WithInputIntegrity(req.InputIntegrity), WithInputSource(req.InputSource),
 	)...)
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are
