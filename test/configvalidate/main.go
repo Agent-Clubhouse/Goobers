@@ -57,10 +57,6 @@ repos:
 `
 
 const docsUpdaterInertWarning = "WARNING Workflow/docs-updater: workflow \"docs-updater\" has no schedule trigger; it will not fire autonomously \u2014 run it with `goobers run docs-updater`"
-const (
-	docsRootDocsWarning   = "WARNING DOCS003 Workflow/docs-updater: declared docs root \"docs\" not verified: config tree is not the target repository Agent-Clubhouse/Goobers"
-	docsRootReadmeWarning = "WARNING DOCS003 Workflow/docs-updater: declared docs root \"README.md\" not verified: config tree is not the target repository Agent-Clubhouse/Goobers"
-)
 
 type checkedInTree struct {
 	path            string
@@ -76,8 +72,6 @@ var checkedInTrees = []checkedInTree{
 		strict:     true,
 		allowedWarnings: []string{
 			docsUpdaterInertWarning,
-			docsRootDocsWarning,
-			docsRootReadmeWarning,
 		},
 	},
 	{path: "config-examples"},
