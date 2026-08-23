@@ -345,9 +345,9 @@ func featureForNext(feature Feature) vnext.Feature {
 func nextFeature(feature vnext.Feature) Feature {
 	out := Feature{
 		ID:                    FeatureID(feature.ID),
-		Level:                 SupportLevel(feature.Level),
+		Level:                 feature.Level,
 		SinceVersion:          feature.SinceVersion,
-		Replacement:           FeatureID(feature.Replacement),
+		Replacement:           feature.Replacement,
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),

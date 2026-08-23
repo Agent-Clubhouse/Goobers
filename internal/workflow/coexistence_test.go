@@ -232,7 +232,7 @@ func TestNextFeatureRegistryDoesNotRevalidateWithCurrentInterpreter(t *testing.T
 		input,
 		func([]vnext.Feature) (vnext.FeatureRegistry, error) {
 			return vnext.NewFeatureRegistry([]vnext.Feature{{
-				ID:           vnext.FeatureID(nextOnly),
+				ID:           nextOnly,
 				Level:        vnext.SupportPreview,
 				SinceVersion: "v0.1.0",
 				History: []vnext.SupportTransition{{
