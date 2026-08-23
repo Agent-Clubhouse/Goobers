@@ -318,33 +318,23 @@ func diagnosticsFromNext(diagnostics []vnext.FeatureDiagnostic) []FeatureDiagnos
 
 func featureForNext(feature Feature) vnext.Feature {
 	out := vnext.Feature{
-		ID:                    vnext.FeatureID(feature.ID),
-		Level:                 vnext.SupportLevel(feature.Level),
+		ID:                    feature.ID,
+		Level:                 feature.Level,
 		SinceVersion:          feature.SinceVersion,
-		Replacement:           vnext.FeatureID(feature.Replacement),
+		Replacement:           feature.Replacement,
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
 		DSLVersions:           make([]vnext.DSLFeatureSupport, len(feature.DSLVersions)),
 		History:               make([]vnext.SupportTransition, len(feature.History)),
 	}
-	for i, support := range feature.DSLVersions {
-		out.DSLVersions[i] = vnext.DSLFeatureSupport{
-			Version: support.Version,
-			Level:   vnext.SupportLevel(support.Level),
-		}
-	}
-	for i, transition := range feature.History {
-		out.History[i] = vnext.SupportTransition{
-			Level:        vnext.SupportLevel(transition.Level),
-			SinceVersion: transition.SinceVersion,
-		}
-	}
+	copy(out.DSLVersions, feature.DSLVersions)
+	copy(out.History, feature.History)
 	return out
 }
 
 func nextFeature(feature vnext.Feature) Feature {
 	out := Feature{
-		ID:                    FeatureID(feature.ID),
+		ID:                    feature.ID,
 		Level:                 feature.Level,
 		SinceVersion:          feature.SinceVersion,
 		Replacement:           feature.Replacement,
@@ -353,18 +343,8 @@ func nextFeature(feature vnext.Feature) Feature {
 		DSLVersions:           make([]DSLFeatureSupport, len(feature.DSLVersions)),
 		History:               make([]SupportTransition, len(feature.History)),
 	}
-	for i, support := range feature.DSLVersions {
-		out.DSLVersions[i] = DSLFeatureSupport{
-			Version: support.Version,
-			Level:   SupportLevel(support.Level),
-		}
-	}
-	for i, transition := range feature.History {
-		out.History[i] = SupportTransition{
-			Level:        SupportLevel(transition.Level),
-			SinceVersion: transition.SinceVersion,
-		}
-	}
+	copy(out.DSLVersions, feature.DSLVersions)
+	copy(out.History, feature.History)
 	return out
 }
 
