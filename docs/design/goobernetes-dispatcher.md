@@ -96,6 +96,19 @@ off the daemon, its replacement gets its own tight pair, never a widened namespa
 stage hangs at materialize (not a policy denial); it is the class's own data path, not a grant
 to withhold.
 
+**AND within one peer, never an OR across peers — how the rule is rendered (decision 012,
+structural):** a NetworkPolicy peer that sets `podSelector` **and** `namespaceSelector` in the
+SAME `to`/`from` list element is an **AND** — pods matching the podSelector *within* namespaces
+matching the namespaceSelector — and that AND is the correct way to pin the blob endpoint to
+its namespace while the grant stays a tight pod+port pair. The identical two selectors as
+SEPARATE list elements are an **OR** — every pod in the selected namespace, *plus* the selected
+pod in every namespace — which is the whole-namespace path this decision forbids. Same fields,
+opposite meaning, and the difference is invisible on visual review — so the composed rule is
+verified by **parsing it, not reading it** (a substring/grep check is a correlate; the parsed
+peer is the observation). Read "**never `namespaceSelector`**" above precisely: never one that
+*widens* — a namespaceSelector AND-combined in a single peer to pin the namespace is correct;
+a standalone or separate-peer namespaceSelector is the bypass.
+
 ## 3. The runner-class label — derived and non-overridable (decision 004, corrected)
 
 The dispatcher stamps exactly one `goobers.dev/runner-class` label, **derived from the
