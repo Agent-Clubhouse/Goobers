@@ -62,7 +62,7 @@ func scoredPolicy(scores map[int]int, higherWins bool) electionPolicyFunc {
 // the "unblocks the most siblings" signal (#1028). Duplicate or off-cluster
 // blocker references never inflate a member's count: each (namingPR, blocker)
 // pair is seen once and only cluster members are scored.
-func gatherMostBlockersScores(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, cluster []int, prs []providers.PullRequestSummary) (map[int]int, error) {
+func gatherMostBlockersScores(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, cluster []int, prs []providers.PullRequestSummary) (map[int]int, error) {
 	inCluster := make(map[int]bool, len(cluster))
 	for _, m := range cluster {
 		inCluster[m] = true
@@ -93,7 +93,7 @@ func gatherMostBlockersScores(ctx context.Context, provider *providers.GitHubPro
 // "smallest downstream reconcile surface" signal. A provider file-list failure
 // is returned to the caller, which surfaces it through the stage's normal
 // explicit failure path rather than silently changing the elected winner.
-func gatherFewestOverlapsScores(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, cluster []int) (map[int]int, error) {
+func gatherFewestOverlapsScores(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, cluster []int) (map[int]int, error) {
 	files := make(map[int]map[string]bool, len(cluster))
 	for _, m := range cluster {
 		changed, err := provider.PullRequestFiles(ctx, repo, fmt.Sprintf("%d", m))
@@ -134,7 +134,7 @@ func gatherFewestOverlapsScores(ctx context.Context, provider *providers.GitHubP
 // resolver. Both elect-lander and apply-verdict call this with identical inputs
 // and the same provider data, so they derive an identical policy — the two
 // stages never disagree about who is crowned.
-func resolveElectionPolicyForCluster(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, name string, selectedNumber int, blockers []int, prs []providers.PullRequestSummary) (electionPolicyFunc, string, error) {
+func resolveElectionPolicyForCluster(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, name string, selectedNumber int, blockers []int, prs []providers.PullRequestSummary) (electionPolicyFunc, string, error) {
 	if !isClusterDataPolicy(name) {
 		policy, resolved := resolveElectionPolicy(name)
 		return policy, resolved, nil
