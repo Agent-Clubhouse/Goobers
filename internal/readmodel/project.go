@@ -453,6 +453,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				node.recordAttempt(event.Branch, "")
 			}
 			node.gateOpen[event.Branch] = false
+			node.Arm = event.Verdict
 			row.OutcomeVerdict = event.Verdict
 			row.OutcomeTarget = event.Target
 			if event.Gate == "review" {
