@@ -89,6 +89,21 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	def, ok := reg.Latest(workflowName)
+	if !ok {
+		pf(stderr, "error: workflow %q is not registered\n", workflowName)
+		return 1
+	}
+	// Mode-3 placement pinning (#3588): resolve every stage's execution
+	// placement now, against the declared runner inventory, and pin the
+	// outcome into the run input — the workflow reads it as data and never
+	// solves mid-run (the WF-016 snapshot / determinism constraint). Nil on
+	// every zero-declaration and local-mode instance.
+	placements, err := bootstrap.PinStagePlacements(cfg, set, target, def)
+	if err != nil {
+		pf(stderr, "error: resolve stage placements: %v\n", err)
+		return 1
+	}
 	in, err := reg.StartInput(workflowName, engine.StartSpec{
 		RunID:           engine.RunID(target, workflowName, *dedupe),
 		Gaggle:          target,
@@ -96,6 +111,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		TriggerKind:     "manual",
 		BranchNamespace: branchNamespacesByGaggle(set)[target],
 		LiveJournal:     *liveJournal,
+		Placements:      placements,
 	})
 	if err != nil {
 		pf(stderr, "error: pin workflow %q: %v\n", workflowName, err)

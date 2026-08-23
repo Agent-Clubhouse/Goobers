@@ -12,14 +12,17 @@ package main
 // refuses that workflow's runs (localscheduler.ReasonPlacementUnsatisfiable).
 //
 // Unlike checkpoint 1 (config validity — whole declared inventory), this
-// checkpoint decides EXECUTION placement, so it solves against the runners
-// the current substrate can actually execute on
-// (runnersolve.SolveExecutable: self only, until the #3513 dispatcher
-// exists). A workflow satisfiable only by remote runners VALIDATES clean —
-// the config is fine — but is refused here with a diagnostic naming where
-// it could place and pointing at #3513, instead of being green-lit on a
-// remote runner's claims and then executed on the daemon host that does not
-// satisfy them.
+// checkpoint decides the DAEMON's execution placement, so it solves against
+// the runners the daemon's substrate can actually execute on
+// (runnersolve.SolveExecutable: self only — the daemon runs stages
+// in-process and cannot dispatch until #3482 moves it behind the dispatch
+// seam). A workflow satisfiable only by remote runners VALIDATES clean —
+// the config is fine, and an ENGINE-started run can place it via the #3588
+// dispatch activity (bootstrap.PinStagePlacements solves the full
+// inventory) — but the daemon refuses it here with a diagnostic naming
+// where it could place, instead of green-lighting it on a remote runner's
+// claims and then executing it on the daemon host that does not satisfy
+// them.
 //
 // Only a declared runners: inventory produces boot refusals. A
 // zero-declaration instance solves nothing here: its capability union check

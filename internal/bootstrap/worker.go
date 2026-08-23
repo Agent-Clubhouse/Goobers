@@ -4,6 +4,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -33,6 +34,14 @@ type EngineDeps struct {
 	// registry every resolver-issued and credential-plane-minted value is
 	// registered with; nil disables the canary.
 	Canary journal.Scrubber
+	// Dispatcher is the mode-3 substrate seam (#3588): a
+	// *dispatcher.Dispatcher placing stage attempts as fresh pods. Nil keeps
+	// the worker local-only — a run pinned with a non-self placement then
+	// fails its dispatch activity closed with "not configured".
+	Dispatcher engine.StageDispatcher
+	// Surrenders is the plane the dispatch activity reads surrendered stage
+	// results from; required alongside Dispatcher.
+	Surrenders dispatcher.SurrenderPlane
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -48,6 +57,8 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		Scrubber:        deps.Scrubber,
 		Journal:         deps.Journal,
 		Canary:          deps.Canary,
+		Dispatcher:      deps.Dispatcher,
+		Surrenders:      deps.Surrenders,
 	})
 }
 

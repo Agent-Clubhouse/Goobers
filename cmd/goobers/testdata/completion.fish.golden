@@ -133,6 +133,7 @@ complete -c goobers -n '__fish_seen_subcommand_from engine-project' -l temporal-
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l instance -r -d 'Instance root; wires the real executors'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l blob-store -r -d 'Directory backing the fleet artifact store'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l daemon-api -r -d 'Daemon write API base URL for live journal emission'
+complete -c goobers -n '__fish_seen_subcommand_from worker' -l dispatch-namespace -r -d 'Namespace for mode-3 stage pods; wires the dispatcher seam'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l task-queue -r -d 'Task queue to serve (repeatable)'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-hostport -r -d 'Temporal frontend host and port'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespace -r -d 'Temporal namespace'
