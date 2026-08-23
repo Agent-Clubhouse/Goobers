@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -16,7 +17,9 @@ import (
 type MonitorMetric string
 
 const (
-	MonitorFailure    MonitorMetric = "failure"
+	// MonitorFailure tracks the proportion of failed node executions.
+	MonitorFailure MonitorMetric = "failure"
+	// MonitorRetryWaste tracks the proportion of node attempts consumed by retries.
 	MonitorRetryWaste MonitorMetric = "retry-waste"
 )
 
@@ -134,6 +137,7 @@ type MonitorResult struct {
 	Improvements []Improvement
 }
 
+// MonitorSink publishes regression nominations and verified improvements.
 type MonitorSink interface {
 	OpenNomination(context.Context, Nomination) error
 	ConfirmImprovement(context.Context, Improvement) error
@@ -176,8 +180,10 @@ func (s *Store) Monitor(ctx context.Context, options MonitorOptions, config Moni
 			}
 			if err := sink.OpenNomination(ctx, nomination); err != nil {
 				if releaseErr := s.releaseMonitorNomination(ctx, nomination.Marker); releaseErr != nil {
-					return MonitorResult{}, fmt.Errorf("readmodel: open drift nomination: %w; release claim: %v",
-						err, releaseErr)
+					return MonitorResult{}, errors.Join(
+						fmt.Errorf("readmodel: open drift nomination: %w", err),
+						fmt.Errorf("readmodel: release drift nomination claim: %w", releaseErr),
+					)
 				}
 				return MonitorResult{}, fmt.Errorf("readmodel: open drift nomination: %w", err)
 			}
@@ -207,8 +213,10 @@ func (s *Store) Monitor(ctx context.Context, options MonitorOptions, config Moni
 				}
 				if err := sink.ConfirmImprovement(ctx, improvement); err != nil {
 					if releaseErr := s.releaseMonitorImprovementClaim(ctx, marker); releaseErr != nil {
-						return MonitorResult{}, fmt.Errorf("readmodel: confirm improvement: %w; release claim: %v",
-							err, releaseErr)
+						return MonitorResult{}, errors.Join(
+							fmt.Errorf("readmodel: confirm improvement: %w", err),
+							fmt.Errorf("readmodel: release improvement claim: %w", releaseErr),
+						)
 					}
 					return MonitorResult{}, fmt.Errorf("readmodel: confirm improvement: %w", err)
 				}
@@ -313,7 +321,7 @@ func (s *Store) lookupMonitorNominationMarker(ctx context.Context, gaggle, workf
 		`SELECT marker FROM monitor_nomination WHERE marker LIKE ? ESCAPE '\' LIMIT 1`,
 		prefix).Scan(&marker)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
 		return "", fmt.Errorf("readmodel: lookup monitor nomination marker: %w", err)
