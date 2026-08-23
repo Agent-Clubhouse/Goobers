@@ -78,6 +78,8 @@
         "branch.started",
         "branch.finished",
         "parallel.finished",
+        "agent.lifecycle",
+        "agent.message",
         "init.completed",
         "trigger.fired",
         "tick.skipped",
@@ -310,6 +312,16 @@
       "$ref": "notification-receipt.schema.json",
       "x-conformance": "excluded"
     },
+    "agent": {
+      "description": "Versioned nested-agent provenance projected by a structured adapter.",
+      "$ref": "#/$defs/agentProvenance",
+      "x-conformance": "excluded"
+    },
+    "peerMessage": {
+      "description": "Orchestration-relevant peer metadata; raw message content is never retained.",
+      "$ref": "#/$defs/peerMessage",
+      "x-conformance": "excluded"
+    },
     "workflow": {
       "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, poll.shed, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
       "type": "string",
@@ -387,6 +399,60 @@
           "type": "string",
           "x-conformance": "excluded"
         }
+      }
+    },
+    "agentProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "runId", "stage", "attempt", "lifecycle", "startedAt", "updatedAt"],
+      "properties": {
+        "schema": { "description": "Versioned schema identifier for the agent provenance record.", "const": "goobers.dev/journal/agent/v1" },
+        "id": { "description": "Stable identifier for this agent invocation.", "type": "string", "minLength": 1 },
+        "parentId": { "description": "Identifier of the parent agent invocation, when nested.", "type": "string", "minLength": 1 },
+        "runId": { "description": "Run that owns this agent invocation.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Workflow stage that launched the agent.", "type": "string", "minLength": 1 },
+        "attempt": { "description": "One-based stage attempt containing the invocation.", "type": "integer", "minimum": 1 },
+        "plugin": { "description": "Adapter or plugin that executed the agent.", "type": "string" },
+        "objective": { "description": "Bounded objective assigned to the agent.", "type": "string" },
+        "coordinator": { "description": "Whether the invocation coordinates child agents.", "type": "boolean" },
+        "worker": { "description": "Whether the invocation performs delegated worker tasks.", "type": "boolean" },
+        "leaf": { "description": "Whether the invocation has no child agents.", "type": "boolean" },
+        "requestedModel": { "description": "Model requested before adapter resolution.", "type": "string" },
+        "resolvedModel": { "description": "Model selected by the executing adapter.", "type": "string" },
+        "requestedReasoningEffort": { "description": "Reasoning effort requested before adapter resolution.", "type": "string" },
+        "resolvedReasoningEffort": { "description": "Reasoning effort selected by the executing adapter.", "type": "string" },
+        "lifecycle": { "description": "Current lifecycle state of the agent invocation.", "type": "string", "enum": ["started", "waiting", "resumed", "completed", "failed", "cancelled"] },
+        "startedAt": { "description": "Time the agent invocation started.", "type": "string", "format": "date-time" },
+        "updatedAt": { "description": "Time the lifecycle record was last updated.", "type": "string", "format": "date-time" },
+        "budget": { "description": "Usage budget assigned to the invocation.", "$ref": "#/$defs/agentUsage" },
+        "usage": { "description": "Observed usage attributed to the invocation.", "$ref": "#/$defs/agentUsage" },
+        "usageAggregated": { "description": "Whether usage already includes descendant invocations.", "type": "boolean" },
+        "results": { "description": "Artifacts or external references produced by the invocation.", "type": "array", "items": { "$ref": "#/$defs/ref" } },
+        "dependsOn": { "description": "Agent invocation identifiers that must complete first.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fidelity": { "description": "Completeness of lifecycle telemetry emitted by the adapter.", "type": "string", "enum": ["full", "partial", "none"] }
+      }
+    },
+    "agentUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": { "description": "Input tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "outputTokens": { "description": "Output tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "costUsd": { "description": "Estimated invocation cost in US dollars.", "type": "number", "minimum": 0 }
+      }
+    },
+    "peerMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "senderId", "recipientId", "occurredAt", "purpose"],
+      "properties": {
+        "id": { "description": "Stable identifier for the peer message.", "type": "string", "minLength": 1 },
+        "senderId": { "description": "Agent invocation that sent the message.", "type": "string", "minLength": 1 },
+        "recipientId": { "description": "Agent invocation intended to receive the message.", "type": "string", "minLength": 1 },
+        "occurredAt": { "description": "Time the peer message was emitted.", "type": "string", "format": "date-time" },
+        "purpose": { "description": "Orchestration purpose without retaining raw message content.", "type": "string", "minLength": 1 },
+        "artifact": { "description": "Artifact reference carrying message content, when persisted separately.", "$ref": "#/$defs/ref" },
+        "contentHash": { "description": "Digest of the omitted raw message content.", "type": "string" }
       }
     },
     "errorDetail": {

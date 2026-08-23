@@ -60,7 +60,7 @@ var goldenDigests = map[string]string{
 	// new unknown-subcommand admission makes the kind dispatch explicit.
 	"implementation.yaml":   "sha256:8a7ea8c6942f2a1bdbb94e56631573bf690c6e7dc4a18b23efbcc2eafc672df5",
 	"backlog-curation.yaml": "sha256:73b4c30bc6a74f64d912709b7414a5e4ad52b08afbddc74dd3612df91b69cdbd",
-	"work-nomination.yaml":  "sha256:b335a202c70550332ed6fd8c97dec641f2b6e3f50796ad03829f73b7f787f9d5",
+	"work-nomination.yaml":  "sha256:e44ee1e09a463011056038605d75c65a930c3489a5e363d44b5e6ad8ad9fc627",
 }
 
 // TestShippedWorkflowsCompile proves the three V0 shipped workflows (curation,

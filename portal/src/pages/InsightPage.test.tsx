@@ -307,6 +307,7 @@ describe("Insight page", () => {
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     getTelemetryStats.mockResolvedValue({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [
         {
           gaggle: "core",
@@ -411,6 +412,7 @@ describe("Insight page", () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -569,6 +571,7 @@ describe("Insight page", () => {
     );
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -681,6 +684,7 @@ describe("Insight page", () => {
     // #2277 bug shape (one writer dead, a sibling writer fine).
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -721,6 +725,7 @@ describe("Insight page", () => {
     // must read differently from "never recorded" above.
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
