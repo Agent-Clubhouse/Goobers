@@ -84,17 +84,35 @@ restatement. Backend is an implementation choice with the digest contract fixed:
 Blob/Files, daemon-minted per-run-scoped credential — no byte-path, preferred at scale). v1
 may start daemon-fronted. **This adds one pod egress destination (§4).**
 
-**Blob-plane scoping is security-relevant (decision 012):** the blob-endpoint grant is
-`podSelector` + port scoped at BOTH ends — the stage-pod egress selects the blob-endpoint pod
-and port, the endpoint's ingress selects the stage-pod runner-class and port — **never
-`namespaceSelector`.** The v1 endpoint (goobers-api) shares goobers-system with the
-egress-proxy (which carries a 0.0.0.0/0-except-RFC1918 allow); a namespace-scoped blob grant
-would give every stage pod a path to the proxy's allowlist (hosts no runner class's CIDR
-grant includes) — a per-class-model bypass. A tight pod+port pair cannot. If the backend moves
-off the daemon, its replacement gets its own tight pair, never a widened namespace rule. And
-**every runner class carries the blob row, `restricted` included** — without it a restricted
-stage hangs at materialize (not a policy denial); it is the class's own data path, not a grant
-to withhold.
+**Blob-plane scoping is security-relevant (decision 012):** the blob grant **crosses
+namespaces** — the stage pod lives in a gaggle namespace, the blob endpoint (v1: goobers-api)
+in goobers-system — so each end's NetworkPolicy peer combines `namespaceSelector` **and**
+`podSelector` in a **single** `to`/`from` element: the namespaceSelector reaches the other
+namespace, the podSelector pins the one pod, the port pins the one port. It is **not** a
+`podSelector`-only rule — that form is case A below and grants nothing. The three peer forms,
+**measured on throwaway namespaces rather than argued** (`findings/evidence/netpol-peer-semantics.md`):
+
+- **A — `podSelector` alone:** selects pods in the policy's OWN namespace, so across namespaces
+  it matches nothing and grants **nothing**. It fails closed (safe), but the symptom is a stage
+  that **hangs at materialize** — the decision-010 stall, presenting as a data-plane hang, not a
+  visible policy denial. This is why "podSelector + port, never namespaceSelector" is wrong for a
+  cross-namespace grant: followed literally it silently grants nothing.
+- **B — `namespaceSelector` + `podSelector` in ONE peer (AND):** reaches exactly the blob
+  endpoint's pod and port, nothing else. **Correct.**
+- **C — the same two selectors as SEPARATE peers (OR):** every pod in the selected namespace,
+  *plus* the selected pod in every namespace — the whole-namespace grant. In goobers-system that
+  namespace holds the egress-proxy (a 0.0.0.0/0-except-RFC1918 allow), so C hands every stage pod
+  a path to the proxy's allowlist (hosts no runner class's CIDR grant includes): the
+  per-class-model **bypass** this decision forbids.
+
+B and C differ by two characters of YAML indentation, and the difference is invisible on visual
+review — so the composed peer is verified by **parsing it, not reading it** (a substring/grep
+check is a correlate; the parsed peer is the observation). Both ends of the grant take the
+single-peer AND form; if the backend moves off the daemon, its replacement gets its own
+single-peer AND grant, never a separate-peer or namespace-wide rule. And **every runner class
+carries the blob row, `restricted` included** — without it a restricted stage hangs at
+materialize (not a policy denial, and indistinguishable at the pod from case A); it is the
+class's own data path, not a grant to withhold.
 
 ## 3. The runner-class label — derived and non-overridable (decision 004, corrected)
 
