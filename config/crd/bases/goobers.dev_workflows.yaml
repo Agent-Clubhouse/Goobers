@@ -512,14 +512,6 @@ spec:
                       items:
                         type: string
                       type: array
-                    goal:
-                      description: Goal is the intended outcome of the task (TSK-001).
-                      type: string
-                    goober:
-                      description: |-
-                        Goober names the goober invoked for an agentic task. Required when
-                        type=agentic; must be empty when type=deterministic (TSK-010).
-                      type: string
                     experiment:
                       description: |-
                         Experiment routes this task across two or three declared safety arms.
@@ -528,8 +520,13 @@ spec:
                       properties:
                         arms:
                           items:
+                            description: BanditArm declares one variant and the gate
+                              strength required to evaluate it.
                             properties:
                               gateLevel:
+                                description: |-
+                                  GateLevel is the required safety strength for the gate evaluating this arm:
+                                  automated=1, agentic=2, human=3.
                                 type: integer
                               name:
                                 type: string
@@ -573,6 +570,14 @@ spec:
                       - seed
                       - trainWindow
                       type: object
+                    goal:
+                      description: Goal is the intended outcome of the task (TSK-001).
+                      type: string
+                    goober:
+                      description: |-
+                        Goober names the goober invoked for an agentic task. Required when
+                        type=agentic; must be empty when type=deterministic (TSK-010).
+                      type: string
                     inputs:
                       additionalProperties:
                         type: string
