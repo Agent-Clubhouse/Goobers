@@ -9,7 +9,41 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestMergeReviewEligibilityPolicy(t *testing.T) {
+	pr := providers.PullRequestSummary{
+		Labels:             []string{"goobers:team-a"},
+		Assignees:          []string{"alice"},
+		RequestedReviewers: []string{"review-bot"},
+	}
+	tests := []struct {
+		name            string
+		label           string
+		respectAssignee bool
+		selfIdentity    string
+		wantEligible    bool
+		wantDescription string
+	}{
+		{"legacy", "", false, "", true, "legacy"},
+		{"opted in", "goobers:team-a", false, "", true, "label:goobers:team-a"},
+		{"missing opt in", "goobers:team-b", false, "", false, ""},
+		{"assigned", "", true, "ALICE", true, "assignee-or-reviewer:ALICE"},
+		{"requested reviewer", "", true, "REVIEW-BOT", true, "assignee-or-reviewer:REVIEW-BOT"},
+		{"unrelated identity", "", true, "mallory", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := eligibleByMergeReviewPolicy(pr, tt.label, tt.respectAssignee, tt.selfIdentity); got != tt.wantEligible {
+				t.Fatalf("eligibleByMergeReviewPolicy() = %t, want %t", got, tt.wantEligible)
+			}
+			if tt.wantDescription != "" && mergeReviewEligibilityDescription(tt.label, tt.respectAssignee, tt.selfIdentity) != tt.wantDescription {
+				t.Fatalf("eligibility description = %q, want %q", mergeReviewEligibilityDescription(tt.label, tt.respectAssignee, tt.selfIdentity), tt.wantDescription)
+			}
+		})
+	}
+}
 
 // setDaemonIdentity rewrites root's instance.yaml to configure a pat-kind
 // DaemonIdentity — enough for daemonIdentityAuthorLogin to consult it, since
