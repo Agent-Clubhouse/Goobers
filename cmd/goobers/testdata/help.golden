@@ -153,7 +153,7 @@ Advanced operator commands:
                                 mechanically migrate workflows to a target dslVersion, one step at a time
   goobers doctor (--k8s | --repo) [--kubeconfig <path>] [--context <name>] [--report text|json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>] [--timeout <duration>]
                                 preflight Kubernetes or compare repository forge policy
-  goobers netpol-render [--out <dir>] [--check] [--baseline <path>] [--write-baseline] [--timeout <duration>] [path]
+  goobers netpol-render [--out <dir>] [--check] [--baseline <path>] [--write-baseline] [--timeout <duration>] [--print-blob-endpoint] [path]
                                 render per-runner-class NetworkPolicy reference manifests from the runners: inventory
   goobers config show|materialize|diff [flags] [path]
                                 inspect, materialize, or compare instance configuration
