@@ -284,6 +284,4 @@ github.com/goobers/goobers/internal/dispatcher.stampedLabels # #3513 dispatcher 
 github.com/goobers/goobers/internal/dispatcher.sweepSelector # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.templateStageImage # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.windowsToleration # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
-github.com/goobers/goobers/internal/runnercap.RunnerClassValue # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
-github.com/goobers/goobers/internal/runnercap.canonicalRestrictions # #3513 runner-class normalization shared by RunnerClassValue and RunnerClassAnnotation so label and annotation cannot drift; reachable through them, production wiring is the #3482 cutover.
-github.com/goobers/goobers/internal/runnercap.RunnerClassAnnotation # #3577 runner-class annotation producer: the dispatcher stamps it as the pod's restriction-set preimage and the #3568 NetworkPolicy renderer will select-annotate from the same function; test-exercised, production wiring is the #3482 cutover / #3568.
+github.com/goobers/goobers/internal/runnercap.ParseRunnerClassPreimage # #3568 decodes the runner-class-restrictions annotation back to a restriction set (inverse of RunnerClassPreimage); exercised by the renderer round-trip tests, no in-binary caller yet — a diagnostic decode helper for operators/preflight.

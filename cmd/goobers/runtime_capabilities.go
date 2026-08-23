@@ -227,6 +227,14 @@ func init() {
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
 			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
+		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).
+			withSynopsis(synopsisByID["netpol-render"]).
+			withHelp("render per-runner-class NetworkPolicy reference manifests from the runners: inventory", netpolRenderHelp).
+			withExamples(
+				"goobers netpol-render --out ./deploy/netpol",
+				"goobers netpol-render --out ./deploy/netpol --write-baseline",
+				"goobers netpol-render --out ./deploy/netpol --check",
+			),
 		groupCommand(
 			"config",
 			runConfig,

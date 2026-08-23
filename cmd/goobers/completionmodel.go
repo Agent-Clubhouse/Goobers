@@ -172,6 +172,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "egress", takesArg: true, desc: "Outbound host and port targets"},
 		{name: "timeout", takesArg: true, desc: "Per-probe timeout"},
 	},
+	"netpol-render": {
+		{name: "out", takesArg: true, desc: "Directory to write the rendered manifest set into"},
+		{name: "check", desc: "Validate provenance markers, the coverage ratchet, and output freshness"},
+		{name: "baseline", takesArg: true, desc: "Coverage baseline file"},
+		{name: "write-baseline", desc: "Freeze the current per-class coverage into the baseline"},
+		{name: "timeout", takesArg: true, desc: "Per-fetch timeout for provenance checks"},
+	},
 	"self-update": {
 		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
 		{name: "branch", takesArg: true, desc: "Branch tracked by on-main"},

@@ -46,9 +46,12 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
 
 ## Conventions
 
-- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts, CIDRs,
-  storage class, identity client ids). Nothing here references a real registry or tenant;
-  documentation CIDRs (`198.51.100.0/24`, `203.0.113.0/24`) stand in for real endpoints.
+- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts,
+  storage class, identity client ids). Nothing here references a real registry or tenant.
+  Stage egress CIDRs are NOT hand-edited here any more: they are rendered per runner
+  class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
+  decision 016 — the rendered output is the only authoritative copy, and the render
+  refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
@@ -116,9 +119,12 @@ verifies a target cluster against the same shape-doc requirements these manifest
 ## Stamping a new gaggle
 
 Copy one of `gaggle-namespace/examples/*`, set `namespace:` to the gaggle's namespace
-name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME egress CIDRs
-and workload-identity annotation for that gaggle (§3: one namespace and one federated
-identity per gaggle; GAG-012, SEC-001/002).
+name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME
+workload-identity annotation for that gaggle (§3: one namespace and one federated
+identity per gaggle; GAG-012, SEC-001/002). Stage egress grants are per runner class:
+render them with `goobers netpol-render --out <dir>` (filled from `instance.yaml
+egress.allowlist`) and apply them alongside the base — the base itself carries only
+the class-independent floor (default-deny-all + allow-dns).
 
 ## Operating notes from a real cluster
 

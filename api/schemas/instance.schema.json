@@ -56,6 +56,10 @@
       "type": "array",
       "items": { "$ref": "#/$defs/runnerEntry" }
     },
+    "egress": {
+      "description": "Operator-supplied network destination set the per-runner-class NetworkPolicy renderer (`goobers netpol-render`, issue #3568) fills into the rendered reference manifests. Omitted renders nothing and changes nothing about local execution — the daemon never applies cluster networking; it renders, and the cluster operator applies.",
+      "$ref": "#/$defs/egress"
+    },
     "engine": {
       "description": "Tier-3 Temporal engine connection shared by the runtime, scheduler, workers, dispatchers, and daemon projection loop. GOOBERS_TEMPORAL_HOSTPORT, GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE override these values at process startup.",
       "$ref": "#/$defs/engine"
@@ -562,6 +566,67 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$",
       "examples": ["dotnet@8"]
+    },
+    "egress": {
+      "description": "The egress destination configuration: named CIDR allowlist groups rendered into every network-granting runner class's NetworkPolicy (goobernetes-restrictions.md §2.2: the allowlist CIDR set is instance-operator-supplied configuration rendered into the manifests).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowlist": {
+          "description": "Named destination groups. Every runner class without network:none is rendered with all of them; a class with network:none gets only DNS and the blob-endpoint data path.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/egressAllowlistGroup" }
+        }
+      }
+    },
+    "egressAllowlistGroup": {
+      "description": "One named CIDR destination group: the git/backlog provider ranges, the model endpoint ranges, or a gaggle's sandbox targets. The render refuses CHANGE-ME documentation placeholders (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) — fill in real ranges before rendering.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "cidrs"],
+      "properties": {
+        "name": {
+          "description": "The group's handle in rendered provenance markers and errors. A lowercase DNS label, unique within the allowlist.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["github-provider"]
+        },
+        "kind": {
+          "description": "The destination family: provider (git/backlog provider), model (model/agent endpoint — the coverage ratchet's reference set), or sandbox (the gaggle's declared sandbox/provisioner targets).",
+          "type": "string",
+          "enum": ["provider", "model", "sandbox"]
+        },
+        "source": {
+          "description": "The upstream document the CIDRs were transcribed from (e.g. https://api.github.com/meta). Optional: omitted declares an operator-local set with no upstream to drift from. When set, sourceSHA256 is required and `goobers netpol-render --check` fails when the live document's hash no longer matches — a stale CIDR set otherwise fails mid-run as a connect timeout indistinguishable from a correct denial.",
+          "type": "string",
+          "examples": ["https://api.github.com/meta"]
+        },
+        "sourceSHA256": {
+          "description": "The hex sha256 of the source document at transcription time — the provenance marker the drift check validates. Required when source is set.",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "cidrs": {
+          "description": "The granted destination blocks, spelled as exact network addresses (no host bits — a normalized-away host part is how a grant silently widens).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One CIDR destination block.",
+            "type": "string",
+            "examples": ["140.82.112.0/20"]
+          }
+        },
+        "ports": {
+          "description": "The allowed TCP ports; omitted defaults to 443.",
+          "type": "array",
+          "items": {
+            "description": "One allowed TCP port.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
     },
     "runnerEntry": {
       "description": "One declared runner: a name, where stages placed on it execute (host), what it claims to provide, and the restriction effects it enforces. Claims are trusted in v1 — a false claim degrades to a runtime error with a named diagnostic, never a silent misroute.",

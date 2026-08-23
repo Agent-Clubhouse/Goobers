@@ -96,6 +96,50 @@ func TestRunnerClassValueUnknownEffectFallsBackToHash(t *testing.T) {
 	}
 }
 
+// The preimage annotation exists so an operator can decode an opaque class
+// value (issue #3568): for EVERY subset of the closed list — and for sets the
+// hash fallback covers — decoding the preimage and re-deriving the value must
+// land on the selector value, because both are functions of the same
+// CanonicalRestrictions output.
+func TestRunnerClassPreimageRoundTripsToValue(t *testing.T) {
+	known := KnownRestrictions()
+	for mask := 0; mask < 1<<len(known); mask++ {
+		var set []string
+		for i, r := range known {
+			if mask&(1<<i) != 0 {
+				set = append(set, string(r))
+			}
+		}
+		preimage := RunnerClassPreimage(set)
+		if got, want := RunnerClassValue(ParseRunnerClassPreimage(preimage)), RunnerClassValue(set); got != want {
+			t.Errorf("preimage %q round-trips to %q, want %q", preimage, got, want)
+		}
+	}
+
+	// The hash-fallback case is the one the annotation exists for: the value
+	// is opaque, so the preimage is the only human-readable handle.
+	future := []string{"future:effect", "network:none"}
+	preimage := RunnerClassPreimage(future)
+	if preimage != "future:effect,network:none" {
+		t.Fatalf("preimage = %q, want canonical sorted comma join", preimage)
+	}
+	if got, want := RunnerClassValue(ParseRunnerClassPreimage(preimage)), RunnerClassValue(future); got != want {
+		t.Fatalf("fallback preimage %q round-trips to %q, want %q", preimage, got, want)
+	}
+}
+
+func TestRunnerClassPreimageEmptySet(t *testing.T) {
+	if got := RunnerClassPreimage(nil); got != "" {
+		t.Fatalf("RunnerClassPreimage(nil) = %q, want empty", got)
+	}
+	if got := ParseRunnerClassPreimage(""); len(got) != 0 {
+		t.Fatalf("ParseRunnerClassPreimage(\"\") = %v, want empty set", got)
+	}
+	if got := RunnerClassValue(ParseRunnerClassPreimage("")); got != RunnerClassUnrestricted {
+		t.Fatalf("empty preimage round-trips to %q, want %q", got, RunnerClassUnrestricted)
+	}
+}
+
 // The slug table and the closed restriction list must cover each other — a
 // new effect added to one without the other would silently push every class
 // containing it onto the opaque hash fallback.
@@ -108,34 +152,6 @@ func TestRunnerClassValueCoversClosedList(t *testing.T) {
 	for r := range runnerClassSlugs {
 		if !KnownRestriction(string(r)) {
 			t.Errorf("runner-class slug exists for %q, which is not in the closed list", r)
-		}
-	}
-}
-
-// The annotation is a NON-DRIFTING mirror of the label: splitting the
-// annotation back into a restriction set and re-deriving the value must return
-// the same label value — for every permutation and duplicate, because both go
-// through canonicalRestrictions. A future edit that lets them diverge fails
-// HERE, not at 2am when an operator trusts a stale preimage.
-func TestRunnerClassAnnotationRoundTrips(t *testing.T) {
-	cases := [][]string{
-		nil,
-		{"fs:readonly-except-workspace"},
-		{"network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral"},
-		{"tmp:ephemeral", "network:allowlist", "fs:readonly-except-workspace"}, // permutation
-		{"network:allowlist", "network:allowlist"},                             // duplicate
-		{"env:default-deny", "network:none"},
-		{"totally:unknown-effect"}, // rc-<sha> fallback still round-trips
-	}
-	for _, set := range cases {
-		label := RunnerClassValue(set)
-		ann := RunnerClassAnnotation(set)
-		var decoded []string
-		if ann != "" {
-			decoded = strings.Split(ann, ",")
-		}
-		if got := RunnerClassValue(decoded); got != label {
-			t.Errorf("round-trip: %v → annotation %q → RunnerClassValue %q, want %q", set, ann, got, label)
 		}
 	}
 }

@@ -143,6 +143,12 @@ type Config struct {
 	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
 	// is startup-only, so in-flight runs finish against their pinned snapshot.
 	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Egress is the operator-supplied network destination set the
+	// per-runner-class NetworkPolicy renderer (`goobers netpol-render`,
+	// issue #3568) fills into the rendered reference manifests. Nil renders
+	// nothing and changes nothing about local execution — the daemon never
+	// applies cluster networking (goobernetes-restrictions.md §7).
+	Egress *EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
 	// SecretStores declares named external secret stores token refs can resolve
 	// through (config half of #683, SEC-010). A token ref opts in per ref with
 	// store: "<storeName>/<secretName>"; an instance that declares no stores and
@@ -1672,6 +1678,7 @@ func (c *Config) Validate() error {
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
 		c.validateRunners,
+		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
 	)

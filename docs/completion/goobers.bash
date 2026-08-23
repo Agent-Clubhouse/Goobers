@@ -60,6 +60,9 @@ _goobers_completion()
         doctor)
             flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
+        netpol-render)
+            flags+=" --out --check --baseline --write-baseline --timeout"
+            ;;
         config)
             case "${COMP_WORDS[2]:-}" in
                 diff) flags+=" --against" ;;
