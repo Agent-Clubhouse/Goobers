@@ -144,7 +144,7 @@ func TestDigestIncludesDSLVersionWhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 	versioned := unversioned
-	versioned.DSLVersion = "1.4"
+	versioned.DSLVersion = "2.0"
 	m2, err := compileAcknowledged(versioned)
 	if err != nil {
 		t.Fatal(err)

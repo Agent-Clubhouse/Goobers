@@ -16,6 +16,7 @@ import (
 // resulting localscheduler.WorkflowEntry.Schedules directly.
 const scheduleTriggeredWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -104,6 +105,7 @@ func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
 // workflow — #341's fixture.
 const multiScheduleWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:

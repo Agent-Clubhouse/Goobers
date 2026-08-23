@@ -95,24 +95,24 @@ func TestNewestSupported(t *testing.T) {
 func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	matrix := GetDSL()
 
-	// DSL 1.4 is deprecated (#2700): still loadable, replacement 2.0, with a
-	// declared unsupported-after release and a two-step lifecycle history.
+	// DSL 1.4 is DROPPED (#3507): unsupported, replacement 2.0, with a
+	// three-step lifecycle history ending at unsupported. It still resolves
+	// in the matrix so a 1.4 document gets DVL030 (naming `goobers fix`)
+	// rather than an opaque unknown-version error.
 	current, ok := matrix.Lookup(CurrentDSLVersion)
 	if !ok {
 		t.Fatalf("DSL version %q is missing", CurrentDSLVersion)
 	}
-	if current.Level != LevelDeprecated {
-		t.Fatalf("DSL version %q level = %q, want %q", CurrentDSLVersion, current.Level, LevelDeprecated)
+	if current.Level != LevelUnsupported {
+		t.Fatalf("DSL version %q level = %q, want %q", CurrentDSLVersion, current.Level, LevelUnsupported)
 	}
 	if current.Replacement != NextDSLVersion {
 		t.Fatalf("DSL version %q replacement = %q, want %q", CurrentDSLVersion, current.Replacement, NextDSLVersion)
 	}
-	if current.UnsupportedAfter == "" {
-		t.Fatalf("DSL version %q declares no unsupported-after release", CurrentDSLVersion)
-	}
-	if len(current.History) != 2 ||
+	if len(current.History) != 3 ||
 		current.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) ||
-		current.History[1].Level != LevelDeprecated {
+		current.History[1].Level != LevelDeprecated ||
+		current.History[2].Level != LevelUnsupported {
 		t.Fatalf("DSL version %q history = %+v", CurrentDSLVersion, current.History)
 	}
 
@@ -138,8 +138,8 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 		}
 	}
 
-	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelUnsupported}
-	if GetDSL()[CurrentDSLVersion].Level != LevelDeprecated {
+	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelSupported}
+	if GetDSL()[CurrentDSLVersion].Level != LevelUnsupported {
 		t.Fatal("GetDSL exposed the package's backing map")
 	}
 

@@ -63,10 +63,12 @@ const (
 	// WarningSkillPackageCollision identifies a gaggle-scoped skill package
 	// shadowing an instance-level package with the same name.
 	WarningSkillPackageCollision WarningCode = "SKILL001"
-	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
-	// defaulted to supportmatrix.CurrentDSLVersion during the transition
-	// window (DVL-3, #863).
-	WarningMissingDSLVersion WarningCode = "DVL001"
+	// ErrorMissingDSLVersion identifies a workflow with no dslVersion pin. This
+	// is a HARD ERROR since DSL 1.4 was dropped (#3507, dsl-3.0.md D13/§8.3):
+	// the transitional default was 1.4, which no longer loads, so an unpinned
+	// workflow can no longer be silently interpreted — the author must pin an
+	// explicit dslVersion. Keeps the DVL001 code id for continuity.
+	ErrorMissingDSLVersion WarningCode = "DVL001"
 	// WarningPreviewDSLVersionOptedIn identifies a workflow pinned to a
 	// preview-level dslVersion on an instance that has opted in.
 	WarningPreviewDSLVersionOptedIn WarningCode = "DVL010"
@@ -1138,9 +1140,13 @@ var dslSupportMatrix = supportmatrix.GetDSL
 func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	version := w.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
-		r.addWarning(WarningMissingDSLVersion, file, w.Spec.Gaggle, "Workflow", w.Name,
-			"spec has no dslVersion pin; defaulting to %q during the transition window — pin an explicit dslVersion before this becomes a hard error", version)
+		// The §8.3 cutover (#3507): a missing dslVersion used to default to 1.4
+		// and warn; 1.4 is dropped, so this is now a hard error naming the
+		// versions the author may pin.
+		r.addCoded(ErrorMissingDSLVersion, Error, file, "Workflow", w.Name,
+			"spec has no dslVersion pin; pin an explicit dslVersion (loadable: %s) — the transitional default is gone now that DSL 1.4 is dropped",
+			strings.Join(loadableDSLVersions(), ", "))
+		return
 	}
 
 	support, ok := dslSupportMatrix().Lookup(version)
@@ -1179,6 +1185,20 @@ func knownDSLVersions() []string {
 	names := make([]string, len(versions))
 	for i, v := range versions {
 		names[i] = v.Version
+	}
+	return names
+}
+
+// loadableDSLVersions lists the versions an author may pin — every declared
+// version that is not unsupported. It is what the missing-pin diagnostic
+// suggests: a dropped version like 1.4 is a valid matrix entry (so a stale pin
+// gets a precise DVL030) but never a suggestion to migrate TO.
+func loadableDSLVersions() []string {
+	var names []string
+	for _, v := range dslSupportMatrix().Versions() {
+		if v.Level != supportmatrix.LevelUnsupported {
+			names = append(names, v.Version)
+		}
 	}
 	return names
 }
