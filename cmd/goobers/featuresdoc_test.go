@@ -197,6 +197,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		},
 		"Task.RepoFrom":    {"task.repoFrom"},
 		"Task.CommitsRepo": {"task.commitsRepo"},
+		"Task.Experiment":  {"task.experiment"},
 	}
 	// The feature registry covers EVERY author-facing spec field (#3292, the
 	// PO-ruled reversal of #3003's operational-metadata exclusion): an
