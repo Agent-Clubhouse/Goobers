@@ -1,0 +1,431 @@
+package dispatcher
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runnercap"
+)
+
+func testConfig() Config {
+	return Config{
+		Namespace:       "gaggle-alpha",
+		EmbeddedCommit:  "0123456789abcdef0123456789abcdef01234567",
+		EmbeddedVersion: "v0.1.0",
+		BlobEndpoint:    "http://goobers-api.goobers-system:7777",
+		WriteAPIBase:    "http://goobers-api.goobers-system:7777",
+	}
+}
+
+func testAttempt() Attempt {
+	return Attempt{
+		RunID:    "run-2026-08-22-0001",
+		Gaggle:   "alpha",
+		Workflow: "implementation",
+		Stage:    "build",
+		Number:   1,
+		CPU:      "500m",
+		Memory:   "1Gi",
+		Disk:     "10Gi",
+		PodToken: "goobers-pod.tok",
+	}
+}
+
+func linuxRunner() RunnerSpec {
+	return RunnerSpec{
+		Name:         "tiny-linux",
+		OS:           "linux",
+		HostKind:     instance.RunnerHostImage,
+		Host:         "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+		CPU:          "2000m",
+		Memory:       "4Gi",
+		Disk:         "20Gi",
+		Restrictions: []string{"network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral"},
+	}
+}
+
+func windowsRunner() RunnerSpec {
+	return RunnerSpec{
+		Name:     "win-large",
+		OS:       "windows",
+		HostKind: instance.RunnerHostImage,
+		Host:     "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+		CPU:      "4000m",
+		Memory:   "8Gi",
+	}
+}
+
+// §8 item 2 (half 1): the runner-class label on every created pod is DERIVED
+// from the resolved restriction set through the single shared producer —
+// exactly one class label, plus the role marker the baseline policies select
+// on. This is also the decision-015 ROUND-TRIP: the value the dispatcher
+// stamps equals the value a rendered per-class NetworkPolicy selector derives
+// from the same inventory restriction set, because both call
+// runnercap.RunnerClassValue.
+func TestRenderPodStampsDerivedRunnerClassLabel(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	want := runnercap.RunnerClassValue(linuxRunner().Restrictions)
+	if got := pod.Labels[runnercap.LabelRunnerClass]; got != want {
+		t.Fatalf("runner-class label = %q, want the shared derivation %q", got, want)
+	}
+	// The renderer side of the contract: a policy selector built from the
+	// inventory's restriction set (any declaration order) selects this pod.
+	selectorValue := runnercap.RunnerClassValue([]string{
+		"tmp:ephemeral", "fs:readonly-except-workspace", "network:allowlist",
+	})
+	if pod.Labels[runnercap.LabelRunnerClass] != selectorValue {
+		t.Fatalf("stamped class %q does not round-trip to the selector derivation %q — the decision-015 contract is broken",
+			pod.Labels[runnercap.LabelRunnerClass], selectorValue)
+	}
+	if got := pod.Labels[runnercap.LabelRole]; got != runnercap.RoleStage {
+		t.Fatalf("role label = %q, want %q", got, runnercap.RoleStage)
+	}
+}
+
+// §8 item 2 (half 2): a workflow attempting to set the class label — or
+// anything in the dispatcher-owned goobers.dev/ metadata namespace — is
+// refused AT DISPATCH, not silently overwritten.
+func TestRenderPodRefusesLabelOverride(t *testing.T) {
+	for _, key := range []string{runnercap.LabelRunnerClass, runnercap.LabelRole, "goobers.dev/anything"} {
+		attempt := testAttempt()
+		attempt.ExtraLabels = map[string]string{key: "attacker-chosen"}
+		_, err := RenderPod(testConfig(), attempt, linuxRunner())
+		var override *LabelOverrideError
+		if !errors.As(err, &override) {
+			t.Fatalf("ExtraLabels[%q]: got err %v, want LabelOverrideError", key, err)
+		}
+		if override.Key != key {
+			t.Fatalf("LabelOverrideError.Key = %q, want %q", override.Key, key)
+		}
+	}
+	// Annotations are the same escalation surface.
+	attempt := testAttempt()
+	attempt.ExtraAnnotations = map[string]string{runnercap.LabelRunnerClass: "x"}
+	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
+		t.Fatal("goobers.dev/ annotation override was not refused")
+	}
+	// Non-goobers.dev metadata passes through untouched.
+	attempt = testAttempt()
+	attempt.ExtraLabels = map[string]string{"team.example.com/cost-center": "42"}
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("benign extra label refused: %v", err)
+	}
+	if pod.Labels["team.example.com/cost-center"] != "42" {
+		t.Fatal("benign extra label dropped")
+	}
+	// Dispatcher-owned stamps outside goobers.dev/ (the managed-by marker)
+	// are not refused but must WIN the merge — overwriting managed-by is how
+	// a pod would hide from the orphan sweep.
+	attempt = testAttempt()
+	attempt.ExtraLabels = map[string]string{LabelManagedBy: "someone-else"}
+	pod, err = RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if pod.Labels[LabelManagedBy] != ManagedByValue {
+		t.Fatalf("managed-by = %q — workflow input overwrote the sweep marker", pod.Labels[LabelManagedBy])
+	}
+}
+
+// Refuse-to-create on restriction mismatch: the stage's effective requirement
+// must be within what the resolved runner enforces (restrictions doc §6:
+// asserted at dispatch).
+func TestRenderPodRefusesRestrictionMismatch(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Restrictions = []string{"network:none"}
+	_, err := RenderPod(testConfig(), attempt, linuxRunner())
+	var mismatch *RestrictionMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("got err %v, want RestrictionMismatchError", err)
+	}
+	if len(mismatch.Missing) != 1 || mismatch.Missing[0] != "network:none" {
+		t.Fatalf("Missing = %v, want [network:none]", mismatch.Missing)
+	}
+}
+
+// §8 item 4: on a Windows pod, readOnlyRootFilesystem is NOT stamped —
+// Kubernetes silently ignores it on Windows, which fails OPEN (decision 007).
+// The fs effect binds to windowsOptions.runAsUserName: ContainerUser, and the
+// Linux-only baseline fields are absent.
+func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
+	runner := windowsRunner()
+	runner.Restrictions = nil // Windows declares no restrictions in v1 (D4)
+	pod, err := RenderPod(testConfig(), testAttempt(), runner)
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	container := pod.Spec.Containers[0]
+	if container.SecurityContext != nil && container.SecurityContext.ReadOnlyRootFilesystem != nil {
+		t.Fatal("readOnlyRootFilesystem stamped on a Windows pod — silently ignored by Kubernetes, fails OPEN (decision 007)")
+	}
+	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.WindowsOptions == nil ||
+		pod.Spec.SecurityContext.WindowsOptions.RunAsUserName == nil ||
+		*pod.Spec.SecurityContext.WindowsOptions.RunAsUserName != WindowsRunAsUserName {
+		t.Fatal("windowsOptions.runAsUserName: ContainerUser not stamped on the Windows pod")
+	}
+	if pod.Spec.SecurityContext.RunAsNonRoot != nil || pod.Spec.SecurityContext.SeccompProfile != nil {
+		t.Fatal("Linux-only securityContext fields stamped on a Windows pod")
+	}
+	if got := pod.Spec.NodeSelector[NodeSelectorOSKey]; got != "windows" {
+		t.Fatalf("node selector %s = %q, want windows", NodeSelectorOSKey, got)
+	}
+	found := false
+	for _, toleration := range pod.Spec.Tolerations {
+		if toleration.Key == WindowsTolerationKey && toleration.Value == "windows" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Windows toleration missing")
+	}
+}
+
+// The Linux counterpart: fs:readonly-except-workspace stamps
+// readOnlyRootFilesystem PLUS a writable workspace and writable HOME, and the
+// PSS-restricted baseline is present.
+func TestRenderPodLinuxReadonlyBinding(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	container := pod.Spec.Containers[0]
+	if container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatal("readOnlyRootFilesystem not stamped for the Linux fs restriction")
+	}
+	mounts := map[string]string{}
+	for _, mount := range container.VolumeMounts {
+		mounts[mount.Name] = mount.MountPath
+	}
+	if mounts["workspace"] != LinuxWorkspacePath {
+		t.Fatalf("workspace mount = %q, want %q", mounts["workspace"], LinuxWorkspacePath)
+	}
+	if mounts["home"] != LinuxHomePath {
+		t.Fatalf("home mount = %q, want %q (readOnlyRootFilesystem needs a writable HOME)", mounts["home"], LinuxHomePath)
+	}
+	var home string
+	for _, env := range container.Env {
+		if env.Name == "HOME" {
+			home = env.Value
+		}
+	}
+	if home != LinuxHomePath {
+		t.Fatalf("HOME env = %q, want %q", home, LinuxHomePath)
+	}
+	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.RunAsNonRoot == nil || !*pod.Spec.SecurityContext.RunAsNonRoot {
+		t.Fatal("runAsNonRoot baseline missing on Linux pod")
+	}
+	if pod.Spec.SecurityContext.SeccompProfile == nil || pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatal("RuntimeDefault seccomp baseline missing on Linux pod")
+	}
+}
+
+// §8 item 6 mechanics: the tmp:ephemeral tmpfs carries an EXPLICIT sizeLimit
+// (never the half-node-RAM default) and that sizeLimit is ADDED INTO the
+// container memory limit, so filling /tmp fails with a named limit rather
+// than an unattributed OOM against a ceiling that never accounted for it.
+func TestRenderPodBudgetsTmpfsIntoMemoryLimit(t *testing.T) {
+	cfg := testConfig()
+	cfg.TmpfsSizeLimit = resource.MustParse("1Gi")
+	pod, err := RenderPod(cfg, testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	var tmp *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "tmp" {
+			tmp = &pod.Spec.Volumes[i]
+		}
+	}
+	if tmp == nil || tmp.EmptyDir == nil {
+		t.Fatal("tmp:ephemeral volume missing")
+	}
+	if tmp.EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Fatalf("tmp medium = %q, want Memory on Linux", tmp.EmptyDir.Medium)
+	}
+	if tmp.EmptyDir.SizeLimit == nil || tmp.EmptyDir.SizeLimit.Cmp(resource.MustParse("1Gi")) != 0 {
+		t.Fatalf("tmp sizeLimit = %v, want explicit 1Gi", tmp.EmptyDir.SizeLimit)
+	}
+	limits := pod.Spec.Containers[0].Resources.Limits
+	// Runner ceiling 4Gi + tmpfs 1Gi = 5Gi.
+	if got, want := limits[corev1.ResourceMemory], resource.MustParse("5Gi"); got.Cmp(want) != 0 {
+		t.Fatalf("memory limit = %s, want %s (ceiling 4Gi + tmpfs 1Gi budgeted in)", got.String(), want.String())
+	}
+	// Requests come from the stage minimums, limits from the runner ceiling.
+	requests := pod.Spec.Containers[0].Resources.Requests
+	if got, want := requests[corev1.ResourceMemory], resource.MustParse("1Gi"); got.Cmp(want) != 0 {
+		t.Fatalf("memory request = %s, want the stage minimum %s", got.String(), want.String())
+	}
+	if got, want := limits[corev1.ResourceCPU], resource.MustParse("2000m"); got.Cmp(want) != 0 {
+		t.Fatalf("cpu limit = %s, want the runner ceiling %s", got.String(), want.String())
+	}
+}
+
+// A dispatcher with no configured tmpfs size still stamps an explicit
+// sizeLimit — the default is a named constant, never Kubernetes' half-node
+// fallback.
+func TestRenderPodTmpfsSizeLimitAlwaysExplicit(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Name == "tmp" {
+			if volume.EmptyDir.SizeLimit == nil || volume.EmptyDir.SizeLimit.Cmp(DefaultTmpfsSizeLimit) != 0 {
+				t.Fatalf("tmp sizeLimit = %v, want the explicit default %s", volume.EmptyDir.SizeLimit, DefaultTmpfsSizeLimit.String())
+			}
+			return
+		}
+	}
+	t.Fatal("tmp volume missing")
+}
+
+// The always-on orphan backstop: every pod carries activeDeadlineSeconds =
+// stage timeout + margin, including stages that declared no timeout.
+func TestRenderPodActiveDeadlineAlwaysOn(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Timeout = 30 * time.Minute
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil {
+		t.Fatal("activeDeadlineSeconds missing")
+	}
+	want := int64((30*60 + 10*60)) // 30m stage + 10m default margin
+	if *pod.Spec.ActiveDeadlineSeconds != want {
+		t.Fatalf("activeDeadlineSeconds = %d, want %d", *pod.Spec.ActiveDeadlineSeconds, want)
+	}
+
+	// No declared timeout: still finite.
+	attempt.Timeout = 0
+	pod, err = RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil || *pod.Spec.ActiveDeadlineSeconds <= 0 {
+		t.Fatal("a stage with no declared timeout must still get a finite activeDeadlineSeconds")
+	}
+}
+
+// The pod-plane env contract: identity, blob endpoint (decision 010 — every
+// class carries the blob data path), write API, and the per-run bearer.
+func TestRenderPodEnvContract(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	for name, want := range map[string]string{
+		EnvRunID:        "run-2026-08-22-0001",
+		EnvStage:        "build",
+		EnvAttempt:      "1",
+		EnvBlobEndpoint: "http://goobers-api.goobers-system:7777",
+		EnvDaemonAPI:    "http://goobers-api.goobers-system:7777",
+		EnvPodToken:     "goobers-pod.tok",
+	} {
+		if env[name] != want {
+			t.Errorf("env %s = %q, want %q", name, env[name], want)
+		}
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Error("stage pods must not automount the ServiceAccount token (deny-first posture; stage pods never call the API server)")
+	}
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Errorf("restartPolicy = %q, want Never (one attempt per pod)", pod.Spec.RestartPolicy)
+	}
+}
+
+// Fresh-pod-per-attempt naming: distinct attempts of one stage produce
+// distinct pod names; the same attempt redelivered produces the SAME name (so
+// a duplicate create collides instead of double-running).
+func TestPodNamePerAttempt(t *testing.T) {
+	first := testAttempt()
+	second := testAttempt()
+	second.Number = 2
+	if PodName(first) == PodName(second) {
+		t.Fatalf("attempts 1 and 2 share pod name %q — a new attempt must be a new pod", PodName(first))
+	}
+	if PodName(first) != PodName(testAttempt()) {
+		t.Fatal("the same attempt must derive the same pod name (idempotent create)")
+	}
+	long := testAttempt()
+	long.Stage = "an-extremely-long-stage-name-that-would-overflow-the-dns-label-budget"
+	long.RunID = strings.Repeat("r", 100)
+	name := PodName(long)
+	if len(name) > 63 {
+		t.Fatalf("pod name %q exceeds the 63-character DNS label bound", name)
+	}
+}
+
+// DI-9: the deployment host kind instantiates the consumer's template —
+// sidecars and consumer volumes survive — while every dispatcher-owned stamp
+// (identity labels, class label, deadline, restart policy, env) still lands,
+// and a template that pre-sets dispatcher-owned labels is refused.
+func TestRenderFromTemplate(t *testing.T) {
+	template := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "consumer-runner"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"consumer.example.com/tier": "fat"}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "stage", Image: "ghcr.io/consumer/fat:0123456789abcdef0123456789abcdef01234567"},
+						{Name: "sidecar", Image: "ghcr.io/consumer/logging:1"},
+					},
+				},
+			},
+		},
+	}
+	runner := RunnerSpec{
+		Name: "consumer", OS: "linux", HostKind: instance.RunnerHostDeployment,
+		Host: "consumer-runner", Memory: "4Gi",
+		Restrictions: []string{"fs:readonly-except-workspace"},
+	}
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), runner, template)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	if len(pod.Spec.Containers) != 2 {
+		t.Fatalf("template sidecar lost: %d containers", len(pod.Spec.Containers))
+	}
+	if pod.Labels["consumer.example.com/tier"] != "fat" {
+		t.Fatal("consumer template label lost")
+	}
+	if pod.Labels[runnercap.LabelRunnerClass] != runnercap.RunnerClassValue(runner.Restrictions) {
+		t.Fatal("derived runner-class label missing on template-instantiated pod")
+	}
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Fatal("template instantiation must force restartPolicy Never (fresh pod per attempt)")
+	}
+	if pod.Spec.ActiveDeadlineSeconds == nil {
+		t.Fatal("template instantiation must stamp the activeDeadlineSeconds backstop")
+	}
+	// The fs restriction is pod-wide: the sidecar gets readOnlyRootFilesystem
+	// too.
+	side := pod.Spec.Containers[1]
+	if side.SecurityContext == nil || side.SecurityContext.ReadOnlyRootFilesystem == nil || !*side.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatal("fs restriction not stamped on the template's sidecar container")
+	}
+
+	// A template pre-setting the class label is the same escalation as
+	// workflow input: refused.
+	template.Spec.Template.Labels[runnercap.LabelRunnerClass] = "general"
+	if _, err := RenderFromTemplate(testConfig(), testAttempt(), runner, template); err == nil {
+		t.Fatal("template-supplied runner-class label was not refused")
+	}
+}

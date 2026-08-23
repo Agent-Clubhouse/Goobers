@@ -106,6 +106,15 @@ grant (the per-class NetworkPolicy model attributes egress by this label). This 
 load-bearing invariant, not the earlier "exactly one label" (a map key holds one value by
 construction — a non-invariant).
 
+**The derived VALUE is a single shared function (delivery decision 015):** the value string is
+produced ONLY by `internal/runnercap.RunnerClassValue` — deterministic over the sorted resolved
+restriction set, always a valid Kubernetes label value — used by BOTH the dispatcher's stamp and
+the per-runner-class reference-manifest render, with a round-trip test asserting the two agree.
+The three coupled label constants (`goobers.dev/runner-class`, `goobers.dev/role=stage`, and the
+namespace marker `goobers.dev/gaggle-namespace=true`) are shared exported constants in the same
+package, never literals; hand-authored downstream copies of the rendered manifests are
+non-authoritative placeholders (delivery decision 016).
+
 ## 4. Egress set (constraint (b) — for goobers-system NetworkPolicy rendering)
 
 The dispatcher's outbound needs, deny-first, to be rendered as goobers-system egress
