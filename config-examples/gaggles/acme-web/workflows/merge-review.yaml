@@ -345,7 +345,7 @@ spec:
           equals: "false"
       branches:
         pass: gather-sibling-context
-        fail: ""
+        fail: "@abort"
 
     # #1313/#1814: gather-sibling-context reconciles the scope label before
     # review. This gate evaluates the carried decision only after a pass

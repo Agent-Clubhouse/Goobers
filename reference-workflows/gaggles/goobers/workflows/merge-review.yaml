@@ -474,7 +474,7 @@ spec:
           equals: "false"
       branches:
         pass: gather-sibling-context
-        fail: ""
+        fail: "@abort"
 
     # Scope gate (#1313/#1814): gather-sibling-context reconciles the label and
     # computes scopeGateParked before review. The value is carried through
