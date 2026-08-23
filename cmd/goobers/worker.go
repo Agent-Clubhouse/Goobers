@@ -134,21 +134,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
-	// The fleet's content-addressed store, if one is configured. Without it
-	// a run is only safely served by a SINGLE worker: stage artifacts stay
-	// on the node that produced them, and the first ContextPointer resolved
-	// somewhere else fails closed (#2866).
-	var store blobstore.Store
-	if *blobRoot != "" {
-		dirStore, berr := blobstore.NewDir(*blobRoot)
-		if berr != nil {
-			pf(stderr, "error: %v\n", berr)
-			return 1
-		}
-		store = dirStore
-		pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
-	}
-
 	// The runtime wiring slice. Without --instance the worker keeps its
 	// previous shape: workspaces and automated gates only, every real stage
 	// failing closed with "not configured". With it, the agentic and
@@ -156,6 +141,26 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// the same buildRunnerConfig — which is what journal conformance between
 	// the two tiers rests on.
 	if *instanceRoot != "" {
+		// The fleet's content-addressed store, if one is configured. Without it
+		// a run is only safely served by a SINGLE worker: stage artifacts stay
+		// on the node that produced them, and the first ContextPointer resolved
+		// somewhere else fails closed (#2866). It is constructed HERE, its only
+		// consumer, so an instance-less worker with GOOBERS_BLOB_STORE set (a
+		// fleet-wide env var) does not MkdirAll, emit a store line, or fail
+		// closed on an unwritable path — the mode-1/2 self-only startup shape
+		// stays byte-for-byte unchanged. The --dispatch-namespace path requires
+		// --instance and reads *blobRoot directly (buildStageDispatch), never
+		// this store value.
+		var store blobstore.Store
+		if *blobRoot != "" {
+			dirStore, berr := blobstore.NewDir(*blobRoot)
+			if berr != nil {
+				pf(stderr, "error: %v\n", berr)
+				return 1
+			}
+			store = dirStore
+			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+		}
 		seams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)
