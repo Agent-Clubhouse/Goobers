@@ -103,6 +103,26 @@ type RunnerProvides struct {
 	// are preinstalled — the same open vocabulary as the legacy
 	// runner.capabilities (internal/runnercap), matched exactly.
 	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Shell declares that this runner's image provides a POSIX-compatible
+	// shell, satisfying a stage's derived run:shell requirement
+	// (runnercap.DerivedShellTag). A self runner already satisfies run:shell
+	// implicitly (its daemon host runs every shell stage through the local
+	// execution path) and does not need this declared; Shell exists for
+	// non-self (image/deployment) runners, where the daemon has no other way
+	// to know what a runner's image contains. Trusted like every other
+	// provides: claim (Goobernetes decision record D10/DI-11) — never
+	// verified against the image's actual contents; a false claim degrades to
+	// a runtime exec failure, not a solver-caught error. The derived
+	// "run:shell" spelling itself stays unspellable in Capabilities (colon
+	// tokens fail runnercap.ValidToken by construction) — this is a separate,
+	// closed, typed field, not a reopening of that grammar.
+	Shell bool `json:"shell,omitempty" yaml:"shell,omitempty"`
+	// Harnesses declares the agent-harness names this runner's image provides
+	// on PATH (e.g. "copilot", "claude"), satisfying a stage's derived
+	// harness:<name> requirement for each named harness. Same trust model and
+	// same rationale as Shell: a self runner satisfies harness:<name>
+	// implicitly already; this is for non-self runners only.
+	Harnesses []string `json:"harnesses,omitempty" yaml:"harnesses,omitempty"`
 }
 
 // RunnerOS is a runner's declared operating system — a validated enum, not a
@@ -379,6 +399,16 @@ func (p RunnerProvides) validate(i int, name string) error {
 		if err := runnercap.ValidateToken(token); err != nil {
 			return fmt.Errorf("runners[%d] (%s): provides.capabilities[%d]: %w", i, name, j, err)
 		}
+	}
+	seenHarnesses := make(map[string]bool, len(p.Harnesses))
+	for j, harness := range p.Harnesses {
+		if !dns1123SubdomainPattern.MatchString(harness) {
+			return fmt.Errorf("runners[%d] (%s): provides.harnesses[%d]: %q must be a lowercase DNS label (letters, digits, and interior hyphens), matching the goober harness: field spelling it claims to satisfy", i, name, j, harness)
+		}
+		if seenHarnesses[harness] {
+			return fmt.Errorf("runners[%d] (%s): provides.harnesses[%d]: %q is declared more than once", i, name, j, harness)
+		}
+		seenHarnesses[harness] = true
 	}
 	return nil
 }

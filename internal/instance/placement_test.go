@@ -45,8 +45,10 @@ func TestPlacementRunnersDeclaredInventory(t *testing.T) {
 			Name: "win-ci",
 			Host: "ghcr.io/example/win:v1",
 			Provides: RunnerProvides{
-				OS:     RunnerOSWindows,
-				Memory: "16Gi",
+				OS:        RunnerOSWindows,
+				Memory:    "16Gi",
+				Shell:     true,
+				Harnesses: []string{"copilot"},
 			},
 			Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral},
 		},
@@ -67,6 +69,9 @@ func TestPlacementRunnersDeclaredInventory(t *testing.T) {
 	}
 	if win.OS != "windows" || win.Memory == nil || win.Memory.String() != "16Gi" {
 		t.Fatalf("win entry = %+v, want declared os and memory ceiling", win)
+	}
+	if !win.Shell || !reflect.DeepEqual(win.Harnesses, []string{"copilot"}) {
+		t.Fatalf("win entry = %+v, want the declared shell/harnesses claims carried", win)
 	}
 	if !reflect.DeepEqual(win.Restrictions, []string{"tmp:ephemeral"}) {
 		t.Fatalf("restrictions = %v, want the declared effect", win.Restrictions)

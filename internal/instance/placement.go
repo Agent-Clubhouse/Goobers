@@ -41,6 +41,8 @@ func (c *Config) PlacementRunners(selfOS string) []runnersolve.Runner {
 			Memory:       parsedCeiling(entry.Provides.Memory),
 			Disk:         parsedCeiling(entry.Provides.Disk),
 			Capabilities: entry.Provides.Capabilities,
+			Shell:        entry.Provides.Shell,
+			Harnesses:    entry.Provides.Harnesses,
 		}
 		for _, restriction := range entry.Restrictions {
 			runner.Restrictions = append(runner.Restrictions, string(restriction))

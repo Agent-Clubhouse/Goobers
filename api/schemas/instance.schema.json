@@ -690,6 +690,18 @@
           "description": "Toolchain and platform capabilities this runner claims are ALREADY INSTALLED — the same open vocabulary as runner.capabilities, matched exactly at schedule time.",
           "type": "array",
           "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "shell": {
+          "description": "Declares that this runner's image provides a POSIX-compatible shell, satisfying a shell stage's derived run:shell requirement. Only meaningful for a non-self runner (a self runner already satisfies this implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "boolean"
+        },
+        "harnesses": {
+          "description": "The agent-harness names (e.g. \"copilot\", \"claude\") this runner's image provides on PATH, each satisfying an agentic stage's derived harness:<name> requirement for that name. Only meaningful for a non-self runner (a self runner already satisfies every configured harness implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          }
         }
       }
     },
