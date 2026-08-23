@@ -47,6 +47,20 @@ const (
 	// GaggleNamespaceMarker is the LabelGaggleNamespace value on a gaggle
 	// NAMESPACE object.
 	GaggleNamespaceMarker = "true"
+
+	// AnnotationRunnerClassRestrictions is the ANNOTATION key carrying the
+	// human-readable restriction set a runner-class value was derived from —
+	// the preimage of the LabelRunnerClass value, for diagnosis. It is an
+	// annotation, never a label: it must NEVER become a selector (delivery
+	// decision 015 keeps the selector the single derived value). The dispatcher
+	// stamps it on the pod and the NetworkPolicy renderer stamps it on each
+	// policy, BOTH from RunnerClassAnnotation over the same restriction set that
+	// produced the label — so a pod's opaque class value (e.g. an rc-<sha>
+	// fallback, or a stage that hangs because NO policy selects it) still names
+	// its restriction set without a preimage search. Because it mirrors a
+	// machine value it can lie if it drifts, so it is round-trip asserted:
+	// RunnerClassValue(split(annotation)) == the stamped label value.
+	AnnotationRunnerClassRestrictions = "goobers.dev/runner-class-restrictions"
 )
 
 // runnerClassSlugs maps each closed-list restriction effect to the short slug
@@ -94,19 +108,7 @@ const RunnerClassUnrestricted = "unrestricted"
 // TestRunnerClassValueIsAlwaysAValidLabelValue asserts it across the closed
 // list's power set.
 func RunnerClassValue(restrictions []string) string {
-	if len(restrictions) == 0 {
-		return RunnerClassUnrestricted
-	}
-	sorted := make([]string, 0, len(restrictions))
-	seen := make(map[string]struct{}, len(restrictions))
-	for _, effect := range restrictions {
-		if _, dup := seen[effect]; dup {
-			continue
-		}
-		seen[effect] = struct{}{}
-		sorted = append(sorted, effect)
-	}
-	sort.Strings(sorted)
+	sorted := canonicalRestrictions(restrictions)
 	if len(sorted) == 0 {
 		return RunnerClassUnrestricted
 	}
@@ -128,4 +130,35 @@ func RunnerClassValue(restrictions []string) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
 	return "rc-" + hex.EncodeToString(sum[:])[:16]
+}
+
+// canonicalRestrictions deduplicates and sorts a restriction set into the one
+// canonical order that both RunnerClassValue (which slugs/hashes it) and
+// RunnerClassAnnotation (which joins it) derive from. Sharing the
+// normalization is what keeps a runner-class value and its human-readable
+// annotation mirror from drifting — they cannot differ on ordering or
+// duplicates, because there is one sort.
+func canonicalRestrictions(restrictions []string) []string {
+	sorted := make([]string, 0, len(restrictions))
+	seen := make(map[string]struct{}, len(restrictions))
+	for _, effect := range restrictions {
+		if _, dup := seen[effect]; dup {
+			continue
+		}
+		seen[effect] = struct{}{}
+		sorted = append(sorted, effect)
+	}
+	sort.Strings(sorted)
+	return sorted
+}
+
+// RunnerClassAnnotation returns the human-readable restriction set behind a
+// runner-class value — the AnnotationRunnerClassRestrictions value. It is the
+// canonical (deduplicated, sorted) effect list joined by ",", derived from the
+// SAME canonicalRestrictions the label value is, so RunnerClassValue applied to
+// the split annotation round-trips to the stamped label. The empty set returns
+// "" (an unrestricted pod's "unrestricted" label needs no preimage); callers
+// stamp the annotation only when it is non-empty.
+func RunnerClassAnnotation(restrictions []string) string {
+	return strings.Join(canonicalRestrictions(restrictions), ",")
 }

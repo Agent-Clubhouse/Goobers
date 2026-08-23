@@ -227,6 +227,7 @@ github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer 
 # (architecture section 12 open point 8), which binds Temporal workers onto the dispatch
 # queues and removes these entries.
 github.com/goobers/goobers/internal/dispatcher.Attempt.stageTimeout # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/dispatcher.stampClassRestrictionsAnnotation # #3577 pod restriction-set-preimage annotation stamp (RenderPod/RenderFromTemplate); #3513 substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.BlobClient.Describe # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.BlobClient.Get # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.BlobClient.Has # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
@@ -284,3 +285,5 @@ github.com/goobers/goobers/internal/dispatcher.sweepSelector # #3513 dispatcher 
 github.com/goobers/goobers/internal/dispatcher.templateStageImage # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/dispatcher.windowsToleration # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
 github.com/goobers/goobers/internal/runnercap.RunnerClassValue # #3513 dispatcher substrate, test-exercised; production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/runnercap.canonicalRestrictions # #3513 runner-class normalization shared by RunnerClassValue and RunnerClassAnnotation so label and annotation cannot drift; reachable through them, production wiring is the #3482 cutover.
+github.com/goobers/goobers/internal/runnercap.RunnerClassAnnotation # #3577 runner-class annotation producer: the dispatcher stamps it as the pod's restriction-set preimage and the #3568 NetworkPolicy renderer will select-annotate from the same function; test-exercised, production wiring is the #3482 cutover / #3568.
