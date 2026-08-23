@@ -32,6 +32,7 @@ const (
 	LabelReady      = "goobers:ready"
 	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
+	LabelNominated  = "goobers:nominated"
 	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"
 	LabelTracking   = "tracking"
