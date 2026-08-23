@@ -278,6 +278,25 @@ func TestNetpolRenderPrintBlobEndpoint(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, stdout.String())
 	}
+	// The emitted SHAPE is a cross-repo contract: #3585's tools/render-blob-ingress
+	// parses exactly these keys. Pin the key set so a rename fails RED here — on the
+	// commit that breaks it, with the author holding context — rather than later, as a
+	// parse error in a different repo. Intent ("I'll keep it stable") is not enforcement.
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &shape); err != nil {
+		t.Fatalf("output is not a JSON object: %v", err)
+	}
+	wantKeys := map[string]bool{"namespace": true, "podLabels": true, "port": true}
+	for k := range shape {
+		if !wantKeys[k] {
+			t.Errorf("unexpected key %q in --print-blob-endpoint output — the shape is a consumed contract (#3585); renaming breaks tools/render-blob-ingress", k)
+		}
+	}
+	for k := range wantKeys {
+		if _, ok := shape[k]; !ok {
+			t.Errorf("missing key %q in --print-blob-endpoint output — the shape is a consumed contract (#3585)", k)
+		}
+	}
 	want := netpolrender.DefaultBlobEndpoint()
 	if got.Namespace != want.Namespace {
 		t.Errorf("namespace = %q, want %q", got.Namespace, want.Namespace)
