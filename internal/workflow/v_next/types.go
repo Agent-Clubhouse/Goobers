@@ -14,16 +14,28 @@ type Definition = model.Definition
 
 // Machine is the shared compiled runtime machine.
 type Machine = model.Machine
+
+// Graph is the canonical executable workflow graph.
 type Graph = model.Graph
+
+// GraphEdge is a directed transition between workflow nodes.
 type GraphEdge = model.GraphEdge
+
+// GraphNode is one executable or control-flow node in a workflow graph.
 type GraphNode = model.GraphNode
+
+// GraphNodeKind classifies executable and control-flow nodes.
 type GraphNodeKind = model.GraphNodeKind
 
 const (
+	// GraphNodeDeterministic identifies a deterministic task.
 	GraphNodeDeterministic = model.GraphNodeDeterministic
-	GraphNodeAgentic       = model.GraphNodeAgentic
-	GraphNodeGate          = model.GraphNodeGate
-	GraphNodeParallel      = model.GraphNodeParallel
+	// GraphNodeAgentic identifies an agent-backed task.
+	GraphNodeAgentic = model.GraphNodeAgentic
+	// GraphNodeGate identifies a policy gate.
+	GraphNodeGate = model.GraphNodeGate
+	// GraphNodeParallel identifies a parallel fan-out node.
+	GraphNodeParallel = model.GraphNodeParallel
 )
 
 const (

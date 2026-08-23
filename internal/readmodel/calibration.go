@@ -19,6 +19,7 @@ type CalibrationSnapshot struct {
 	Nodes       map[string]NodeCalibrationObservation
 }
 
+// NodeCalibrationObservation contains empirical measurements for one node.
 type NodeCalibrationObservation struct {
 	Samples    int
 	Successes  int
@@ -111,7 +112,7 @@ func (s *Store) HarvestCalibration(ctx context.Context, since, until time.Time, 
 	if err != nil {
 		return CalibrationSnapshot{}, fmt.Errorf("readmodel: query calibration stages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var name string
 		var samples, successes, waste, costMeasured int

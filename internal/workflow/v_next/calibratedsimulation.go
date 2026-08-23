@@ -61,19 +61,25 @@ type SimulationResult struct {
 	FallbackMode       string
 }
 
+// Window identifies the observation interval used for calibration.
 type Window struct {
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
 }
 
+// Confidence describes how much empirical support backs a simulation.
 type Confidence string
 
 const (
-	ConfidenceLow    Confidence = "low"
+	// ConfidenceLow indicates sparse or fallback-heavy evidence.
+	ConfidenceLow Confidence = "low"
+	// ConfidenceMedium indicates partial empirical support.
 	ConfidenceMedium Confidence = "medium"
-	ConfidenceHigh   Confidence = "high"
+	// ConfidenceHigh indicates broad empirical support.
+	ConfidenceHigh Confidence = "high"
 )
 
+// NodeContribution summarizes a node's simulated resource contribution.
 type NodeContribution struct {
 	Visits       int
 	ExpectedTime time.Duration
@@ -285,6 +291,7 @@ func EvaluateWhatIf(baseline, candidate Graph, calibration Calibration, options 
 	}, nil
 }
 
+// WhatIfResult compares a candidate graph against its baseline.
 type WhatIfResult struct {
 	Baseline, Candidate SimulationResult
 	SuccessRateDelta    float64
