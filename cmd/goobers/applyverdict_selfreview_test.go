@@ -48,6 +48,7 @@ func TestApplyVerdictDegradesOnSelfReview422(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !strings.Contains(stdout, "native review skipped") {
 		t.Fatalf("stdout = %q, want it to report the native review was skipped", stdout)
 	}
@@ -159,10 +160,46 @@ func TestApplyVerdictDoesNotDegradeUnconfirmedReview404(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("apply-verdict: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if strings.Contains(stdout, "native review skipped") {
 		t.Fatalf("stdout = %q, unrelated 404 must not be degraded", stdout)
 	}
 	if !strings.Contains(stderr, "status 404") {
 		t.Fatalf("stderr = %q, want original review failure", stderr)
+	}
+}
+
+func TestApplyAdvisoryVerdictReadOnlyDoesNotPublish(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	const selectedNumber = 10
+	server.addIssue(selectedNumber, "Advisory PR")
+	server.addOpenPR(selectedNumber, "feature/unmanaged", "main", "sha10head", "shamainbase", false, nil, nil)
+
+	const runID = "advisory-read-only-run"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "advisory result",
+		HeadSHA:  "sha10head",
+		BaseSHA:  "shamainbase",
+	})
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "10")
+	t.Setenv("GOOBERS_INPUT_ADVISORYMODE", "true")
+	t.Setenv("GOOBERS_INPUT_PUBLISHADVISORY", "false")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "apply-verdict", root)
+	if code != 0 {
+		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "public publication disabled by policy") {
+		t.Fatalf("stdout = %q, want read-only advisory diagnostic", stdout)
+	}
+	server.mu.Lock()
+	commentCount := len(server.issues[selectedNumber].comments)
+	server.mu.Unlock()
+	if commentCount != 0 {
+		t.Fatalf("advisory comments = %d, want no public comment", commentCount)
 	}
 }

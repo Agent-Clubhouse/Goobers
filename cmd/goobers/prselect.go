@@ -458,6 +458,17 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	now := time.Now().UTC()
+	requiredOptInLabel := strings.TrimSpace(providerInput("requireOptInLabel", ""))
+	respectAssignee, err := strconv.ParseBool(providerInput("respectAssignee", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
+		return 1
+	}
+	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
+	if respectAssignee && selfIdentity == "" {
+		pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
+		return 1
+	}
 	// ADO has no AuthenticatedLogin (merge-wiring-plan §2): daemonIdentityAuthorLogin
 	// would return "" here, so isOwnPullRequest falls to the branch-prefix
 	// heuristic against headPrefixes. See §8 (the advisoryMode misfire): the ADO
@@ -495,6 +506,11 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
+			continue
+		}
+		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
+			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
+				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
 			continue
 		}
 		eligible = append(eligible, pr)
@@ -556,6 +572,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
+		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
@@ -567,6 +584,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	}
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
+	pf(stdout, "selection eligibility policy: %s\n", mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity))
 	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
 		priority.Wait.Round(time.Second),
 		fairness.MaxWait.Round(time.Second),

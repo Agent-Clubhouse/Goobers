@@ -18,6 +18,7 @@ func TestMergeReviewEligibilityPolicy(t *testing.T) {
 		Assignees:          []string{"alice"},
 		RequestedReviewers: []string{"review-bot"},
 	}
+
 	tests := []struct {
 		name            string
 		label           string
@@ -42,6 +43,65 @@ func TestMergeReviewEligibilityPolicy(t *testing.T) {
 				t.Fatalf("eligibility description = %q, want %q", mergeReviewEligibilityDescription(tt.label, tt.respectAssignee, tt.selfIdentity), tt.wantDescription)
 			}
 		})
+	}
+}
+
+func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.authenticatedLogin = "shared-review-bot"
+	server.addIssue(50, "Instance A PR")
+	server.addIssue(51, "Instance B PR")
+	server.addOpenPR(50, "goobers/implementation/run-a", "main", "sha50head", "shamainbase",
+		false, []string{"goobers:instance-a"}, nil)
+	server.addOpenPR(51, "goobers/implementation/run-b", "main", "sha51head", "shamainbase",
+		false, []string{"goobers:instance-b"}, nil)
+	server.setPRIdentities(50, "contributor-a", []string{"instance-a"}, nil)
+	server.setPRIdentities(51, "contributor-b", []string{"instance-b"}, nil)
+
+	rootA := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "instance-a-run")
+	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-a")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-a")
+	dirA := t.TempDir()
+	t.Chdir(dirA)
+	if code, stdout, stderr := runArgs(t, "pr-select", rootA); code != 0 {
+		t.Fatalf("instance A pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	} else if !strings.Contains(stdout, "selected PR #50") {
+		t.Fatalf("instance A stdout = %q, want PR #50", stdout)
+	}
+
+	rootB := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "instance-b-run")
+	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-b")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-b")
+	dirB := t.TempDir()
+	t.Chdir(dirB)
+	if code, stdout, stderr := runArgs(t, "pr-select", rootB); code != 0 {
+		t.Fatalf("instance B pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	} else if !strings.Contains(stdout, "selected PR #51") {
+		t.Fatalf("instance B stdout = %q, want PR #51", stdout)
+	}
+
+	for _, check := range []struct {
+		dir    string
+		number string
+	}{
+		{dirA, "50"},
+		{dirB, "51"},
+	} {
+		data, err := os.ReadFile(filepath.Join(check.dir, "selected-pr.json"))
+		if err != nil {
+			t.Fatalf("read %s selected-pr.json: %v", check.number, err)
+		}
+		var selected map[string]string
+		if err := json.Unmarshal(data, &selected); err != nil {
+			t.Fatalf("unmarshal %s selection: %v", check.number, err)
+		}
+		if selected["number"] != check.number {
+			t.Fatalf("selection for instance %s = %q, want %s", check.number, selected["number"], check.number)
+		}
 	}
 }
 
