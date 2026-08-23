@@ -64,14 +64,16 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// local-only run reveal, and HITL escalation resolution — operator
 	// recovery of a terminal run, kept outside the parity contract like
 	// `run abort`), and the write planes' workflow-execution routes
-	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11 —
-	// a stage pod advancing its own execution, the same machine-seam class
-	// as the claims plane).
+	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11;
+	// blob PUT, decision 010/012 §2a — each a stage pod advancing its own
+	// execution, the same machine-seam class as the claims plane). Blob GET
+	// needs no entry: it is a genuine read (RouteBlobGet's ActionClass is
+	// read-only-navigation) and falls through to the default case below.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
-		"triggerIngest": true, "journalEmit": true, "credentialResolve": true,
+		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {

@@ -35,6 +35,15 @@ const (
 	// to let the next cycle resume instead of re-reading the repo's entire
 	// issue-event history.
 	BacklogHealthDirName = "backlog-health"
+	// BlobStoreDirName holds the daemon's content-addressed blob store
+	// (decision 010/012, §2a): the backing directory for the blob plane's
+	// digest GET/PUT routes a mode-3 stage pod's BlobClient addresses over
+	// the network. Instance-wide like SchedulerDir, not per-gaggle — a digest
+	// names its content, not a gaggle. Created lazily by blobstore.NewDir at
+	// daemon startup rather than scaffolded by `goobers init` (like read.db,
+	// not like config/), since an instance that never serves a mode-3 stage
+	// never needs it.
+	BlobStoreDirName = "blobstore"
 )
 
 // Layout resolves the paths that make up an instance root.
@@ -137,6 +146,11 @@ const IntakeDBName = "intake.db"
 
 // IntakeDB returns the source-watermark database path.
 func (l Layout) IntakeDB() string { return filepath.Join(l.Root, IntakeDBName) }
+
+// BlobStoreDir is the path to the daemon's content-addressed blob store
+// (decision 010/012, §2a) — the directory internal/blobstore.NewDir roots
+// itself at for the blob plane's digest GET/PUT routes.
+func (l Layout) BlobStoreDir() string { return filepath.Join(l.Root, BlobStoreDirName) }
 
 // DocsWatermarkPath returns the durable docs-drift watermark file for a
 // (gaggle, workflow) pair (#1015). The watermark records the commit the

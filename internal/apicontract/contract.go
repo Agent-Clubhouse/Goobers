@@ -73,6 +73,15 @@ const (
 	// (#2931), and resolution happens at stage start — never inherited from
 	// dispatch time.
 	CredentialResolvePath = V1Prefix + "/credentials/resolve"
+
+	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
+	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
+	// BlobPathPrefix) fetches and puts content-addressed artifacts by sha256
+	// digest over this route instead of a shared filesystem. Stage pods are
+	// the only intended callers, like the credential plane — the digest itself
+	// carries no run scope to check, so containment is "authenticated pod
+	// principal or refused" rather than a per-run comparison.
+	BlobDigestPath = V1Prefix + "/blobs/{digest}"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -112,6 +121,12 @@ const (
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
+
+	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
+	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
+	// carries exactly one Method.
+	RouteBlobGet RouteID = "blobGet"
+	RouteBlobPut RouteID = "blobPut"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -240,6 +255,16 @@ var v1Routes = []Route{
 	// workflow-execution action class, but its budget is mint-bound rather
 	// than ledger-bound (see CredentialResolveBudget).
 	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
+
+	// The blob plane (decision 010/012, §2a) is the network transport for the
+	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET
+	// is a content-addressed read, classified like RouteRunArtifact (blob
+	// cost, the larger transfer-bound budget); PUT is content-addressed
+	// storage, a machine seam like the claims/credential/journal planes
+	// (workflow-execution, mutation cost, the same MutationBudget ceiling
+	// RouteJournalEmit accepts for its own inline artifact bytes).
+	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

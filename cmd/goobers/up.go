@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -518,6 +519,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
+	// The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+	// (internal/dispatcher/blob.go) fetches and puts content-addressed
+	// artifacts by digest over this route instead of a shared filesystem. The
+	// daemon fronts the SAME blobstore.Store type a local worker plugs into
+	// MaterializeContext/StagingArtifacts (cmd/goobers/worker.go's
+	// --blob-store), rooted at its own instance-local directory — wired
+	// unconditionally like the claims and trigger planes, because it is inert
+	// without a caller: a mode-1/2 daemon that never serves a mode-3 stage
+	// never gets a request on these routes, and the blob plane's own
+	// fail-closed pod-principal gate (registerBlobPlaneRoutes) keeps a
+	// loopback null-auth daemon from handing out raw content to any local
+	// caller either — the same posture the credential plane already takes.
+	blobStore, err := blobstore.NewDir(l.BlobStoreDir())
+	if err != nil {
+		pf(stderr, "error: initialize blob store: %v\n", err)
+		return 1
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
@@ -525,6 +543,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
+		httpapi.WithBlobService(blobStore),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
