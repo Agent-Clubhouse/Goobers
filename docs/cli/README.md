@@ -68,6 +68,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
+| [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
@@ -1712,6 +1713,68 @@ provider failure), 2 = usage/IO error.
 
 ~~~console
 $ goobers merge-queue-poll
+~~~
+
+## `goobers netpol-render`
+
+render per-runner-class NetworkPolicy reference manifests from the runners: inventory
+
+~~~text
+Usage: goobers netpol-render [--out <dir>] [--check] [--baseline <path>]
+                             [--write-baseline] [--timeout <duration>] [instance-root]
+
+Render the per-runner-class NetworkPolicy reference manifests from the
+runners: inventory — the decision-016 single source of the network reference
+manifests (issue #3568, docs/design/goobernetes-restrictions.md §6/§7).
+
+One manifest set is emitted per DISTINCT restriction set (runner class). Every
+policy selects on goobers.dev/runner-class derived by the SAME shared function
+the dispatcher stamps stage pods with, so selector and stamp agree by
+construction. Each policy also carries the goobers.dev/runner-class-restrictions
+ANNOTATION — the human-readable restriction set behind the (possibly opaque)
+class value, so `kubectl get netpol -o yaml` answers "which class is this".
+
+Per class: a network:none class gets only DNS and the blob-endpoint data path;
+every other class additionally gets the instance-configured egress.allowlist
+CIDR groups (instance.yaml egress: — operator-supplied; the render REFUSES
+CHANGE-ME documentation placeholders rather than emitting a stub). Every class,
+restricted included, carries the blob-endpoint egress row: it is the class's
+own artifact data path, and each cross-namespace grant is composed as
+namespaceSelector AND podSelector in a single peer element.
+
+--out writes one file per class plus a kustomization.yaml; without it the
+manifests stream to stdout.
+
+--check validates instead of writing:
+  - provenance drift: every egress.allowlist group with a source URL is
+    re-fetched and EVERY sourceSHA256 marker compared (a stale CIDR set
+    otherwise fails mid-run as a connect timeout indistinguishable from a
+    correct denial);
+  - coverage ratchet: per-class model-endpoint coverage, measured in
+    ADDRESSES (never CIDR-block counts), compared against the committed
+    baseline — failing on a rise or an unfrozen class;
+  - output freshness: with --out, the on-disk manifests must match a fresh
+    render.
+
+--write-baseline freezes the current per-class coverage into the baseline
+file (--baseline; defaults to <out>/coverage-baseline.json).
+
+The rendered manifests are REFERENCE manifests the cluster operator applies;
+this command never touches a cluster, and rendering says nothing about
+enforcement — `goobers doctor --k8s` owns enforcement honesty (D12).
+
+An instance with no pod-hosted runners (no runners: block, or self-only)
+renders nothing and exits 0.
+
+Exit codes: 0 = OK, 1 = refusal or check failure, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers netpol-render --out ./deploy/netpol
+$ goobers netpol-render --out ./deploy/netpol --write-baseline
+$ goobers netpol-render --out ./deploy/netpol --check
 ~~~
 
 ## `goobers onboarding`

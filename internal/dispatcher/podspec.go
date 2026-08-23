@@ -377,11 +377,13 @@ func stampedLabels(attempt Attempt, runner RunnerSpec) map[string]string {
 // materialize because NO NetworkPolicy selects it (case A, a class with nothing
 // rendered) — still names its restriction set at diagnosis without a preimage
 // search. Both the value and this annotation derive from the same restriction
-// set through runnercap, so the annotation is a mirror, not a copy that can
-// drift (round-trip asserted in the tests). Empty (unrestricted) writes
+// set through runnercap.RunnerClassPreimage — the SAME function the per-class
+// NetworkPolicy renderer stamps its annotation from — so the pod annotation and
+// the policy annotation agree by construction, a mirror rather than a copy that
+// can drift (round-trip asserted in the tests). Empty (unrestricted) writes
 // nothing — the "unrestricted" label needs no preimage.
 func stampClassRestrictionsAnnotation(annotations map[string]string, runner RunnerSpec) {
-	if ann := runnercap.RunnerClassAnnotation(runner.Restrictions); ann != "" {
+	if ann := runnercap.RunnerClassPreimage(runner.Restrictions); ann != "" {
 		annotations[runnercap.AnnotationRunnerClassRestrictions] = ann
 	}
 }
