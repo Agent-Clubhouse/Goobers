@@ -96,6 +96,7 @@ jobs:
     name: dead-code analysis
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -133,6 +134,7 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -226,6 +228,7 @@ jobs:
   deploy-reference:
     name: deploy reference manifests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -256,6 +259,7 @@ jobs:
       matrix:
         goos: [linux, darwin, windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -317,6 +321,7 @@ jobs:
     name: darwin gate (build · vet)
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -365,6 +370,7 @@ jobs:
       matrix:
         shard: ["1/3", "2/3", "3/3"]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -402,6 +408,7 @@ jobs:
   unit-macos:
     name: unit behavioral suite (macos)
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -528,6 +535,7 @@ jobs:
             race: "0"
             timeout: "40m"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -564,6 +572,7 @@ jobs:
     name: declared-dependency integration
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -913,6 +922,7 @@ jobs:
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1098,6 +1108,7 @@ jobs:
     name: Go vulnerability scan
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1136,6 +1147,7 @@ jobs:
     # requiring them.
     needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
@@ -1247,6 +1259,7 @@ jobs:
     name: linux node validation (#636/#639)
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1299,6 +1312,7 @@ jobs:
       }}
     needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
