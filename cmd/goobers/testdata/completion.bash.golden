@@ -61,7 +61,7 @@ _goobers_completion()
             flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
         netpol-render)
-            flags+=" --out --check --baseline --write-baseline --timeout"
+            flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in

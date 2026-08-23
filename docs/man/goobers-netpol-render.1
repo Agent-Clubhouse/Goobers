@@ -7,7 +7,8 @@ goobers netpol-render \- render per-runner-class NetworkPolicy reference manifes
 .SH DESCRIPTION
 .nf
 Usage: goobers netpol-render [--out <dir>] [--check] [--baseline <path>]
-                             [--write-baseline] [--timeout <duration>] [instance-root]
+                             [--write-baseline] [--timeout <duration>]
+                             [--print-blob-endpoint] [instance-root]
 
 Render the per-runner-class NetworkPolicy reference manifests from the
 runners: inventory — the decision-016 single source of the network reference
@@ -44,6 +45,12 @@ manifests stream to stdout.
 
 --write-baseline freezes the current per-class coverage into the baseline
 file (--baseline; defaults to <out>/coverage-baseline.json).
+
+--print-blob-endpoint prints the blob endpoint (namespace, pod labels,
+container port) as JSON and exits, touching no cluster and needing no instance
+root. The goobers-system ingress half of the blob grant (#3585) lives in a
+separate repo and renders its ingress peer FROM this value rather than
+restating it, so the endpoint is derived once and cannot drift.
 
 The rendered manifests are REFERENCE manifests the cluster operator applies;
 this command never touches a cluster, and rendering says nothing about
