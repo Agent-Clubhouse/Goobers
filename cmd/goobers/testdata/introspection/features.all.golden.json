@@ -570,6 +570,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.experiment",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.goal",
       "stability": "ga",
       "sinceVersion": "dev"

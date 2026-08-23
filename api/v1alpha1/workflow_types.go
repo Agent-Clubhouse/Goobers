@@ -195,6 +195,11 @@ type Task struct {
 	// type=agentic; must be empty when type=deterministic (TSK-010).
 	// +optional
 	Goober string `json:"goober,omitempty" yaml:"goober,omitempty"`
+	// Experiment routes this task across two or three declared safety arms.
+	// Variants overlay task inputs; selection and outcomes are journaled by the
+	// runner and promotion remains an external approval decision.
+	// +optional
+	Experiment *BanditExperiment `json:"experiment,omitempty" yaml:"experiment,omitempty"`
 	// Run defines the code to execute for a deterministic task. Required when
 	// type=deterministic; must be empty when type=agentic.
 	// +optional
@@ -363,6 +368,29 @@ type Task struct {
 	// every non-producer repo stage and fails closed on an undeclared advance.
 	// +optional
 	CommitsRepo bool `json:"commitsRepo,omitempty" yaml:"commitsRepo,omitempty"`
+}
+
+// BanditArm declares one variant and the gate strength required to evaluate it.
+type BanditArm struct {
+	Name    string            `json:"name" yaml:"name"`
+	Variant map[string]string `json:"variant,omitempty" yaml:"variant,omitempty"`
+	// GateLevel is the required safety strength for the gate evaluating this arm:
+	// automated=1, agentic=2, human=3.
+	GateLevel int `json:"gateLevel" yaml:"gateLevel"`
+}
+
+// BanditExperiment configures bounded exploration and promotion criteria.
+type BanditExperiment struct {
+	Seed              uint64      `json:"seed" yaml:"seed"`
+	Arms              []BanditArm `json:"arms" yaml:"arms"`
+	ExplorationBudget int         `json:"explorationBudget" yaml:"explorationBudget"`
+	MinSamples        int         `json:"minSamples" yaml:"minSamples"`
+	MaxFailureRate    float64     `json:"maxFailureRate" yaml:"maxFailureRate"`
+	MinLift           float64     `json:"minLift" yaml:"minLift"`
+	Confidence        float64     `json:"confidence" yaml:"confidence"`
+	TrainWindow       int         `json:"trainWindow" yaml:"trainWindow"`
+	EvalWindow        int         `json:"evalWindow" yaml:"evalWindow"`
+	DefaultGateLevel  int         `json:"defaultGateLevel" yaml:"defaultGateLevel"`
 }
 
 // RunsOn is a stage's placement requirement block (DSL 3.0, dsl-3.0.md §2 /

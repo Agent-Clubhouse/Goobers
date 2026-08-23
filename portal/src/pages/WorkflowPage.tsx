@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type {
   DaemonClient,
+  GraphAnalytics,
   ReadinessConditions,
   RunSummary,
   StageDefinition,
@@ -19,6 +20,7 @@ import { Icon } from "../ui/Icon";
 import { Inspector } from "../ui/Inspector";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
+import { useInsightStats } from "../insightData";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -37,6 +39,7 @@ export function WorkflowPage({
   workflowName: string;
 }) {
   const query = useWorkflowDetail(client, gaggle, workflowName);
+  const analyticsQuery = useInsightStats(client, "all", gaggle, workflowName, true);
 
   if (query.state.status === "loading") {
     return (
@@ -89,6 +92,11 @@ export function WorkflowPage({
         navigate={navigate}
         runs={query.state.data.runs}
         workflow={query.state.data.workflow}
+        analytics={
+          analyticsQuery.state.status === "ready" || analyticsQuery.state.status === "stale"
+            ? analyticsQuery.state.data.stats.graphAnalytics
+            : undefined
+        }
       />
     </>
   );
@@ -99,11 +107,13 @@ function WorkflowDetailWorkspace({
   navigate,
   runs,
   workflow,
+  analytics,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   navigate: Navigate;
   runs: RunSummary[];
   workflow: WorkflowDetail;
+  analytics?: GraphAnalytics;
 }) {
   const initialStageId =
     workflow.stages.find((stage) => stage.name === workflow.graph.start)?.name ??
@@ -204,6 +214,7 @@ function WorkflowDetailWorkspace({
             graph={workflow.graph}
             onSelectStage={setSelectedStageId}
             selectedStageId={selectedStageId}
+            analytics={analytics}
           />
         </GraphFrame>
         {selectedStage && <StageDefinitionSummary stage={selectedStage} />}

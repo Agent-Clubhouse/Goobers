@@ -498,6 +498,7 @@ const (
 	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
 	featureTaskContinueOnError            FeatureID = "task.continueOnError"
 	featureTaskNext                       FeatureID = "task.next"
+	featureTaskExperiment                 FeatureID = "task.experiment"
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageExternalTelemetry         FeatureID = "stage.external-telemetry"
@@ -702,6 +703,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskExpectedOutputs,
 		featureTaskContinueOnError,
 		featureTaskNext,
+		featureTaskExperiment,
 		featureStageShell,
 		featureStageCIPoll,
 		featureStageExternalTelemetry,
@@ -1347,6 +1349,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	}
 	if task.OutboxMirrorPath != "" {
 		used.add(featureTaskOutboxMirrorPath)
+	}
+	if task.Experiment != nil {
+		used.add(featureTaskExperiment)
 	}
 	addRetryFeatures(used, task.Retry, retryFeatureIDs{
 		policy:      featureTaskRetry,

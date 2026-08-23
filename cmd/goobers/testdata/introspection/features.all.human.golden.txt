@@ -107,6 +107,7 @@ task.contextFrom                                   2.0          ga              
 task.continueOnError                               2.0          ga               supported        dev
 task.deterministic                                 2.0          ga               supported        dev
 task.expectedOutputs                               2.0          ga               supported        dev
+task.experiment                                    2.0          ga               supported        dev
 task.goal                                          2.0          ga               supported        dev
 task.goober                                        2.0          ga               supported        dev
 task.inputs                                        2.0          ga               supported        dev
@@ -367,4 +368,4 @@ workflow.terminal.abort                            3.0          ga              
 workflow.terminal.complete                         3.0          ga               preview          dev
 workflow.terminal.escalate                         3.0          ga               preview          dev
 
-367 feature/version row(s)
+368 feature/version row(s)

@@ -111,3 +111,31 @@ func TestRunnerClassValueCoversClosedList(t *testing.T) {
 		}
 	}
 }
+
+// The annotation is a NON-DRIFTING mirror of the label: splitting the
+// annotation back into a restriction set and re-deriving the value must return
+// the same label value — for every permutation and duplicate, because both go
+// through canonicalRestrictions. A future edit that lets them diverge fails
+// HERE, not at 2am when an operator trusts a stale preimage.
+func TestRunnerClassAnnotationRoundTrips(t *testing.T) {
+	cases := [][]string{
+		nil,
+		{"fs:readonly-except-workspace"},
+		{"network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral"},
+		{"tmp:ephemeral", "network:allowlist", "fs:readonly-except-workspace"}, // permutation
+		{"network:allowlist", "network:allowlist"},                             // duplicate
+		{"env:default-deny", "network:none"},
+		{"totally:unknown-effect"}, // rc-<sha> fallback still round-trips
+	}
+	for _, set := range cases {
+		label := RunnerClassValue(set)
+		ann := RunnerClassAnnotation(set)
+		var decoded []string
+		if ann != "" {
+			decoded = strings.Split(ann, ",")
+		}
+		if got := RunnerClassValue(decoded); got != label {
+			t.Errorf("round-trip: %v → annotation %q → RunnerClassValue %q, want %q", set, ann, got, label)
+		}
+	}
+}

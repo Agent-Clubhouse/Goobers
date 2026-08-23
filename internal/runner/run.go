@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -586,6 +587,164 @@ type Config struct {
 	// replaces it (never merged); empty leaves every task's own requireLabels
 	// (or its absence) untouched.
 	BacklogQueryRequireLabels string
+}
+
+func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
+	if task.Experiment == nil {
+		return bandit.Config{}, false, nil
+	}
+	e := task.Experiment
+	arms := make([]bandit.Arm, len(e.Arms))
+	for i, arm := range e.Arms {
+		arms[i] = bandit.Arm{Name: arm.Name, Variant: arm.Variant, GateLevel: arm.GateLevel}
+	}
+	defaultArm, err := defaultBanditArm(arms)
+	if err != nil {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: %w", task.Name, err)
+	}
+	if e.DefaultGateLevel != 0 && e.DefaultGateLevel != defaultArm.GateLevel {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment defaultGateLevel (%d) must match default arm %q gateLevel (%d)",
+			task.Name, e.DefaultGateLevel, defaultArm.Name, defaultArm.GateLevel)
+	}
+
+	// Validate that the task transitions to an actual gate in the workflow.
+	if task.Next == "" {
+		return bandit.Config{}, false, fmt.Errorf("task %q with experiment must transition to a gate (Next field is empty)", task.Name)
+	}
+	gate, ok := machine.Gate(task.Next)
+	if !ok {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: task transitions to %q but no such gate exists in workflow", task.Name, task.Next)
+	}
+
+	actualGateLevel, err := banditGateLevel(gate)
+	if err != nil {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: %w", task.Name, err)
+	}
+	if defaultArm.GateLevel != actualGateLevel {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment control arm %q gateLevel (%d) must match actual gate %q level (%d)",
+			task.Name, defaultArm.Name, defaultArm.GateLevel, gate.Name, actualGateLevel)
+	}
+
+	// Validate that all arms have a gate level not lower than the actual gate.
+	for _, arm := range arms {
+		if arm.GateLevel < actualGateLevel {
+			return bandit.Config{}, false, fmt.Errorf("task %q experiment arm %q has gateLevel %d but actual gate %q has level %d (experimental arms must not weaken the gate)",
+				task.Name, arm.Name, arm.GateLevel, gate.Name, actualGateLevel)
+		}
+	}
+
+	return bandit.Config{Stage: task.Name, Seed: e.Seed, Arms: arms,
+		ExplorationBudget: e.ExplorationBudget, MinSamples: e.MinSamples,
+		MaxFailureRate: e.MaxFailureRate, MinLift: e.MinLift, Confidence: e.Confidence,
+		TrainWindow: e.TrainWindow, EvalWindow: e.EvalWindow,
+		DefaultGateLevel: defaultArm.GateLevel}, true, nil
+}
+
+func banditGateLevel(gate apiv1.Gate) (int, error) {
+	switch gate.Evaluator {
+	case apiv1.EvaluatorAutomated:
+		return 1, nil
+	case apiv1.EvaluatorAgentic:
+		return 2, nil
+	case apiv1.EvaluatorHuman:
+		return 3, nil
+	default:
+		return 0, fmt.Errorf("gate %q has unsupported evaluator %q", gate.Name, gate.Evaluator)
+	}
+}
+
+func defaultBanditArm(arms []bandit.Arm) (bandit.Arm, error) {
+	if len(arms) == 0 {
+		return bandit.Arm{}, fmt.Errorf("bandit requires at least one arm")
+	}
+	defaultArm := arms[0]
+	for _, arm := range arms {
+		if arm.Name == "control" {
+			defaultArm = arm
+			break
+		}
+	}
+	return defaultArm, nil
+}
+
+func loadBanditObservations(runsDir string, stage string) ([]bandit.Observation, error) {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read experiment journals: %w", err)
+	}
+	var observations []bandit.Observation
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		reader, err := journal.OpenReadOnly(filepath.Join(runsDir, entry.Name()))
+		if err != nil {
+			if errors.Is(err, journal.ErrNotRunDirectory) {
+				continue
+			}
+			return nil, fmt.Errorf("open experiment journal %q: %w", entry.Name(), err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return nil, fmt.Errorf("read experiment journal %q: %w", entry.Name(), err)
+		}
+		for _, event := range events {
+			if event.Type != journal.EventBanditObservation || event.Stage != stage {
+				continue
+			}
+			data, err := json.Marshal(event.Outputs)
+			if err != nil {
+				return nil, fmt.Errorf("encode experiment observation: %w", err)
+			}
+			var observation bandit.Observation
+			if err := json.Unmarshal(data, &observation); err != nil {
+				return nil, fmt.Errorf("decode experiment observation: %w", err)
+			}
+			observations = append(observations, observation)
+		}
+	}
+	bandit.SortObservations(observations)
+	return observations, nil
+}
+
+func banditObservationWindow(config bandit.Config, observations []bandit.Observation) string {
+	train := 0
+	for _, observation := range observations {
+		if observation.Stage == config.Stage && observation.Window == "train" {
+			train++
+		}
+	}
+	if train < config.TrainWindow {
+		return "train"
+	}
+	return "eval"
+}
+
+func configuredExperiment(task apiv1.Task) bool {
+	return task.Experiment != nil
+}
+
+func recordBanditOutcome(config bandit.Config, in StartInput, assignment bandit.Assignment, window string, result apiv1.ResultEnvelope, out bandit.Journal) (bandit.Observation, error) {
+	success := result.Status == apiv1.ResultSuccess
+	reward := 0.0
+	if success {
+		reward = 1
+	}
+	observation := bandit.Observation{
+		Stage: config.Stage, RunID: in.RunID, Arm: assignment.Arm,
+		Reward: reward, RewardSet: true, Success: success,
+		Window: window, Assigned: assignment.Seed,
+	}
+	return observation, config.RecordObservation(observation, out)
+}
+
+func recordBanditResult(config bandit.Config, in StartInput, assignment bandit.Assignment, window string, historical []bandit.Observation, result apiv1.ResultEnvelope, out bandit.Journal) error {
+	observation, err := recordBanditOutcome(config, in, assignment, window, result, out)
+	if err != nil {
+		return err
+	}
+	_, _, err = config.EvaluateAndRecord(append(historical, observation), out)
+	return err
 }
 
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
@@ -4235,6 +4394,25 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	}
 	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
 	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
+	var experiment bandit.Config
+	var assignment bandit.Assignment
+	var experimentObservations []bandit.Observation
+	var experimentWindow string
+	if configured, ok, banditConfigErr := banditConfig(in.Machine, t); banditConfigErr != nil {
+		return apiv1.ResultEnvelope{}, nil, banditConfigErr, nil
+	} else if ok {
+		experiment = configured
+		experimentObservations, err = loadBanditObservations(r.cfg.RunsDir, t.Name)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, err, nil
+		}
+		assignment, err = experiment.AssignAndRecord(in.RunID, experimentObservations, jr)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("assign experiment for task %q: %w", t.Name, err), nil
+		}
+		experimentWindow = banditObservationWindow(experiment, experimentObservations)
+		taskInputs = assignment.Apply(taskInputs)
+	}
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
@@ -4392,6 +4570,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = outboxErr
 			}
 		}
+		if configuredExperiment(t) {
+			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
+				return result, mutations, errors.Join(err, recordErr), nil
+			}
+		}
 		return result, mutations, err, nil
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
@@ -4430,6 +4613,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = errors.Join(err, fmt.Errorf("inspect commits created by infrastructure-failed attempt: %w", inspectErr))
 			} else {
 				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
+			}
+		}
+		if configuredExperiment(t) {
+			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
+				return result, mutations, errors.Join(err, recordErr), nil
 			}
 		}
 		// #3366: persist the run branch's committed-but-not-yet-published diff
