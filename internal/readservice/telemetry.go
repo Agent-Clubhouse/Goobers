@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -55,6 +57,7 @@ type TelemetryStatsResult struct {
 	Models           []TelemetryModelStats        `json:"models"`
 	CreditAssignment []NodeCredit                 `json:"creditAssignment"`
 	CausalCredit     []readmodel.CausalNodeCredit `json:"causalCredit"`
+	GraphAnalytics   *readmodel.GraphAnalytics    `json:"graphAnalytics,omitempty"`
 	PromotionSignals []PromotionSignal            `json:"promotionSignals,omitempty"`
 	// PromotionCandidates is the machine-filtered input for automated
 	// promotion. Correlational fallbacks remain visible in PromotionSignals
@@ -727,7 +730,7 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		Workflow:      req.Workflow,
 		Since:         req.Since,
 		Until:         req.Until,
-		WorkflowGraph: getWorkflowGraphForQuery(s.sources.Definitions, req.Gaggle, req.Workflow),
+		WorkflowGraph: getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow),
 	})
 	if err != nil {
 		return TelemetryStatsResult{}, err
@@ -772,7 +775,212 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		}
 	}
 	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
+	if graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow); graph != nil {
+		runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		analyticsGraph := readmodel.AnalyticsGraph{
+			Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
+			Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
+		}
+		failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
+			result.CreditAssignment, result.PromotionCandidates,
+		)
+		latencyByNode := make(map[string]float64, len(result.Stages))
+		for _, stage := range result.Stages {
+			if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
+				latencyByNode[stage.Stage] = *stage.AvgDurationMs
+			}
+		}
+		for _, node := range runtimeGraph.Nodes {
+			analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
+				ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
+			})
+		}
+		for _, edge := range runtimeGraph.Edges {
+			analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
+				Source: edge.Source, Target: edge.Target,
+			})
+		}
+		analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		if len(trustedFailure) == 0 {
+			analytics.Centrality = nil
+			analytics.CriticalPath = readmodel.CriticalPath{}
+			analytics.Confidence = "untrusted"
+			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
+		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
+			analytics.Confidence = "partial"
+			analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
+		} else {
+			analytics.Confidence = "bounded"
+		}
+		result.GraphAnalytics = &analytics
+	}
 	return result, nil
+}
+
+// normalizedPromotionFailure reconciles identity-level credits with the
+// stage-level causal signals used by the graph.
+func normalizedPromotionFailure(credits []NodeCredit, signals []PromotionSignal) (map[string]float64, map[string]bool, map[string]bool) {
+	creditNodes := make(map[string]bool, len(credits))
+	for _, credit := range credits {
+		creditNodes[normalizeAnalyticsNode(credit.Kind+":"+credit.Stage)] = true
+	}
+
+	type aggregate struct {
+		total float64
+		count int
+	}
+	aggregates := make(map[string]aggregate, len(signals))
+	for _, signal := range signals {
+		node := normalizeAnalyticsNode(signal.Node)
+		item := aggregates[node]
+		item.total += signal.Value
+		item.count++
+		aggregates[node] = item
+	}
+	failureByNode := make(map[string]float64, len(aggregates))
+	trustedFailure := make(map[string]bool, len(aggregates))
+	for node, item := range aggregates {
+		if item.count == 0 {
+			continue
+		}
+		failureByNode[node] = item.total / float64(item.count)
+		trustedFailure[node] = true
+	}
+	return failureByNode, trustedFailure, creditNodes
+}
+
+func sameAnalyticsNodes(left, right map[string]bool) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for node := range left {
+		if !right[node] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeAnalyticsNode(node string) string {
+	node = strings.TrimPrefix(node, "stage:")
+	return strings.TrimPrefix(node, "gate:")
+}
+
+func (s *Local) definitionsForQuery() *instance.ConfigSet {
+	if snapshot := s.definitions.Load(); snapshot != nil {
+		return snapshot.set
+	}
+	return s.sources.Definitions
+}
+
+// runtimeAnalyticsGraph overlays the declared topology with the transitions
+// actually observed across runs. The declared workflow is a DAG, while repass
+// and cross-run review/CI transitions are allowed to form SCCs.
+func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsRequest, declared *workflow.Graph) (readmodel.AnalyticsGraph, error) {
+	graph := readmodel.AnalyticsGraph{}
+	if declared != nil {
+		for _, node := range declared.Nodes {
+			graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node.ID})
+		}
+		for _, edge := range declared.Edges {
+			if edge.Target != "" && edge.Terminal == "" {
+				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: edge.Source, Target: edge.Target})
+			}
+		}
+	}
+	ids, err := s.RunIDs(ctx)
+	if err != nil {
+		return readmodel.AnalyticsGraph{}, err
+	}
+	known := make(map[string]bool, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		known[node.ID] = true
+	}
+	edges := make(map[string]bool, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges[edge.Source+"\x00"+edge.Target] = true
+	}
+	type runtimeRun struct {
+		detail RunDetail
+	}
+	runs := make([]runtimeRun, 0, len(ids))
+	for _, id := range ids {
+		detail, err := s.GetRun(ctx, id)
+		if err != nil {
+			return readmodel.AnalyticsGraph{}, fmt.Errorf("read analytics run %q: %w", id, err)
+		}
+		if detail.Gaggle != req.Gaggle || detail.Workflow != req.Workflow ||
+			(!req.Since.IsZero() && detail.StartedAt.Before(req.Since)) ||
+			(!req.Until.IsZero() && !detail.StartedAt.Before(req.Until)) {
+			continue
+		}
+		runs = append(runs, runtimeRun{detail: detail})
+		for _, transition := range detail.Transitions {
+			if transition.Source == "" || transition.Target == "" || transition.Terminal ||
+				transition.Target == workflow.TargetAbort || transition.Target == workflow.TargetEscalate {
+				continue
+			}
+			for _, node := range []string{transition.Source, transition.Target} {
+				if !known[node] {
+					known[node] = true
+					graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
+				}
+			}
+			key := transition.Source + "\x00" + transition.Target
+			if !edges[key] {
+				edges[key] = true
+				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: transition.Source, Target: transition.Target})
+			}
+		}
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		if runs[i].detail.StartedAt.Equal(runs[j].detail.StartedAt) {
+			return runs[i].detail.ID < runs[j].detail.ID
+		}
+		return runs[i].detail.StartedAt.Before(runs[j].detail.StartedAt)
+	})
+	previousByIssue := make(map[string]RunDetail)
+	for _, run := range runs {
+		current := run.detail
+		if current.Operator.Issue == nil || current.Operator.Issue.Number == "" {
+			continue
+		}
+		previous, seen := previousByIssue[current.Operator.Issue.Number]
+		previousByIssue[current.Operator.Issue.Number] = current
+		if !seen || len(previous.Transitions) == 0 || len(current.Transitions) == 0 {
+			continue
+		}
+		source := previous.Transitions[len(previous.Transitions)-1].Target
+		if source == "" {
+			source = previous.Transitions[len(previous.Transitions)-1].Source
+		}
+		target := current.Transitions[0].Source
+		if target == "" {
+			target = current.Transitions[0].Target
+		}
+		if source == "" || target == "" ||
+			workflow.IsReservedTarget(source) || workflow.IsReservedTarget(target) {
+			continue
+		}
+		for _, node := range []string{source, target} {
+			if !known[node] {
+				known[node] = true
+				graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
+			}
+		}
+		key := source + "\x00" + target
+		if !edges[key] {
+			edges[key] = true
+			graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: source, Target: target})
+		}
+	}
+	return graph, nil
 }
 
 // getWorkflowGraphForQuery returns the compiled workflow graph for a given gaggle/workflow pair.

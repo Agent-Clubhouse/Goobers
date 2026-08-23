@@ -679,10 +679,29 @@ export interface TelemetryStatsResult {
   models: TelemetryModelStats[];
   creditAssignment: NodeCredit[];
   causalCredit: CausalNodeCredit[] | null;
+  graphAnalytics?: GraphAnalytics;
   promotionSignals?: PromotionSignal[];
   promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+}
+
+export interface GraphAnalytics {
+  centrality: CentralityScore[];
+  criticalPath: CriticalPath;
+  cycles: string[][];
+  confidence: "bounded" | "partial" | "untrusted" | string;
+  caveat?: string;
+}
+
+export interface CentralityScore {
+  node: string;
+  score: number;
+}
+
+export interface CriticalPath {
+  nodes: string[];
+  weight: number;
 }
 
 export interface NodeCredit {

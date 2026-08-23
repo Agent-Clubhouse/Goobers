@@ -33,6 +33,7 @@ describe("Insight time windows", () => {
       limit: 20,
     });
   });
+
 });
 
 describe("Insight cost trend buckets", () => {
