@@ -624,4 +624,55 @@ DELETE FROM run_node WHERE TRUE;
 DELETE FROM run_stage WHERE TRUE;
 DELETE FROM run WHERE TRUE;
 `,
+
+	// v16: node-grain outcome buckets for bounded monitor queries.
+	`
+CREATE TABLE IF NOT EXISTS bucket_node_day (
+	day         TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	kind        TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	identity    TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	failures    INTEGER NOT NULL DEFAULT 0,
+	retry_waste INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (day, gaggle, workflow, phase, outcome, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_node_day_recency
+	ON bucket_node_day(day DESC, gaggle, workflow, kind, name);
+
+CREATE TABLE IF NOT EXISTS bucket_node_month (
+	month       TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	kind        TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	identity    TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	failures    INTEGER NOT NULL DEFAULT 0,
+	retry_waste INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (month, gaggle, workflow, phase, outcome, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_node_month_recency
+	ON bucket_node_month(month DESC, gaggle, workflow, kind, name);
+`,
+
+	// v17: durable monitor episode claims. These are bookkeeping for the
+	// provider-side nomination deduplication and are not outcome data.
+	`
+CREATE TABLE IF NOT EXISTS monitor_nomination (
+	marker      TEXT PRIMARY KEY,
+	claimed_at  TEXT NOT NULL
+);
+`,
+
+	// v18: serialize improvement confirmations for each claimed episode.
+	`
+ALTER TABLE monitor_nomination ADD COLUMN improvement_claimed_at TEXT;
+`,
 }
