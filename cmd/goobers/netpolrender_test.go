@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/netpolrender"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -255,5 +257,37 @@ func TestNetpolRenderCheckRefusesStaleOutput(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "stale output") {
 		t.Errorf("stderr = %q, want stale-output refusal", stderr.String())
+	}
+}
+
+// --print-blob-endpoint prints DefaultBlobEndpoint as JSON, needs no instance
+// root, and touches no cluster — it is the value a downstream goobers-system
+// base (#3585) renders its ingress half FROM rather than restating. The test
+// derives `want` from DefaultBlobEndpoint too, so it asserts agreement, not a
+// second copy of the values.
+func TestNetpolRenderPrintBlobEndpoint(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := runNetpolRender([]string{"--print-blob-endpoint"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("--print-blob-endpoint exit %d, stderr=%s", code, stderr.String())
+	}
+	var got struct {
+		Namespace string            `json:"namespace"`
+		PodLabels map[string]string `json:"podLabels"`
+		Port      int               `json:"port"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	want := netpolrender.DefaultBlobEndpoint()
+	if got.Namespace != want.Namespace {
+		t.Errorf("namespace = %q, want %q", got.Namespace, want.Namespace)
+	}
+	if got.Port != want.Port {
+		t.Errorf("port = %d, want %d", got.Port, want.Port)
+	}
+	for k, v := range want.PodLabels {
+		if got.PodLabels[k] != v {
+			t.Errorf("podLabels[%q] = %q, want %q", k, got.PodLabels[k], v)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -16,7 +17,8 @@ import (
 )
 
 const netpolRenderHelp = "Usage: goobers netpol-render [--out <dir>] [--check] [--baseline <path>]\n" +
-	"                             [--write-baseline] [--timeout <duration>] [instance-root]\n\n" +
+	"                             [--write-baseline] [--timeout <duration>]\n" +
+	"                             [--print-blob-endpoint] [instance-root]\n\n" +
 	"Render the per-runner-class NetworkPolicy reference manifests from the\n" +
 	"runners: inventory — the decision-016 single source of the network reference\n" +
 	"manifests (issue #3568, docs/design/goobernetes-restrictions.md §6/§7).\n\n" +
@@ -47,6 +49,11 @@ const netpolRenderHelp = "Usage: goobers netpol-render [--out <dir>] [--check] [
 	"    render.\n\n" +
 	"--write-baseline freezes the current per-class coverage into the baseline\n" +
 	"file (--baseline; defaults to <out>/coverage-baseline.json).\n\n" +
+	"--print-blob-endpoint prints the blob endpoint (namespace, pod labels,\n" +
+	"container port) as JSON and exits, touching no cluster and needing no instance\n" +
+	"root. The goobers-system ingress half of the blob grant (#3585) lives in a\n" +
+	"separate repo and renders its ingress peer FROM this value rather than\n" +
+	"restating it, so the endpoint is derived once and cannot drift.\n\n" +
 	"The rendered manifests are REFERENCE manifests the cluster operator applies;\n" +
 	"this command never touches a cluster, and rendering says nothing about\n" +
 	"enforcement — `goobers doctor --k8s` owns enforcement honesty (D12).\n\n" +
@@ -81,9 +88,13 @@ func runNetpolRender(args []string, stdout, stderr io.Writer) int {
 	baselinePath := fs.String("baseline", "", "coverage baseline file (default: <out>/coverage-baseline.json)")
 	writeBaseline := fs.Bool("write-baseline", false, "freeze the current per-class model-endpoint coverage into the baseline file")
 	timeout := fs.Duration("timeout", 30*time.Second, "per-fetch timeout for provenance --check")
+	printBlobEndpoint := fs.Bool("print-blob-endpoint", false, "print the blob endpoint (namespace, pod labels, container port) as JSON and exit; a downstream goobers-system base renders its ingress half (#3585) FROM this value instead of restating it — so a change to the endpoint propagates rather than drifting")
 	fs.Usage = helpUsage(stderr, "netpol-render")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *printBlobEndpoint {
+		return printBlobEndpointJSON(stdout, stderr)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -244,6 +255,28 @@ func runNetpolCheck(input netpolrender.Input, result *netpolrender.Result, cover
 // gets a class policy — and an instance with no runners: block resolves to
 // the implicit self entry, rendering nothing), plus the operator-supplied
 // egress allowlist.
+// printBlobEndpointJSON writes the blob endpoint (decision 010/012) as
+// machine-readable JSON and exits — no cluster touch, no instance root needed.
+// The goobers-system ingress half of the blob grant (#3585) lives in a
+// separate repo that cannot import netpolrender.DefaultBlobEndpoint; it renders
+// its ingress peer FROM this output, so the endpoint is derived once and
+// propagates rather than being restated (and drifting — decision 015/016).
+func printBlobEndpointJSON(stdout, stderr io.Writer) int {
+	ep := netpolrender.DefaultBlobEndpoint()
+	out := struct {
+		Namespace string            `json:"namespace"`
+		PodLabels map[string]string `json:"podLabels"`
+		Port      int               `json:"port"`
+	}{Namespace: ep.Namespace, PodLabels: ep.PodLabels, Port: ep.Port}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		pf(stderr, "goobers netpol-render: marshal blob endpoint: %v\n", err)
+		return 1
+	}
+	pln(stdout, string(data))
+	return 0
+}
+
 func netpolRenderInput(cfg *instance.Config) netpolrender.Input {
 	var input netpolrender.Input
 	for _, entry := range cfg.ResolvedRunners() {
