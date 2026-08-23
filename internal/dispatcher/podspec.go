@@ -265,6 +265,12 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	spec := template.Spec.DeepCopy()
 	spec.RestartPolicy = corev1.RestartPolicyNever
 	spec.ActiveDeadlineSeconds = ptr.To(activeDeadlineSeconds(cfg, attempt))
+	// Deny-first posture (dispatcher §2 item 3): a stage pod never calls the
+	// API server, so it never mounts a ServiceAccount token — the same stamp
+	// RenderPod applies. The template path must apply it too, or a deployment
+	// whose template/SA leaves automount on yields a stage pod with a live
+	// token, silently defeating the invariant the image path asserts.
+	spec.AutomountServiceAccountToken = ptr.To(false)
 	if spec.NodeSelector == nil {
 		spec.NodeSelector = map[string]string{}
 	}
@@ -463,11 +469,14 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 		Name:         "workspace",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	}
-	if attempt.Disk != "" {
-		if quantity, err := resource.ParseQuantity(attempt.Disk); err == nil {
-			workspace.EmptyDir.SizeLimit = &quantity
-		}
-	}
+	// No per-volume SizeLimit on the workspace: the container's ephemeral-
+	// storage LIMIT (runner.Disk, the ceiling — stampResources) already caps
+	// total pod ephemeral use, and kubelet enforces an emptyDir sizeLimit
+	// independently. Sizing this from attempt.Disk (the floor / request)
+	// collapsed the usable workspace to the minimum and evicted the pod once
+	// /workspace crossed it — declaring runsOn.disk paradoxically SHRANK
+	// workspace. Leaving it nil lets the workspace grow to the container
+	// ceiling, which is the intended cap.
 	workspacePath := LinuxWorkspacePath
 	if windows {
 		workspacePath = WindowsWorkspacePath
@@ -526,10 +535,18 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 //     not stamped (Windows kubelets reject or ignore them).
 func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows bool) {
 	if windows {
-		spec.SecurityContext = &corev1.PodSecurityContext{
-			WindowsOptions: &corev1.WindowsSecurityContextOptions{
-				RunAsUserName: ptr.To(WindowsRunAsUserName),
-			},
+		// ContainerUser binds ONLY to fs:readonly-except-workspace (dispatcher
+		// §5, AC-4), the Windows equivalent of readOnlyRootFilesystem. Stamping
+		// it unconditionally would impose a non-admin identity on every Windows
+		// stage — Access Denied for admin-requiring stages — and nothing asked
+		// for it. In v1 no Windows pod carries fs:readonly (restrictions D4), so
+		// this branch stamps nothing in v1; the binding is here for when it can.
+		if class[string(runnercap.RestrictionFSReadonly)] {
+			spec.SecurityContext = &corev1.PodSecurityContext{
+				WindowsOptions: &corev1.WindowsSecurityContextOptions{
+					RunAsUserName: ptr.To(WindowsRunAsUserName),
+				},
+			}
 		}
 		return
 	}

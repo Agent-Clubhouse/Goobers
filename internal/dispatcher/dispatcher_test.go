@@ -25,6 +25,7 @@ type fakePodAPI struct {
 	deleted       []string
 	deployments   map[string]*appsv1.Deployment
 	createErr     error
+	deleteErrFor  map[string]error // pod name → error DeletePod returns for it
 }
 
 func (f *fakePodAPI) key(namespace, name string) string { return namespace + "/" + name }
@@ -77,6 +78,9 @@ func (f *fakePodAPI) GetPod(_ context.Context, namespace, name string) (*corev1.
 func (f *fakePodAPI) DeletePod(_ context.Context, namespace, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.deleteErrFor[name]; err != nil {
+		return err
+	}
 	delete(f.pods, f.key(namespace, name))
 	f.deleted = append(f.deleted, name)
 	return nil

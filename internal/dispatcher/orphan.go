@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/runnercap"
@@ -51,17 +52,24 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 		return nil, fmt.Errorf("dispatcher: list labeled stage pods for orphan sweep: %w", err)
 	}
 	var deleted []string
+	var errs []error
 	for i := range pods {
 		pod := &pods[i]
 		if runs.RunState(ctx, pod.Labels[LabelRun]) == RunStateLive {
 			continue
 		}
+		// Fail CLOSED toward cleanup: one pod's delete error must not strand
+		// the rest of the batch. Accumulate and keep deleting; the aggregated
+		// error is returned after the loop, and `deleted` reflects every pod
+		// actually removed. (The sweep also re-runs on every restart, so a
+		// pod that errors here is retried, not lost.)
 		if err := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); err != nil {
-			return deleted, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err)
+			errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
+			continue
 		}
 		deleted = append(deleted, pod.Name)
 	}
-	return deleted, nil
+	return deleted, errors.Join(errs...)
 }
 
 // sweepSelector selects exactly the pods this dispatcher stamps: its own

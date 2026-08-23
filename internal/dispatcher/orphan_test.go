@@ -2,6 +2,8 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -76,5 +78,48 @@ func TestSweepOrphansRequiresResolver(t *testing.T) {
 	}
 	if _, err := d.SweepOrphans(context.Background(), nil); err == nil {
 		t.Fatal("nil RunStates accepted — the sweep would delete everything it cannot resolve")
+	}
+}
+
+// Fail CLOSED toward cleanup: one pod's DeletePod error must not strand the
+// rest of the batch. The sweep continues, removes every other orphan, and
+// returns an aggregated error naming the failure (not aborting on the first).
+func TestSweepOrphansContinuesPastDeleteFailure(t *testing.T) {
+	pods := &fakePodAPI{deleteErrFor: map[string]error{"pod-b": errors.New("apiserver conflict")}}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for run, name := range map[string]string{"run-a": "pod-a", "run-b": "pod-b", "run-c": "pod-c"} {
+		attempt := testAttempt()
+		attempt.RunID = run
+		pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+		if err != nil {
+			t.Fatalf("RenderPod: %v", err)
+		}
+		pod.Name = name
+		if err := pods.CreatePod(context.Background(), pod); err != nil {
+			t.Fatalf("CreatePod: %v", err)
+		}
+	}
+	// All three runs terminal → all three are orphans; pod-b's delete fails.
+	deleted, err := d.SweepOrphans(context.Background(), stateTable{
+		"run-a": RunStateTerminal, "run-b": RunStateTerminal, "run-c": RunStateTerminal,
+	})
+	if err == nil {
+		t.Fatal("expected an aggregated error naming the failed delete, got nil")
+	}
+	if !strings.Contains(err.Error(), "pod-b") {
+		t.Fatalf("aggregated error %q does not name the failed pod pod-b", err)
+	}
+	got := map[string]bool{}
+	for _, name := range deleted {
+		got[name] = true
+	}
+	if !got["pod-a"] || !got["pod-c"] {
+		t.Fatalf("deleted %v — the other orphans must be removed despite pod-b failing", deleted)
+	}
+	if got["pod-b"] {
+		t.Fatal("pod-b reported deleted despite its DeletePod erroring")
 	}
 }

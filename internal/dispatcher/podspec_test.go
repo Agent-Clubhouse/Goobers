@@ -157,8 +157,9 @@ func TestRenderPodRefusesRestrictionMismatch(t *testing.T) {
 
 // §8 item 4: on a Windows pod, readOnlyRootFilesystem is NOT stamped —
 // Kubernetes silently ignores it on Windows, which fails OPEN (decision 007).
-// The fs effect binds to windowsOptions.runAsUserName: ContainerUser, and the
-// Linux-only baseline fields are absent.
+// A v1 Windows pod carries no restrictions (D4), so it gets NO ContainerUser
+// either — ContainerUser is the fs:readonly binding, not a Windows default —
+// and the Linux-only baseline fields are absent.
 func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	runner := windowsRunner()
 	runner.Restrictions = nil // Windows declares no restrictions in v1 (D4)
@@ -170,12 +171,14 @@ func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	if container.SecurityContext != nil && container.SecurityContext.ReadOnlyRootFilesystem != nil {
 		t.Fatal("readOnlyRootFilesystem stamped on a Windows pod — silently ignored by Kubernetes, fails OPEN (decision 007)")
 	}
-	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.WindowsOptions == nil ||
-		pod.Spec.SecurityContext.WindowsOptions.RunAsUserName == nil ||
-		*pod.Spec.SecurityContext.WindowsOptions.RunAsUserName != WindowsRunAsUserName {
-		t.Fatal("windowsOptions.runAsUserName: ContainerUser not stamped on the Windows pod")
+	// No fs:readonly in the class → NO ContainerUser. ContainerUser binds only
+	// to fs:readonly-except-workspace (dispatcher §5); stamping it on a plain
+	// Windows stage imposes a non-admin identity the stage never asked for and
+	// admin-requiring stages hit Access Denied at cutover.
+	if sc := pod.Spec.SecurityContext; sc != nil && sc.WindowsOptions != nil && sc.WindowsOptions.RunAsUserName != nil {
+		t.Fatalf("ContainerUser stamped on a Windows pod with no fs:readonly (runAsUserName=%q)", *sc.WindowsOptions.RunAsUserName)
 	}
-	if pod.Spec.SecurityContext.RunAsNonRoot != nil || pod.Spec.SecurityContext.SeccompProfile != nil {
+	if sc := pod.Spec.SecurityContext; sc != nil && (sc.RunAsNonRoot != nil || sc.SeccompProfile != nil) {
 		t.Fatal("Linux-only securityContext fields stamped on a Windows pod")
 	}
 	if got := pod.Spec.NodeSelector[NodeSelectorOSKey]; got != "windows" {
@@ -189,6 +192,29 @@ func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("Windows toleration missing")
+	}
+}
+
+// The Windows fs:readonly binding (the positive case): a Windows pod whose
+// class DOES carry fs:readonly-except-workspace gets ContainerUser (the Windows
+// equivalent of readOnlyRootFilesystem) — but STILL not readOnlyRootFilesystem
+// itself, which fails open on Windows (decision 007). The v1 solver won't place
+// fs:readonly on Windows (D4); this pins the renderer's binding regardless, so
+// the gate is proven in both directions.
+func TestRenderPodWindowsContainerUserGatedOnFSReadonly(t *testing.T) {
+	runner := windowsRunner()
+	runner.Restrictions = []string{"fs:readonly-except-workspace"}
+	pod, err := RenderPod(testConfig(), testAttempt(), runner)
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	sc := pod.Spec.SecurityContext
+	if sc == nil || sc.WindowsOptions == nil || sc.WindowsOptions.RunAsUserName == nil ||
+		*sc.WindowsOptions.RunAsUserName != WindowsRunAsUserName {
+		t.Fatal("ContainerUser not stamped on a Windows pod carrying fs:readonly-except-workspace")
+	}
+	if c := pod.Spec.Containers[0]; c.SecurityContext != nil && c.SecurityContext.ReadOnlyRootFilesystem != nil {
+		t.Fatal("readOnlyRootFilesystem stamped on a Windows pod — fails OPEN (decision 007), even with fs:readonly present")
 	}
 }
 
@@ -269,6 +295,33 @@ func TestRenderPodBudgetsTmpfsIntoMemoryLimit(t *testing.T) {
 	}
 	if got, want := limits[corev1.ResourceCPU], resource.MustParse("2000m"); got.Cmp(want) != 0 {
 		t.Fatalf("cpu limit = %s, want the runner ceiling %s", got.String(), want.String())
+	}
+}
+
+// The workspace emptyDir carries NO per-volume sizeLimit: capping it from
+// attempt.Disk (the floor / request, 10Gi) collapsed usable workspace to the
+// minimum and evicted the pod the moment /workspace crossed it — so declaring
+// runsOn.disk paradoxically SHRANK workspace. The container ephemeral-storage
+// LIMIT (the runner ceiling, 20Gi) governs total pod ephemeral use instead.
+func TestRenderPodWorkspaceHasNoFloorSizeLimit(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	var workspace *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == "workspace" {
+			workspace = &pod.Spec.Volumes[i]
+		}
+	}
+	if workspace == nil || workspace.EmptyDir == nil {
+		t.Fatal("workspace emptyDir volume missing")
+	}
+	if workspace.EmptyDir.SizeLimit != nil {
+		t.Fatalf("workspace sizeLimit = %v, want nil (the container ephemeral ceiling governs, not the floor)", workspace.EmptyDir.SizeLimit)
+	}
+	if limit := pod.Spec.Containers[0].Resources.Limits[corev1.ResourceEphemeralStorage]; limit.Cmp(resource.MustParse("20Gi")) != 0 {
+		t.Fatalf("ephemeral-storage limit = %s, want the runner ceiling 20Gi", limit.String())
 	}
 }
 
@@ -414,6 +467,12 @@ func TestRenderFromTemplate(t *testing.T) {
 	}
 	if pod.Spec.ActiveDeadlineSeconds == nil {
 		t.Fatal("template instantiation must stamp the activeDeadlineSeconds backstop")
+	}
+	// Deny-first (DI-9): the template path must disable SA-token automount just
+	// like the image path, or a deployment whose template/SA leaves automount
+	// on yields a stage pod with a live token. The template above sets it nil.
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("template instantiation must stamp AutomountServiceAccountToken=false (deny-first posture)")
 	}
 	// The fs restriction is pod-wide: the sidecar gets readOnlyRootFilesystem
 	// too.
