@@ -512,6 +512,64 @@ spec:
                       items:
                         type: string
                       type: array
+                    experiment:
+                      description: |-
+                        Experiment routes this task across two or three declared safety arms.
+                        Variants overlay task inputs; selection and outcomes are journaled by the
+                        runner and promotion remains an external approval decision.
+                      properties:
+                        arms:
+                          items:
+                            description: BanditArm declares one variant and the gate
+                              strength required to evaluate it.
+                            properties:
+                              gateLevel:
+                                description: |-
+                                  GateLevel is the required safety strength for the gate evaluating this arm:
+                                  automated=1, agentic=2, human=3.
+                                type: integer
+                              name:
+                                type: string
+                              variant:
+                                additionalProperties:
+                                  type: string
+                                type: object
+                            required:
+                            - gateLevel
+                            - name
+                            type: object
+                          type: array
+                        confidence:
+                          type: number
+                        defaultGateLevel:
+                          type: integer
+                        evalWindow:
+                          type: integer
+                        explorationBudget:
+                          type: integer
+                        maxFailureRate:
+                          type: number
+                        minLift:
+                          type: number
+                        minSamples:
+                          type: integer
+                        seed:
+                          format: int64
+                          type: integer
+                        trainWindow:
+                          type: integer
+                      required:
+                      - arms
+                      - confidence
+                      - defaultGateLevel
+                      - evalWindow
+                      - explorationBudget
+                      - maxFailureRate
+                      - minLift
+                      - minSamples
+                      - seed
+                      - trainWindow
+                      type: object
                     goal:
                       description: Goal is the intended outcome of the task (TSK-001).
                       type: string
