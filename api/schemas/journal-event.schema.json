@@ -398,6 +398,12 @@
           "description": "Convenience link. Not normative — identity is (provider, kind, id).",
           "type": "string",
           "x-conformance": "excluded"
+        },
+        "commitSha": {
+          "description": "Commit observed for a branch reference.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "normative"
         }
       }
     },

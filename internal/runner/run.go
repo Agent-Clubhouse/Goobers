@@ -825,6 +825,11 @@ type StartInput struct {
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
 	RepoRef apiv1.RepoRef
+	// WorkspaceBranch and WorkspaceBranchSHA allow a continuation to retain an
+	// already-created branch and pin the commit observed before execution.
+	WorkspaceBranch    string
+	WorkspaceBranchSHA string
+	ContextPointers    []apiv1.ContextPointer
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
@@ -975,14 +980,18 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	registrar, scrubber := journal.DefaultScrubber()
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
-		RunID:           in.RunID,
-		Workflow:        in.Machine.Def.Name,
-		WorkflowVersion: in.Machine.Def.Version,
-		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.GooberDigest,
-		Gaggle:          in.Gaggle,
-		RunControls:     &pinnedControls,
-		Trigger:         in.Trigger,
+		RunID:               in.RunID,
+		Workflow:            in.Machine.Def.Name,
+		WorkflowVersion:     in.Machine.Def.Version,
+		WorkflowDigest:      in.Machine.Digest(),
+		GooberDigest:        in.GooberDigest,
+		Gaggle:              in.Gaggle,
+		RunControls:         &pinnedControls,
+		Trigger:             in.Trigger,
+		WorkspaceBranch:     in.WorkspaceBranch,
+		WorkspaceBranchSHA:  in.WorkspaceBranchSHA,
+		WorkspaceRepository: repoRefPtr(in.RepoRef),
+		ContextPointers:     append([]apiv1.ContextPointer(nil), in.ContextPointers...),
 	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
@@ -1038,6 +1047,8 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}
 
 		ws := newWalkState(jr, in, registrar, in.Machine.Def.Spec.Start)
+		ws.pointers = append(ws.pointers, in.ContextPointers...)
+		ws.workspaceBranch = in.WorkspaceBranch
 		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
 			if err := r.recordRunBranch(jr, in); err != nil {
 				span.Fail(err)
@@ -1346,12 +1357,17 @@ func (r *Runner) branchNamespaceFor(gaggle string) string {
 }
 
 func (r *Runner) recordRunBranch(jr journalAppender, in StartInput) error {
+	branch := in.WorkspaceBranch
+	if branch == "" {
+		branch = providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	}
 	return jr.Append(journal.Event{
 		Type: journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{
-			Provider: string(in.RepoRef.Provider),
-			Kind:     "branch",
-			ID:       providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID),
+			Provider:  string(in.RepoRef.Provider),
+			Kind:      "branch",
+			ID:        branch,
+			CommitSHA: in.WorkspaceBranchSHA,
 		},
 	})
 }
@@ -4039,7 +4055,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, &infraFailedAttemptCommittedWork)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, branchRecorded, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -4053,16 +4069,6 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 					dispatchErr = nil
 				}
 			}
-		}
-		// A branchless no-work result with no provider mutations touched no
-		// external ref. Delay branch provenance until an attempt proves otherwise.
-		if !*branchRecorded && machineUsesRepo(in.Machine) &&
-			(dispatchErr != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
-			if err := r.recordRunBranch(jr, in); err != nil {
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
-			}
-			*branchRecorded = true
 		}
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
@@ -4386,7 +4392,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, branchRecorded *bool, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -4501,6 +4507,23 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		if agentInvocation != nil && agentInvocation.materializedAssets() {
 			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
 				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+			}
+		}
+		if workspace.worktree != nil && workspace.worktree.Branch != "" &&
+			!*branchRecorded && machineUsesRepo(in.Machine) &&
+			(err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
+			branchSHA, headErr := workspace.worktree.HeadSHA(context.WithoutCancel(ctx))
+			if headErr != nil {
+				err = errors.Join(err, fmt.Errorf("resolve workspace branch %q: %w", workspace.worktree.Branch, headErr))
+			} else {
+				branchInput := in
+				branchInput.WorkspaceBranch = workspace.worktree.Branch
+				branchInput.WorkspaceBranchSHA = branchSHA
+				if recordErr := r.recordRunBranch(jr, branchInput); recordErr != nil {
+					err = errors.Join(err, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, recordErr))
+				} else {
+					*branchRecorded = true
+				}
 			}
 		}
 		removeErr = workspace.Remove(ctx)
@@ -5634,6 +5657,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			in.pinnedStage.Unlock()
 			return nil, err
 		}
+		if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
+			in.pinnedStage.Unlock()
+			return nil, err
+		}
 		return &stageWorkspace{path: in.pinnedWorkspace.Path, worktree: in.pinnedWorkspace, release: in.pinnedStage.Unlock}, nil
 	}
 	switch mode {
@@ -5720,6 +5747,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 				in.pinnedStage.Unlock()
 				return nil, err
 			}
+			if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
 			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 			if err != nil {
 				in.pinnedStage.Unlock()
@@ -5758,6 +5789,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
 		}
+		if err := verifyWorkspaceBranchSHA(ctx, in, wt, workspaceBranch); err != nil {
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
 		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 		if err != nil {
 			// Best-effort teardown of the primary worktree so a failed
@@ -5765,10 +5800,31 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
+
 		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func repoRefPtr(ref apiv1.RepoRef) *apiv1.RepoRef {
+	repository := ref
+	return &repository
+}
+
+func verifyWorkspaceBranchSHA(ctx context.Context, in StartInput, wt *worktree.Worktree, branch string) error {
+	expected := strings.TrimSpace(in.WorkspaceBranchSHA)
+	if strings.TrimSpace(branch) == "" || expected == "" {
+		return nil
+	}
+	actual, err := wt.HeadSHA(ctx)
+	if err != nil {
+		return fmt.Errorf("verify workspace branch %q commit: %w", branch, err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(actual), expected) {
+		return fmt.Errorf("workspace branch %q advanced to %q, expected %q", branch, strings.TrimSpace(actual), expected)
+	}
+	return nil
 }
 
 func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase bool, workspaceBranch string) error {

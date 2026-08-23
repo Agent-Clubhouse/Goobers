@@ -453,10 +453,11 @@ type BranchOutcome struct {
 // in a provider. The normative identity is (Provider, Kind, ID); URL is a
 // convenience for humans and is not compared across runners.
 type ExternalRef struct {
-	Provider string `json:"provider"`      // e.g. "github"
-	Kind     string `json:"kind"`          // e.g. "issue", "pr"
-	ID       string `json:"id"`            // e.g. "123"
-	URL      string `json:"url,omitempty"` // not normative
+	Provider  string `json:"provider"`      // e.g. "github"
+	Kind      string `json:"kind"`          // e.g. "issue", "pr"
+	ID        string `json:"id"`            // e.g. "123"
+	URL       string `json:"url,omitempty"` // not normative
+	CommitSHA string `json:"commitSha,omitempty"`
 }
 
 // ErrorDetail is the failure detail on an error event. Code is a stable,
