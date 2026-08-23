@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   insightErrorSignatureFilters,
   insightPreviousWindowFilters,
+  insightStatsFilters,
   insightTrendBuckets,
   insightWindowFilters,
 } from "./insightData";
@@ -31,6 +32,16 @@ describe("Insight time windows", () => {
       since: "2026-07-21T12:00:00.000Z",
       until: "2026-07-22T12:00:00.000Z",
       limit: 20,
+    });
+  });
+
+  it("adds the selected operational scope to stats queries", () => {
+    const now = new Date("2026-07-22T12:00:00Z");
+
+    expect(insightStatsFilters("all", "core", "implementation", now)).toEqual({
+      gaggle: "core",
+      workflow: "implementation",
+      until: "2026-07-22T12:00:00.000Z",
     });
   });
 });

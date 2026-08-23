@@ -71,7 +71,7 @@ export function useInsightStats(
   state: QueryState<InsightSnapshot>;
 } {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = dataCacheKey("insight-stats", window);
+  const cacheKey = dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "");
   const [state, setState] = useState<QueryState<InsightSnapshot>>(() => {
     const cached = cache.get<InsightSnapshot>(cacheKey);
     return cached ? { status: "ready", data: cached } : { status: "loading" };
@@ -83,7 +83,7 @@ export function useInsightStats(
     const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
     const controller = new AbortController();
     request.current = controller;
-    const filters = insightWindowFilters(window);
+    const filters = insightStatsFilters(window, gaggle, workflow);
     setState((current) =>
       (current.status === "ready" || current.status === "stale") &&
       current.data.window === window
@@ -571,6 +571,19 @@ export function insightWindowFilters(
         since: new Date(now.getTime() - WINDOW_MILLISECONDS[window]).toISOString(),
         until,
       };
+}
+
+export function insightStatsFilters(
+  window: InsightWindow,
+  gaggle?: string,
+  workflow?: string,
+  now = new Date(),
+): TelemetryStatsOptions {
+  return {
+    ...insightWindowFilters(window, now),
+    ...(gaggle ? { gaggle } : {}),
+    ...(workflow ? { workflow } : {}),
+  };
 }
 
 export function insightErrorSignatureFilters(
