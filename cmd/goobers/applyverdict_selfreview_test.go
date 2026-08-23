@@ -48,7 +48,6 @@ func TestApplyVerdictDegradesOnSelfReview422(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-
 	if !strings.Contains(stdout, "native review skipped") {
 		t.Fatalf("stdout = %q, want it to report the native review was skipped", stdout)
 	}
@@ -160,7 +159,6 @@ func TestApplyVerdictDoesNotDegradeUnconfirmedReview404(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("apply-verdict: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-
 	if strings.Contains(stdout, "native review skipped") {
 		t.Fatalf("stdout = %q, unrelated 404 must not be degraded", stdout)
 	}

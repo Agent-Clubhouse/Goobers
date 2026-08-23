@@ -265,7 +265,6 @@ func TestPRSelectADOAdvisoryModeMisfireWhenHeadPrefixMismatch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-
 	if !strings.Contains(stdout, "no eligible") && !strings.Contains(stdout, "no work") {
 		t.Fatalf("stdout = %q, want no-work: default headPrefixes must not recognize the ADO run branch as own", stdout)
 	}
