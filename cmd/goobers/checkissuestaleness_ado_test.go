@@ -104,11 +104,11 @@ func TestCheckIssueStalenessADODetectsStaleAndDoesNotWriteRemediationLabel(t *te
 
 	mux.HandleFunc(prBase+"/360", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
-			"pullRequestId": 360,
-			"status":        "active",
-			"description":   "Implements PBI 1457\n\nFixes #1457\n" + pin,
-			"sourceRefName": "refs/heads/goobers/tb-ado-implementation/run-360",
-			"targetRefName": "refs/heads/main",
+			"pullRequestId":         360,
+			"status":                "active",
+			"description":           "Implements PBI 1457\n\nFixes #1457\n" + pin,
+			"sourceRefName":         "refs/heads/goobers/tb-ado-implementation/run-360",
+			"targetRefName":         "refs/heads/main",
 			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
 			"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
 			"repository": map[string]interface{}{
@@ -138,15 +138,15 @@ func TestCheckIssueStalenessADODetectsStaleAndDoesNotWriteRemediationLabel(t *te
 	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/1457", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			writeJSONResp(t, w, map[string]interface{}{
-				"id":     1457,
-				"rev":    1,
-				"url":    "https://dev.azure.com/acme/project/_apis/wit/workitems/1457",
+				"id":  1457,
+				"rev": 1,
+				"url": "https://dev.azure.com/acme/project/_apis/wit/workitems/1457",
 				"fields": map[string]interface{}{
 					"System.WorkItemType": "Issue",
 					"System.Title":        "Updated title",
-					"System.Description": "Updated body",
-					"System.ChangedDate": updatedAfterSnapshot.Format(time.RFC3339Nano),
-					"System.State":       "Active",
+					"System.Description":  "Updated body",
+					"System.ChangedDate":  updatedAfterSnapshot.Format(time.RFC3339Nano),
+					"System.State":        "Active",
 				},
 			})
 		} else {
