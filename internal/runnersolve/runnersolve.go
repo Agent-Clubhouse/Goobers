@@ -36,7 +36,10 @@
 //     resource requirements are advisory, never errors").
 //   - capabilities: exact set membership (internal/runnercap), stage requires
 //     ⊆ runner provides. The self runner additionally satisfies the derived
-//     namespace implicitly (see Runner.Self).
+//     namespace implicitly (see Runner.Self); a non-self runner satisfies it
+//     only via the explicit, trusted Shell/Harnesses claims (D10) — never by
+//     an authored token in Capabilities, which stays closed to the derived
+//     spellings by construction (internal/runnercap.ValidToken).
 //   - restrictions: stage requires ⊆ runner enforces, with the instance
 //     isolation mandate floor merged into every stage (Inventory.Mandates —
 //     a seam today, see its comment).
@@ -116,6 +119,15 @@ type Runner struct {
 	Disk   *resource.Quantity
 	// Capabilities is the claim set, matched exactly (internal/runnercap).
 	Capabilities []string
+	// Shell declares (non-self runners only; trusted, D10) that this
+	// runner's image provides a POSIX shell, satisfying
+	// runnercap.DerivedShellTag the same way Self does implicitly.
+	Shell bool
+	// Harnesses declares (non-self runners only; trusted, D10) the agent-
+	// harness names this runner's image provides on PATH, each satisfying
+	// runnercap.DerivedHarnessTagPrefix+name the same way Self does
+	// implicitly for every configured harness.
+	Harnesses []string
 	// Restrictions are the isolation effects this runner enforces.
 	Restrictions []string
 }
@@ -141,6 +153,7 @@ func SelfRunner(caps []string) Runner {
 // NOT a derived tag), so the addition is byte-invisible to 2.0 shapes.
 func (r Runner) MissingCapabilities(required []string) []string {
 	claimed := runnercap.NewClaimed(r.Capabilities)
+	harnesses := runnercap.NewClaimed(r.Harnesses)
 	var missing []string
 	seen := make(map[string]struct{}, len(required))
 	for _, token := range required {
@@ -152,6 +165,13 @@ func (r Runner) MissingCapabilities(required []string) []string {
 			continue
 		}
 		if r.Self && runnercap.DerivedTag(token) {
+			continue
+		}
+		if !r.Self && token == runnercap.DerivedShellTag && r.Shell {
+			continue
+		}
+		if !r.Self && strings.HasPrefix(token, runnercap.DerivedHarnessTagPrefix) &&
+			harnesses.Has(strings.TrimPrefix(token, runnercap.DerivedHarnessTagPrefix)) {
 			continue
 		}
 		missing = append(missing, token)

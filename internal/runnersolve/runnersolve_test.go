@@ -165,10 +165,25 @@ func TestDerivedTagsSatisfiedBySelfOnly(t *testing.T) {
 		t.Fatalf("self must satisfy derived tags implicitly, missing %v", missing)
 	}
 	if missing := remote.MissingCapabilities([]string{"harness:copilot"}); len(missing) != 1 {
-		t.Fatalf("a non-self runner must not satisfy a harness tag, missing %v", missing)
+		t.Fatalf("a non-self runner with no declared harness must not satisfy a harness tag, missing %v", missing)
 	}
 	if missing := remote.MissingCapabilities([]string{"run:shell"}); len(missing) != 1 {
-		t.Fatalf("a non-self runner must not satisfy the derived shell tag, missing %v", missing)
+		t.Fatalf("a non-self runner with no declared shell must not satisfy the derived shell tag, missing %v", missing)
+	}
+	// A non-self runner CAN satisfy derived tags, but only via the explicit,
+	// trusted Shell/Harnesses claims (D10) — never implicitly the way self
+	// is, and never via an author-spelled Capabilities token (the derived
+	// spellings stay outside that grammar regardless of host kind).
+	declared := Runner{Name: "pod", OS: OSLinux, Shell: true, Harnesses: []string{"copilot"}}
+	if missing := declared.MissingCapabilities([]string{"run:shell", "harness:copilot"}); len(missing) != 0 {
+		t.Fatalf("a non-self runner declaring shell:true and harnesses:[copilot] must satisfy both derived tags, missing %v", missing)
+	}
+	if missing := declared.MissingCapabilities([]string{"harness:claude"}); len(missing) != 1 {
+		t.Fatalf("declaring harnesses:[copilot] must not satisfy a different harness tag, missing %v", missing)
+	}
+	shellOnly := Runner{Name: "pod-shell-only", OS: OSLinux, Shell: true}
+	if missing := shellOnly.MissingCapabilities([]string{"harness:copilot"}); len(missing) != 1 {
+		t.Fatalf("shell:true alone must not satisfy a harness tag, missing %v", missing)
 	}
 	if !runnercap.DerivedTag("run:shell") || runnercap.DerivedTag("shell") {
 		t.Fatal("run:shell must be the derived spelling and plain shell must not be")

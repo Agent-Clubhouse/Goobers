@@ -166,6 +166,13 @@ engine:
 - **`provides`** quantities are ceilings (→ limits); `provides.capabilities` is the claim
   set matched exactly. **Claims are trusted in v1** (D10): a false claim degrades to a
   runtime error with a named diagnostic, never a silent misroute.
+- **`provides.shell`/`provides.harnesses`** are how a non-self runner satisfies the
+  derived requirements above (#3513): trusted claims (D10) in the same sense as
+  `provides.capabilities`, but a separate, closed, typed surface — the derived
+  `run:shell`/`harness:<name>` spellings stay outside the author token grammar
+  regardless of host kind (`internal/runnercap.ValidToken` rejects the colon), so
+  this is not a reopening of that grammar. A self runner satisfies both implicitly
+  and never needs to declare them.
 - **`restrictions`** on a runner declare what it enforces; a stage requiring a restriction
   matches only runners that enforce it. Instance-mandate composition and strengthen-only
   (SEC-021) semantics are specified in the restrictions companion doc (PO-D7).

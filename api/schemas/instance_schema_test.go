@@ -193,6 +193,8 @@ runners:
       memory: 8Gi
       disk: 60Gi
       capabilities: [go@1.26]
+      shell: true
+      harnesses: [copilot, claude]
     restrictions: [network:allowlist, tmp:ephemeral]
   - name: win-pool
     host: win-runner-pool

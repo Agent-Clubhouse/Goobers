@@ -423,6 +423,26 @@ func TestValidateRunnersEntryBranches(t *testing.T) {
 			wantErr: "provides.capabilities[0]",
 		},
 		{
+			name: "malformed harness name is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{Harnesses: []string{"Copilot"}}}}
+			},
+			wantErr: "provides.harnesses[0]",
+		},
+		{
+			name: "duplicate harness name is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{Harnesses: []string{"copilot", "copilot"}}}}
+			},
+			wantErr: "provides.harnesses[1]",
+		},
+		{
+			name: "shell and harnesses are accepted",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{Shell: true, Harnesses: []string{"copilot", "claude"}}}}
+			},
+		},
+		{
 			name: "unknown restriction is refused naming the closed list",
 			mutate: func(c *Config) {
 				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Restrictions: []RunnerRestriction{"network:proxy"}}}
