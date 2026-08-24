@@ -150,6 +150,9 @@ preflight a Kubernetes cluster against the documented infra shape
 \fBgoobers e2e\fR
 check the Goobernetes distributed e2e proof harness's assertions against a recorded run
 .TP
+\fBgoobers e2e kill-inject\fR
+perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+.TP
 \fBgoobers e2e verify\fR
 verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
 .TP
@@ -455,6 +458,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
 \fBgoobers-e2e\fR(1),
+\fBgoobers-e2e-kill-inject\fR(1),
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),

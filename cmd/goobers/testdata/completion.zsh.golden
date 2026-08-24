@@ -185,6 +185,7 @@ _goobers_completion()
         e2e)
             case "${words[3]:-}" in
                 verify) flags+=(--run --gaggle --expected --out --print-runner-class) ;;
+                kill-inject) flags+=(--daemon-url --token --run --stage --stage-class --namespace --poll-timeout --out) ;;
             esac
             ;;
         escalations)
@@ -374,7 +375,7 @@ _goobers_completion()
             ;;
         e2e)
             if (( CURRENT == 3 )); then
-                candidates=(verify)
+                candidates=(verify kill-inject)
                 _describe -V 'command' candidates
                 return
             fi

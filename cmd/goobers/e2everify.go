@@ -29,10 +29,13 @@ import (
 // harness package (this command is item 7's only caller today).
 const itemArch11Item7LedgerWindows e2e.SmokeItemID = "ARCH11-7"
 
-const e2eHelp = "Usage: goobers e2e verify [flags]\n\n" +
-	"verify: check the Goobernetes S1-S9 distributed e2e proof harness's\n" +
-	"        assertions (#3517) against one already-completed run's recorded\n" +
-	"        data.\n"
+const e2eHelp = "Usage: goobers e2e verify [flags]\n" +
+	"       goobers e2e kill-inject [flags]\n\n" +
+	"verify:      check the Goobernetes S1-S9 distributed e2e proof harness's\n" +
+	"             assertions (#3517) against one already-completed run's\n" +
+	"             recorded data.\n" +
+	"kill-inject: perform one live S6 kill-matrix cell (pod-kill) against a\n" +
+	"             real cluster (#3513).\n"
 
 func runE2E(args []string, stdout, stderr io.Writer) int {
 	usage := func(w io.Writer) { pf(w, "%s", e2eHelp) }

@@ -7,10 +7,13 @@ goobers e2e \- check the Goobernetes distributed e2e proof harness's assertions 
 .SH DESCRIPTION
 .nf
 Usage: goobers e2e verify [flags]
+       goobers e2e kill-inject [flags]
 
-verify: check the Goobernetes S1-S9 distributed e2e proof harness's
-        assertions (#3517) against one already-completed run's recorded
-        data.
+verify:      check the Goobernetes S1-S9 distributed e2e proof harness's
+             assertions (#3517) against one already-completed run's
+             recorded data.
+kill-inject: perform one live S6 kill-matrix cell (pod-kill) against a
+             real cluster (#3513).
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

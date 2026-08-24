@@ -325,6 +325,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "out", takesArg: true, desc: "Write the evidence bundle here instead of stdout"},
 		{name: "print-runner-class", takesArg: true, desc: "Print the runner-class label value for a restriction set and exit"},
 	},
+	"e2e kill-inject": {
+		{name: "daemon-url", takesArg: true, desc: "Base URL of the daemon's HTTP read API"},
+		{name: "token", takesArg: true, desc: "Bearer token for the daemon's read API"},
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id whose stage attempt to kill"},
+		{name: "stage", takesArg: true, desc: "The real workflow stage name to target"},
+		{name: "stage-class", takesArg: true, desc: "Which S6 stage class this stage plays: builtin, agentic, or local-ci"},
+		{name: "namespace", takesArg: true, desc: "Kubernetes namespace the target pod runs in"},
+		{name: "poll-timeout", takesArg: true, desc: "Bound on each polling phase"},
+		{name: "out", takesArg: true, desc: "Write the injection record here instead of stdout"},
+	},
 	"escalations": {
 		{name: "json", desc: "Emit JSON"},
 	},

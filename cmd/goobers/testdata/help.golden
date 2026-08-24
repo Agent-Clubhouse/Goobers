@@ -190,6 +190,8 @@ Advanced operator commands:
                                 force-release a claim through the live daemon or claims.lock
   goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [--print-runner-class <restrictions>] [path]
                                 verify the Goobernetes S1-S9 e2e proof harness's assertions against one completed run's recorded data
+  goobers e2e kill-inject --daemon-url <url> --run <run-id> --stage <name> --stage-class <builtin|agentic|local-ci> --namespace <ns> [--token <bearer>] [--poll-timeout <duration>] [--out <record.json>]
+                                perform one live S6 kill-matrix cell (pod-kill) against a real cluster
   goobers escalations show [--json] [--include-verdict] <run-id> [path]
                                 show escalation cause, verdict, and per-stage artifact timeline
   goobers telemetry stats|errors|export|prune|prune-orphans|compact [flags] [path]
@@ -809,10 +811,52 @@ clear message rather than hanging. Exit codes: 0 = shutdown requested,
 
 ### e2e
 Usage: goobers e2e verify [flags]
+       goobers e2e kill-inject [flags]
 
-verify: check the Goobernetes S1-S9 distributed e2e proof harness's
-        assertions (#3517) against one already-completed run's recorded
-        data.
+verify:      check the Goobernetes S1-S9 distributed e2e proof harness's
+             assertions (#3517) against one already-completed run's
+             recorded data.
+kill-inject: perform one live S6 kill-matrix cell (pod-kill) against a
+             real cluster (#3513).
+
+### e2e kill-inject
+Usage: goobers e2e kill-inject --daemon-url <url> --run <run-id> --stage <stage-name>
+       --stage-class builtin --namespace <k8s-namespace> [--token <bearer>]
+       [--poll-timeout <duration>] [--out <record.json>]
+
+Perform ONE live S6 kill-matrix cell (#3513/#3517, goobernetes-smoke.md §4
+S6) against a real cluster: pod-kill only, one stage class per invocation.
+This is the minimal live CellDriver implementation — it does not run the
+full six-cell matrix (RunKillMatrix), and it does not implement node-kill.
+
+--stage names the REAL workflow stage (e.g. "probe-builtin") whose currently
+executing attempt should be killed; --stage-class records which of S6's
+three abstract classes (builtin, agentic, local-ci) that stage plays, for
+the emitted record only — it is never used to find the attempt.
+
+Procedure:
+  1. Poll --daemon-url's read API (StageAttempts) for --run/--stage until an
+     attempt is running with recorded pod placement.
+  2. Delete that pod via the Kubernetes API (client-go — in-cluster config
+     when running as a pod, else standard kubeconfig loading), in
+     --namespace. No kubectl exec.
+  3. Poll again for a successor attempt and the run's terminal phase.
+  4. Emit one internal/e2e.CellInjectionRecord as JSON — to --out, or
+     stdout.
+
+--poll-timeout bounds BOTH polling phases independently (default 10m each) —
+this command fails loudly on timeout rather than hanging forever; a partial
+record (injection performed, no successor observed yet) is still emitted
+with RunCompletedSuccessfully=false, since D5 requires every injection be
+recorded even when the retry hasn't landed by the time this command gives up.
+
+Exit codes:
+  0 = injection performed and a complete record emitted (successor attempt
+      observed, run reached a terminal phase)
+  1 = injection performed but the record is incomplete (timed out waiting
+      for a successor or run completion) — the record is still emitted
+  2 = usage / IO / network error, or the target attempt never appeared
+      within --poll-timeout (nothing was injected, no record produced)
 
 ### e2e verify
 Usage: goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [path]

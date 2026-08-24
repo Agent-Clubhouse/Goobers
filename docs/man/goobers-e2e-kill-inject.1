@@ -1,0 +1,52 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS E2E KILL INJECT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers e2e kill-inject \- perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+.SH SYNOPSIS
+\fBgoobers e2e kill-inject\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers e2e kill-inject --daemon-url <url> --run <run-id> --stage <stage-name>
+       --stage-class builtin --namespace <k8s-namespace> [--token <bearer>]
+       [--poll-timeout <duration>] [--out <record.json>]
+
+Perform ONE live S6 kill-matrix cell (#3513/#3517, goobernetes-smoke.md §4
+S6) against a real cluster: pod-kill only, one stage class per invocation.
+This is the minimal live CellDriver implementation — it does not run the
+full six-cell matrix (RunKillMatrix), and it does not implement node-kill.
+
+--stage names the REAL workflow stage (e.g. "probe-builtin") whose currently
+executing attempt should be killed; --stage-class records which of S6's
+three abstract classes (builtin, agentic, local-ci) that stage plays, for
+the emitted record only — it is never used to find the attempt.
+
+Procedure:
+  1. Poll --daemon-url's read API (StageAttempts) for --run/--stage until an
+     attempt is running with recorded pod placement.
+  2. Delete that pod via the Kubernetes API (client-go — in-cluster config
+     when running as a pod, else standard kubeconfig loading), in
+     --namespace. No kubectl exec.
+  3. Poll again for a successor attempt and the run's terminal phase.
+  4. Emit one internal/e2e.CellInjectionRecord as JSON — to --out, or
+     stdout.
+
+--poll-timeout bounds BOTH polling phases independently (default 10m each) —
+this command fails loudly on timeout rather than hanging forever; a partial
+record (injection performed, no successor observed yet) is still emitted
+with RunCompletedSuccessfully=false, since D5 requires every injection be
+recorded even when the retry hasn't landed by the time this command gives up.
+
+Exit codes:
+  0 = injection performed and a complete record emitted (successor attempt
+      observed, run reached a terminal phase)
+  1 = injection performed but the record is incomplete (timed out waiting
+      for a successor or run completion) — the record is still emitted
+  2 = usage / IO / network error, or the target attempt never appeared
+      within --poll-timeout (nothing was injected, no record produced)
+.fi
+.SH EXAMPLES
+.nf
+goobers e2e kill-inject --daemon-url http://localhost:8080 --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
