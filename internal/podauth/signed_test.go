@@ -80,7 +80,11 @@ func TestSignedKeyRejectsForeignKeyExpiryAndTampering(t *testing.T) {
 	}
 
 	// Expiry, via the clock seam rather than a sleep.
-	expired, err := (&SignedKey{key: testKey(2), now: func() time.Time { return time.Now().Add(-2 * time.Hour) }}).Mint("run-1", time.Hour)
+	backdated, err := NewSignedKey(testKey(2))
+	if err != nil {
+		t.Fatalf("NewSignedKey: %v", err)
+	}
+	expired, err := backdated.WithClock(func() time.Time { return time.Now().Add(-2 * time.Hour) }).Mint("run-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Mint (expired): %v", err)
 	}
