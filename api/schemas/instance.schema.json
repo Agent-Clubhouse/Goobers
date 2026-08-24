@@ -946,6 +946,12 @@
           "description": "host:port for the API listener. Empty defaults to 127.0.0.1:8080. A NON-loopback host is refused at load unless BOTH tls and auth are configured — fail closed, with no insecure override.",
           "examples": ["127.0.0.1:8080"]
         },
+        "podTokenKeyFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to shared key material for STATELESS pod tokens. Set it when the mode-3 dispatcher runs in a different process from the daemon (the split `goobers up` / `goobers worker --dispatch-namespace` deployment): the in-memory token registry is daemon-local, so a token minted in the worker cannot otherwise be verified by the daemon receiving the surrender. A path only — key material never appears in this file. Unset keeps the in-memory registry, which is correct whenever daemon and dispatcher share a process.",
+          "examples": ["/mnt/secrets/pod-token.key"]
+        },
         "tls": {
           "description": "Serves the API over HTTPS from an on-disk certificate and key. Required for a non-loopback listen address.",
           "type": "object",

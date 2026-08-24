@@ -265,6 +265,20 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	return principal, ok
 }
 
+// DenyAllAuthenticator refuses every request. It exists so a daemon with NO
+// human API surface can still satisfy the non-loopback authenticator
+// requirement (SEC-043/#640) while serving only its own stage pods, which
+// authenticate ahead of it via podauth. Denying is the correct answer for a
+// human request to such a daemon — the alternative today is to configure an
+// unrelated OIDC issuer purely to unlock pod traffic, which makes the
+// most-restrictive deployment the hardest one to express (Goobers#3701).
+type DenyAllAuthenticator struct{}
+
+// Authenticate always fails closed.
+func (DenyAllAuthenticator) Authenticate(*http.Request) (*Principal, error) {
+	return nil, errors.New("httpapi: this daemon exposes no human API surface; only stage-pod tokens are accepted")
+}
+
 type authorizerFunc func(*http.Request) error
 
 func (f authorizerFunc) Authorize(r *http.Request) error { return f(r) }

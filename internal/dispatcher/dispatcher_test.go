@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -21,7 +22,8 @@ type fakePodAPI struct {
 	pods          map[string]*corev1.Pod
 	observations  map[string]int
 	terminalPhase corev1.PodPhase
-	created       []string // every pod name ever created, in order
+	created       []string      // every pod name ever created, in order
+	createdSpecs  []*corev1.Pod // the pods AS CREATED; survives disposal, which deletes from pods
 	deleted       []string
 	deployments   map[string]*appsv1.Deployment
 	createErr     error
@@ -36,6 +38,7 @@ func (f *fakePodAPI) CreatePod(_ context.Context, pod *corev1.Pod) error {
 	if f.createErr != nil {
 		return f.createErr
 	}
+	f.createdSpecs = append(f.createdSpecs, pod.DeepCopy())
 	if f.pods == nil {
 		f.pods = map[string]*corev1.Pod{}
 		f.observations = map[string]int{}
@@ -349,5 +352,107 @@ func TestDispatchDeploymentTemplateSkewChecked(t *testing.T) {
 	var skew *SkewError
 	if !errors.As(err, &skew) {
 		t.Fatalf("got %v, want SkewError for the template's stage image", err)
+	}
+}
+
+// mintOnce is a TokenMinter that records what it was asked for.
+type mintOnce struct {
+	runIDs []string
+	token  string
+	err    error
+}
+
+func (m *mintOnce) Mint(runID string, _ time.Duration) (string, error) {
+	m.runIDs = append(m.runIDs, runID)
+	return m.token, m.err
+}
+
+func podTokenEnv(pod *corev1.Pod) string {
+	if pod == nil || len(pod.Spec.Containers) == 0 {
+		return ""
+	}
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == EnvPodToken {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// Regression for #3701: before this, Attempt.PodToken was assigned only in
+// tests and Registry.Mint had no non-test caller, so GOOBERS_POD_TOKEN was
+// never present on a stage pod and every surrender arrived unauthenticated.
+func TestDispatchMintsPodTokenAndStampsIt(t *testing.T) {
+	pods := &fakePodAPI{}
+	minter := &mintOnce{token: "goobers-pod.minted"}
+	cfg := testConfig()
+	cfg.TokenMinter = minter
+	d, err := New(cfg, pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	attempt := testAttempt()
+	attempt.PodToken = "" // the dispatcher mints only when one was not supplied
+	if _, err := d.Dispatch(context.Background(), attempt, []RunnerSpec{linuxRunner()}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(minter.runIDs) != 1 || minter.runIDs[0] != attempt.RunID {
+		t.Fatalf("minter called with %v, want exactly [%s]", minter.runIDs, attempt.RunID)
+	}
+	if len(pods.createdSpecs) != 1 {
+		t.Fatalf("expected exactly one created pod, got %d", len(pods.createdSpecs))
+	}
+	if got := podTokenEnv(pods.createdSpecs[0]); got != "goobers-pod.minted" {
+		t.Fatalf("%s = %q, want the minted token stamped on the pod", EnvPodToken, got)
+	}
+}
+
+// A mint failure must stop the dispatch. Continuing would create a pod that
+// cannot surrender, and the failure would resurface much later as an
+// unauthenticated PUT that reads like a daemon fault.
+func TestDispatchFailsClosedWhenMintFails(t *testing.T) {
+	pods := &fakePodAPI{}
+	cfg := testConfig()
+	cfg.TokenMinter = &mintOnce{err: errors.New("no key")}
+	d, err := New(cfg, pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	failing := testAttempt()
+	failing.PodToken = ""
+	if _, err := d.Dispatch(context.Background(), failing, []RunnerSpec{linuxRunner()}); err == nil {
+		t.Fatal("Dispatch must fail when the pod token cannot be minted")
+	}
+	if len(pods.created) != 0 {
+		t.Fatalf("no pod may be created when minting failed, created %v", pods.created)
+	}
+}
+
+// A caller-supplied token is honoured rather than overwritten — the mint is a
+// default, not a policy. This is also what makes the two tests above meaningful:
+// testAttempt() ships a token, so an unguarded mint would have looked like it
+// worked while never exercising the minter.
+func TestDispatchKeepsCallerSuppliedPodToken(t *testing.T) {
+	pods := &fakePodAPI{}
+	minter := &mintOnce{token: "goobers-pod.minted"}
+	cfg := testConfig()
+	cfg.TokenMinter = minter
+	d, err := New(cfg, pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	if _, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(minter.runIDs) != 0 {
+		t.Fatalf("minter must not be called when the attempt already carries a token, got %v", minter.runIDs)
 	}
 }

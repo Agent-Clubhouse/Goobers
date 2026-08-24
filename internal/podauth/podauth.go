@@ -147,19 +147,35 @@ func (r *Registry) pruneLocked(now time.Time) {
 // present a pod token never falls through: an invalid pod token fails
 // closed rather than being retried as a JWT.
 type Authenticator struct {
-	registry *Registry
+	verifier Verifier
 	fallback httpapi.Authenticator
 }
 
+// Verifier resolves a presented pod token to the run it authenticates. The
+// two implementations differ only in where the trust lives: Registry keeps
+// grants in daemon memory (sound when the dispatcher shares that process),
+// SignedKey verifies a shared-key signature (required when it does not —
+// Goobers#3701).
+type Verifier interface {
+	verifyToken(token string) (string, error)
+}
+
+func (r *Registry) verifyToken(token string) (string, error)  { return r.verify(token) }
+func (s *SignedKey) verifyToken(token string) (string, error) { return s.verifySigned(token) }
+
 // NewAuthenticator chains pod-token verification in front of fallback.
-func NewAuthenticator(registry *Registry, fallback httpapi.Authenticator) (*Authenticator, error) {
-	if registry == nil {
-		return nil, errors.New("podauth: registry is required")
+func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authenticator, error) {
+	if verifier == nil {
+		return nil, errors.New("podauth: verifier is required")
 	}
 	if fallback == nil {
-		return nil, errors.New("podauth: fallback authenticator is required")
+		// Deliberately still required. A pod-only daemon passes DenyAll
+		// rather than nil, so "no human authenticator" is an explicit choice
+		// at the call site instead of an omission that silently admits
+		// unauthenticated requests.
+		return nil, errors.New("podauth: fallback authenticator is required (use httpapi.DenyAllAuthenticator for a pod-only daemon)")
 	}
-	return &Authenticator{registry: registry, fallback: fallback}, nil
+	return &Authenticator{verifier: verifier, fallback: fallback}, nil
 }
 
 // Authenticate verifies a pod bearer token, or delegates to the fallback
@@ -169,7 +185,7 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 	if !isPodToken(token) {
 		return a.fallback.Authenticate(request)
 	}
-	runID, err := a.registry.verify(token)
+	runID, err := a.verifier.verifyToken(token)
 	if err != nil {
 		return nil, err
 	}

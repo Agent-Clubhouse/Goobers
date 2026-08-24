@@ -64,6 +64,13 @@ type Config struct {
 	// comparison basis for release-tagged images (DI-6's release-time
 	// reading).
 	EmbeddedVersion string
+	// TokenMinter issues the per-run bearer a stage pod presents to the
+	// daemon write API. Nil leaves PodToken empty, which is correct only when
+	// the API needs no pod authentication (a loopback, null-auth daemon
+	// sharing this process). In a split deployment it MUST be set, or the pod
+	// surrenders unauthenticated and the daemon rejects it (Goobers#3701).
+	TokenMinter TokenMinter
+
 	// BlobEndpoint is the URL stage pods fetch/put artifact digests against
 	// (decision 010) — stamped into every pod's environment, every runner
 	// class INCLUDED restricted (without it a restricted stage hangs at
@@ -341,6 +348,13 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// TokenMinter issues per-run pod bearers. internal/podauth provides both
+// implementations; the dispatcher depends on the seam, never the package, so
+// a TokenReview-based minter can replace it without touching this file.
+type TokenMinter interface {
+	Mint(runID string, ttl time.Duration) (string, error)
+}
+
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
@@ -403,6 +417,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		// contract applies (architecture §3).
 		report.Local = true
 		return report, nil
+	}
+
+	// Mint the pod's bearer before rendering: podspec stamps
+	// GOOBERS_POD_TOKEN only when it is non-empty, so a mint failure must
+	// stop the dispatch rather than silently produce a pod that cannot
+	// surrender — the failure would otherwise surface much later, as an
+	// unauthenticated PUT, and read as a daemon problem.
+	if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
+		token, terr := d.cfg.TokenMinter.Mint(attempt.RunID, 0)
+		if terr != nil {
+			return Report{}, fmt.Errorf("dispatcher: mint pod token for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, terr)
+		}
+		attempt.PodToken = token
 	}
 
 	if err := d.waitForCapacity(ctx, runner); err != nil {

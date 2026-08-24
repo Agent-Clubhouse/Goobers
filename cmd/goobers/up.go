@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -574,6 +575,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
+	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
+	// deployments — Goobers#3701), else the daemon-local in-memory registry.
+	podVerifier, perr := buildPodVerifier(setup.Config)
+	if perr != nil {
+		pf(stderr, "error: initialize pod token verifier: %v\n", perr)
+		return 1
+	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
 			Issuer:     auth.OIDC.Issuer,
@@ -593,8 +601,21 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// minted bearers): chain the pod-token verifier in front of the human
 		// OIDC authenticator. The registry is daemon-local (sound under DS1);
 		// the mode-3 dispatcher mints into it at stage dispatch (#3482).
-		podTokens := podauth.NewRegistry()
-		chained, err := podauth.NewAuthenticator(podTokens, authenticator)
+		chained, err := podauth.NewAuthenticator(podVerifier, authenticator)
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiAuthorizer = httpapi.RequireRoles()
+	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		// Non-loopback with no human authenticator configured: serve the pod
+		// plane only, denying every non-pod request. This satisfies SEC-043's
+		// requirement for a REAL authenticator without forcing an operator who
+		// wants no human surface to stand up an OIDC issuer to get one
+		// (Goobers#3701). It never admits an unauthenticated request — the
+		// fallback denies rather than allowing.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.DenyAllAuthenticator{})
 		if err != nil {
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
@@ -1579,4 +1600,21 @@ func emitHeartbeats(
 			}
 		}
 	}
+}
+
+// buildPodVerifier selects the pod-token verifier. A configured key file gives
+// stateless shared-key tokens, which is what a SPLIT deployment needs: the
+// dispatcher runs inside `goobers worker`, so a token it mints must be
+// verifiable by a different process. Unset keeps the daemon-local in-memory
+// registry, correct whenever daemon and dispatcher share a process.
+func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
+	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	if path == "" {
+		return podauth.NewRegistry(), nil
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
+	}
+	return podauth.NewSignedKey(bytes.TrimSpace(key))
 }
