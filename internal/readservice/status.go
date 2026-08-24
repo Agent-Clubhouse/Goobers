@@ -36,6 +36,7 @@ type SchedulerStatus struct {
 	// boundaries. Empty on zero-declaration instances.
 	RefusedWorkflows []WorkflowRefusalStatus
 	RefillOccupancy  []RefillOccupancyStatus
+	Retention        *RetentionStatus
 }
 
 // WorkflowRefusalStatus is one boot-refused workflow and its solver
@@ -55,6 +56,18 @@ type RefillOccupancyStatus struct {
 	ActiveRuns        int32  `json:"activeRuns"`
 	AdmissionBlocked  bool   `json:"admissionBlocked"`
 	BlockingCondition string `json:"blockingCondition,omitempty"`
+}
+
+// RetentionStatus exposes projection retention diagnostics for the portal.
+type RetentionStatus struct {
+	// Window is the configured retention window in days, or 0 for unbounded.
+	Window int `json:"window"`
+	// AgedOut is the cumulative number of runs aged out of the projection.
+	AgedOut int `json:"agedOut"`
+	// Passes is the total number of retention passes executed.
+	Passes int `json:"passes"`
+	// LastPassAt is the time of the most recent retention pass, if any.
+	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
 }
 
 // DaemonRestartStatus correlates the latest daemon lifetime with runs selected
@@ -397,6 +410,24 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		return refill[i].Gaggle < refill[j].Gaggle
 	})
 	status.RefillOccupancy = refill
+
+	// Retention diagnostics: expose the effective policy and live loop counters.
+	if s.sources.Config != nil {
+		retention := RetentionStatus{
+			Window: s.sources.Config.ProjectionFullFidelityRetentionDays(),
+		}
+		if s.sources.RetentionStats != nil {
+			stats := s.sources.RetentionStats()
+			retention.AgedOut = stats.AgedOut
+			retention.Passes = stats.Passes
+			if !stats.LastPassAt.IsZero() {
+				lastPassAt := stats.LastPassAt
+				retention.LastPassAt = &lastPassAt
+			}
+		}
+		status.Retention = &retention
+	}
+
 	return status, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type RetentionLoop struct {
 	writer  RetentionWriter
 	window  RetentionWindow
 	options RetentionOptions
+	mu      sync.RWMutex
 	stats   RetentionStats
 }
 
@@ -97,19 +99,25 @@ func (l *RetentionLoop) Run(ctx context.Context) {
 // which is a cost, not a correctness problem — whereas taking the daemon down
 // over it would turn a cost into an outage.
 func (l *RetentionLoop) pass(ctx context.Context) {
+	l.mu.Lock()
 	l.stats.Passes++
 	l.stats.LastPassAt = time.Now().UTC()
+	l.mu.Unlock()
 
 	if l.window.Bounded() {
 		result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
+				l.mu.Lock()
 				l.stats.Failures++
+				l.mu.Unlock()
 				l.options.Logger.Warn("projection retention pass failed", "error", err)
 			}
 			return
 		}
+		l.mu.Lock()
 		l.stats.AgedOut += result.AgedOut
+		l.mu.Unlock()
 		if result.AgedOut > 0 {
 			l.options.Logger.Info("projection retention aged out runs",
 				"aged_out", result.AgedOut, "floor", result.Floor.Format(time.RFC3339))
@@ -123,13 +131,21 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	pruned, err := l.writer.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
+			l.mu.Lock()
 			l.stats.Failures++
+			l.mu.Unlock()
 			l.options.Logger.Warn("change feed prune failed", "error", err)
 		}
 		return
 	}
+	l.mu.Lock()
 	l.stats.ChangesPruned += pruned
+	l.mu.Unlock()
 }
 
 // Stats returns a snapshot of the counters.
-func (l *RetentionLoop) Stats() RetentionStats { return l.stats }
+func (l *RetentionLoop) Stats() RetentionStats {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.stats
+}

@@ -27,32 +27,33 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion                 = "goobers.dev/v1alpha1"
-	ConfigKind                       = "Instance"
-	DefaultAPIListenAddress          = "127.0.0.1:8080"
-	DefaultWebhookListenAddress      = "127.0.0.1:8081"
-	DefaultTemporalHostPort          = "127.0.0.1:7233"
-	DefaultTemporalNamespace         = "default"
-	DefaultEngineTaskQueue           = "goobers-engine"
-	TemporalHostPortEnv              = "GOOBERS_TEMPORAL_HOSTPORT"
-	TemporalAddressEnv               = "GOOBERS_TEMPORAL_ADDRESS"
-	TemporalAddressLegacyEnv         = "TEMPORAL_ADDRESS"
-	TemporalNamespaceEnv             = "GOOBERS_TEMPORAL_NAMESPACE"
-	TemporalNamespaceLegacyEnv       = "TEMPORAL_NAMESPACE"
-	TaskQueueEnv                     = "GOOBERS_TASK_QUEUE"
-	TemporalTaskQueueEnv             = "GOOBERS_TEMPORAL_TASK_QUEUE"
-	TemporalTaskQueueLegacyEnv       = "TEMPORAL_TASK_QUEUE"
-	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
-	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
-	DefaultWorkflowSourceRef         = "main"
-	WorkflowSourceKindLocalDir       = "local-dir"
-	WorkflowSourceKindGit            = "git"
-	DefaultDaemonLivenessTimeout     = 2 * time.Minute
-	MinimumDaemonLivenessTimeout     = 2 * time.Second
-	DefaultStalledRunTimeout         = runcontrol.DefaultStalledRunTimeout
-	DefaultClaimsLockTimeout         = 30 * time.Second
-	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
-	DefaultTelemetryRetentionMaxRuns = 500
+	ConfigAPIVersion                  = "goobers.dev/v1alpha1"
+	ConfigKind                        = "Instance"
+	DefaultAPIListenAddress           = "127.0.0.1:8080"
+	DefaultWebhookListenAddress       = "127.0.0.1:8081"
+	DefaultTemporalHostPort           = "127.0.0.1:7233"
+	DefaultTemporalNamespace          = "default"
+	DefaultEngineTaskQueue            = "goobers-engine"
+	TemporalHostPortEnv               = "GOOBERS_TEMPORAL_HOSTPORT"
+	TemporalAddressEnv                = "GOOBERS_TEMPORAL_ADDRESS"
+	TemporalAddressLegacyEnv          = "TEMPORAL_ADDRESS"
+	TemporalNamespaceEnv              = "GOOBERS_TEMPORAL_NAMESPACE"
+	TemporalNamespaceLegacyEnv        = "TEMPORAL_NAMESPACE"
+	TaskQueueEnv                      = "GOOBERS_TASK_QUEUE"
+	TemporalTaskQueueEnv              = "GOOBERS_TEMPORAL_TASK_QUEUE"
+	TemporalTaskQueueLegacyEnv        = "TEMPORAL_TASK_QUEUE"
+	OTLPEndpointEnv                   = "GOOBERS_OTLP_ENDPOINT"
+	OTLPInsecureEnv                   = "GOOBERS_OTLP_INSECURE"
+	DefaultWorkflowSourceRef          = "main"
+	WorkflowSourceKindLocalDir        = "local-dir"
+	WorkflowSourceKindGit             = "git"
+	DefaultDaemonLivenessTimeout      = 2 * time.Minute
+	MinimumDaemonLivenessTimeout      = 2 * time.Second
+	DefaultStalledRunTimeout          = runcontrol.DefaultStalledRunTimeout
+	DefaultClaimsLockTimeout          = 30 * time.Second
+	DefaultTelemetryRetentionWindow   = 90 * 24 * time.Hour
+	DefaultTelemetryRetentionMaxRuns  = 500
+	DefaultProjectionFullFidelityDays = 90
 	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
@@ -1220,7 +1221,14 @@ type RetentionConfig struct {
 	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
 	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
 	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
-	// LISTABLE in the portal read model (#1932, §11.4).
+	// LISTABLE in the portal read model (#1932, §11.4). This is a product
+	// policy decision (issue #3056) to age out runs beyond full-fidelity
+	// listability in unattended-operation scenarios, with OPT-OUT behavior:
+	// the default is 90 days, and operators who want unbounded history must
+	// explicitly set this to 0 or negative. This is deliberately different
+	// from opt-in: a zero-day window would age out every run on the first
+	// pass (the most destructive possible reading of an off value), so the
+	// safe default is explicit configuration.
 	//
 	// Independent of journal retention above, and deliberately so: a journal is
 	// the source of truth and its retention is a decision about disk and audit;
@@ -1231,13 +1239,76 @@ type RetentionConfig struct {
 	// individually listable. That is strictly less than the portal offers
 	// today, and was a product decision rather than an engineering one.
 	//
-	// **0, unset, or negative means UNBOUNDED** — no run is ever aged out. Not
-	// "a zero-day window": compared naively that would age out every run
-	// immediately, which is the most destructive possible reading of the value
-	// an operator would most reasonably expect to mean "off". See
-	// readmodel.RetentionDays, where the distinction is enforced rather than
-	// documented.
+	// 0 or negative means UNBOUNDED. Omitted keeps the product default
+	// (DefaultProjectionFullFidelityDays), so operators can opt out explicitly
+	// without changing the safe default for existing instances.
 	ProjectionFullFidelityDays int `json:"projectionFullFidelityDays,omitempty" yaml:"projectionFullFidelityDays,omitempty"`
+	// projectionFullFidelityDaysSet records whether the field was present at
+	// decode time, so an omitted value can differ from an explicit zero.
+	projectionFullFidelityDaysSet bool `json:"-" yaml:"-"`
+}
+
+// MarshalJSON preserves an explicitly configured zero projection window, which
+// is otherwise omitted by the field's omitempty tag.
+func (c RetentionConfig) MarshalJSON() ([]byte, error) {
+	type alias RetentionConfig
+	data, err := json.Marshal(alias(c))
+	if err != nil {
+		return nil, err
+	}
+	if !c.projectionFullFidelityDaysSet || c.ProjectionFullFidelityDays != 0 {
+		return data, nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	fields["projectionFullFidelityDays"] = json.RawMessage("0")
+	return json.Marshal(fields)
+}
+
+// UnmarshalJSON tracks presence of projectionFullFidelityDays so loaders can
+// distinguish "omitted" from "explicitly set to 0".
+func (c *RetentionConfig) UnmarshalJSON(data []byte) error {
+	type alias RetentionConfig
+	var decoded alias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = RetentionConfig(decoded)
+	_, c.projectionFullFidelityDaysSet = fields["projectionFullFidelityDays"]
+	return nil
+}
+
+// ProjectionFullFidelityDaysConfigured reports whether the field was explicitly
+// set in instance.yaml.
+func (c RetentionConfig) ProjectionFullFidelityDaysConfigured() bool {
+	return c.projectionFullFidelityDaysSet
+}
+
+// ProjectionFullFidelityDaysEffective resolves the configured retention window
+// in days with the issue #3056 default policy.
+func (c RetentionConfig) ProjectionFullFidelityDaysEffective() int {
+	if c.ProjectionFullFidelityDays != 0 || c.projectionFullFidelityDaysSet {
+		return c.ProjectionFullFidelityDays
+	}
+	return DefaultProjectionFullFidelityDays
+}
+
+// ProjectionFullFidelityRetentionDays resolves projection retention policy for
+// the full instance config, including nil config defaults.
+func (c *Config) ProjectionFullFidelityRetentionDays() int {
+	if c == nil {
+		return DefaultProjectionFullFidelityDays
+	}
+	return c.Retention.ProjectionFullFidelityDaysEffective()
 }
 
 // RetainedWorktreeMaxAgeDuration resolves the optional retention window.

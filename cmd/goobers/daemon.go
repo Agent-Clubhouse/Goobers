@@ -64,6 +64,9 @@ type schedulerSetup struct {
 	// the daemon's shutdown path stops it with everything else, rather than the
 	// loop outliving the process's other goroutines.
 	StopProjector func()
+	// RetentionStats snapshots projection-retention loop counters for status
+	// diagnostics while the daemon is running.
+	RetentionStats func() readmodel.RetentionStats
 	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
 	// at open so a broken store surfaces at daemon start rather than on the first
 	// read. It becomes the SSE cursor's epoch component in Wave 5.
@@ -269,6 +272,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var readModelEpoch string
 	var watermarks *intake.Store
 	var stopProjector func()
+	var retentionStats func() readmodel.RetentionStats
 	var instanceLog *journal.InstanceLog
 	defer func() {
 		if err == nil {
@@ -393,7 +397,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+				stopProjector, retentionStats = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
@@ -481,6 +485,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		ReadModel:         readModel,
 		Watermarks:        watermarks,
 		StopProjector:     stopProjector,
+		RetentionStats:    retentionStats,
 		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,

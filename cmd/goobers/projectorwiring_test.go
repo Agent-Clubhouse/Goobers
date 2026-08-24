@@ -38,7 +38,7 @@ func TestStartProjectorRoutesRepairWritesThroughCommitLoop(t *testing.T) {
 	}
 	t.Cleanup(func() { newRepairSweeper = original })
 
-	stop := startProjector(context.Background(), store, watermarks, layout, nil)
+	stop, _ := startProjector(context.Background(), store, watermarks, layout, nil)
 	defer stop()
 
 	if repairWriter == store {
@@ -46,5 +46,78 @@ func TestStartProjectorRoutesRepairWritesThroughCommitLoop(t *testing.T) {
 	}
 	if _, ok := repairWriter.(*projector.Projector); !ok {
 		t.Fatalf("repair writer = %T, want *projector.Projector", repairWriter)
+	}
+}
+
+func TestStartProjectorUsesDefaultRetentionWindowWhenUnset(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+
+	var captured readmodel.RetentionWindow
+	original := newRetentionLoop
+	newRetentionLoop = func(
+		s *readmodel.Store,
+		w readmodel.RetentionWriter,
+		window readmodel.RetentionWindow,
+		options readmodel.RetentionOptions,
+	) *readmodel.RetentionLoop {
+		captured = window
+		return readmodel.NewRetentionLoop(s, w, window, options)
+	}
+	t.Cleanup(func() { newRetentionLoop = original })
+
+	stop, _ := startProjector(context.Background(), store, watermarks, layout, &instance.Config{})
+	defer stop()
+	if !captured.Bounded() || captured.Days() != instance.DefaultProjectionFullFidelityDays {
+		t.Fatalf("retention window = %s, want %dd default", captured, instance.DefaultProjectionFullFidelityDays)
+	}
+}
+
+func TestStartProjectorAllowsExplicitOptOutRetentionWindow(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+
+	var captured readmodel.RetentionWindow
+	original := newRetentionLoop
+	newRetentionLoop = func(
+		s *readmodel.Store,
+		w readmodel.RetentionWriter,
+		window readmodel.RetentionWindow,
+		options readmodel.RetentionOptions,
+	) *readmodel.RetentionLoop {
+		captured = window
+		return readmodel.NewRetentionLoop(s, w, window, options)
+	}
+	t.Cleanup(func() { newRetentionLoop = original })
+
+	cfg := &instance.Config{}
+	cfg.Retention.ProjectionFullFidelityDays = 0
+	if err := cfg.Retention.UnmarshalJSON([]byte(`{"projectionFullFidelityDays":0}`)); err != nil {
+		t.Fatalf("mark retention field configured: %v", err)
+	}
+	stop, _ := startProjector(context.Background(), store, watermarks, layout, cfg)
+	defer stop()
+	if captured.Bounded() || captured.Days() != 0 {
+		t.Fatalf("retention window = %s, want unbounded opt-out", captured)
 	}
 }

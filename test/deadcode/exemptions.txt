@@ -199,12 +199,6 @@ github.com/goobers/goobers/internal/readmodel/repair.Sweeper.Stats # Sweep count
 # lands with the route wiring in the same wave. Expected to go stale then.
 github.com/goobers/goobers/internal/readmodel.ParseSourceApplied # If-Source-Applied header decoder (#1927 route wiring).
 
-# Projection retention (#1932). The window type and its constructors land with
-# the mechanism; the daemon's retention pass that calls them is the second PR of
-# this issue. Expected to go stale then.
-
-github.com/goobers/goobers/internal/readmodel.RetentionLoop.Stats # Retention counters for the freshness envelope (#1927 surface).
-
 # Mutability seam (#1934). The seam is deliberately SHIPPED AHEAD OF ITS
 # CALLERS: the portal is read-only today (three mutation routes return 501), and
 # the point of the issue is to settle the read-model requirements that light

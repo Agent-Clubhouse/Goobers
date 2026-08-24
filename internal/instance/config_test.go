@@ -1230,6 +1230,74 @@ func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
 	}
 }
 
+func TestProjectionFullFidelityRetentionDaysPolicy(t *testing.T) {
+	if got := (*Config)(nil).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
+		t.Fatalf("nil config default = %d, want %d", got, DefaultProjectionFullFidelityDays)
+	}
+	if got := (&Config{}).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
+		t.Fatalf("unset config default = %d, want %d", got, DefaultProjectionFullFidelityDays)
+	}
+	if got := (&Config{Retention: RetentionConfig{ProjectionFullFidelityDays: 30}}).ProjectionFullFidelityRetentionDays(); got != 30 {
+		t.Fatalf("explicit non-zero = %d, want 30", got)
+	}
+
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  projectionFullFidelityDays: 0
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Retention.ProjectionFullFidelityDaysConfigured() {
+		t.Fatal("ProjectionFullFidelityDaysConfigured = false, want true")
+	}
+	if got := cfg.ProjectionFullFidelityRetentionDays(); got != 0 {
+		t.Fatalf("explicit opt-out = %d, want 0", got)
+	}
+
+	roundTripPath := filepath.Join(t.TempDir(), ConfigFileName)
+	if err := WriteConfig(roundTripPath, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	roundTrip, err := LoadConfig(roundTripPath)
+	if err != nil {
+		t.Fatalf("LoadConfig after WriteConfig: %v", err)
+	}
+	if !roundTrip.Retention.ProjectionFullFidelityDaysConfigured() {
+		t.Fatal("round-trip ProjectionFullFidelityDaysConfigured = false, want true")
+	}
+	if got := roundTrip.ProjectionFullFidelityRetentionDays(); got != 0 {
+		t.Fatalf("round-trip explicit opt-out = %d, want 0", got)
+	}
+}
+
+func TestLoadConfigRejectsUnknownRetentionFields(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  unknown: true
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown retention field to be rejected, got %v", err)
+	}
+}
+
 func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
 	var zero TelemetryRetentionConfig
 	if zero.Enabled {

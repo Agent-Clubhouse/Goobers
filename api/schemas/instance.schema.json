@@ -899,7 +899,8 @@
         "projectionFullFidelityDays": {
           "type": "integer",
           "minimum": 0,
-          "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence. Zero, unset, or negative means UNBOUNDED — never a zero-day window."
+          "default": 90,
+          "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Defaults to 90 days (product policy decision per issue #3056 for unattended operation: opt-out with safe first-enable semantics). Set to 0 or negative to disable retention (UNBOUNDED — never a zero-day window). Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence."
         }
       }
     },
