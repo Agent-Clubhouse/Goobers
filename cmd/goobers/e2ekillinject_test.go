@@ -2,132 +2,146 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/readservice"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/goobers/goobers/internal/dispatcher"
 )
 
-// fakeDaemonServer serves the two routes waitForRunningAttempt/
-// waitForSuccessorAndCompletion poll, with handlers the test controls per
-// call so polling behavior (nothing yet, then a match) is exercised without
-// a real daemon.
-func fakeDaemonServer(t *testing.T, attempts func() readservice.AttemptList, detail func() readservice.RunDetail) *httptest.Server {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/runs/{run}/stages/{stage}/attempts", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(attempts())
-	})
-	mux.HandleFunc("/api/v1/runs/{run}", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(detail())
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server
+// fakePodAPI is a minimal in-memory dispatcher.PodAPI for testing
+// waitForRunningPod against a controllable pod set, without a real cluster.
+// CreatePod/GetPod/GetDeployment are unused by e2ekillinject.go and exist
+// only to satisfy the interface.
+type fakePodAPI struct {
+	listFunc func() []corev1.Pod
+	deleted  []string
 }
 
-func TestWaitForRunningAttemptFindsPlacedRunningAttempt(t *testing.T) {
+func (f *fakePodAPI) CreatePod(context.Context, *corev1.Pod) error { return nil }
+func (f *fakePodAPI) GetPod(context.Context, string, string) (*corev1.Pod, error) {
+	return nil, nil
+}
+func (f *fakePodAPI) DeletePod(_ context.Context, _, name string) error {
+	f.deleted = append(f.deleted, name)
+	return nil
+}
+func (f *fakePodAPI) ListPods(_ context.Context, _ string, selector map[string]string) ([]corev1.Pod, error) {
+	var out []corev1.Pod
+	for _, pod := range f.listFunc() {
+		match := true
+		for k, v := range selector {
+			if pod.Labels[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, pod)
+		}
+	}
+	return out, nil
+}
+func (f *fakePodAPI) GetDeployment(context.Context, string, string) (*appsv1.Deployment, error) {
+	return nil, nil
+}
+
+var _ dispatcher.PodAPI = (*fakePodAPI)(nil)
+
+func podWith(name, runID, stage, attempt string, phase corev1.PodPhase, node string) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				dispatcher.LabelRun:     runID,
+				dispatcher.LabelStage:   stage,
+				dispatcher.LabelAttempt: attempt,
+			},
+		},
+		Spec:   corev1.PodSpec{NodeName: node},
+		Status: corev1.PodStatus{Phase: phase},
+	}
+}
+
+func TestWaitForRunningPodFindsMatchingRunningPod(t *testing.T) {
 	var calls atomic.Int32
-	server := fakeDaemonServer(t, func() readservice.AttemptList {
+	api := &fakePodAPI{listFunc: func() []corev1.Pod {
 		n := calls.Add(1)
 		if n < 2 {
-			// First poll: nothing running yet.
-			return readservice.AttemptList{RunID: "run-1", Stage: "probe-builtin", Attempts: []readservice.StageAttempt{
-				{ID: "a1", Status: "queued"},
-			}}
+			return []corev1.Pod{podWith("probe-builtin-1", "run-1", "probe-builtin", "1", corev1.PodPending, "")}
 		}
-		return readservice.AttemptList{RunID: "run-1", Stage: "probe-builtin", Attempts: []readservice.StageAttempt{
-			{ID: "a1", Status: "running", Placement: &journal.Placement{Pod: "probe-builtin-a1"}},
-		}}
-	}, nil)
-
-	client := &e2eDaemonClient{baseURL: server.URL, http: server.Client()}
+		return []corev1.Pod{podWith("probe-builtin-1", "run-1", "probe-builtin", "1", corev1.PodRunning, "node-a")}
+	}}
 	origSleep := pollSleep
 	pollSleep = func(time.Duration) {}
 	t.Cleanup(func() { pollSleep = origSleep })
 
-	got, err := waitForRunningAttempt(context.Background(), client, "run-1", "probe-builtin", 5*time.Second)
+	got, err := waitForRunningPod(context.Background(), api, "gaggle-ns", map[string]string{dispatcher.LabelRun: "run-1", dispatcher.LabelStage: "probe-builtin"}, "", 5*time.Second)
 	if err != nil {
-		t.Fatalf("waitForRunningAttempt: %v", err)
+		t.Fatalf("waitForRunningPod: %v", err)
 	}
-	if got.ID != "a1" || got.Placement == nil || got.Placement.Pod != "probe-builtin-a1" {
-		t.Fatalf("got = %+v, want the running attempt with pod placement", got)
-	}
-	if calls.Load() < 2 {
-		t.Fatalf("expected at least 2 polls (queued then running), got %d", calls.Load())
+	if got.Name != "probe-builtin-1" || got.Spec.NodeName != "node-a" {
+		t.Fatalf("got = %+v, want the running pod on node-a", got)
 	}
 }
 
-func TestWaitForRunningAttemptTimesOutWithClearError(t *testing.T) {
-	server := fakeDaemonServer(t, func() readservice.AttemptList {
-		return readservice.AttemptList{RunID: "run-1", Stage: "probe-builtin", Attempts: nil}
-	}, nil)
-	client := &e2eDaemonClient{baseURL: server.URL, http: server.Client()}
+func TestWaitForRunningPodExcludesGivenName(t *testing.T) {
+	api := &fakePodAPI{listFunc: func() []corev1.Pod {
+		return []corev1.Pod{
+			podWith("probe-builtin-1", "run-1", "probe-builtin", "1", corev1.PodRunning, "node-a"),
+			podWith("probe-builtin-2", "run-1", "probe-builtin", "2", corev1.PodRunning, "node-b"),
+		}
+	}}
 	origSleep := pollSleep
 	pollSleep = func(time.Duration) {}
 	t.Cleanup(func() { pollSleep = origSleep })
 
-	_, err := waitForRunningAttempt(context.Background(), client, "run-1", "probe-builtin", 0)
+	got, err := waitForRunningPod(context.Background(), api, "gaggle-ns", map[string]string{dispatcher.LabelRun: "run-1", dispatcher.LabelStage: "probe-builtin"}, "probe-builtin-1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("waitForRunningPod: %v", err)
+	}
+	if got.Name != "probe-builtin-2" {
+		t.Fatalf("got = %q, want the successor pod probe-builtin-2 (excluding probe-builtin-1)", got.Name)
+	}
+}
+
+func TestWaitForRunningPodTimesOutWithClearError(t *testing.T) {
+	api := &fakePodAPI{listFunc: func() []corev1.Pod { return nil }}
+	origSleep := pollSleep
+	pollSleep = func(time.Duration) {}
+	t.Cleanup(func() { pollSleep = origSleep })
+
+	_, err := waitForRunningPod(context.Background(), api, "gaggle-ns", map[string]string{dispatcher.LabelRun: "run-1"}, "", 0)
 	if err == nil {
 		t.Fatal("expected a timeout error, got nil")
 	}
 }
 
-func TestWaitForSuccessorAndCompletionObservesSuccessorAndTerminal(t *testing.T) {
-	interrupted := readservice.StageAttempt{ID: "a1", Placement: &journal.Placement{Pod: "probe-builtin-a1"}}
-	var calls atomic.Int32
-	server := fakeDaemonServer(t, func() readservice.AttemptList {
-		return readservice.AttemptList{Attempts: []readservice.StageAttempt{
-			interrupted,
-			{ID: "a2", Placement: &journal.Placement{Pod: "probe-builtin-a2"}},
-		}}
-	}, func() readservice.RunDetail {
-		n := calls.Add(1)
-		terminal := n >= 2
-		return readservice.RunDetail{RunSummary: readservice.RunSummary{Terminal: terminal, Phase: journal.PhaseCompleted}}
-	})
-	client := &e2eDaemonClient{baseURL: server.URL, http: server.Client()}
-	origSleep := pollSleep
-	pollSleep = func(time.Duration) {}
-	t.Cleanup(func() { pollSleep = origSleep })
-
-	successor, completed, err := waitForSuccessorAndCompletion(context.Background(), client, "run-1", "probe-builtin", interrupted, 5*time.Second)
-	if err != nil {
-		t.Fatalf("waitForSuccessorAndCompletion: %v", err)
+func TestAttemptFromPodBuildsThinStageAttempt(t *testing.T) {
+	pod := podWith("probe-builtin-1", "run-1", "probe-builtin", "3", corev1.PodRunning, "node-a")
+	attempt := attemptFromPod(pod, "probe-builtin")
+	if attempt.ID != "probe-builtin-1" {
+		t.Errorf("ID = %q, want the pod name", attempt.ID)
 	}
-	if successor == nil || successor.ID != "a2" {
-		t.Fatalf("successor = %+v, want attempt a2", successor)
+	if attempt.Number != 3 {
+		t.Errorf("Number = %d, want 3 (from the LabelAttempt label)", attempt.Number)
 	}
-	if !completed {
-		t.Fatal("expected the run to be classified as completed")
+	if attempt.Status != "Running" {
+		t.Errorf("Status = %q, want %q", attempt.Status, "Running")
+	}
+	if attempt.Placement == nil || attempt.Placement.Pod != "probe-builtin-1" || attempt.Placement.Node != "node-a" {
+		t.Errorf("Placement = %+v, want Pod/Node built from the pod object", attempt.Placement)
 	}
 }
 
-func TestWaitForSuccessorAndCompletionTimesOutWithPartialResult(t *testing.T) {
-	interrupted := readservice.StageAttempt{ID: "a1", Placement: &journal.Placement{Pod: "probe-builtin-a1"}}
-	server := fakeDaemonServer(t, func() readservice.AttemptList {
-		return readservice.AttemptList{Attempts: []readservice.StageAttempt{interrupted}}
-	}, func() readservice.RunDetail {
-		return readservice.RunDetail{RunSummary: readservice.RunSummary{Terminal: false}}
-	})
-	client := &e2eDaemonClient{baseURL: server.URL, http: server.Client()}
-	origSleep := pollSleep
-	pollSleep = func(time.Duration) {}
-	t.Cleanup(func() { pollSleep = origSleep })
-
-	successor, completed, err := waitForSuccessorAndCompletion(context.Background(), client, "run-1", "probe-builtin", interrupted, 0)
-	if err == nil {
-		t.Fatal("expected a timeout error, got nil")
-	}
-	if successor != nil {
-		t.Fatalf("successor = %+v, want nil (none ever appeared)", successor)
-	}
-	if completed {
-		t.Fatal("a timed-out wait must not report the run as completed")
+func TestAttemptFromPodLeavesNumberZeroWhenLabelUnparseable(t *testing.T) {
+	pod := podWith("p", "run-1", "probe-builtin", "not-a-number", corev1.PodRunning, "node-a")
+	attempt := attemptFromPod(pod, "probe-builtin")
+	if attempt.Number != 0 {
+		t.Errorf("Number = %d, want 0 for an unparseable label rather than a guess", attempt.Number)
 	}
 }

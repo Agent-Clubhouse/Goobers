@@ -1024,8 +1024,8 @@ kill-inject: perform one live S6 kill-matrix cell (pod-kill) against a
 perform one live S6 kill-matrix cell (pod-kill) against a real cluster
 
 ~~~text
-Usage: goobers e2e kill-inject --daemon-url <url> --run <run-id> --stage <stage-name>
-       --stage-class builtin --namespace <k8s-namespace> [--token <bearer>]
+Usage: goobers e2e kill-inject --run <run-id> --stage <stage-name>
+       --stage-class builtin --namespace <k8s-namespace>
        [--poll-timeout <duration>] [--out <record.json>]
 
 Perform ONE live S6 kill-matrix cell (#3513/#3517, goobernetes-smoke.md §4
@@ -1034,19 +1034,30 @@ This is the minimal live CellDriver implementation — it does not run the
 full six-cell matrix (RunKillMatrix), and it does not implement node-kill.
 
 --stage names the REAL workflow stage (e.g. "probe-builtin") whose currently
-executing attempt should be killed; --stage-class records which of S6's
-three abstract classes (builtin, agentic, local-ci) that stage plays, for
-the emitted record only — it is never used to find the attempt.
+running pod should be killed; --stage-class records which of S6's three
+abstract classes (builtin, agentic, local-ci) that stage plays, for the
+emitted record only.
+
+Finds the target pod by label selector (goobers.dev/run=<run-id>,
+goobers.dev/stage=<stage>) — the same labels every dispatcher-created stage
+pod carries (internal/dispatcher.LabelRun/LabelStage) — NOT by asking the
+daemon: its read API defaults to loopback-only and cannot be reached from
+outside its own pod. No kubectl exec anywhere.
 
 Procedure:
-  1. Poll --daemon-url's read API (StageAttempts) for --run/--stage until an
-     attempt is running with recorded pod placement.
-  2. Delete that pod via the Kubernetes API (client-go — in-cluster config
-     when running as a pod, else standard kubeconfig loading), in
-     --namespace. No kubectl exec.
-  3. Poll again for a successor attempt and the run's terminal phase.
+  1. Poll for a Running pod matching the label selector.
+  2. Delete it via the Kubernetes API (client-go — in-cluster config when
+     running as a pod, else standard kubeconfig loading), in --namespace.
+  3. Poll the same selector for a DIFFERENT pod (the dispatcher's retry) to
+     appear.
   4. Emit one internal/e2e.CellInjectionRecord as JSON — to --out, or
-     stdout.
+     stdout. InterruptedAttempt/SuccessorAttempt are built from pod data
+     only (name, labels, phase, node) — thinner than the journal-sourced
+     StageAttempt goobers e2e verify produces, and RunCompletedSuccessfully
+     is always false here: no pod carries the overall run's terminal phase,
+     only its own stage's outcome, so this command does not guess it.
+     Rendering S6's actual pass/fail verdict needs this record combined with
+     the run's journal-sourced data separately.
 
 --poll-timeout bounds BOTH polling phases independently (default 10m each) —
 this command fails loudly on timeout rather than hanging forever; a partial
@@ -1055,18 +1066,17 @@ with RunCompletedSuccessfully=false, since D5 requires every injection be
 recorded even when the retry hasn't landed by the time this command gives up.
 
 Exit codes:
-  0 = injection performed and a complete record emitted (successor attempt
-      observed, run reached a terminal phase)
-  1 = injection performed but the record is incomplete (timed out waiting
-      for a successor or run completion) — the record is still emitted
-  2 = usage / IO / network error, or the target attempt never appeared
+  0 = injection performed and a successor pod was observed
+  1 = injection performed but no successor pod appeared within
+      --poll-timeout — the record is still emitted
+  2 = usage / IO / Kubernetes API error, or the target pod never appeared
       within --poll-timeout (nothing was injected, no record produced)
 ~~~
 
 **Examples**
 
 ~~~console
-$ goobers e2e kill-inject --daemon-url http://localhost:8080 --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers
+$ goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers
 ~~~
 
 ## `goobers e2e verify`

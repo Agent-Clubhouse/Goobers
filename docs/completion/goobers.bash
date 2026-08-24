@@ -156,7 +156,7 @@ _goobers_completion()
         e2e)
             case "${COMP_WORDS[2]:-}" in
                 verify) flags+=" --run --gaggle --expected --out --print-runner-class" ;;
-                kill-inject) flags+=" --daemon-url --token --run --stage --stage-class --namespace --poll-timeout --out" ;;
+                kill-inject) flags+=" --run --stage --stage-class --namespace --poll-timeout --out" ;;
             esac
             ;;
         escalations)

@@ -201,8 +201,6 @@ complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcomm
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l expected -r -d 'Topology expectations JSON file'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l out -r -d 'Write the evidence bundle here instead of stdout'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from verify' -l print-runner-class -r -d 'Print the runner-class label value for a restriction set and exit'
-complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l daemon-url -r -d 'Base URL of the daemon\'s HTTP read API'
-complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l token -r -d 'Bearer token for the daemon\'s read API'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l run -r -a '(__goobers_completion_runs)' -d 'Run id whose stage attempt to kill'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l stage -r -d 'The real workflow stage name to target'
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l stage-class -r -d 'Which S6 stage class this stage plays: builtin, agentic, or local-ci'

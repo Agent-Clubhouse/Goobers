@@ -453,7 +453,7 @@ func init() {
 			subcommand("e2e kill-inject", "kill-inject", apicontract.ActionMaintenance, runE2EKillInject).
 				withSynopsis(synopsisByID["e2e kill-inject"]).
 				withHelp("perform one live S6 kill-matrix cell (pod-kill) against a real cluster", e2eKillInjectHelp).
-				withExamples("goobers e2e kill-inject --daemon-url http://localhost:8080 --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers"),
+				withExamples("goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers"),
 		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",
