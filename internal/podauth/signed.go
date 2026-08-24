@@ -1,19 +1,3 @@
-// signed.go — stateless, shared-key pod tokens for split deployments.
-//
-// WHY THIS EXISTS (Goobers#3701): the in-memory Registry above is daemon-local,
-// which is sound when the dispatcher shares the daemon's process. Mode-3 splits
-// them: `goobers up` and `goobers worker --dispatch-namespace` are separate
-// processes (separate Deployments in-cluster), so a token minted in the
-// worker's memory is unverifiable by the daemon that receives the surrender.
-//
-// A shared signing key makes minting and verification independent of shared
-// state: the worker signs, the daemon verifies, neither needs the other's
-// memory and no bootstrap authentication problem is introduced (a token-issuing
-// endpoint would itself need to authenticate the caller).
-//
-// THE TRADE, STATED: signed tokens cannot be revoked before they expire, so
-// Revoke is a no-op in this mode and TTL is the only bound. That is why the
-// default TTL is short and why SignedKey refuses an over-long one.
 package podauth
 
 import (
@@ -44,6 +28,21 @@ var ErrMalformedToken = errors.New("podauth: malformed signed pod token")
 
 // SignedKey mints and verifies stateless per-run tokens from a shared secret.
 // Safe for concurrent use: it holds no mutable state.
+//
+// WHY THIS EXISTS (Goobers#3701): the in-memory Registry is daemon-local, which
+// is sound when the dispatcher shares the daemon's process. Mode-3 splits them:
+// `goobers up` and `goobers worker --dispatch-namespace` are separate processes
+// (separate Deployments in-cluster), so a token minted in the worker's memory is
+// unverifiable by the daemon that receives the surrender.
+//
+// A shared signing key makes minting and verification independent of shared
+// state: the worker signs, the daemon verifies, neither needs the other's memory
+// and no bootstrap authentication problem is introduced (a token-issuing
+// endpoint would itself need to authenticate the caller).
+//
+// THE TRADE, STATED: signed tokens cannot be revoked before they expire, so
+// Revoke is a no-op in this mode and TTL is the only bound. That is why the
+// default TTL is short and why Mint refuses an over-long one.
 type SignedKey struct {
 	key []byte
 	now func() time.Time
