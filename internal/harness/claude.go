@@ -19,6 +19,37 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
+// dropForeignAnthropicAPIKey strips an ANTHROPIC_API_KEY entry from env
+// whose value isn't shaped like a real Anthropic API key (which always
+// starts with "sk-ant-"). This instance's credentialGrant schema allows only
+// one agent:model grant per instance, with no per-harness scoping — so a
+// grant configured to back Copilot's headless model auth (a GitHub PAT,
+// injected as COPILOT_GITHUB_TOKEN for that adapter) is ALSO resolved and
+// injected here as ANTHROPIC_API_KEY purely because both adapters declare
+// the same capability name. A GitHub PAT is never a valid Anthropic key, so
+// without this guard every claude-code invocation on a mixed-harness
+// instance authenticates with a guaranteed-invalid key and fails instantly
+// with a 401 "Invalid API key" — surfaced nowhere but the process's own
+// (otherwise-uncaptured) transcript, since seedClaudeCredentials treats any
+// non-empty ANTHROPIC_API_KEY as "caller already handled auth" and skips
+// seeding the user's real stored Claude Code session as a fallback. Dropping
+// a foreign-shaped key here restores that fallback — the same behavior as
+// if no agent:model credential were configured for this capability at all,
+// which is what Copilot-only credential configuration actually means for a
+// harness that isn't Copilot. A genuinely valid Anthropic key (sk-ant-...)
+// configured for this capability still passes through unchanged.
+func dropForeignAnthropicAPIKey(env []string) []string {
+	filtered := env[:0:0]
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == "ANTHROPIC_API_KEY" && !strings.HasPrefix(value, "sk-ant-") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
 var defaultClaudeExtraArgs = []string{
 	"--output-format", "stream-json",
 	"--verbose",
@@ -311,6 +342,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		return Outcome{}, err
 	}
 	env = append(env, mcpEnvAdditions...)
+	env = dropForeignAnthropicAPIKey(env)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,

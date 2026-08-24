@@ -76,7 +76,7 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 		},
 	}
 	credentials := twoTokenCredentials(t,
-		"agent:model", "anthropic-key",
+		"agent:model", "sk-ant-test-key",
 		"github:issues:write", "github-token",
 	)
 
@@ -111,14 +111,14 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 	if command[len(command)-1] != prompt {
 		t.Fatalf("prompt is not the final argv element: %v", command)
 	}
-	for _, token := range []string{"anthropic-key", "github-token"} {
+	for _, token := range []string{"sk-ant-test-key", "github-token"} {
 		for _, arg := range command {
 			if strings.Contains(arg, token) {
 				t.Fatalf("credential leaked into argv: %v", command)
 			}
 		}
 	}
-	for _, want := range []string{"ANTHROPIC_API_KEY=anthropic-key", "GH_TOKEN=github-token"} {
+	for _, want := range []string{"ANTHROPIC_API_KEY=sk-ant-test-key", "GH_TOKEN=github-token"} {
 		if !slices.Contains(runner.lastReq.Env, want) {
 			t.Errorf("environment missing %q: %v", want, runner.lastReq.Env)
 		}
@@ -146,6 +146,58 @@ func TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment(t *testing.T) 
 	}
 	if got := out.AgentEvents[0].Agent.ResolvedReasoningEffort; got != "high" {
 		t.Fatalf("resolved reasoning effort = %q, want high", got)
+	}
+}
+
+// TestClaudeAdapterRunDropsForeignShapedAnthropicAPIKey pins the fix for a
+// mixed-harness instance where the credentialGrant schema allows only one
+// agent:model grant per instance (no per-harness scoping): a grant backing
+// Copilot's headless model auth (a GitHub PAT, never shaped like an
+// Anthropic key) must not be passed through to claude-code as
+// ANTHROPIC_API_KEY, since seedClaudeCredentials treats any non-empty value
+// there as "caller already handled auth" and skips falling back to the
+// user's real stored Claude Code session — turning a Copilot-only credential
+// configuration into a guaranteed 401 for every claude-code invocation. A
+// genuinely Anthropic-shaped key (sk-ant-...) must still pass through
+// unchanged (see TestClaudeAdapterRunUsesHeadlessContractAndScopedEnvironment).
+func TestClaudeAdapterRunDropsForeignShapedAnthropicAPIKey(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte(claudeResultStream)},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+				Status:  apiv1.ResultSuccess,
+				Summary: "implemented",
+			})
+		},
+	}
+	adapter := &ClaudeAdapter{
+		Command: []string{"claude"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "ANTHROPIC_API_KEY",
+		},
+	}
+	credentials := twoTokenCredentials(t,
+		"agent:model", "github_pat_11AAcopilotPAT",
+		"repo:read", "unused",
+	)
+
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Model:          "claude-sonnet-4-6",
+		HarnessOptions: testHarnessOptions(t, map[string]interface{}{}),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    credentials,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "ANTHROPIC_API_KEY=") {
+			t.Fatalf("foreign-shaped credential must not reach ANTHROPIC_API_KEY: %v", runner.lastReq.Env)
+		}
 	}
 }
 
