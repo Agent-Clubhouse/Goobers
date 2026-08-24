@@ -450,6 +450,10 @@ func init() {
 				withSynopsis(synopsisByID["e2e verify"]).
 				withHelp("verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data", e2eVerifyHelp).
 				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json", "goobers e2e verify --print-runner-class network:allowlist"),
+			subcommand("e2e kill-inject", "kill-inject", apicontract.ActionMaintenance, runE2EKillInject).
+				withSynopsis(synopsisByID["e2e kill-inject"]).
+				withHelp("perform one live S6 kill-matrix cell (pod-kill) against a real cluster", e2eKillInjectHelp).
+				withExamples("goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers"),
 		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",

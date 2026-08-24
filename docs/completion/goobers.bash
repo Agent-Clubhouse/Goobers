@@ -156,6 +156,7 @@ _goobers_completion()
         e2e)
             case "${COMP_WORDS[2]:-}" in
                 verify) flags+=" --run --gaggle --expected --out --print-runner-class" ;;
+                kill-inject) flags+=" --run --stage --stage-class --namespace --poll-timeout --out" ;;
             esac
             ;;
         escalations)
@@ -315,7 +316,7 @@ _goobers_completion()
             ;;
         e2e)
             if (( COMP_CWORD == 2 )); then
-                candidates="verify"
+                candidates="verify kill-inject"
             fi
             ;;
         escalations)
