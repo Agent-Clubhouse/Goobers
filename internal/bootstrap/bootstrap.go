@@ -40,7 +40,15 @@ func RegisterGaggleWorkflows(set *instance.ConfigSet, gaggle string) (*engine.Re
 	for i := range set.Workflows {
 		w := set.Workflows[i]
 		if w.Spec.Gaggle == gaggle {
-			if _, err := reg.Register(w.Name, w.Spec); err != nil {
+			// RegisterDefinition, not the two-arg Register shim: Register
+			// drops DSLVersion (it exists only to keep legacy 1.4-only
+			// callers simple), which silently defaults every workflow here
+			// to supportmatrix.CurrentDSLVersion regardless of what it
+			// actually declares — a 3.0 workflow's runsOn then fails as if
+			// authored against 1.4. This is the one non-test call site that
+			// built a Definition without carrying the version explicitly.
+			def := workflow.Definition{Name: w.Name, DSLVersion: w.DSLVersion, Spec: w.Spec}
+			if _, err := reg.RegisterDefinition(def); err != nil {
 				return nil, apiv1.RepoRef{}, fmt.Errorf("register workflow %q: %w", w.Name, err)
 			}
 		}

@@ -34,13 +34,6 @@ func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 	}
 }
 
-// Register appends spec as the next version of the named workflow and returns the
-// new version number (1-based). It validates the definition compiles before
-// accepting it, so a broken definition can never be started.
-func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
-	return r.RegisterDefinition(wf.Definition{Name: name, Spec: spec})
-}
-
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
 // Version assignment, validation, and the append run under one critical
