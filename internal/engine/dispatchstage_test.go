@@ -309,6 +309,82 @@ func TestDispatchStageFailsClosed(t *testing.T) {
 	})
 }
 
+// #3699: the pod actually needs to know what to run. dispatchStageInput
+// carries the pinned DeterministicRun through to the activity, and
+// DispatchStage lands it on the dispatcher.Attempt the pod spec is rendered
+// from.
+func TestDispatchStagePopulatesAttemptFromRun(t *testing.T) {
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-r", "build", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true,
+	}}
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+
+	input := dispatchInput("run-r", "build", 1)
+	input.Run = &apiv1.DeterministicRun{
+		Script:    "curl -sf https://example.invalid",
+		Env:       map[string]string{"GOOBERS_PROBE_TARGET": "8.8.8.8"},
+		Workspace: apiv1.WorkspaceScratch,
+	}
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("DispatchStage error: %v", err)
+	}
+	attempts, _ := fake.recorded()
+	if len(attempts) != 1 {
+		t.Fatalf("dispatch calls = %d, want 1", len(attempts))
+	}
+	got := attempts[0]
+	if got.Script != "curl -sf https://example.invalid" {
+		t.Fatalf("attempt.Script = %q, want the pinned Run's script", got.Script)
+	}
+	if got.Env["GOOBERS_PROBE_TARGET"] != "8.8.8.8" {
+		t.Fatalf("attempt.Env = %+v, want the pinned Run's env", got.Env)
+	}
+	if len(got.Command) != 0 {
+		t.Fatalf("attempt.Command = %v, want empty (Script was declared, not Command)", got.Command)
+	}
+}
+
+// #3699 v1 scope: DispatchStage re-asserts the same guards
+// dispatchRemoteTask applies before ever reaching the activity (belt and
+// suspenders, matching this file's self-placement re-assertion) — a
+// non-scratch workspace, declared capabilities, or a goobers-CLI/provider-
+// builtin command must never reach the dispatcher, because the in-pod
+// executor cannot honor any of them yet.
+func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
+	for name, mutate := range map[string]func(*dispatchStageInput){
+		"repo workspace": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceRepo}
+		},
+		"unset workspace defaults to repo": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
+		},
+		"declared capabilities": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}
+			in.Envelope.Capabilities = []string{"repo:push"}
+		},
+		"goobers CLI builtin": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceScratch}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+			a := &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}
+			input := dispatchInput("run-u", "build", 1)
+			mutate(&input)
+			if _, err := a.DispatchStage(context.Background(), input); err == nil {
+				t.Fatal("expected a v1-scope refusal, got none")
+			}
+			if fake.calls.Load() != 0 {
+				t.Fatal("an unsupported Run reached the dispatcher instead of being refused first")
+			}
+		})
+	}
+}
+
 // A mode-3 stage executes through the dispatch activity with everything —
 // eligible set, attempt facts, queue — read from RunInput's pinned
 // placements, while an unpinned stage in the same run keeps the local arm.
@@ -376,6 +452,44 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	defer mu.Unlock()
 	if len(localStages) != 1 || localStages[0] != "report" {
 		t.Fatalf("local stages = %v, want only the unpinned stage", localStages)
+	}
+}
+
+// #3699 v1 scope, at the workflow level: a pinned stage whose Run the in-pod
+// executor cannot yet honor (here, no explicit workspace: scratch — the
+// default is repo) is refused BEFORE the dispatcher is ever consulted, so no
+// pod is created for it — dispatchRemoteTask's guard, not DispatchStage's
+// defensive re-check, is what fires here.
+func TestModeThreeRefusesUnsupportedRunBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "build",
+		Tasks: []apiv1.Task{
+			{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+				Run: &apiv1.DeterministicRun{Command: []string{"build.cmd"}}},
+		},
+	}
+	in := runInput("mode-three-unsupported", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "build", Queue: dispatcher.QueueName("web", "win-ci"),
+		Eligible: remoteEligible(), Memory: "4Gi",
+	}}
+	fake := &fakeStageDispatcher{}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	// dispatchRemoteTask's guard returns a plain error, exactly like the
+	// existing empty-command guard it sits beside — this is a workflow
+	// execution error, not a graceful ResultFailure branch.
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "does not yet provision a pod-side repo checkout") {
+		t.Fatalf("workflow error = %v, want the unsupported-workspace refusal", err)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("the dispatcher was consulted for a stage the v1 guard should have refused first — a pod may have been created")
 	}
 }
 

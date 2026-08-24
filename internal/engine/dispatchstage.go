@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 )
 
@@ -75,11 +76,18 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 }
 
 // dispatchStageInput is ActDispatchStage's activity input: the stage's fully
-// built invocation envelope plus the pinned placement facts. Pure data — the
-// workflow resolves nothing at dispatch time.
+// built invocation envelope, the pinned placement facts, and — for a
+// deterministic task — the pinned DeterministicRun content the pod actually
+// executes (#3699). Pure data — the workflow resolves nothing at dispatch
+// time; Run is read from the pinned Definition (apiv1.Task.Run), the same
+// WF-016 snapshot Placement itself is pinned from, so carrying it here adds
+// no new nondeterminism. Deliberately NOT added to apiv1.InvocationEnvelope
+// (the DSL/CRD-shared wire contract): this type is Temporal activity input
+// only, never DSL-visible.
 type dispatchStageInput struct {
 	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
 	Placement PinnedPlacement          `json:"placement"`
+	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -87,6 +95,14 @@ type dispatchStageInput struct {
 // arms. It re-asserts the deterministic-task fail-closed guards (#626/#156)
 // with the local arm's exact diagnostics: a stage with no command is refused
 // here too, never shipped to a pod.
+//
+// v1 scope (#3699): the in-pod executor has no credential injector, no
+// journal/providerstage wiring, and provisions no repo checkout, so a task
+// that needs any of those is refused HERE, before a pod is ever created,
+// rather than silently diverging from local-executor behavior in the pod
+// (the shipped disposal gate would just as soon fail such an attempt after
+// the fact — refusing at dispatch is the same outcome without spending a
+// pod). Each of these is a stated, narrowing v1 cut, not a permanent limit.
 func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity) (apiv1.ResultEnvelope, error) {
 	if t.Type == apiv1.TaskDeterministic {
 		if t.Run == nil {
@@ -95,12 +111,21 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		if len(t.Run.Command) == 0 && t.Run.Script == "" {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 		}
+		if t.Run.Workspace != apiv1.WorkspaceScratch {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout — declare workspace: scratch to run this stage in a pod", t.Name, t.Run.Workspace)
+		}
+		if len(env.Capabilities) > 0 {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares capabilities %v; mode-3 dispatch does not yet deliver credentials into a stage pod", t.Name, env.Capabilities)
+		}
+		if executor.StageInvokesGoobersCLI(t.Run.Command) || executor.StageInvokesProviderBuiltin(t.Run.Command) {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs a goobers-CLI builtin stage (%v); mode-3 dispatch does not yet wire journal/provider access into a stage pod", t.Name, t.Run.Command)
+		}
 	}
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement}).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	})
@@ -136,6 +161,23 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		// activity with one means the routing was tampered with or mis-built.
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
 	}
+	// input.Run is set exactly for a deterministic dispatch (agentic stages
+	// carry a nil Run and are unaffected below). Re-assert
+	// dispatchRemoteTask's v1-scope guards here too — the same "trust the
+	// workflow-side refusal happened, but re-check anyway" idiom the self-
+	// placement check above already applies, and the activity boundary is
+	// where a version-skewed or hand-built input would actually surface.
+	if input.Run != nil {
+		if input.Run.Workspace != apiv1.WorkspaceScratch {
+			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout (fail closed)", input.Envelope.TaskID, input.Run.Workspace))
+		}
+		if len(input.Envelope.Capabilities) > 0 {
+			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares capabilities; mode-3 dispatch does not yet deliver credentials into a stage pod (fail closed)", input.Envelope.TaskID))
+		}
+		if executor.StageInvokesGoobersCLI(input.Run.Command) || executor.StageInvokesProviderBuiltin(input.Run.Command) {
+			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q runs a goobers-CLI builtin stage; mode-3 dispatch does not yet wire journal/provider access into a stage pod (fail closed)", input.Envelope.TaskID))
+		}
+	}
 	attempt := dispatcher.Attempt{
 		RunID:          input.Envelope.RunID,
 		Gaggle:         input.Envelope.Gaggle,
@@ -147,6 +189,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		Memory:         input.Placement.Memory,
 		Disk:           input.Placement.Disk,
 		Restrictions:   input.Placement.Restrictions,
+	}
+	if input.Run != nil {
+		attempt.Command = input.Run.Command
+		attempt.Script = input.Run.Script
+		attempt.Env = input.Run.Env
 	}
 	if input.Envelope.Limits.MaxDurationSeconds > 0 {
 		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second

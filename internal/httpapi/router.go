@@ -129,9 +129,11 @@ func IsPodPrincipal(principal Principal) bool {
 // stage pods). The journal plane is the third pod-reachable plane; it carries
 // a run-id segment and is matched structurally by journalPlanePath. The blob
 // plane is the fourth; it carries a digest segment and is matched
-// structurally by blobPlanePath. Everything else (reads, triggers, HITL,
-// interventions) stays human-only: a stage pod has no business resolving
-// escalations or minting runs.
+// structurally by blobPlanePath. The surrender plane is the fifth; it
+// carries run/stage/attempt segments and is matched structurally by
+// surrenderPlanePath. Everything else (reads, triggers, HITL, interventions)
+// stays human-only: a stage pod has no business resolving escalations or
+// minting runs.
 func podPlanePath(path string) bool {
 	switch path {
 	case apicontract.ClaimAcquirePath,
@@ -176,6 +178,27 @@ func blobPlanePath(path string) bool {
 	return strings.HasPrefix(path, blobDigestPrefix) && len(path) > len(blobDigestPrefix)
 }
 
+// surrenderPlanePath reports whether path is the surrender plane's PUT route
+// (#3699) — the fifth pod-reachable plane. Matched structurally, like the
+// journal plane, because the route carries run/stage/attempt segments; which
+// run the pod may surrender into is enforced by the handler, exactly as the
+// journal plane enforces it.
+func surrenderPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	segments := strings.Split(rest, "/")
+	if len(segments) != 6 {
+		return false
+	}
+	run, stagesLiteral, stage, attemptsLiteral, attempt, suffix := segments[0], segments[1], segments[2], segments[3], segments[4], segments[5]
+	if stagesLiteral != "stages" || attemptsLiteral != "attempts" || suffix != "surrender" {
+		return false
+	}
+	return run != "" && stage != "" && attempt != ""
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
@@ -184,14 +207,15 @@ func blobPlanePath(path string) bool {
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
 // to the pod planes (claims + credential resolve + journal emit + blob
-// get/put): their token proves "I am run X's stage pod", which authorizes
-// ledger operations, credential resolution, journal emission, and blob
-// transfer for that run and nothing else. Per-run containment (the request
-// body's runId, or the path run id for the journal plane, matching the pod's
-// run) is enforced by the plane handlers, which can see the request — the
-// credential and blob handlers additionally refuse human principals outright
-// (DS9: those planes serve stage pods only; the blob plane's digest carries
-// no run to compare against).
+// get/put + surrender put): their token proves "I am run X's stage pod",
+// which authorizes ledger operations, credential resolution, journal
+// emission, blob transfer, and result surrender for that run and nothing
+// else. Per-run containment (the request body's runId, or the path run id
+// for the journal and surrender planes, matching the pod's run) is enforced
+// by the plane handlers, which can see the request — the credential and blob
+// handlers additionally refuse human principals outright (DS9: those planes
+// serve stage pods only; the blob plane's digest carries no run to compare
+// against).
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -199,13 +223,13 @@ func RequireRoles() Authorizer {
 			return errors.New("no authenticated principal")
 		}
 		if IsPodPrincipal(principal) {
-			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
+			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path) || surrenderPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
 				return nil
 			}
 			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
 				return nil
 			}
-			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, and blob planes", principal.Subject)
+			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, and surrender planes", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -285,6 +309,7 @@ type handlerConfig struct {
 	journal             JournalService
 	credentials         CredentialService
 	blobs               blobstore.Store
+	surrenders          SurrenderService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -585,6 +610,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	registerSurrenderPlaneRoutes(router, config, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {
