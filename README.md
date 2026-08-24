@@ -218,6 +218,7 @@ the differences relevant to your environment:
 - [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
 - [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
+- [Move a local instance to another machine](docs/guides/move-local-instance.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)
 - [External telemetry connectors](docs/guides/external-telemetry-connectors.md)

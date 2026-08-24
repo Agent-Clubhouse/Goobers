@@ -68,6 +68,9 @@ remove it immediately). After updating the configuration and restarting, verify
 the new checkouts, then remove the backup. Do not copy managed checkouts into
 the new root because Git worktree metadata may contain the old absolute path.
 Leaving the old directory in place is safe but continues to consume disk space.
+For a complete host cutover, including journals, scheduler state, telemetry,
+credentials, and split-brain prevention, follow
+[Move a local instance to another machine](move-local-instance.md).
 
 Before creating a checkout, Goobers measures the deepest tracked path and
 refuses it when the worktree prefix plus that path exceeds the repository's
