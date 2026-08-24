@@ -359,6 +359,18 @@ type APIConfig struct {
 	// Auth replaces the tier-1 null authenticator (SEC-043). Required for a
 	// non-loopback listen address.
 	Auth *APIAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// PodTokenKeyFile is a path to shared key material for STATELESS pod
+	// tokens (Goobers#3701). Set it when the mode-3 dispatcher runs in a
+	// different process from the daemon — the split `goobers up` /
+	// `goobers worker --dispatch-namespace` deployment — because the
+	// in-memory token registry is daemon-local and a token minted in the
+	// worker cannot otherwise be verified by the daemon receiving the
+	// surrender.
+	//
+	// Path only; key material never appears in instance.yaml (CFG-009).
+	// Unset keeps the in-memory registry, which is correct whenever daemon
+	// and dispatcher share a process.
+	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.

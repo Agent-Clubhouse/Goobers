@@ -8,9 +8,11 @@ package main
 // ServiceAccount, or the standard kubeconfig loading rules outside a pod).
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -95,8 +98,28 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
+	// The dispatcher runs HERE, in the worker — a different process from the
+	// daemon that will receive the surrender. So the pod's bearer must be
+	// verifiable without shared memory: a configured shared key gives
+	// stateless signed tokens (Goobers#3701). Without one, PodToken stays
+	// empty and the pod surrenders unauthenticated, which only works against
+	// a null-auth loopback daemon in the same process.
+	var minter dispatcher.TokenMinter
+	if path := strings.TrimSpace(cfg.API.PodTokenKeyFile); path != "" {
+		key, kerr := os.ReadFile(path)
+		if kerr != nil {
+			return stageDispatch{}, fmt.Errorf("stage dispatch: read pod token key %s: %w", path, kerr)
+		}
+		signed, kerr := podauth.NewSignedKey(bytes.TrimSpace(key))
+		if kerr != nil {
+			return stageDispatch{}, fmt.Errorf("stage dispatch: %w", kerr)
+		}
+		minter = signed
+	}
+
 	build := version.Get()
 	d, err := dispatcher.New(dispatcher.Config{
+		TokenMinter:     minter,
 		Namespace:       namespace,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
