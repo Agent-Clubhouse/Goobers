@@ -446,6 +446,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
 		ReadModel:      setup.ReadModel,
+		RetentionStats: setup.RetentionStats,
 		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)

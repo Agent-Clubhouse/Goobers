@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -741,6 +742,7 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 			t.Fatal(err)
 		}
 	}
+
 	if err := genuine.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -824,6 +826,93 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].ID != "healthy-run" {
 		t.Fatalf("ListStatusRuns = %+v, want only healthy-run", runs)
+	}
+}
+
+func TestSchedulerStatusRetentionDefaultsAndOptOut(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	cfgDefault := &instance.Config{}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      cfgDefault,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil || status.Retention.Window != instance.DefaultProjectionFullFidelityDays {
+		t.Fatalf("default retention status = %+v, want window %d", status.Retention, instance.DefaultProjectionFullFidelityDays)
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, instance.ConfigFileName)
+	if err := os.WriteFile(path, []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  projectionFullFidelityDays: 0
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgOptOut, err := instance.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	optOutService, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      cfgOptOut,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = optOutService.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil || status.Retention.Window != 0 {
+		t.Fatalf("opt-out retention status = %+v, want window 0", status.Retention)
+	}
+}
+
+func TestSchedulerStatusProjectsRetentionLoopDiagnostics(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	lastPassAt := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      &instance.Config{},
+		Definitions: testDefinitions(),
+		RetentionStats: func() readmodel.RetentionStats {
+			return readmodel.RetentionStats{
+				Passes:     7,
+				AgedOut:    3,
+				LastPassAt: lastPassAt,
+			}
+		},
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil ||
+		status.Retention.Passes != 7 ||
+		status.Retention.AgedOut != 3 ||
+		status.Retention.LastPassAt == nil ||
+		!status.Retention.LastPassAt.Equal(lastPassAt) {
+		t.Fatalf("retention diagnostics = %+v, want passes/agedOut/lastPassAt projected", status.Retention)
 	}
 }
 

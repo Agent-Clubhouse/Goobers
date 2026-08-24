@@ -45,8 +45,7 @@ type RetentionWindow struct {
 
 // UnboundedRetention keeps every run individually listable forever.
 //
-// Also the correct default for an instance that has not opted in, so the
-// mechanism ships inert and is switched on deliberately.
+// This is the opt-out state selected by an explicit non-positive day value.
 func UnboundedRetention() RetentionWindow { return RetentionWindow{days: 0} }
 
 // RetentionDays builds a window from a configured day count.
