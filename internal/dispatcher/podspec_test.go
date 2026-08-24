@@ -423,6 +423,7 @@ func TestRenderPodEnvContract(t *testing.T) {
 		EnvBlobEndpoint: "http://goobers-api.goobers-system:7777",
 		EnvDaemonAPI:    "http://goobers-api.goobers-system:7777",
 		EnvPodToken:     "goobers-pod.tok",
+		EnvStageTimeout: DefaultStageTimeout.String(),
 	} {
 		if env[name] != want {
 			t.Errorf("env %s = %q, want %q", name, env[name], want)
@@ -433,6 +434,111 @@ func TestRenderPodEnvContract(t *testing.T) {
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Errorf("restartPolicy = %q, want Never (one attempt per pod)", pod.Spec.RestartPolicy)
+	}
+}
+
+// #3699: a rendered pod must run the authored stage, not the image's own
+// ENTRYPOINT/CMD — this is the core assertion the bug's absence of a test
+// let slip through originally.
+func TestRenderPodExecutesTheAuthoredStage(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	container := pod.Spec.Containers[0]
+	if len(container.Command) != 1 || container.Command[0] != "goobers" {
+		t.Fatalf("container.Command = %v, want [\"goobers\"]", container.Command)
+	}
+	if len(container.Args) != 1 || container.Args[0] != DispatchExecCommand {
+		t.Fatalf("container.Args = %v, want [%q]", container.Args, DispatchExecCommand)
+	}
+}
+
+// GOOBERS_STAGE_COMMAND/GOOBERS_STAGE_SCRIPT carry whichever of
+// Attempt.Command/Script is set (mutually exclusive, mirroring
+// DeterministicRun), and Attempt.Env entries land as their own EnvVars.
+func TestRenderPodStampsCommandScriptAndEnv(t *testing.T) {
+	withCommand := testAttempt()
+	withCommand.Command = []string{"make", "ci"}
+	withCommand.Env = map[string]string{"GOOBERS_PROBE_TARGET": "8.8.8.8", "GOOBERS_PROBE_MODE": "egress"}
+	pod, err := RenderPod(testConfig(), withCommand, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if want := `["make","ci"]`; env[EnvStageCommand] != want {
+		t.Errorf("%s = %q, want %q", EnvStageCommand, env[EnvStageCommand], want)
+	}
+	if _, ok := env[EnvStageScript]; ok {
+		t.Errorf("%s must be absent when Command is set", EnvStageScript)
+	}
+	if env["GOOBERS_PROBE_TARGET"] != "8.8.8.8" || env["GOOBERS_PROBE_MODE"] != "egress" {
+		t.Errorf("Attempt.Env did not land verbatim: %+v", env)
+	}
+
+	withScript := testAttempt()
+	withScript.Script = "curl -sf https://example.invalid"
+	pod, err = RenderPod(testConfig(), withScript, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env = map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env[EnvStageScript] != withScript.Script {
+		t.Errorf("%s = %q, want %q", EnvStageScript, env[EnvStageScript], withScript.Script)
+	}
+	if _, ok := env[EnvStageCommand]; ok {
+		t.Errorf("%s must be absent when Script is set", EnvStageCommand)
+	}
+
+	// The baseline fixture declares neither: both stay absent rather than
+	// stamping an empty/null placeholder.
+	pod, err = RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == EnvStageCommand || e.Name == EnvStageScript {
+			t.Errorf("unexpected %s on a Command/Script-less attempt", e.Name)
+		}
+	}
+}
+
+// RenderFromTemplate must run the authored stage too (#3699): the disposal
+// gate's surrender requirement is uniform across host kinds, so the
+// template's own ENTRYPOINT/CMD is overridden the same way RenderPod's fresh
+// container is built, exactly like the dispatcher-owned labels already are.
+func TestRenderFromTemplateExecutesTheAuthoredStage(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "consumer-template"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:    "stage",
+						Image:   "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+						Command: []string{"/bin/sh"},
+						Args:    []string{"-c", "sleep infinity"},
+					}},
+				},
+			},
+		},
+	}
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), linuxRunner(), deployment)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	container := pod.Spec.Containers[0]
+	if len(container.Command) != 1 || container.Command[0] != "goobers" {
+		t.Fatalf("template container.Command = %v, want [\"goobers\"] (dispatcher-owned, not the template's)", container.Command)
+	}
+	if len(container.Args) != 1 || container.Args[0] != DispatchExecCommand {
+		t.Fatalf("template container.Args = %v, want [%q]", container.Args, DispatchExecCommand)
 	}
 }
 

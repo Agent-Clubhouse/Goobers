@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -537,6 +538,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize blob store: %v\n", err)
 		return 1
 	}
+	// The surrender plane (#3699) rides beside the blob store, under the same
+	// instance-local root — the "<blob-store>/surrender" convention
+	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
+	// and constructs identically from its own --blob-store flag. When an
+	// operator points a mode-3 `goobers worker --dispatch-namespace` at this
+	// daemon's blob-store volume (the documented --dispatch-namespace
+	// requirement), the two independently-built SurrenderDirs resolve to the
+	// identical path and interoperate: the worker's activity reads what a
+	// stage pod PUT here over HTTP. Wired unconditionally, like the blob
+	// plane above — inert without a caller, and the surrender route's own
+	// pod-principal gate (registerSurrenderPlaneRoutes) refuses everyone
+	// else.
+	surrenderStore, err := dispatcher.NewSurrenderDir(filepath.Join(l.BlobStoreDir(), "surrender"))
+	if err != nil {
+		pf(stderr, "error: initialize surrender plane: %v\n", err)
+		return 1
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
@@ -545,6 +563,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
+		httpapi.WithSurrenderService(surrenderStore),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal

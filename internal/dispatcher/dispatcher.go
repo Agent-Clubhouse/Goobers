@@ -174,6 +174,14 @@ type Attempt struct {
 	// PodToken is the per-run bearer (internal/podauth) minted at dispatch,
 	// delivered to the pod as GOOBERS_POD_TOKEN.
 	PodToken string
+	// Command, Script, and Env are the stage's DeterministicRun content
+	// (apiv1.DeterministicRun.Command/Script/Env), carried from the pinned
+	// workflow definition so the pod spec can stamp what the pod actually
+	// executes (#3699). Never both Command and Script set — the same
+	// exclusivity DeterministicRun itself enforces upstream.
+	Command []string
+	Script  string
+	Env     map[string]string
 	// ExtraLabels and ExtraAnnotations carry any workflow/gaggle/stage
 	// -supplied pod metadata. Keys in the goobers.dev/ namespace are REFUSED
 	// at create (§3: the runner-class label is derived and non-overridable;

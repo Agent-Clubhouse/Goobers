@@ -74,6 +74,15 @@ const (
 	// dispatch time.
 	CredentialResolvePath = V1Prefix + "/credentials/resolve"
 
+	// RunStageSurrenderPath is the surrender plane's write route (#3699): a
+	// mode-3 stage pod's dispatch-exec entrypoint PUTs its SurrenderedResult
+	// (ResultEnvelope + mutation facts) here before exiting, identity-keyed
+	// by run/stage/attempt rather than content-addressed — the same reason
+	// it cannot ride the blob plane below (dispatcher.SurrenderPlane's own
+	// doc comment). Stage pods are the only intended callers, authenticated
+	// as their own run like the credential and journal planes.
+	RunStageSurrenderPath = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
+
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
 	// BlobPathPrefix) fetches and puts content-addressed artifacts by sha256
@@ -121,6 +130,7 @@ const (
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
+	RouteStageSurrender    RouteID = "stageSurrender"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -255,6 +265,12 @@ var v1Routes = []Route{
 	// workflow-execution action class, but its budget is mint-bound rather
 	// than ledger-bound (see CredentialResolveBudget).
 	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
+
+	// The surrender plane (#3699) is a machine seam like journal/credential —
+	// a stage pod delivering its own terminal result — so it shares the
+	// workflow-execution action class and the standard mutation budget; the
+	// payload is a single small ResultEnvelope, not a mint or a stream.
+	{ID: RouteStageSurrender, Method: http.MethodPost, Path: RunStageSurrenderPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET

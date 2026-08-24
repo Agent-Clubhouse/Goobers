@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -53,6 +54,18 @@ const (
 	EnvDaemonAPI = "GOOBERS_DAEMON_API"
 	// EnvPodToken carries the per-run podauth bearer.
 	EnvPodToken = "GOOBERS_POD_TOKEN"
+	// EnvStageCommand carries the stage's DeterministicRun.Command as a JSON
+	// array, when set — the in-pod dispatch-exec entrypoint's argv (#3699).
+	EnvStageCommand = "GOOBERS_STAGE_COMMAND"
+	// EnvStageScript carries the stage's DeterministicRun.Script verbatim,
+	// when set.
+	EnvStageScript = "GOOBERS_STAGE_SCRIPT"
+	// EnvStageTimeout carries the stage's effective timeout (Go duration
+	// string) so dispatch-exec bounds the command the same way the local
+	// executor bounds it, independent of the pod's activeDeadlineSeconds
+	// backstop (which exists to reclaim an orphaned pod, not to time the
+	// stage itself).
+	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
 )
 
 // Workspace and temp paths — the base-image contract half of the mount
@@ -89,6 +102,17 @@ const (
 	// pods.
 	StageContainerName = "stage"
 )
+
+// DispatchExecCommand is the hidden goobers CLI entrypoint every
+// dispatcher-rendered pod's Command/Args invokes to actually run the
+// authored stage and surrender its result (#3699). It is a `__`-prefixed
+// name (cmd/goobers's established hidden-entrypoint convention, the same
+// shape as the detached run worker) — never DSL-authorable, never shown in
+// --help or generated docs. Defined here rather than in cmd/goobers so the
+// pod-spec side (this package) and the CLI-registration side agree on the
+// literal by construction instead of by matching string literals in two
+// files.
+const DispatchExecCommand = "__dispatch-exec"
 
 // LabelOverrideError is the §3 refuse-to-create: a workflow, gaggle, or stage
 // attempted to influence dispatcher-owned pod metadata (the
@@ -180,9 +204,11 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	class := restrictionSet(runner.Restrictions)
 
 	container := corev1.Container{
-		Name:  StageContainerName,
-		Image: runner.Host,
-		Env:   stageEnv(cfg, attempt),
+		Name:    StageContainerName,
+		Image:   runner.Host,
+		Command: []string{"goobers"},
+		Args:    []string{DispatchExecCommand},
+		Env:     stageEnv(cfg, attempt),
 	}
 
 	// Extra (non-goobers.dev) metadata merges FIRST; the dispatcher-owned
@@ -281,6 +307,14 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}
 
 	stage := &spec.Containers[0]
+	// Command/Args are dispatcher-owned in the template path too (#3699):
+	// the disposal gate's surrender requirement applies uniformly to every
+	// host kind, so whatever ENTRYPOINT/CMD the template's image declares is
+	// overridden the same way RenderPod's fresh container is built — a
+	// template controls sidecars/volumes/node selectors (DI-9), not whether
+	// its own stage container actually runs the authored stage.
+	stage.Command = []string{"goobers"}
+	stage.Args = []string{DispatchExecCommand}
 	stage.Env = append(stage.Env, stageEnv(cfg, attempt)...)
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
@@ -425,6 +459,21 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	if attempt.PodToken != "" {
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: attempt.PodToken})
+	}
+	if len(attempt.Command) > 0 {
+		// []string always marshals; a marshal failure here would mean the Go
+		// runtime itself is broken, not a data problem — ignoring the error
+		// is standard for this exact shape (encoding/json's own doc example
+		// does the same for json.Marshal([]string)).
+		encoded, _ := json.Marshal(attempt.Command)
+		env = append(env, corev1.EnvVar{Name: EnvStageCommand, Value: string(encoded)})
+	}
+	if attempt.Script != "" {
+		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: attempt.Script})
+	}
+	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
+	for _, key := range sortedKeys(attempt.Env) {
+		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
 	return env
 }
@@ -589,4 +638,16 @@ func copyStringMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// sortedKeys returns m's keys in sorted order, so a rendered pod's env list
+// (and any test asserting on it) is deterministic despite Go's randomized
+// map iteration.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

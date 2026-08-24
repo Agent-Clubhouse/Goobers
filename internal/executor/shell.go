@@ -224,22 +224,22 @@ func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*Sh
 	return &ShellExecutor{Injector: injector, Journal: rec}, nil
 }
 
-// stageInvokesGoobersCLI reports whether a stage's command is the goobers CLI
+// StageInvokesGoobersCLI reports whether a stage's command is the goobers CLI
 // itself (e.g. backlog-query/open-pr/ci-poll/issue-close-out) rather than an
 // external tool (make, go, git). It is the single discriminator for two
 // goobers-CLI-specific behaviors: substituting the daemon's own binary for the
 // bare "goobers" token (SelfBin, #229), and injecting the run's operational
 // identity into the stage env (#322). A stage that runs the project's own
 // build/test suite (`make ci`) is not a goobers-CLI stage on either axis.
-func stageInvokesGoobersCLI(command []string) bool {
+func StageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
 }
 
-// stageInvokesProviderBuiltin narrows transient stderr classification to the
+// StageInvokesProviderBuiltin narrows transient stderr classification to the
 // built-in stages that call a provider. Other goobers subcommands can fail
 // with similar words but have separate retry contracts.
-func stageInvokesProviderBuiltin(command []string) bool {
-	if !stageInvokesGoobersCLI(command) || len(command) < 2 {
+func StageInvokesProviderBuiltin(command []string) bool {
+	if !StageInvokesGoobersCLI(command) || len(command) < 2 {
 		return false
 	}
 	_, ok := ProviderStageResultFile(command[1])
@@ -290,7 +290,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// fail-closed misconfiguration error an unset workspace should be.
 		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
 	}
-	command, commandEnv, cleanup, err := deterministicCommand(run)
+	command, commandEnv, cleanup, err := DeterministicCommand(run)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -305,7 +305,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	resultFile := stringInput(env, InputResultFile)
 	implicitResultFile := ""
-	if resultFile == "" && stageInvokesGoobersCLI(command) && len(command) > 1 {
+	if resultFile == "" && StageInvokesGoobersCLI(command) && len(command) > 1 {
 		if defaultResultFile, ok := ProviderStageResultFile(command[1]); ok {
 			resultFile = defaultResultFile
 			implicitResultFile = defaultResultFile
@@ -320,7 +320,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// run env leaks into its own test suite (#322). This is the same
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
-	injectRunContext := stageInvokesGoobersCLI(command)
+	injectRunContext := StageInvokesGoobersCLI(command)
 	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
 	for key, value := range e.DefaultEnv {
 		declaredEnv[key] = value
@@ -382,7 +382,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// the worktree — so it fails at exec (#229). SelfBin is byte-identical to the
 	// running daemon, avoiding version skew.
 	name := command[0]
-	if e.SelfBin != "" && stageInvokesGoobersCLI(command) {
+	if e.SelfBin != "" && StageInvokesGoobersCLI(command) {
 		name = e.SelfBin
 	}
 	invokeName, invokeArgs := commandInvocation(name, command[1:])
@@ -546,7 +546,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if timedOut {
-		if stageInvokesProviderBuiltin(command) {
+		if StageInvokesProviderBuiltin(command) {
 			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
 				command[1], timeout, context.DeadlineExceeded,
@@ -606,7 +606,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	if exitCode != 0 && stageInvokesProviderBuiltin(command) {
+	if exitCode != 0 && StageInvokesProviderBuiltin(command) {
 		// #control precedence ruling (2026-07-17, the #613/#711/#712
 		// chokepoint): a provider-builtin stage that got far enough to
 		// self-report structurally via its declared result file
@@ -623,7 +623,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			if full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile); perr == nil {
 				if data, rerr := os.ReadFile(full); rerr == nil {
 					ref, aerr := e.recordResultArtifact(
-						env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+						env.TaskID+"/result", scrubber.Scrub(data), StageInvokesProviderBuiltin(command),
 					)
 					if aerr != nil {
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
@@ -686,7 +686,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			switch {
 			case rerr == nil:
 				ref, aerr := e.recordResultArtifact(
-					env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+					env.TaskID+"/result", scrubber.Scrub(data), StageInvokesProviderBuiltin(command),
 				)
 				if aerr != nil {
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)

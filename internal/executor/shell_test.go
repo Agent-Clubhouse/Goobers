@@ -970,7 +970,7 @@ func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 			exec, rec := newTestExecutor(t, nil)
 			ref, err := exec.recordResultArtifact(
 				"task-1/result", []byte(test.data),
-				stageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
+				StageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
 			)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {

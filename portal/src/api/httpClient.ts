@@ -97,6 +97,11 @@ const clientRoutes = {
   // check requires the full contract here as it grows.
   blobGet: apiRoutes.blobGet,
   blobPut: apiRoutes.blobPut,
+  // The surrender plane (#3699): a mode-3 stage pod's dispatch-exec
+  // entrypoint PUTs its terminal result here. Pod-only, like the credential
+  // and blob planes — the portal never calls this and never will — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  stageSurrender: apiRoutes.stageSurrender,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
