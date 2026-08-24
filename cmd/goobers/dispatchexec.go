@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/signals"
 )
 
@@ -113,14 +114,42 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	cmd.Stdout = io.MultiWriter(stdout, capturedStdout)
 	cmd.Stderr = io.MultiWriter(stderr, capturedStderr)
 
-	runErr := cmd.Run()
+	// proc.Start + a tree-kill on timeout (not exec.CommandContext, whose
+	// context-cancel path only reaches the direct child): the declared
+	// command commonly runs through an intermediate shell ("sh -c ..."), and
+	// only a whole-process-tree kill reliably reclaims a timed-out stage
+	// regardless of how many processes it spawned or whether the shell
+	// happened to exec-replace itself for a trivial script. Mirrors
+	// internal/executor/shell.go's exact pattern, minus its SIGQUIT
+	// diagnostics dump — a v1 in-pod stage has no journal to record a
+	// goroutine-trace artifact against.
+	tree, startErr := proc.Start(cmd)
+	if startErr != nil {
+		return failureEnvelope("exec_start", startErr.Error())
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	var runErr error
+	timedOut := false
+	select {
+	case runErr = <-waitDone:
+	case <-runCtx.Done():
+		// Fires for either the declared timeout or the outer signal-context
+		// being canceled (SIGTERM to the pod) — both cases mean the stage
+		// must not be reported as having quietly succeeded.
+		timedOut = true
+		_ = tree.Kill()
+		runErr = <-waitDone
+	}
+
 	outputs := map[string]interface{}{}
 	if capturedStdout.Len() > 0 {
 		outputs["stdout"] = capturedStdout.String()
@@ -128,17 +157,24 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	if capturedStderr.Len() > 0 {
 		outputs["stderr"] = capturedStderr.String()
 	}
-	if runErr == nil {
+	if runErr == nil && !timedOut {
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs}
 	}
 
-	code, message := "stage_failed", runErr.Error()
-	var exitErr *exec.ExitError
-	if errors.As(runErr, &exitErr) {
-		message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), capturedStderr.String())
+	code, message := "stage_failed", "stage exited with an error"
+	if runErr != nil {
+		message = runErr.Error()
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), capturedStderr.String())
+		}
 	}
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		code, message = "stage_timeout", fmt.Sprintf("stage exceeded its %s timeout", timeout)
+	if timedOut {
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			code, message = "stage_timeout", fmt.Sprintf("stage exceeded its %s timeout", timeout)
+		} else {
+			code, message = "stage_interrupted", "dispatch-exec was interrupted before the stage finished"
+		}
 	}
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
