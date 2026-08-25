@@ -54,10 +54,18 @@ func (c APIConfig) validate(address string) error {
 			return fmt.Errorf("api.auth.oidc: %w", err)
 		}
 	}
-	if !isLoopbackHost(host) && (c.TLS == nil || c.Auth == nil) {
+	// Off-loopback requires ENCRYPTION unconditionally, and an AUTHENTICATOR —
+	// but OIDC is not the only way to have one. Since #3702 a daemon with no
+	// human API surface serves the pod plane behind podauth chained in front of
+	// DenyAllAuthenticator, which never admits an unauthenticated request. The
+	// guard's intent (SEC-043/#640: nothing unauthenticated off-loopback) is
+	// preserved; requiring OIDC specifically made the MOST restrictive posture
+	// the only one that could not be expressed, since an operator wanting zero
+	// human access had to stand up an issuer to get it.
+	if !isLoopbackHost(host) && c.TLS == nil {
 		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
-			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
-			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
+			"api.tls (certFile + keyFile) so the listener is encrypted; there is no insecure override — "+
+			"bind a loopback address instead (SEC-043, #640)", host)
 	}
 	return nil
 }
