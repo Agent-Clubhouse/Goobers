@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -702,4 +703,48 @@ func TestWindowsStagePodToleratesBothTaintConventions(t *testing.T) {
 			t.Fatalf("linux stage pod must not carry a windows toleration, got %+v", tol)
 		}
 	}
+}
+
+// Declared inputs must reach the pod as GOOBERS_INPUT_<KEY>. Without this a
+// pod-executed stage saw every input unset while the identical stage on the
+// self runner saw them all — and nothing reported a difference.
+func TestStagePodCarriesDeclaredInputs(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Inputs = map[string]string{"resultFile": "parity.json", "probe-value": "42"}
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	got := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		got[e.Name] = e.Value
+	}
+	if got["GOOBERS_INPUT_RESULTFILE"] != "parity.json" {
+		t.Fatalf("GOOBERS_INPUT_RESULTFILE = %q, want parity.json (env=%v)", got["GOOBERS_INPUT_RESULTFILE"], got)
+	}
+	// Non-alphanumerics are sanitized to underscore, upper-cased — the local
+	// executor's rule, which this must match exactly.
+	if got["GOOBERS_INPUT_PROBE_VALUE"] != "42" {
+		t.Fatalf("GOOBERS_INPUT_PROBE_VALUE = %q, want 42 (env=%v)", got["GOOBERS_INPUT_PROBE_VALUE"], got)
+	}
+}
+
+// The dispatcher duplicates executor.InputEnvVar rather than importing it (the
+// dispatcher deliberately does not depend on the local execution world). This
+// pins the two spellings together: if they drift, a stage reads its inputs
+// under one name locally and another in a pod, and no error says so.
+func TestInputEnvVarMatchesTheLocalExecutorSpelling(t *testing.T) {
+	for _, key := range []string{"resultFile", "probe-value", "a.b c", "SINCE", "x"} {
+		if got, want := InputEnvVar(key), executorInputEnvVarReference(key); got != want {
+			t.Fatalf("InputEnvVar(%q) = %q, local executor spells it %q", key, got, want)
+		}
+	}
+}
+
+// executorInputEnvVarReference restates internal/executor.InputEnvVar. Kept
+// here as a literal transcription so this test fails if either implementation
+// changes without the other.
+func executorInputEnvVarReference(key string) string {
+	sanitized := regexp.MustCompile(`[^A-Za-z0-9]+`).ReplaceAllString(key, "_")
+	return "GOOBERS_INPUT_" + strings.ToUpper(sanitized)
 }

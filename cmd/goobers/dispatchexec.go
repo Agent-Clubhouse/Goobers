@@ -157,6 +157,41 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	if capturedStderr.Len() > 0 {
 		outputs["stderr"] = capturedStderr.String()
 	}
+	// Lift the declared result file into Outputs, exactly as the local
+	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
+	// so a gate reading an output key finds nothing and evaluates its FAILURE
+	// branch — measured on a live cluster: a stage emitted {"verdict":"pass"},
+	// the gate read no `verdict` key, and the run took the fail path three
+	// times before exhausting its repass budget. The run "completed" with the
+	// wrong control flow and nothing reported an error.
+	resultFile := os.Getenv(dispatcher.InputEnvVar("resultFile"))
+	if resultFile != "" {
+		data, rerr := os.ReadFile(resultFile)
+		switch {
+		case rerr == nil:
+			mergeResultFileOutputs(outputs, data)
+		case os.IsNotExist(rerr) && runErr == nil && !timedOut:
+			// A stage that succeeded but did not write its declared result
+			// file is a FAILURE, same as locally: the declaration is a
+			// contract, and honouring the exit code alone would report a
+			// success whose outputs the workflow cannot read.
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Outputs: outputs,
+				Error: &apiv1.ErrorInfo{
+					Code:    "missing_result_file",
+					Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", resultFile),
+				},
+			}
+		case rerr != nil && !os.IsNotExist(rerr):
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Outputs: outputs,
+				Error:   &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
+			}
+		}
+	}
+
 	if runErr == nil && !timedOut {
 		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs}
 	}
@@ -208,3 +243,21 @@ func (b *boundedCapture) Write(p []byte) (int, error) {
 func (b *boundedCapture) Len() int { return len(b.buf) }
 
 func (b *boundedCapture) String() string { return string(b.buf) }
+
+// mergeResultFileOutputs merges a stage's declared result file into Outputs.
+// Mirrors executor.mergeResultFileOutputs deliberately, INCLUDING its rules:
+// invalid JSON is ignored rather than failing the stage, and only scalar
+// values are lifted. Any divergence here reappears as a gate that evaluates
+// differently depending on which substrate ran the stage.
+func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return
+	}
+	for key, value := range parsed {
+		switch value.(type) {
+		case string, float64, bool:
+			outputs[key] = value
+		}
+	}
+}

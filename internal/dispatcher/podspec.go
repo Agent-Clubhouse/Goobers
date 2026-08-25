@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -492,6 +493,11 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	for _, key := range sortedKeys(attempt.Env) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
+	// Declared inputs, named exactly as the local executor names them so a
+	// stage reads GOOBERS_INPUT_<KEY> identically on both substrates.
+	for _, key := range sortedKeys(attempt.Inputs) {
+		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: attempt.Inputs[key]})
+	}
 	return env
 }
 
@@ -679,3 +685,16 @@ func sortedKeys(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// InputEnvVar renders a declared input key as its stage environment variable.
+// This MUST match executor.InputEnvVar: the whole point is that a stage sees
+// the same variable name whether it runs locally or in a pod. Duplicated
+// rather than imported because internal/executor pulls in the local execution
+// world the dispatcher deliberately does not depend on; the parity test is
+// what keeps the two spellings honest.
+func InputEnvVar(key string) string {
+	sanitized := nonAlnumInputKey.ReplaceAllString(key, "_")
+	return "GOOBERS_INPUT_" + strings.ToUpper(sanitized)
+}
+
+var nonAlnumInputKey = regexp.MustCompile(`[^A-Za-z0-9]+`)

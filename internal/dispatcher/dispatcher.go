@@ -189,6 +189,17 @@ type Attempt struct {
 	Command []string
 	Script  string
 	Env     map[string]string
+
+	// Inputs is the stage's declared inputs (apiv1.InvocationEnvelope.Inputs),
+	// rendered to strings. The dispatcher stamps them as GOOBERS_INPUT_<KEY>
+	// exactly as the local executor does, so a stage reads its inputs the same
+	// way on both substrates — and so the in-pod executor can find the
+	// declared resultFile, which it must lift into Outputs.
+	//
+	// Without this a pod-executed stage saw EVERY declared input as unset and
+	// surrendered stdout instead of its result file, which silently changed
+	// gate outcomes rather than failing (Goobers#3699 v1 cut).
+	Inputs map[string]string
 	// ExtraLabels and ExtraAnnotations carry any workflow/gaggle/stage
 	// -supplied pod metadata. Keys in the goobers.dev/ namespace are REFUSED
 	// at create (§3: the runner-class label is derived and non-overridable;
