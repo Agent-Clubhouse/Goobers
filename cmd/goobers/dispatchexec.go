@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/signals"
 )
@@ -177,12 +179,23 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		registry.Register([]byte(cred.Value))
 	}
 	outputs := map[string]interface{}{}
+	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
+	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))
 	if capturedStdout.Len() > 0 {
-		outputs["stdout"] = string(scrubber.Scrub([]byte(capturedStdout.String())))
+		outputs["stdout"] = string(scrubbedOut)
 	}
 	if capturedStderr.Len() > 0 {
-		outputs["stderr"] = string(scrubber.Scrub([]byte(capturedStderr.String())))
+		outputs["stderr"] = string(scrubbedErr)
 	}
+	// Record the stage's streams as artifacts through the daemon's journal
+	// plane, as the local executor does. Best-effort BY DESIGN: the stage has
+	// already run, and its ResultEnvelope is the authoritative outcome — losing
+	// a log artifact must not turn a completed stage into a failure. Failures
+	// are surfaced on stderr so they are visible rather than silent.
+	recordStageArtifacts(ctx, stderr, map[string][]byte{
+		"stdout.log": scrubbedOut,
+		"stderr.log": scrubbedErr,
+	})
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
 	// so a gate reading an output key finds nothing and evaluates its FAILURE
@@ -361,4 +374,55 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 		Token:   os.Getenv(dispatcher.EnvPodToken),
 	}
 	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+}
+
+// recordStageArtifacts writes the stage's streams into the run journal through
+// the daemon's journal plane. The pod has no local journal — the plane is the
+// only path — and this is what makes a pod-executed stage's output inspectable
+// after the pod is disposed, which is the whole point of a fresh-per-attempt
+// substrate.
+func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) {
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	runID := os.Getenv(dispatcher.EnvRunID)
+	stage := os.Getenv(dispatcher.EnvStage)
+	if daemonAPI == "" || runID == "" || stage == "" {
+		return
+	}
+	attempt, err := strconv.Atoi(os.Getenv(dispatcher.EnvAttempt))
+	if err != nil || attempt < 1 {
+		attempt = 1
+	}
+	names := make([]string, 0, len(streams))
+	for name := range streams {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic op order; the daemon assigns sequence
+	ops := make([]livejournal.Op, 0, len(names))
+	for _, name := range names {
+		data := streams[name]
+		if len(data) == 0 {
+			continue
+		}
+		ops = append(ops, livejournal.Op{
+			Kind: livejournal.OpArtifact,
+			Key:  stage + "/" + name,
+			Artifact: &livejournal.ArtifactOp{
+				Stage:   stage,
+				Attempt: attempt,
+				Name:    stage + "/" + name,
+				Data:    data,
+			},
+		})
+	}
+	if len(ops) == 0 {
+		return
+	}
+	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
+	if _, err := emitter.Emit(ctx, livejournal.EmitRequest{
+		RunID:  runID,
+		Gaggle: os.Getenv(dispatcher.EnvGaggle),
+		Ops:    ops,
+	}); err != nil {
+		_, _ = fmt.Fprintf(stderr, "dispatch-exec: record stage artifacts: %v\n", err)
+	}
 }
