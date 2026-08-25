@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -195,6 +197,17 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		attempt.Script = input.Run.Script
 		attempt.Env = input.Run.Env
 	}
+	// Declared inputs travel to the pod so the stage reads GOOBERS_INPUT_<KEY>
+	// exactly as it would locally, and so the in-pod executor can find the
+	// declared resultFile it must lift into Outputs.
+	if len(input.Envelope.Inputs) > 0 {
+		attempt.Inputs = make(map[string]string, len(input.Envelope.Inputs))
+		for key, value := range input.Envelope.Inputs {
+			if rendered, ok := renderInputValue(value); ok {
+				attempt.Inputs[key] = rendered
+			}
+		}
+	}
 	if input.Envelope.Limits.MaxDurationSeconds > 0 {
 		attempt.Timeout = time.Duration(input.Envelope.Limits.MaxDurationSeconds) * time.Second
 	}
@@ -285,4 +298,31 @@ func classifyDispatchError(err error) error {
 		return classifySeamError(err)
 	}
 	return classifySeamError(invoke.InfrastructureFailure(err))
+}
+
+// renderInputValue flattens a declared input to its stage-environment string.
+// Scalars render; structured values do NOT — a map or slice has no faithful
+// single-variable spelling, and inventing one (JSON, comma-joined) would make
+// the pod disagree with the local executor in a way no error would report.
+// Skipping is the honest choice: the variable is absent rather than wrong.
+func renderInputValue(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case bool:
+		return strconv.FormatBool(typed), true
+	case int:
+		return strconv.Itoa(typed), true
+	case int64:
+		return strconv.FormatInt(typed, 10), true
+	case float64:
+		// JSON numbers decode as float64; render integers without a ".0" tail
+		// so a declared 30 does not reach the stage as "30".
+		if typed == math.Trunc(typed) && math.Abs(typed) < 1e15 {
+			return strconv.FormatInt(int64(typed), 10), true
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64), true
+	default:
+		return "", false
+	}
 }

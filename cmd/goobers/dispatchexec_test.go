@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -216,5 +218,48 @@ func TestRunDispatchExecContextFailsClosedWithoutIdentity(t *testing.T) {
 				t.Fatal("the stage must not run at all when there is no identity to surrender under")
 			}
 		})
+	}
+}
+
+// The measured defect this fixes: a stage emitted {"verdict":"pass"} into its
+// declared result file, the pod surrendered only stdout, and a gate reading the
+// `verdict` output key took its FAILURE branch — three times — while the run
+// reported completed. Outputs must carry the result file's scalars.
+func TestDispatchExecLiftsResultFileIntoOutputs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "r.json"), []byte(`{"verdict":"pass","count":3,"ok":true,"nested":{"x":1}}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	outputs := map[string]interface{}{"stdout": "ignored"}
+	data, err := os.ReadFile(filepath.Join(dir, "r.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	mergeResultFileOutputs(outputs, data)
+
+	if outputs["verdict"] != "pass" {
+		t.Fatalf("verdict = %v, want pass — a gate reading this key is the reason it matters", outputs["verdict"])
+	}
+	if outputs["count"] != float64(3) || outputs["ok"] != true {
+		t.Fatalf("scalars not lifted: %v", outputs)
+	}
+	// Structured values are NOT lifted — the local executor lifts only
+	// scalars, and diverging here would change gate behaviour by substrate.
+	if _, present := outputs["nested"]; present {
+		t.Fatalf("nested object must not be lifted (local executor lifts scalars only): %v", outputs)
+	}
+	if outputs["stdout"] != "ignored" {
+		t.Fatalf("existing outputs must survive the merge: %v", outputs)
+	}
+}
+
+// Invalid JSON is ignored rather than failing the stage — matching the local
+// executor. A stage that writes a non-JSON result file still reports its own
+// exit status.
+func TestDispatchExecIgnoresUnparseableResultFile(t *testing.T) {
+	outputs := map[string]interface{}{}
+	mergeResultFileOutputs(outputs, []byte("not json at all"))
+	if len(outputs) != 0 {
+		t.Fatalf("unparseable result file must contribute nothing, got %v", outputs)
 	}
 }
