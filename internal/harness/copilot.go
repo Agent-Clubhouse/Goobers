@@ -635,7 +635,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	if err := os.MkdirAll(filepath.Dir(debugPath), 0o755); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: prepare prompt dir: %w", err)
 	}
-	if err := os.WriteFile(debugPath, []byte(prompt), 0o644); err != nil {
+	if err := os.WriteFile(debugPath, []byte(prompt), 0o600); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: write prompt: %w", err)
 	}
 
