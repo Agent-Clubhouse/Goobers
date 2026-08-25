@@ -295,3 +295,72 @@ func TestStageEnvironmentDropsDispatcherControlPlane(t *testing.T) {
 		t.Fatalf("declared inputs must survive: %v", got)
 	}
 }
+
+// A pod is disposed after its attempt, so the journal plane is the ONLY way a
+// stage's output survives. Recording must be best-effort: the stage has run and
+// its ResultEnvelope is authoritative, so a journal failure must not turn a
+// completed stage into a failed one — but it must be visible on stderr, not
+// swallowed.
+func TestRecordStageArtifactsIsBestEffortAndVisible(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 4096)
+		n, _ := r.Body.Read(buf)
+		gotBody = string(buf[:n])
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvRunID, "run-7")
+	t.Setenv(dispatcher.EnvStage, "build")
+	t.Setenv(dispatcher.EnvAttempt, "2")
+	t.Setenv(dispatcher.EnvGaggle, "g")
+
+	var errOut strings.Builder
+	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{
+		"stdout.log": []byte("hello"),
+		"stderr.log": nil, // empty streams must not be recorded at all
+	})
+	if !strings.Contains(gotBody, "build/stdout.log") {
+		t.Fatalf("emit body must carry the stdout artifact, got %q", gotBody)
+	}
+	if strings.Contains(gotBody, "stderr.log") {
+		t.Fatalf("an EMPTY stream must not be recorded, got %q", gotBody)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("a successful record must be silent, got %q", errOut.String())
+	}
+}
+
+func TestRecordStageArtifactsSurfacesFailureWithoutPanicking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"boom","message":"journal down"}}`))
+	}))
+	defer server.Close()
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvRunID, "run-7")
+	t.Setenv(dispatcher.EnvStage, "build")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	var errOut strings.Builder
+	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")})
+	if !strings.Contains(errOut.String(), "record stage artifacts") {
+		t.Fatalf("a journal failure must be VISIBLE on stderr, got %q", errOut.String())
+	}
+}
+
+// No daemon API (a loopback/no-plane posture) must be a clean no-op rather
+// than an error path a stage has to care about.
+func TestRecordStageArtifactsNoopsWithoutADaemonAPI(t *testing.T) {
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	t.Setenv(dispatcher.EnvRunID, "run-7")
+	t.Setenv(dispatcher.EnvStage, "build")
+	var errOut strings.Builder
+	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")})
+	if errOut.Len() != 0 {
+		t.Fatalf("no daemon API must be a silent no-op, got %q", errOut.String())
+	}
+}
