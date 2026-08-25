@@ -2,12 +2,135 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// Mock implementations for testing
+
+type mockFS struct {
+	mu         sync.Mutex
+	statErr    error
+	readErr    error
+	createErr  error
+	removeErr  error
+	readData   []byte
+	statPath   string
+	readPath   string
+	createPath string
+	removePath string
+	tempFile   tempFile
+}
+
+func (m *mockFS) stat(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.statPath = path
+	return m.statErr
+}
+
+func (m *mockFS) readFile(path string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.readPath = path
+	if m.readErr != nil {
+		return nil, m.readErr
+	}
+	if m.readData != nil {
+		return m.readData, nil
+	}
+	return []byte(validProfile), nil
+}
+
+func (m *mockFS) createTemp(dir, pattern string) (tempFile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createPath = dir
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	return m.tempFile, nil
+}
+
+func (m *mockFS) remove(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removePath = path
+	return m.removeErr
+}
+
+type mockTempFile struct {
+	mu          sync.Mutex
+	writeErr    error
+	closeErr    error
+	closeCalled bool
+	writtenData []byte
+	fileName    string
+}
+
+func (m *mockTempFile) write(b []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.writtenData = b
+	if m.writeErr != nil {
+		return 0, m.writeErr
+	}
+	return len(b), nil
+}
+
+func (m *mockTempFile) close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closeCalled = true
+	return m.closeErr
+}
+
+func (m *mockTempFile) name() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.fileName
+}
+
+type mockExec struct {
+	mu             sync.Mutex
+	generateErr    error
+	functionErr    error
+	functionOutput []byte
+	generateCalled bool
+	functionCalled bool
+}
+
+func (m *mockExec) generateProfile(profile string, stdout, stderr io.Writer) error {
+	m.mu.Lock()
+	m.generateCalled = true
+	generateErr := m.generateErr
+	m.mu.Unlock()
+
+	if generateErr != nil {
+		return generateErr
+	}
+	_, _ = io.WriteString(stdout, "ok\n")
+	return nil
+}
+
+func (m *mockExec) functionCoverage(profile string) ([]byte, error) {
+	m.mu.Lock()
+	m.functionCalled = true
+	functionErr := m.functionErr
+	functionOutput := m.functionOutput
+	m.mu.Unlock()
+
+	if functionErr != nil {
+		return nil, functionErr
+	}
+	return functionOutput, nil
+}
 
 func TestFilterProfile(t *testing.T) {
 	t.Parallel()
@@ -180,5 +303,248 @@ func TestRunMatchesThresholdBoundary(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "FAIL: coverage 100.0% is below threshold 100.1%") {
 		t.Fatalf("failure output missing decision:\n%s", &stderr)
+	}
+}
+
+// Operational failure-path tests
+
+const validProfile = `mode: atomic
+github.com/goobers/goobers/internal/runner/run.go:10.1,12.2 2 1
+github.com/goobers/goobers/internal/runner/run.go:14.1,16.2 2 0
+`
+
+const validCoverageReport = `github.com/goobers/goobers/internal/runner/run.go:10.1,12.2	covered	Run	1	1
+github.com/goobers/goobers/internal/runner/run.go:14.1,16.2	uncovered	covered	0	1
+total:		(statements)	50.0%
+`
+
+func TestProfileGenerationError(t *testing.T) {
+	t.Parallel()
+	mockFS := &mockFS{
+		statErr:  os.ErrNotExist,
+		tempFile: &mockTempFile{fileName: "temp.out"},
+	}
+	mockExec := &mockExec{
+		generateErr: errors.New("go test failed"),
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "generate profile") {
+		t.Fatalf("expected error about generating profile, got: %s", stderr.String())
+	}
+
+	mockExec.mu.Lock()
+	generateCalled := mockExec.generateCalled
+	mockExec.mu.Unlock()
+
+	if !generateCalled {
+		t.Fatal("generateProfile was not called")
+	}
+}
+
+func TestProfileStatError(t *testing.T) {
+	t.Parallel()
+	mockFS := &mockFS{
+		statErr: errors.New("permission denied"),
+	}
+	mockExec := &mockExec{}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "inspect") {
+		t.Fatalf("expected error about inspecting profile, got: %s", stderr.String())
+	}
+}
+
+func TestProfileReadError(t *testing.T) {
+	t.Parallel()
+	mockFS := &mockFS{
+		statErr: nil,
+		readErr: errors.New("read error"),
+	}
+	mockExec := &mockExec{}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "read") {
+		t.Fatalf("expected error about reading profile, got: %s", stderr.String())
+	}
+}
+
+func TestInvalidExclusionRegex(t *testing.T) {
+	t.Setenv("COVERAGE_EXCLUDE", "[invalid(regex")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"70"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "invalid exclusion regex") {
+		t.Fatalf("expected error about invalid regex, got: %s", stderr.String())
+	}
+}
+
+func TestTempFileCreateError(t *testing.T) {
+	t.Parallel()
+	mockFS := &mockFS{
+		statErr:   nil,
+		readErr:   nil,
+		createErr: errors.New("cannot create temp file"),
+	}
+	mockExec := &mockExec{}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "create filtered profile") {
+		t.Fatalf("expected error about creating filtered profile, got: %s", stderr.String())
+	}
+}
+
+func TestTempFileWriteError(t *testing.T) {
+	t.Parallel()
+	mockTempFile := &mockTempFile{
+		fileName: "temp.out",
+		writeErr: errors.New("write failed"),
+	}
+	mockFS := &mockFS{
+		statErr:  nil,
+		readErr:  nil,
+		tempFile: mockTempFile,
+	}
+	mockExec := &mockExec{}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "write filtered profile") {
+		t.Fatalf("expected error about writing filtered profile, got: %s", stderr.String())
+	}
+
+	mockTempFile.mu.Lock()
+	closeCalled := mockTempFile.closeCalled
+	mockTempFile.mu.Unlock()
+
+	if !closeCalled {
+		t.Fatal("temp file close was not called after write error")
+	}
+}
+
+func TestTempFileCloseError(t *testing.T) {
+	t.Parallel()
+	mockTempFile := &mockTempFile{
+		fileName: "temp.out",
+		closeErr: errors.New("close failed"),
+	}
+	mockFS := &mockFS{
+		statErr:  nil,
+		readErr:  nil,
+		tempFile: mockTempFile,
+	}
+	mockExec := &mockExec{}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "close filtered profile") {
+		t.Fatalf("expected error about closing filtered profile, got: %s", stderr.String())
+	}
+}
+
+func TestFunctionCoverageError(t *testing.T) {
+	t.Parallel()
+	mockTempFile := &mockTempFile{fileName: "temp.out"}
+	mockFS := &mockFS{
+		statErr:  nil,
+		readErr:  nil,
+		tempFile: mockTempFile,
+	}
+	mockExec := &mockExec{
+		functionErr: errors.New("go tool cover failed: invalid profile"),
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"70"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "calculate coverage") {
+		t.Fatalf("expected error about calculating coverage, got: %s", stderr.String())
+	}
+}
+
+func TestEndToEndWithMocks(t *testing.T) {
+	t.Parallel()
+	mockTempFile := &mockTempFile{fileName: "temp.out"}
+	mockFS := &mockFS{
+		statErr:  nil,
+		tempFile: mockTempFile,
+	}
+	mockExec := &mockExec{
+		functionOutput: []byte(validCoverageReport),
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"50"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d\nstderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "PASS: coverage gate satisfied") {
+		t.Fatalf("expected pass message in stdout, got: %s", stdout.String())
+	}
+
+	mockExec.mu.Lock()
+	functionCalled := mockExec.functionCalled
+	mockExec.mu.Unlock()
+
+	if !functionCalled {
+		t.Fatal("functionCoverage was not called")
+	}
+}
+
+func TestGateClosed_BelowThreshold(t *testing.T) {
+	t.Parallel()
+	mockTempFile := &mockTempFile{fileName: "temp.out"}
+	mockFS := &mockFS{
+		statErr:  nil,
+		tempFile: mockTempFile,
+	}
+	mockExec := &mockExec{
+		functionOutput: []byte(validCoverageReport),
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithProviders([]string{"51"}, &stdout, &stderr, mockFS, mockExec)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 (gate fail), got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "FAIL: coverage 50.0% is below threshold 51%") {
+		t.Fatalf("expected fail message in stderr, got: %s", stderr.String())
 	}
 }
