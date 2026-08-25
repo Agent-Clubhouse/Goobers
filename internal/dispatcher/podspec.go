@@ -69,6 +69,22 @@ const (
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
 )
 
+// DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
+// own in-pod runtime. They are the pod's control plane, not the stage's
+// environment, and __dispatch-exec strips every one of them before handing an
+// environment to the stage.
+//
+// EnvPodToken is the sharp one: it authorizes surrendering results for this
+// run. A stage that can read it can author its own outcome — report success
+// for work that failed. MEASURED before this list existed: a stage command on
+// a runner declaring env:default-deny saw POD_TOKEN=PRESENT in a 24-variable
+// inherited environment.
+var DispatcherControlEnv = []string{
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
+	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout,
+}
+
 // Workspace and temp paths — the base-image contract half of the mount
 // bindings (decisions 006/007).
 const (

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,5 +262,36 @@ func TestDispatchExecIgnoresUnparseableResultFile(t *testing.T) {
 	mergeResultFileOutputs(outputs, []byte("not json at all"))
 	if len(outputs) != 0 {
 		t.Fatalf("unparseable result file must contribute nothing, got %v", outputs)
+	}
+}
+
+// A stage must never receive the dispatcher's control plane — above all
+// GOOBERS_POD_TOKEN, which authorizes surrendering THIS run's results. A stage
+// that can read it can report success for work that failed.
+//
+// MEASURED before this fix, inside a real pod on a runner declaring
+// env:default-deny: POD_TOKEN=PRESENT, DAEMON_API=PRESENT, TOTAL_ENV=24.
+func TestStageEnvironmentDropsDispatcherControlPlane(t *testing.T) {
+	t.Setenv("GOOBERS_POD_TOKEN", "goobers-pod.secret")
+	t.Setenv("GOOBERS_DAEMON_API", "https://daemon.invalid:8080")
+	t.Setenv("GOOBERS_RUN_ID", "run-1")
+	t.Setenv("GOOBERS_STAGE_COMMAND", `["sh","-c","true"]`)
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "r.json")
+	t.Setenv("GOOBERS_INPUT_PROBEVALUE", "42")
+
+	got := map[string]string{}
+	for _, kv := range stageEnvironment() {
+		name, value, _ := strings.Cut(kv, "=")
+		got[name] = value
+	}
+
+	for _, banned := range dispatcher.DispatcherControlEnv {
+		if _, present := got[banned]; present {
+			t.Fatalf("stage environment leaks dispatcher control variable %q", banned)
+		}
+	}
+	// Declared inputs ARE the stage's to read.
+	if got["GOOBERS_INPUT_RESULTFILE"] != "r.json" || got["GOOBERS_INPUT_PROBEVALUE"] != "42" {
+		t.Fatalf("declared inputs must survive: %v", got)
 	}
 }

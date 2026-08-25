@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -115,7 +116,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	defer cancel()
 
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Env = append(stageEnvironment(), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	cmd.Stdout = io.MultiWriter(stdout, capturedStdout)
@@ -260,4 +261,53 @@ func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
 			outputs[key] = value
 		}
 	}
+}
+
+// stageEnvironment builds the environment a stage command actually receives.
+//
+// It does NOT inherit the pod's environment. The local executor composes a
+// stage environment from procenv's default-deny allowlist plus declared values;
+// a pod inheriting os.Environ() diverges from that AND hands the stage the
+// dispatcher's own control plane — including GOOBERS_POD_TOKEN, the credential
+// that authorizes surrendering this run's results. A stage able to read it can
+// author its own outcome.
+//
+// Kept: the procenv allowlist (the same one the local executor uses) and the
+// stage's declared inputs, which a stage is meant to read.
+// Dropped: every dispatcher control variable.
+func stageEnvironment() []string {
+	// The pod's environment is the stage's environment: podspec stamps the
+	// stage's declared Env as NATIVE container variables, and the runner image
+	// provides its own (PLAYWRIGHT_BROWSERS_PATH, GOOBERS_TEMPORAL_CLI, …).
+	// Both must reach the command — dropping image-provided variables is the
+	// documented failure where "the browsers were present and INVISIBLE".
+	//
+	// What must NOT reach it is the dispatcher's own control plane, above all
+	// GOOBERS_POD_TOKEN: it authorizes surrendering THIS run's results, so a
+	// stage able to read it can author its own outcome — report success for
+	// work that failed. MEASURED before this filter, inside a real pod:
+	// POD_TOKEN=PRESENT in a 24-variable inherited environment.
+	//
+	// NOTE, deliberately not fixed here: this is NOT procenv's default-deny
+	// allowlist, so a runner declaring env:default-deny still does not get it.
+	// True parity needs the instance's envPassthrough threaded into the pod,
+	// because in-pod the allowlisted values come from the IMAGE rather than
+	// from the daemon's environment. That is a design change, not a filter.
+	control := make(map[string]struct{}, len(dispatcher.DispatcherControlEnv))
+	for _, name := range dispatcher.DispatcherControlEnv {
+		control[name] = struct{}{}
+	}
+	inherited := os.Environ()
+	env := make([]string, 0, len(inherited))
+	for _, kv := range inherited {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if _, isControl := control[name]; isControl {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
 }
