@@ -364,3 +364,74 @@ func TestRecordStageArtifactsNoopsWithoutADaemonAPI(t *testing.T) {
 		t.Fatalf("no daemon API must be a silent no-op, got %q", errOut.String())
 	}
 }
+
+// The CLI-stage exemption widens what a stage can READ, never what it can DO.
+// A goobers-CLI stage keeps its run identity — it cannot name its own run
+// branch without it — but the privileged half, above all the pod token, is
+// stripped on exactly the same terms as for every other stage. If this test
+// ever fails, a CLI stage can author its own run's outcome.
+func TestStageEnvironmentCLIStageKeepsIdentityNotAuthority(t *testing.T) {
+	t.Setenv("GOOBERS_STAGE_IS_CLI", "true")
+	t.Setenv("GOOBERS_POD_TOKEN", "goobers-pod.secret")
+	t.Setenv("GOOBERS_DAEMON_API", "https://daemon.invalid:8080")
+	t.Setenv("GOOBERS_BLOB_ENDPOINT", "https://daemon.invalid:8080/blobs")
+	t.Setenv("GOOBERS_STAGE_COMMAND", `["goobers","backlog-query"]`)
+	t.Setenv("GOOBERS_RUN_ID", "run-1")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv("GOOBERS_REPO_OWNER", "Agent-Clubhouse")
+
+	got := map[string]string{}
+	for _, kv := range stageEnvironment() {
+		name, value, _ := strings.Cut(kv, "=")
+		got[name] = value
+	}
+
+	for _, banned := range dispatcher.DispatcherPrivilegedEnv {
+		if _, present := got[banned]; present {
+			t.Fatalf("CLI stage leaks privileged control variable %q", banned)
+		}
+	}
+	for _, kept := range dispatcher.DispatcherRunIdentityEnv {
+		if _, present := os.LookupEnv(kept); !present {
+			continue // only the ones this test actually set
+		}
+		if _, present := got[kept]; !present {
+			t.Fatalf("CLI stage must keep run identity %q: providers.BranchName composes the run branch from it", kept)
+		}
+	}
+	if got["GOOBERS_REPO_OWNER"] != "Agent-Clubhouse" {
+		t.Fatalf("CLI stage must see its routed repo: %v", got["GOOBERS_REPO_OWNER"])
+	}
+}
+
+// The two halves must remain a PARTITION of the old single list. A name that
+// falls out of both is a variable that silently stops being stripped for every
+// stage — the failure this split could plausibly introduce.
+func TestDispatcherControlEnvIsExactlyItsTwoHalves(t *testing.T) {
+	union := map[string]bool{}
+	for _, n := range dispatcher.DispatcherPrivilegedEnv {
+		union[n] = true
+	}
+	for _, n := range dispatcher.DispatcherRunIdentityEnv {
+		if union[n] {
+			t.Fatalf("%q is in BOTH halves; the split must be a partition", n)
+		}
+		union[n] = true
+	}
+	if len(union) != len(dispatcher.DispatcherControlEnv) {
+		t.Fatalf("halves cover %d names, control plane has %d", len(union), len(dispatcher.DispatcherControlEnv))
+	}
+	for _, n := range dispatcher.DispatcherControlEnv {
+		if !union[n] {
+			t.Fatalf("%q is in neither half: it would stop being stripped", n)
+		}
+	}
+	// The one that matters most, asserted by name rather than by construction.
+	privileged := map[string]bool{}
+	for _, n := range dispatcher.DispatcherPrivilegedEnv {
+		privileged[n] = true
+	}
+	if !privileged[dispatcher.EnvPodToken] {
+		t.Fatal("EnvPodToken must be privileged: it authorizes surrendering this run's results")
+	}
+}

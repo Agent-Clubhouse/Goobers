@@ -72,6 +72,9 @@ const (
 	// credential plane itself, so no secret ever rides a pod spec — which is
 	// readable by anyone with get-pod in the namespace.
 	EnvStageCapabilities = "GOOBERS_STAGE_CAPABILITIES"
+	// EnvStageIsCLI marks a stage whose command is the goobers CLI, so the pod
+	// keeps its run context instead of stripping it with the control plane.
+	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -84,10 +87,32 @@ const (
 // for work that failed. MEASURED before this list existed: a stage command on
 // a runner declaring env:default-deny saw POD_TOKEN=PRESENT in a 24-variable
 // inherited environment.
-var DispatcherControlEnv = []string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
+var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...)
+
+// DispatcherPrivilegedEnv is the half of the control plane that NO stage may
+// ever see, goobers-CLI stage included. EnvPodToken is the reason the whole
+// filter exists: it authorizes surrendering this run's results, so a stage that
+// can read it can author its own outcome. The endpoints are here because a
+// stage holding them plus any token is a step from the same place, and the
+// stage-spec vars because a stage rewriting its own command/capabilities is
+// self-authorization by another name.
+var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+}
+
+// DispatcherRunIdentityEnv is the half that is operational identity rather than
+// authority: WHICH run this is, not permission to do anything as it. Knowing a
+// run ID grants nothing — every plane demands the bearer token above.
+//
+// A goobers-CLI stage KEEPS these, because they are exactly what it needs:
+// providers.BranchName composes the run branch from workflow + run, so a CLI
+// stage stripped of them cannot name the branch it is supposed to push. Every
+// other stage is still stripped, and that is the point of splitting rather than
+// exempting — a stage running the project's own `make ci` must not see them, or
+// a self-hosting project's tests are perturbed by the live run.
+var DispatcherRunIdentityEnv = []string{
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
 }
 
 // Workspace and temp paths — the base-image contract half of the mount
@@ -518,6 +543,16 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	// stage reads GOOBERS_INPUT_<KEY> identically on both substrates.
 	for _, key := range sortedKeys(attempt.Inputs) {
 		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: attempt.Inputs[key]})
+	}
+	// Run context, for goobers-CLI stages ONLY. stageEnvironment() in the pod
+	// strips the dispatcher's control plane, and these names overlap it — so
+	// they are re-stamped here under a distinct prefix-free contract and
+	// re-admitted in the pod only when the stage is a CLI stage.
+	for _, key := range sortedKeys(attempt.RunContext) {
+		env = append(env, corev1.EnvVar{Name: key, Value: attempt.RunContext[key]})
+	}
+	if attempt.CLIStage {
+		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {

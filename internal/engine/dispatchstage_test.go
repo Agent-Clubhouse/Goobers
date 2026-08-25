@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -362,8 +363,13 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 		"unset workspace defaults to repo": func(in *dispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
 		},
-		"goobers CLI builtin": func(in *dispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceScratch}
+		// Narrow, measured replacement for the blanket goobers-CLI refusal:
+		// telemetry-query reads the instance CONFIG DIRECTORY (the workflow
+		// definitions), which a stage pod does not have. Every other CLI stage
+		// this instance's workflows invoke reaches its repo and credential
+		// through the environment and now dispatches.
+		"goobers command reading the config dir": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}, Workspace: apiv1.WorkspaceScratch}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -661,5 +667,71 @@ func TestDispatchStagePassesCapabilityNamesToTheDispatcher(t *testing.T) {
 	}
 	if got := fake.attempts[0].Capabilities; len(got) != 1 || got[0] != "contents:write" {
 		t.Fatalf("dispatcher received Capabilities=%v, want [contents:write]", got)
+	}
+}
+
+// A goobers-CLI stage is no longer refused: the pod resolves its own
+// credentials (#3722), emits its own journal (#3723), and — below — receives
+// the run context the CLI reads. This is the positive half of the refusal that
+// used to live in TestDispatchStageRefusesV1UnsupportedRun.
+func TestDispatchStageCLIStageCarriesRunContext(t *testing.T) {
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-cli", "query-backlog", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-cli", "query-backlog", 1)
+	input.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}, Workspace: apiv1.WorkspaceScratch}
+	input.Envelope.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	input.Envelope.BranchNamespace = "goobernetes/"
+	input.Envelope.BaseBranch = "main"
+
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("a goobers-CLI stage must dispatch: %v", err)
+	}
+	if len(fake.attempts) != 1 {
+		t.Fatalf("expected one attempt, got %d", len(fake.attempts))
+	}
+	got := fake.attempts[0]
+	if !got.CLIStage {
+		t.Fatal("attempt must be marked a CLI stage, or the pod strips the run identity it needs")
+	}
+	for name, want := range map[string]string{
+		executor.RepoProviderEnvVar:    "github",
+		executor.RepoOwnerEnvVar:       "Agent-Clubhouse",
+		executor.RepoNameEnvVar:        "Goobers",
+		executor.BranchNamespaceEnvVar: "goobernetes/",
+		executor.BaseBranchEnvVar:      "main",
+	} {
+		if got.RunContext[name] != want {
+			t.Errorf("RunContext[%s] = %q, want %q", name, got.RunContext[name], want)
+		}
+	}
+}
+
+// The exemption is scoped to CLI stages. A stage running the project's own
+// build must NOT carry the run's identity — in a self-hosting project that
+// leaks the live run into its own test suite (#322).
+func TestDispatchStageNonCLIStageCarriesNoRunContext(t *testing.T) {
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-ci", "build", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-ci", "build", 1)
+	input.Run = &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Workspace: apiv1.WorkspaceScratch}
+	input.Envelope.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	got := fake.attempts[0]
+	if got.CLIStage {
+		t.Fatal("`make ci` is not a goobers-CLI stage")
+	}
+	if len(got.RunContext) != 0 {
+		t.Fatalf("non-CLI stage must carry no run context, got %v", got.RunContext)
 	}
 }

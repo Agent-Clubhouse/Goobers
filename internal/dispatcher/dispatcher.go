@@ -206,6 +206,17 @@ type Attempt struct {
 	// the daemon's credential plane at stage START — the dispatch payload
 	// carries the capability NAMES only, never a secret (#2931/DS10).
 	Capabilities []string
+
+	// CLIStage marks a stage whose command IS the goobers CLI. Only such a
+	// stage receives the run's operational identity — the same least-privilege
+	// boundary the local executor draws (#322): a stage running the project's
+	// own build/test suite must not see GOOBERS_* vars, or a self-hosting
+	// project's tests are silently perturbed by the live run.
+	CLIStage bool
+	// RunContext is the operational identity a goobers-CLI stage reads to learn
+	// which run it belongs to and which repository it was routed to. Empty for
+	// every other stage.
+	RunContext map[string]string
 	// ExtraLabels and ExtraAnnotations carry any workflow/gaggle/stage
 	// -supplied pod metadata. Keys in the goobers.dev/ namespace are REFUSED
 	// at create (§3: the runner-class label is derived and non-overridable;
