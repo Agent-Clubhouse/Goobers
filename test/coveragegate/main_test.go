@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // Mock implementations for testing
 
 type mockFS struct {
+	mu         sync.Mutex
 	statErr    error
 	readErr    error
 	createErr  error
@@ -27,11 +29,15 @@ type mockFS struct {
 }
 
 func (m *mockFS) stat(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.statPath = path
 	return m.statErr
 }
 
 func (m *mockFS) readFile(path string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.readPath = path
 	if m.readErr != nil {
 		return nil, m.readErr
@@ -43,6 +49,8 @@ func (m *mockFS) readFile(path string) ([]byte, error) {
 }
 
 func (m *mockFS) createTemp(dir, pattern string) (tempFile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.createPath = dir
 	if m.createErr != nil {
 		return nil, m.createErr
@@ -51,11 +59,14 @@ func (m *mockFS) createTemp(dir, pattern string) (tempFile, error) {
 }
 
 func (m *mockFS) remove(path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.removePath = path
 	return m.removeErr
 }
 
 type mockTempFile struct {
+	mu          sync.Mutex
 	writeErr    error
 	closeErr    error
 	closeCalled bool
@@ -64,6 +75,8 @@ type mockTempFile struct {
 }
 
 func (m *mockTempFile) write(b []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.writtenData = b
 	if m.writeErr != nil {
 		return 0, m.writeErr
@@ -72,15 +85,20 @@ func (m *mockTempFile) write(b []byte) (int, error) {
 }
 
 func (m *mockTempFile) close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closeCalled = true
 	return m.closeErr
 }
 
 func (m *mockTempFile) name() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.fileName
 }
 
 type mockExec struct {
+	mu             sync.Mutex
 	generateErr    error
 	functionErr    error
 	functionOutput []byte
@@ -89,20 +107,29 @@ type mockExec struct {
 }
 
 func (m *mockExec) generateProfile(profile string, stdout, stderr io.Writer) error {
+	m.mu.Lock()
 	m.generateCalled = true
-	if m.generateErr != nil {
-		return m.generateErr
+	generateErr := m.generateErr
+	m.mu.Unlock()
+
+	if generateErr != nil {
+		return generateErr
 	}
 	_, _ = io.WriteString(stdout, "ok\n")
 	return nil
 }
 
 func (m *mockExec) functionCoverage(profile string) ([]byte, error) {
+	m.mu.Lock()
 	m.functionCalled = true
-	if m.functionErr != nil {
-		return nil, m.functionErr
+	functionErr := m.functionErr
+	functionOutput := m.functionOutput
+	m.mu.Unlock()
+
+	if functionErr != nil {
+		return nil, functionErr
 	}
-	return m.functionOutput, nil
+	return functionOutput, nil
 }
 
 func TestFilterProfile(t *testing.T) {
@@ -310,7 +337,12 @@ func TestProfileGenerationError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "generate profile") {
 		t.Fatalf("expected error about generating profile, got: %s", stderr.String())
 	}
-	if !mockExec.generateCalled {
+
+	mockExec.mu.Lock()
+	generateCalled := mockExec.generateCalled
+	mockExec.mu.Unlock()
+
+	if !generateCalled {
 		t.Fatal("generateProfile was not called")
 	}
 }
@@ -408,7 +440,12 @@ func TestTempFileWriteError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "write filtered profile") {
 		t.Fatalf("expected error about writing filtered profile, got: %s", stderr.String())
 	}
-	if !mockTempFile.closeCalled {
+
+	mockTempFile.mu.Lock()
+	closeCalled := mockTempFile.closeCalled
+	mockTempFile.mu.Unlock()
+
+	if !closeCalled {
 		t.Fatal("temp file close was not called after write error")
 	}
 }
@@ -480,7 +517,12 @@ func TestEndToEndWithMocks(t *testing.T) {
 	if !strings.Contains(stdout.String(), "PASS: coverage gate satisfied") {
 		t.Fatalf("expected pass message in stdout, got: %s", stdout.String())
 	}
-	if !mockExec.functionCalled {
+
+	mockExec.mu.Lock()
+	functionCalled := mockExec.functionCalled
+	mockExec.mu.Unlock()
+
+	if !functionCalled {
 		t.Fatal("functionCoverage was not called")
 	}
 }
