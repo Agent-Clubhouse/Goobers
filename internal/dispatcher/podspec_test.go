@@ -664,3 +664,42 @@ func TestRenderSetsWorkingDirToTheWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// A Windows stage pod must tolerate BOTH Windows node-taint conventions. AKS
+// applies kubernetes.io/os=windows:NoSchedule (the same key as the OS label);
+// sig-windows documents node.kubernetes.io/os. Tolerating only one leaves the
+// pod Pending on clusters using the other, with the node selector correctly
+// targeting a node the pod may not land on — a failure that looks like
+// capacity, not configuration.
+func TestWindowsStagePodToleratesBothTaintConventions(t *testing.T) {
+	runner := linuxRunner()
+	runner.OS = "windows"
+	pod, err := RenderPod(testConfig(), testAttempt(), runner)
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	want := map[string]bool{WindowsTolerationKey: false, WindowsTolerationKeyLegacy: false}
+	for _, tol := range pod.Spec.Tolerations {
+		if tol.Value == "windows" && tol.Effect == corev1.TaintEffectNoSchedule {
+			if _, ok := want[tol.Key]; ok {
+				want[tol.Key] = true
+			}
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("windows stage pod does not tolerate %q; tolerations=%+v", key, pod.Spec.Tolerations)
+		}
+	}
+
+	// And a linux pod must tolerate neither — the stamp is OS-conditional.
+	linux, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod(linux): %v", err)
+	}
+	for _, tol := range linux.Spec.Tolerations {
+		if tol.Value == "windows" {
+			t.Fatalf("linux stage pod must not carry a windows toleration, got %+v", tol)
+		}
+	}
+}
