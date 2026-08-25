@@ -362,10 +362,6 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 		"unset workspace defaults to repo": func(in *dispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
 		},
-		"declared capabilities": func(in *dispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}
-			in.Envelope.Capabilities = []string{"repo:push"}
-		},
 		"goobers CLI builtin": func(in *dispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceScratch}
 		},
@@ -646,5 +642,24 @@ func TestModeThreeQueueRoutingAndHistoryReplay(t *testing.T) {
 	replayer.RegisterWorkflow(Run)
 	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
 		t.Fatalf("replay mode-3 workflow history (the placement-from-RunInput determinism guarantee): %v", err)
+	}
+}
+
+// Declared capabilities are no longer a v1 refusal: the pod resolves them
+// against the credential plane at stage start. What must hold is that the
+// dispatcher receives the capability NAMES — the values are never in the
+// dispatch payload.
+func TestDispatchStagePassesCapabilityNamesToTheDispatcher(t *testing.T) {
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	a := &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}
+	in := dispatchInput("run-1", "open-pr", 1)
+	in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}
+	in.Envelope.Capabilities = []string{"contents:write"}
+	_, _ = a.DispatchStage(context.Background(), in)
+	if len(fake.attempts) == 0 {
+		t.Fatal("the dispatcher was never called — a declared capability must no longer be refused")
+	}
+	if got := fake.attempts[0].Capabilities; len(got) != 1 || got[0] != "contents:write" {
+		t.Fatalf("dispatcher received Capabilities=%v, want [contents:write]", got)
 	}
 }

@@ -67,6 +67,11 @@ const (
 	// backstop (which exists to reclaim an orphaned pod, not to time the
 	// stage itself).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
+	// EnvStageCapabilities carries the stage's declared credential capability
+	// NAMES as a JSON array. Names only: the pod resolves them against the
+	// credential plane itself, so no secret ever rides a pod spec — which is
+	// readable by anyone with get-pod in the namespace.
+	EnvStageCapabilities = "GOOBERS_STAGE_CAPABILITIES"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -82,7 +87,7 @@ const (
 var DispatcherControlEnv = []string{
 	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities,
 }
 
 // Workspace and temp paths — the base-image contract half of the mount
@@ -513,6 +518,11 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	// stage reads GOOBERS_INPUT_<KEY> identically on both substrates.
 	for _, key := range sortedKeys(attempt.Inputs) {
 		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: attempt.Inputs[key]})
+	}
+	if len(attempt.Capabilities) > 0 {
+		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {
+			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: string(encoded)})
+		}
 	}
 	return env
 }

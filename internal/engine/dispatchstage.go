@@ -116,9 +116,6 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		if t.Run.Workspace != apiv1.WorkspaceScratch {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout — declare workspace: scratch to run this stage in a pod", t.Name, t.Run.Workspace)
 		}
-		if len(env.Capabilities) > 0 {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares capabilities %v; mode-3 dispatch does not yet deliver credentials into a stage pod", t.Name, env.Capabilities)
-		}
 		if executor.StageInvokesGoobersCLI(t.Run.Command) || executor.StageInvokesProviderBuiltin(t.Run.Command) {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs a goobers-CLI builtin stage (%v); mode-3 dispatch does not yet wire journal/provider access into a stage pod", t.Name, t.Run.Command)
 		}
@@ -173,9 +170,6 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		if input.Run.Workspace != apiv1.WorkspaceScratch {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout (fail closed)", input.Envelope.TaskID, input.Run.Workspace))
 		}
-		if len(input.Envelope.Capabilities) > 0 {
-			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares capabilities; mode-3 dispatch does not yet deliver credentials into a stage pod (fail closed)", input.Envelope.TaskID))
-		}
 		if executor.StageInvokesGoobersCLI(input.Run.Command) || executor.StageInvokesProviderBuiltin(input.Run.Command) {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q runs a goobers-CLI builtin stage; mode-3 dispatch does not yet wire journal/provider access into a stage pod (fail closed)", input.Envelope.TaskID))
 		}
@@ -197,6 +191,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		attempt.Script = input.Run.Script
 		attempt.Env = input.Run.Env
 	}
+	// Declared credential capabilities travel as NAMES; the pod resolves them
+	// against the credential plane at stage start (DS9/DS10), so no secret
+	// rides the dispatch payload or the pod spec.
+	attempt.Capabilities = input.Envelope.Capabilities
+
 	// Declared inputs travel to the pod so the stage reads GOOBERS_INPUT_<KEY>
 	// exactly as it would locally, and so the in-pod executor can find the
 	// declared resultFile it must lift into Outputs.
