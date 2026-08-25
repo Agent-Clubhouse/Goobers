@@ -104,16 +104,17 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 	// stateless signed tokens (Goobers#3701). Without one, PodToken stays
 	// empty and the pod surrenders unauthenticated, which only works against
 	// a null-auth loopback daemon in the same process.
+	signed, kerr := podTokenMinter(cfg)
+	if kerr != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", kerr)
+	}
+	// Assigned through an explicitly-typed nil interface rather than passing
+	// `signed` straight in. A nil *SignedKey stored in a TokenMinter makes the
+	// interface NON-nil, so the dispatcher's `TokenMinter != nil` guard would
+	// pass and then call Mint on a nil pointer — the no-key posture would panic
+	// instead of dispatching unauthenticated.
 	var minter dispatcher.TokenMinter
-	if path := strings.TrimSpace(cfg.API.PodTokenKeyFile); path != "" {
-		key, kerr := os.ReadFile(path)
-		if kerr != nil {
-			return stageDispatch{}, fmt.Errorf("stage dispatch: read pod token key %s: %w", path, kerr)
-		}
-		signed, kerr := podauth.NewSignedKey(bytes.TrimSpace(key))
-		if kerr != nil {
-			return stageDispatch{}, fmt.Errorf("stage dispatch: %w", kerr)
-		}
+	if signed != nil {
 		minter = signed
 	}
 
@@ -148,4 +149,31 @@ func mergeQueues(existing []string, dispatch []string) []string {
 		merged = append(merged, q)
 	}
 	return merged
+}
+
+// podTokenMinter builds the shared-key minter from a loaded instance config, or
+// returns nil when no key is configured (the loopback/no-auth posture).
+//
+// Factored out because TWO consumers in this process need the same key and must
+// not drift: the dispatcher mints the bearer it stamps on a stage pod, and the
+// live-journal emitter mints the bearer it presents to the daemon's journal
+// plane. Both are "this worker proving which run it speaks for", and a second
+// copy of this loading would be a second place for the key path to go stale.
+func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	if path == "" {
+		return nil, nil
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
+	}
+	signed, err := podauth.NewSignedKey(bytes.TrimSpace(key))
+	if err != nil {
+		return nil, err
+	}
+	return signed, nil
 }

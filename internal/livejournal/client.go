@@ -18,8 +18,11 @@ import (
 // seam. The daemon's own in-process emitters bypass HTTP by using *Writer
 // directly; a stage-executing worker outside the daemon pod uses this.
 //
-// Token carries the pod's per-run bearer (internal/podauth) when the daemon
-// requires authentication; empty is the loopback/no-auth posture. Transport
+// Token carries a fixed bearer when the caller already holds one (a stage pod
+// is handed its own per-run token). A WORKER holds no such token: it serves
+// many runs and is not itself a pod, so it carries the signing KEY instead and
+// mints per batch — set Minter for that. With neither, no Authorization header
+// is sent, which is the loopback/no-auth posture only. Transport
 // failures and non-2xx statuses are plain errors — the engine's EmitJournal
 // activity classifies every emitter failure as infrastructure and retries on
 // its bounded budget, and the writer's idempotency keys make redelivery safe.
@@ -28,9 +31,28 @@ type HTTPEmitter struct {
 	BaseURL string
 	// Token is the bearer presented as Authorization; empty sends none.
 	Token string
+	// Minter, used only when Token is empty, issues a bearer scoped to the run
+	// each batch belongs to. This is the worker's posture: it holds the shared
+	// signing key (the same one it uses to mint stage-pod tokens) rather than
+	// any single run's token, so the credential is derived per batch from the
+	// run being emitted for — never a long-lived ambient one.
+	Minter TokenMinter
 	// Client overrides the HTTP client; nil uses a 30s-timeout default.
 	Client *http.Client
 }
+
+// TokenMinter issues a per-run bearer. Declared here as a SEAM rather than
+// importing internal/podauth, which would invert the layering — this package
+// stays beneath the API layers. dispatcher.TokenMinter is the same shape for
+// the same reason, and podauth.SignedKey satisfies both.
+type TokenMinter interface {
+	Mint(runID string, ttl time.Duration) (string, error)
+}
+
+// mintedTokenTTL bounds a minted journal bearer. Short because it is used
+// immediately by the request that mints it; it is not stored, reused across
+// batches, or handed to another process.
+const mintedTokenTTL = 5 * time.Minute
 
 // errorEnvelope mirrors apicontract.ErrorEnvelope without importing it (this
 // package stays beneath the API layers).
@@ -60,8 +82,17 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		return EmitResponse{}, fmt.Errorf("livejournal: build emit request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if e.Token != "" {
+	switch {
+	case e.Token != "":
 		httpReq.Header.Set("Authorization", "Bearer "+e.Token)
+	case e.Minter != nil:
+		// Scoped to THIS batch's run, so a worker serving many runs never
+		// presents one run's authority while emitting for another.
+		token, mErr := e.Minter.Mint(req.RunID, mintedTokenTTL)
+		if mErr != nil {
+			return EmitResponse{}, fmt.Errorf("livejournal: mint bearer for run %s: %w", req.RunID, mErr)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := e.Client
 	if client == nil {

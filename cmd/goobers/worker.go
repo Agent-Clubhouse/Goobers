@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
@@ -186,10 +187,33 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// LiveJournal-pinned run flow to the daemon's journal plane. The
 		// per-run pod bearer (internal/podauth) rides GOOBERS_POD_TOKEN;
 		// empty is the loopback/no-auth posture.
-		engineRuntime.deps.Journal = &livejournal.HTTPEmitter{
+		// A worker is not a stage pod and holds no run's token, so when the
+		// daemon authenticates (a split deployment: worker pod, daemon pod) a
+		// static GOOBERS_POD_TOKEN is empty and every emit was refused:
+		//   livejournal: emit refused (401 unauthenticated)
+		// It does hold the shared signing key — the same one it uses to mint
+		// the bearer it stamps on stage pods — so it mints per batch, scoped to
+		// the run being emitted for. Env token still wins when present, which
+		// keeps the single-run/pod posture working unchanged.
+		emitter := &livejournal.HTTPEmitter{
 			BaseURL: *daemonAPI,
 			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
 		}
+		if emitter.Token == "" {
+			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
+			if cerr == nil {
+				// Same typed-nil care as the dispatcher's minter: a nil
+				// *SignedKey in the interface would make it non-nil and turn
+				// the no-key posture into a nil-pointer call at emit time.
+				if signed, kerr := podTokenMinter(cfg); kerr != nil {
+					pf(stderr, "error: load pod token key for live journal: %v\n", kerr)
+					return 2
+				} else if signed != nil {
+					emitter.Minter = signed
+				}
+			}
+		}
+		engineRuntime.deps.Journal = emitter
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
 	}
 
