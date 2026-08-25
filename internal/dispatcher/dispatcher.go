@@ -200,6 +200,12 @@ type Attempt struct {
 	// surrendered stdout instead of its result file, which silently changed
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
+
+	// Capabilities is the stage's declared credential capabilities
+	// (apiv1.InvocationEnvelope.Capabilities). The pod resolves them against
+	// the daemon's credential plane at stage START — the dispatch payload
+	// carries the capability NAMES only, never a secret (#2931/DS10).
+	Capabilities []string
 	// ExtraLabels and ExtraAnnotations carry any workflow/gaggle/stage
 	// -supplied pod metadata. Keys in the goobers.dev/ namespace are REFUSED
 	// at create (§3: the runner-class label is derived and non-overridable;

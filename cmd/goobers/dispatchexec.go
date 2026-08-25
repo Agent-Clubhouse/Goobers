@@ -13,8 +13,10 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/signals"
 )
@@ -116,7 +118,22 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	defer cancel()
 
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(stageEnvironment(), extraEnv...)
+	// Resolve this stage's declared credentials against the daemon's credential
+	// plane and inject them exactly as the local executor does. Resolution
+	// happens HERE, at stage start, not at dispatch — so no secret ever rides
+	// a dispatch payload or a pod spec (DS9/DS10, #2931).
+	creds, credErr := resolveStageCredentials(ctx)
+	if credErr != nil {
+		// Fail closed. A stage that declared capabilities and did not get them
+		// would run uncredentialed and fail far away, against the provider,
+		// with an error naming the provider rather than the credential plane.
+		return failureEnvelope("credential_resolve_failed", credErr.Error())
+	}
+	credEnv := make([]string, 0, len(creds))
+	for _, cred := range creds {
+		credEnv = append(credEnv, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
+	}
+	cmd.Env = append(append(stageEnvironment(), credEnv...), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	cmd.Stdout = io.MultiWriter(stdout, capturedStdout)
@@ -151,12 +168,20 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		runErr = <-waitDone
 	}
 
+	// Scrub resolved credentials out of anything the stage wrote. The local
+	// executor registers every token with a scrubber before the stage runs;
+	// without this a stage that echoes its token surrenders it into the
+	// journal, where it is durable and widely readable.
+	registry, scrubber := journal.DefaultScrubber()
+	for _, cred := range creds {
+		registry.Register([]byte(cred.Value))
+	}
 	outputs := map[string]interface{}{}
 	if capturedStdout.Len() > 0 {
-		outputs["stdout"] = capturedStdout.String()
+		outputs["stdout"] = string(scrubber.Scrub([]byte(capturedStdout.String())))
 	}
 	if capturedStderr.Len() > 0 {
-		outputs["stderr"] = capturedStderr.String()
+		outputs["stderr"] = string(scrubber.Scrub([]byte(capturedStderr.String())))
 	}
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
@@ -310,4 +335,30 @@ func stageEnvironment() []string {
 		env = append(env, kv)
 	}
 	return env
+}
+
+// resolveStageCredentials asks the daemon's credential plane for the
+// capabilities this stage declared. The dispatcher stamps the capability NAMES
+// only; the values never exist outside this process and the daemon.
+func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	encoded := strings.TrimSpace(os.Getenv(dispatcher.EnvStageCapabilities))
+	if encoded == "" {
+		return nil, nil
+	}
+	var capabilities []string
+	if err := json.Unmarshal([]byte(encoded), &capabilities); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", dispatcher.EnvStageCapabilities, err)
+	}
+	if len(capabilities) == 0 {
+		return nil, nil
+	}
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	if daemonAPI == "" {
+		return nil, fmt.Errorf("stage declares capabilities %v but %s is unset; the pod cannot reach the credential plane", capabilities, dispatcher.EnvDaemonAPI)
+	}
+	client := &dispatcher.CredentialResolveClient{
+		BaseURL: daemonAPI,
+		Token:   os.Getenv(dispatcher.EnvPodToken),
+	}
+	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
 }

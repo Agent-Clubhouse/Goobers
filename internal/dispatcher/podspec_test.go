@@ -748,3 +748,27 @@ func executorInputEnvVarReference(key string) string {
 	sanitized := regexp.MustCompile(`[^A-Za-z0-9]+`).ReplaceAllString(key, "_")
 	return "GOOBERS_INPUT_" + strings.ToUpper(sanitized)
 }
+
+// Capability NAMES travel on the pod spec; values never do. A pod spec is
+// readable by anyone with get-pod in the namespace, so a resolved secret on it
+// would be a credential leak with a very wide blast radius.
+func TestStagePodCarriesCapabilityNamesButNeverValues(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Capabilities = []string{"contents:write", "issues:write"}
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	var found string
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == EnvStageCapabilities {
+			found = e.Value
+		}
+		if strings.Contains(strings.ToUpper(e.Name), "GOOBERS_CRED_") {
+			t.Fatalf("a resolved credential must NEVER be stamped on a pod spec, found %s", e.Name)
+		}
+	}
+	if !strings.Contains(found, "contents:write") || !strings.Contains(found, "issues:write") {
+		t.Fatalf("%s = %q, want both declared capability names", EnvStageCapabilities, found)
+	}
+}
