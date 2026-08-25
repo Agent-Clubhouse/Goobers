@@ -236,6 +236,9 @@ func (c Config) Evaluate(observations []Observation) (Decision, error) {
 		if arm.Name == defaultArm.Name {
 			continue
 		}
+		if c.Retired(arm.Name, observations) {
+			continue
+		}
 		failures := failureRate(eval, arm.Name)
 		if failures > c.MaxFailureRate {
 			continue

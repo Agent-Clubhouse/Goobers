@@ -243,3 +243,26 @@ func TestExplicitZeroRewardIsPreserved(t *testing.T) {
 		t.Fatalf("explicit zero reward = %v, want 0", got)
 	}
 }
+
+func TestEvaluateExcludesRetiredArms(t *testing.T) {
+	c := testConfig()
+	var observations []Observation
+	for i := 0; i < 4; i++ {
+		observations = append(observations,
+			Observation{Stage: "review", Arm: "control", Success: true, Window: "train"},
+			Observation{Stage: "review", Arm: "treatment", Success: false, Window: "train"},
+			Observation{Stage: "review", Arm: "control", Success: true, Window: "eval"},
+			Observation{Stage: "review", Arm: "treatment", Success: false, Window: "eval"},
+		)
+	}
+	if !c.Retired("treatment", observations) {
+		t.Fatal("treatment should be retired above failure-rate bound")
+	}
+	decision, err := c.Evaluate(observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Eligible || decision.Arm == "treatment" {
+		t.Fatalf("decision = %+v, should not nominate retired arm", decision)
+	}
+}
