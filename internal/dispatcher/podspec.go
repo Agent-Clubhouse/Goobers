@@ -91,10 +91,22 @@ const (
 const (
 	// NodeSelectorOSKey is the well-known node OS label.
 	NodeSelectorOSKey = "kubernetes.io/os"
-	// WindowsTolerationKey is the Windows node taint stage pods tolerate
-	// (the upstream sig-windows convention: node.kubernetes.io/os=windows
-	// :NoSchedule on Windows pools).
+	// WindowsTolerationKey is the sig-windows convention for the Windows node
+	// taint (node.kubernetes.io/os=windows:NoSchedule).
 	WindowsTolerationKey = "node.kubernetes.io/os"
+	// WindowsTolerationKeyLegacy is the key AKS actually applies to a Windows
+	// node pool: kubernetes.io/os=windows:NoSchedule — the same key as the
+	// well-known OS LABEL, which is why NodeSelectorOSKey above matches and the
+	// toleration did not.
+	//
+	// MEASURED on aks-goobernetes-prod: the node carries
+	// `kubernetes.io/os=windows:NoSchedule`, so a stage pod tolerating only the
+	// sig-windows key sat Pending until its deadline —
+	//   0/3 nodes are available: 1 node(s) had untolerated taint(s)
+	// while the node selector had correctly targeted that very node. Both keys
+	// are stamped: tolerating a taint a cluster does not apply costs nothing,
+	// and picking one convention silently breaks every cluster using the other.
+	WindowsTolerationKeyLegacy = "kubernetes.io/os"
 	// WindowsRunAsUserName is the non-admin Windows container identity the
 	// fs restriction binds to (decision 007).
 	WindowsRunAsUserName = "ContainerUser"
@@ -239,7 +251,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	stampVolumes(cfg, attempt, &pod.Spec, &container, class, windows)
 	stampSecurity(&pod.Spec, &container, class, windows)
 	if windows {
-		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsToleration())
+		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsTolerations()...)
 	}
 
 	pod.Spec.Containers = []corev1.Container{container}
@@ -303,7 +315,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}
 	spec.NodeSelector[NodeSelectorOSKey] = nodeSelectorOS(runner.OS)
 	if windows {
-		spec.Tolerations = append(spec.Tolerations, windowsToleration())
+		spec.Tolerations = append(spec.Tolerations, windowsTolerations()...)
 	}
 
 	stage := &spec.Containers[0]
@@ -429,13 +441,18 @@ func nodeSelectorOS(os string) string {
 	return "linux"
 }
 
-func windowsToleration() corev1.Toleration {
-	return corev1.Toleration{
-		Key:      WindowsTolerationKey,
-		Operator: corev1.TolerationOpEqual,
-		Value:    "windows",
-		Effect:   corev1.TaintEffectNoSchedule,
+func windowsTolerations() []corev1.Toleration {
+	keys := []string{WindowsTolerationKey, WindowsTolerationKeyLegacy}
+	tolerations := make([]corev1.Toleration, 0, len(keys))
+	for _, key := range keys {
+		tolerations = append(tolerations, corev1.Toleration{
+			Key:      key,
+			Operator: corev1.TolerationOpEqual,
+			Value:    "windows",
+			Effect:   corev1.TaintEffectNoSchedule,
+		})
 	}
+	return tolerations
 }
 
 func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
