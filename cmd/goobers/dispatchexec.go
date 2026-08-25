@@ -135,6 +135,22 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	for _, cred := range creds {
 		credEnv = append(credEnv, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
 	}
+	// A provider builtin writes its result to an IMPLICIT path when the stage
+	// declared no resultFile — the local executor derives it from the
+	// subcommand (shell.go), and so must the pod, or the builtin writes a file
+	// nobody reads and the stage reports empty outputs. Derived from the same
+	// exported helper, not a second table.
+	resultFile := os.Getenv(dispatcher.InputEnvVar("resultFile"))
+	if resultFile == "" && len(argv) > 1 && executor.StageInvokesGoobersCLI(argv) {
+		if implicit, ok := executor.ProviderStageResultFile(argv[1]); ok {
+			resultFile = implicit
+			// The child reads the path from this variable, exactly as it does
+			// on a self runner. cmd.Dir is unset and the container's WorkingDir
+			// IS the workspace, so a workspace-relative path resolves the same
+			// on both substrates.
+			extraEnv = append(extraEnv, dispatcher.InputEnvVar("resultFile")+"="+implicit)
+		}
+	}
 	cmd.Env = append(append(stageEnvironment(), credEnv...), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
@@ -203,7 +219,6 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// the gate read no `verdict` key, and the run took the fail path three
 	// times before exhausting its repass budget. The run "completed" with the
 	// wrong control flow and nothing reported an error.
-	resultFile := os.Getenv(dispatcher.InputEnvVar("resultFile"))
 	if resultFile != "" {
 		data, rerr := os.ReadFile(resultFile)
 		switch {
@@ -331,8 +346,16 @@ func stageEnvironment() []string {
 	// True parity needs the instance's envPassthrough threaded into the pod,
 	// because in-pod the allowlisted values come from the IMAGE rather than
 	// from the daemon's environment. That is a design change, not a filter.
-	control := make(map[string]struct{}, len(dispatcher.DispatcherControlEnv))
-	for _, name := range dispatcher.DispatcherControlEnv {
+	// A goobers-CLI stage keeps its run identity; every other stage is stripped
+	// of the whole control plane. The privileged half — above all the pod token
+	// — is removed either way, so this widens what a CLI stage can READ, never
+	// what any stage can DO. See DispatcherRunIdentityEnv for why the split.
+	stripped := dispatcher.DispatcherControlEnv
+	if os.Getenv(dispatcher.EnvStageIsCLI) == "true" {
+		stripped = dispatcher.DispatcherPrivilegedEnv
+	}
+	control := make(map[string]struct{}, len(stripped))
+	for _, name := range stripped {
 		control[name] = struct{}{}
 	}
 	inherited := os.Environ()

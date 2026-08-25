@@ -98,13 +98,19 @@ type dispatchStageInput struct {
 // with the local arm's exact diagnostics: a stage with no command is refused
 // here too, never shipped to a pod.
 //
-// v1 scope (#3699): the in-pod executor has no credential injector, no
-// journal/providerstage wiring, and provisions no repo checkout, so a task
-// that needs any of those is refused HERE, before a pod is ever created,
-// rather than silently diverging from local-executor behavior in the pod
-// (the shipped disposal gate would just as soon fail such an attempt after
-// the fact — refusing at dispatch is the same outcome without spending a
-// pod). Each of these is a stated, narrowing v1 cut, not a permanent limit.
+// v1 scope (#3699): a task the pod cannot faithfully run is refused HERE,
+// before a pod is ever created, rather than silently diverging from
+// local-executor behavior in the pod (the shipped disposal gate would just as
+// soon fail such an attempt after the fact — refusing at dispatch is the same
+// outcome without spending a pod). Each is a stated, narrowing cut.
+//
+// CLOSED since: credential injection (#3722), journal/artifact emission
+// (#3723), and goobers-CLI/providerstage wiring (this change) — the pod
+// resolves its own credentials, emits its own journal, and receives the run
+// context a CLI stage reads. The CLI refusal that stood here is gone.
+//
+// STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
+// so a stage declaring a workspace other than scratch is still refused.
 func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity) (apiv1.ResultEnvelope, error) {
 	if t.Type == apiv1.TaskDeterministic {
 		if t.Run == nil {
@@ -116,8 +122,8 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		if t.Run.Workspace != apiv1.WorkspaceScratch {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout — declare workspace: scratch to run this stage in a pod", t.Name, t.Run.Workspace)
 		}
-		if executor.StageInvokesGoobersCLI(t.Run.Command) || executor.StageInvokesProviderBuiltin(t.Run.Command) {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs a goobers-CLI builtin stage (%v); mode-3 dispatch does not yet wire journal/provider access into a stage pod", t.Name, t.Run.Command)
+		if executor.StageRequiresInstanceConfig(t.Run.Command) {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs %v, which reads the instance config directory; a stage pod has no config directory — place this stage on a self runner", t.Name, t.Run.Command)
 		}
 	}
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
@@ -170,8 +176,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		if input.Run.Workspace != apiv1.WorkspaceScratch {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout (fail closed)", input.Envelope.TaskID, input.Run.Workspace))
 		}
-		if executor.StageInvokesGoobersCLI(input.Run.Command) || executor.StageInvokesProviderBuiltin(input.Run.Command) {
-			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q runs a goobers-CLI builtin stage; mode-3 dispatch does not yet wire journal/provider access into a stage pod (fail closed)", input.Envelope.TaskID))
+		if executor.StageRequiresInstanceConfig(input.Run.Command) {
+			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q reads the instance config directory, which a stage pod does not have (fail closed)", input.Envelope.TaskID))
 		}
 	}
 	attempt := dispatcher.Attempt{
@@ -195,6 +201,40 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
 	attempt.Capabilities = input.Envelope.Capabilities
+
+	// A goobers-CLI stage needs the run's operational identity to do its job:
+	// providerRepo() reads GOOBERS_REPO_* to learn which repository it was
+	// routed to, and providers.BranchName composes the run branch from the
+	// workflow and run. On a self runner the executor injects these for exactly
+	// this stage class (shell.go, injectRunContext); mode 3 does the same here.
+	//
+	// Deliberately an EXPLICIT allowlist of names rather than marshalling
+	// input.Envelope.RepoRef: this value reaches a pod spec, and an allowlist
+	// cannot silently start shipping a field someone adds to RepoRef later.
+	// (The config-side instance.RepoRef already carries Token and Auth; the
+	// envelope's does not, and this is what keeps that distinction from
+	// mattering.)
+	if input.Run != nil && executor.StageInvokesGoobersCLI(input.Run.Command) {
+		attempt.CLIStage = true
+		attempt.RunContext = map[string]string{}
+		if repo := input.Envelope.RepoRef; repo.Provider != "" {
+			attempt.RunContext[executor.RepoProviderEnvVar] = string(repo.Provider)
+			attempt.RunContext[executor.RepoOwnerEnvVar] = repo.Owner
+			attempt.RunContext[executor.RepoNameEnvVar] = repo.Name
+			if repo.Project != "" {
+				attempt.RunContext[executor.RepoProjectEnvVar] = repo.Project
+			}
+		}
+		if ns := input.Envelope.BranchNamespace; ns != "" {
+			attempt.RunContext[executor.BranchNamespaceEnvVar] = ns
+		}
+		if base := input.Envelope.BaseBranch; base != "" {
+			attempt.RunContext[executor.BaseBranchEnvVar] = base
+		}
+		if trigger := input.Envelope.TriggerRef; trigger != "" {
+			attempt.RunContext[executor.TriggerRefEnvVar] = trigger
+		}
+	}
 
 	// Declared inputs travel to the pod so the stage reads GOOBERS_INPUT_<KEY>
 	// exactly as it would locally, and so the in-pod executor can find the

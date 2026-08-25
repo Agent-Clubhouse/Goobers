@@ -235,6 +235,33 @@ func StageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
 }
 
+// stageCommandsRequiringInstanceConfig are goobers subcommands that read the
+// instance CONFIG DIRECTORY — the workflow/gaggle definitions — not just the
+// routed repo and a credential. A stage pod has no config directory, so these
+// cannot run there.
+//
+// DERIVED, and re-derivable: `grep -l LoadConfigDir cmd/goobers/*.go`, then map
+// each file to the command its newCLIFlagSet declares. That yields 16 files, of
+// which all but this one are operator commands (config, connect, fix, features,
+// onboarding, run, workflow) that a workflow never invokes as a stage. If that
+// grep ever names a new STAGE command, it belongs here.
+var stageCommandsRequiringInstanceConfig = map[string]bool{
+	"telemetry-query": true,
+}
+
+// StageRequiresInstanceConfig reports whether a stage command needs the instance
+// config directory, and so cannot run in a stage pod. This is deliberately a
+// NARROW list rather than "every goobers CLI stage": measured against the
+// commands this instance's workflows actually invoke, all the rest reach their
+// repo and credential through providerRepo/providerToken, both of which read
+// the environment first — which is exactly what the pod stamps.
+func StageRequiresInstanceConfig(command []string) bool {
+	if !StageInvokesGoobersCLI(command) || len(command) < 2 {
+		return false
+	}
+	return stageCommandsRequiringInstanceConfig[command[1]]
+}
+
 // StageInvokesProviderBuiltin narrows transient stderr classification to the
 // built-in stages that call a provider. Other goobers subcommands can fail
 // with similar words but have separate retry contracts.
