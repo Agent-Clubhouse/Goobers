@@ -627,3 +627,40 @@ func TestRenderFromTemplate(t *testing.T) {
 		t.Fatal("template-supplied runner-class label was not refused")
 	}
 }
+
+// A mounted workspace the stage does not run in is not a workspace. Without
+// WorkingDir the stage inherits the image default (/), which the non-root
+// runner contract cannot write — and the failure names the file rather than
+// the directory, so it reads as a permissions bug on the wrong object.
+func TestRenderSetsWorkingDirToTheWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		os   string
+		want string
+	}{
+		{name: "linux", os: "linux", want: LinuxWorkspacePath},
+		{name: "windows", os: "windows", want: WindowsWorkspacePath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := linuxRunner()
+			runner.OS = tc.os
+			pod, err := RenderPod(testConfig(), testAttempt(), runner)
+			if err != nil {
+				t.Fatalf("RenderPod: %v", err)
+			}
+			c := pod.Spec.Containers[0]
+			if c.WorkingDir != tc.want {
+				t.Fatalf("WorkingDir = %q, want %q — the stage must RUN in the workspace, not merely have it mounted", c.WorkingDir, tc.want)
+			}
+			var mounted bool
+			for _, m := range c.VolumeMounts {
+				if m.Name == "workspace" && m.MountPath == tc.want {
+					mounted = true
+				}
+			}
+			if !mounted {
+				t.Fatalf("workspace is not mounted at %s; WorkingDir would point at nothing", tc.want)
+			}
+		})
+	}
+}

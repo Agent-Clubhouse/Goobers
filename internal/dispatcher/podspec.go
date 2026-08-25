@@ -551,6 +551,17 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 	}
 	spec.Volumes = append(spec.Volumes, workspace)
 	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "workspace", MountPath: workspacePath})
+	// RUN THE STAGE *IN* THE WORKSPACE. Mounting it is not enough: without a
+	// WorkingDir the stage inherits the image's default (/), which is not
+	// writable by the non-root user the runner contract requires. A stage that
+	// writes a relative path — the ordinary case — then fails with a message
+	// naming the FILE, not the missing working directory:
+	//
+	//   tee: probe-exit-codes.txt: Permission denied
+	//
+	// which sends the reader looking at permissions on a file that was never
+	// the problem. Observed on a live cluster before this line existed.
+	container.WorkingDir = workspacePath
 
 	if class[string(runnercap.RestrictionTmpEphemeral)] {
 		tmpfs := cfg.tmpfsSizeLimit()
