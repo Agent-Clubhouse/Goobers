@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -60,6 +61,11 @@ type restartManagerProcessInfo struct {
 type Tree struct {
 	pid int
 	job windows.Handle
+}
+
+type processIdentity struct {
+	pid       int
+	startTime time.Time
 }
 
 // configure detaches the child into its own process group so a console signal
@@ -182,19 +188,71 @@ func resumeProcess(pid int) error {
 // kill hard-terminates every process in the tree via TerminateJobObject, then
 // releases the job handle promptly (the finalizer would otherwise hold it until
 // GC — undesirable on the timeout path, exactly when freeing resources matters).
-// Without a job (Configure-only path) it best-effort terminates the lone pid.
+// WSL can broker a host process outside the job, so the process snapshot closes
+// that escape hatch as well.
 func (t *Tree) kill() error {
 	if t.job == 0 {
 		return terminatePID(t.pid)
 	}
+	descendants, snapshotErr := snapshotDescendants(t.pid)
 	err := windows.TerminateJobObject(t.job, 1)
 	runtime.SetFinalizer(t, nil)
 	_ = windows.CloseHandle(t.job)
 	t.job = 0
 	if err != nil {
-		return fmt.Errorf("proc: terminate job for %d: %w", t.pid, err)
+		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
 	}
-	return nil
+	for _, descendant := range descendants {
+		if current, ok := startTime(descendant.pid); ok && !descendant.startTime.IsZero() && !current.Equal(descendant.startTime) {
+			continue
+		}
+		if err := terminatePID(descendant.pid); err != nil && alive(descendant.pid) {
+			snapshotErr = errors.Join(snapshotErr, err)
+		}
+	}
+	return snapshotErr
+}
+
+func snapshotDescendants(root int) ([]processIdentity, error) {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, fmt.Errorf("proc: snapshot process tree: %w", err)
+	}
+	defer func() { _ = windows.CloseHandle(snapshot) }()
+
+	type process struct {
+		pid    int
+		parent int
+	}
+	var processes []process
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		processes = append(processes, process{
+			pid:    int(entry.ProcessID),
+			parent: int(entry.ParentProcessID),
+		})
+	}
+	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		return nil, fmt.Errorf("proc: enumerate process tree: %w", err)
+	}
+
+	children := make(map[int][]int)
+	for _, process := range processes {
+		children[process.parent] = append(children[process.parent], process.pid)
+	}
+	var descendants []processIdentity
+	queue := append([]int(nil), children[root]...)
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if started, ok := startTime(pid); ok {
+			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
+		} else {
+			descendants = append(descendants, processIdentity{pid: pid})
+		}
+		queue = append(queue, children[pid]...)
+	}
+	return descendants, nil
 }
 
 // terminatePID force-terminates a single process by pid — the degraded path when
