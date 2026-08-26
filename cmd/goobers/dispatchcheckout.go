@@ -30,6 +30,12 @@ import (
 // before it, mode 3 refused every such stage, which is every stage in a
 // workflow that does not explicitly opt into scratch.
 
+// checkoutCloneURL derives the git remote for a routed repository. A package
+// var solely so a test can point the real clone path at a local bare repo:
+// without it the only coverage for the code that actually does the work is a
+// live cluster, which is how #3734's two bugs reached one.
+var checkoutCloneURL = runner.DefaultRepoCloneURL
+
 // checkoutRepoWorkspace clones the run's repository into dir when the stage
 // declared a repo workspace. It is a no-op for scratch, which keeps the
 // pre-checkout behaviour byte-identical for stages that never needed it.
@@ -52,7 +58,7 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	if ref.Provider == "" || ref.Name == "" {
 		return fmt.Errorf("repo workspace requested but the dispatcher stamped no repository")
 	}
-	cloneURL, err := runner.DefaultRepoCloneURL(ref)
+	cloneURL, err := checkoutCloneURL(ref)
 	if err != nil {
 		return fmt.Errorf("derive clone URL: %w", err)
 	}
@@ -121,7 +127,18 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 	if token == "" {
 		return nil, nil
 	}
-	askpass, err := credentials.WriteAskpassScript(dir)
+	// OUTSIDE the workspace, deliberately. `git clone <url> .` refuses a
+	// non-empty destination, so a helper written into the workspace makes the
+	// clone fail before it starts:
+	//   fatal: destination path '.' already exists and is not an empty directory
+	// The worker-side path has always kept this in a control directory beside
+	// the worktree rather than inside it (workcopies/auth); this is the same
+	// separation, and the reason for it is now recorded where it bites.
+	authDir, err := os.MkdirTemp("", "goobers-auth-*")
+	if err != nil {
+		return nil, fmt.Errorf("create auth dir: %w", err)
+	}
+	askpass, err := credentials.WriteAskpassScript(authDir)
 	if err != nil {
 		return nil, fmt.Errorf("write askpass helper: %w", err)
 	}
@@ -134,7 +151,11 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// GIT_TERMINAL_PROMPT=0 is not cosmetic: without it a clone of a private
+	// repository with no usable credential can BLOCK asking for one. A stage
+	// pod has no terminal, so the ask would hang until the stage timed out and
+	// be reported as a timeout rather than as the auth failure it is.
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = stderr
 	return cmd.Run()
@@ -150,7 +171,15 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 		if c.Value == "" {
 			continue
 		}
-		if strings.Contains(name, "repo") || strings.Contains(name, "git") {
+		// "repo" ONLY. Matching "git" as well looked harmless and was not:
+		// "github:issues:read" contains it, so an issues-only token would have
+		// been handed to git — the exact scope widening the comment below says
+		// this must not do. Caught by
+		// TestCheckoutRefusesToSubstituteAnUnrelatedCredential.
+		//
+		// "repo" covers the capabilities production stages actually declare:
+		// repo:push, push-repository-branch, modify-repository.
+		if strings.Contains(name, "repo") {
 			return c.Value
 		}
 	}
