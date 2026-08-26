@@ -1,6 +1,7 @@
 package gooberassets
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,15 +27,18 @@ func TestWireRoundTripPreservesFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	data, err := MarshalBundles(map[string]*Bundle{"g": original})
+	// Exercised exactly as a Kit carries it: ToWire, through encoding/json,
+	// and back. Testing a helper the production path does not use would prove
+	// nothing about the transport that actually runs.
+	data, err := json.Marshal(original.ToWire())
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	back, err := UnmarshalBundles(data)
-	if err != nil {
+	var wire WireBundle
+	if err := json.Unmarshal(data, &wire); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	got := back["g"]
+	got := FromWire(&wire)
 	if got == nil {
 		t.Fatal("bundle absent after round trip")
 	}
@@ -47,15 +51,8 @@ func TestWireRoundTripPreservesFingerprint(t *testing.T) {
 // A goober with no assets must travel as ABSENT, not as an empty bundle: an
 // empty bundle materialises a directory the goober never had.
 func TestWireNilBundleStaysNil(t *testing.T) {
-	data, err := MarshalBundles(map[string]*Bundle{"g": nil})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	back, err := UnmarshalBundles(data)
-	if err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if back["g"] != nil {
+	var nilBundle *Bundle
+	if FromWire(nilBundle.ToWire()) != nil {
 		t.Fatal("a nil bundle must not become a non-nil empty one")
 	}
 }
@@ -71,11 +68,12 @@ func TestWireRoundTripMaterializesIdenticalTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := MarshalBundles(map[string]*Bundle{"g": original})
-	back, _ := UnmarshalBundles(data)
+	data, _ := json.Marshal(original.ToWire())
+	var wire WireBundle
+	_ = json.Unmarshal(data, &wire)
 
 	ws := t.TempDir()
-	if err := back["g"].Materialize(ws); err != nil {
+	if err := FromWire(&wire).Materialize(ws); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(ws, WorkspaceDir, "a.txt"))

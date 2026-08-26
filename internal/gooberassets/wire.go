@@ -1,10 +1,6 @@
 package gooberassets
 
-import (
-	"encoding/json"
-	"fmt"
-	"io/fs"
-)
+import "io/fs"
 
 // wire.go gives a Bundle a serializable form so it can travel to a process that
 // cannot read the instance's asset directory.
@@ -58,30 +54,4 @@ func FromWire(w *WireBundle) *Bundle {
 		b.entries = append(b.entries, entry{path: e.Path, mode: e.Mode, data: e.Data, dir: e.Dir})
 	}
 	return b
-}
-
-// MarshalBundles renders a set of named bundles.
-func MarshalBundles(in map[string]*Bundle) ([]byte, error) {
-	wire := make(map[string]*WireBundle, len(in))
-	for name, b := range in {
-		wire[name] = b.ToWire()
-	}
-	data, err := json.Marshal(wire)
-	if err != nil {
-		return nil, fmt.Errorf("gooberassets: marshal bundles: %w", err)
-	}
-	return data, nil
-}
-
-// UnmarshalBundles reconstructs a set of named bundles.
-func UnmarshalBundles(data []byte) (map[string]*Bundle, error) {
-	var wire map[string]*WireBundle
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return nil, fmt.Errorf("gooberassets: unmarshal bundles: %w", err)
-	}
-	out := make(map[string]*Bundle, len(wire))
-	for name, w := range wire {
-		out[name] = FromWire(w)
-	}
-	return out, nil
 }
