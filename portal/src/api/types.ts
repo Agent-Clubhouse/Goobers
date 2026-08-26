@@ -669,6 +669,17 @@ export interface TelemetryStatsOptions {
   gaggle?: string;
   since?: string;
   until?: string;
+  trendSince?: string;
+  trendUntil?: string;
+  trendBuckets?: number;
+  trendPreviousSince?: string;
+  trendPreviousUntil?: string;
+}
+
+export interface TelemetryTrendBucket {
+  since: string;
+  until: string;
+  usage: TelemetryUsageStats[];
 }
 
 export interface TelemetryStatsResult {
@@ -684,6 +695,8 @@ export interface TelemetryStatsResult {
   promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+  trend?: TelemetryTrendBucket[];
+  trendPrevious?: TelemetryTrendBucket;
 }
 
 export interface GraphAnalytics {

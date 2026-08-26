@@ -6,6 +6,7 @@ import type {
   TelemetryErrorSignaturesResult,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TelemetryTrendBucket,
   TelemetryUsageStats,
 } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
@@ -213,6 +214,17 @@ export function insightPreviousWindowFilters(
   };
 }
 
+export function selectInsightCostTrendBuckets(
+  trend: TelemetryTrendBucket[],
+  bucketCount: number,
+  hasPrevious: boolean,
+): TelemetryTrendBucket[] {
+  const combinedCount = hasPrevious ? bucketCount * 2 : bucketCount;
+  const combinedTrend = trend.slice(0, combinedCount);
+  const currentStart = hasPrevious ? bucketCount : 0;
+  return combinedTrend.slice(currentStart, currentStart + bucketCount);
+}
+
 export function useInsightCostTrend(
   client: DaemonClient,
   window: InsightWindow,
@@ -238,6 +250,7 @@ export function useInsightCostTrend(
     request.current = controller;
     const bucketRanges = insightTrendBuckets(window);
     const previousRange = insightPreviousWindowFilters(window);
+    const currentRange = insightWindowFilters(window);
     setState((current) =>
       (current.status === "ready" || current.status === "stale") &&
       current.data.window === window
@@ -245,15 +258,45 @@ export function useInsightCostTrend(
         : { status: "loading" },
     );
 
-    const fetchPeriod = (range: { since: string; until: string }) =>
-      client
-        .getTelemetryStats({ ...range, gaggle, workflow }, { signal: controller.signal })
-        .then((stats) => ({ since: range.since, until: range.until, usage: stats.usage }));
+    if (bucketRanges.length === 0) {
+      const data: InsightCostTrendSnapshot = { buckets: [], window };
+      cache.set(cacheKey, data, dependencies, cacheRevision);
+      setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+      return Promise.resolve(true);
+    }
 
-    return Promise.all([
-      Promise.all(bucketRanges.map(fetchPeriod)),
-      previousRange ? fetchPeriod(previousRange) : Promise.resolve(undefined),
-    ]).then(
+    const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
+    const trendUntil = bucketRanges.at(-1)?.until;
+    const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
+    return client.getTelemetryStats(
+      {
+        gaggle,
+        workflow,
+        since: currentRange.since,
+        until: currentRange.until,
+        trendSince,
+        trendUntil,
+        trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
+        trendPreviousSince: previousRange?.since,
+        trendPreviousUntil: previousRange?.until,
+      },
+      { signal: controller.signal },
+    ).then(
+      (stats) => {
+        const trend = stats.trend ?? [];
+        const buckets = selectInsightCostTrendBuckets(
+          trend,
+          bucketRanges.length,
+          previousRange !== undefined,
+        ).map(({ since, until, usage }) => ({
+          since,
+          until,
+          usage,
+        }));
+        const previous = previousRange ? stats.trendPrevious : undefined;
+        return [buckets, previous] as const;
+      },
+    ).then(
       ([buckets, previous]) => {
         if (controller.signal.aborted) {
           return true;

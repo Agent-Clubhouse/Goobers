@@ -286,20 +286,24 @@ describe("Insight page", () => {
         since: request?.since,
         until: request?.until,
       }));
-      // One call per trend bucket (7 for the default 7d window), plus one for
-      // the immediately preceding 7-day period, plus the page's own snapshot
-      // fetch for the selected window.
-      expect(ranges.length).toBeGreaterThanOrEqual(9);
-      const uniqueRanges = new Set(ranges.map((range) => `${range.since}:${range.until}`));
-      expect(uniqueRanges.size).toBeGreaterThanOrEqual(8);
+      expect(ranges.length).toBeGreaterThanOrEqual(2);
+      expect(getTelemetryStats.mock.calls.some(([request]) => request?.trendBuckets === 14)).toBe(
+        true,
+      );
     });
 
+    const trendRequestsBeforeAll = getTelemetryStats.mock.calls.filter(
+      ([request]) => request?.trendBuckets !== undefined,
+    ).length;
     await user.selectOptions(screen.getByLabelText("Time window"), "all");
     expect(
       await screen.findByText(
         "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
       ),
     ).toBeInTheDocument();
+    expect(
+      getTelemetryStats.mock.calls.filter(([request]) => request?.trendBuckets !== undefined),
+    ).toHaveLength(trendRequestsBeforeAll);
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {

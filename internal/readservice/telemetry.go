@@ -46,6 +46,11 @@ type TelemetryStatsRequest struct {
 	GroupByHarnessVersion bool
 	Since                 time.Time
 	Until                 time.Time
+	TrendSince            time.Time
+	TrendUntil            time.Time
+	TrendBuckets          int
+	TrendPreviousSince    time.Time
+	TrendPreviousUntil    time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
@@ -65,6 +70,15 @@ type TelemetryStatsResult struct {
 	PromotionCandidates []PromotionSignal      `json:"promotionCandidates,omitempty"`
 	Curation            TelemetryCurationStats `json:"curation"`
 	ReadyPool           TelemetryReadyPool     `json:"readyPool"`
+	Trend               []TelemetryTrendBucket `json:"trend,omitempty"`
+	TrendPrevious       *TelemetryTrendBucket  `json:"trendPrevious,omitempty"`
+}
+
+// TelemetryTrendBucket contains usage aggregated over one bounded time window.
+type TelemetryTrendBucket struct {
+	Since string                `json:"since"`
+	Until string                `json:"until"`
+	Usage []TelemetryUsageStats `json:"usage"`
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
@@ -346,6 +360,7 @@ type TelemetryError struct {
 
 type telemetryStore interface {
 	Stats(context.Context, rollup.StatsRequest) (rollup.StatsResult, error)
+	TrendStats(context.Context, rollup.TrendRequest) ([]rollup.TrendResult, error)
 	TopErrorSignatures(context.Context, rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
 	Errors(context.Context, rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
 }
@@ -363,9 +378,45 @@ func NewTelemetry(db *rollup.DB) (*Telemetry, error) {
 	return &Telemetry{store: db}, nil
 }
 
+func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
+	item := TelemetryUsageStats{
+		Scope: stat.Scope, Gaggle: stat.Gaggle, Workflow: stat.Workflow, Stage: stat.Stage,
+		Branch: stat.Branch, Model: stat.Model, HarnessVersion: stat.HarnessVersion,
+		TotalAttempts: stat.TotalAttempts, TokenSamples: stat.TokenSamples,
+		PremiumRequestSamples: stat.PremiumRequestSamples, CostSamples: stat.CostSamples,
+		RetryWasteAttempts: stat.RetryWasteAttempts,
+	}
+	if stat.HasTokens {
+		item.P50Tokens = int64Pointer(stat.P50Tokens)
+		item.P95Tokens = int64Pointer(stat.P95Tokens)
+	}
+	if stat.HasPremiumRequests {
+		item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
+		item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
+	}
+	if stat.HasCost {
+		item.CostUSD = float64Pointer(stat.CostUSD)
+		item.P50CostUSD = float64Pointer(stat.P50CostUSD)
+		item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+	}
+	if stat.HasRetryWasteTokens {
+		item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+	}
+	if stat.HasRetryWasteCost {
+		item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+	}
+	return item
+}
+
 // TelemetryStats returns workflow and stage aggregates in stable name order.
 func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (TelemetryStatsResult, error) {
 	if err := validateWindow(req.Since, req.Until); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := validateOptionalTrendWindow(req.TrendSince, req.TrendUntil, "trend"); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := validateOptionalTrendWindow(req.TrendPreviousSince, req.TrendPreviousUntil, "trend previous"); err != nil {
 		return TelemetryStatsResult{}, err
 	}
 	if req.Branch != nil && *req.Branch < 0 {
@@ -529,40 +580,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.Stages = append(result.Stages, item)
 	}
 	for _, stat := range stats.Usage {
-		item := TelemetryUsageStats{
-			Scope:                 stat.Scope,
-			Gaggle:                stat.Gaggle,
-			Workflow:              stat.Workflow,
-			Stage:                 stat.Stage,
-			Branch:                stat.Branch,
-			Model:                 stat.Model,
-			HarnessVersion:        stat.HarnessVersion,
-			TotalAttempts:         stat.TotalAttempts,
-			TokenSamples:          stat.TokenSamples,
-			PremiumRequestSamples: stat.PremiumRequestSamples,
-			CostSamples:           stat.CostSamples,
-			RetryWasteAttempts:    stat.RetryWasteAttempts,
-		}
-		if stat.HasTokens {
-			item.P50Tokens = int64Pointer(stat.P50Tokens)
-			item.P95Tokens = int64Pointer(stat.P95Tokens)
-		}
-		if stat.HasPremiumRequests {
-			item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
-			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
-		}
-		if stat.HasCost {
-			item.CostUSD = float64Pointer(stat.CostUSD)
-			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
-			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
-		}
-		if stat.HasRetryWasteTokens {
-			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
-		}
-		if stat.HasRetryWasteCost {
-			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
-		}
-		result.Usage = append(result.Usage, item)
+		result.Usage = append(result.Usage, projectTelemetryUsage(stat))
 	}
 	for _, stat := range stats.Models {
 		item := TelemetryModelStats{
@@ -587,7 +605,101 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		}
 		result.Models = append(result.Models, item)
 	}
+	var trends []rollup.TrendResult
+	if req.TrendBuckets > 0 {
+		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
+		}
+		total := req.TrendUntil.Sub(req.TrendSince)
+		buckets := time.Duration(req.TrendBuckets)
+		if total < buckets {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: trend window is too short for requested buckets", ErrInvalidTelemetryRequest)
+		}
+		result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
+		windows := make([]rollup.TrendWindow, 0, req.TrendBuckets+1)
+		boundary := func(index int) time.Duration {
+			i := time.Duration(index)
+			return total/buckets*i + total%buckets*i/buckets
+		}
+		for index := 0; index < req.TrendBuckets; index++ {
+			since := req.TrendSince.Add(boundary(index))
+			until := req.TrendSince.Add(boundary(index + 1))
+			if index == req.TrendBuckets-1 {
+				until = req.TrendUntil
+			}
+			windows = append(windows, rollup.TrendWindow{Since: since, Until: until})
+			result.Trend = append(result.Trend, TelemetryTrendBucket{
+				Since: since.UTC().Format(time.RFC3339Nano),
+				Until: until.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
+			windows = append(windows, rollup.TrendWindow{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil})
+		}
+		var err error
+		trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
+			Stats: rollup.StatsRequest{
+				Gaggle: req.Gaggle, Workflow: req.Workflow, Branch: req.Branch,
+				Model: req.Model, HarnessVersion: req.HarnessVersion,
+				GroupByBranch: req.GroupByBranch, GroupByModel: req.GroupByModel,
+				GroupByHarnessVersion: req.GroupByHarnessVersion,
+			},
+			Windows: windows,
+		})
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		if len(trends) != len(windows) {
+			return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d windows, want %d", len(trends), len(windows))
+		}
+		for index := range result.Trend {
+			for _, stat := range trends[index].Usage {
+				result.Trend[index].Usage = append(result.Trend[index].Usage, projectTelemetryUsage(stat))
+			}
+		}
+	}
+	if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
+		if len(trends) == 0 {
+			var err error
+			trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
+				Stats: rollup.StatsRequest{
+					Gaggle:                req.Gaggle,
+					Workflow:              req.Workflow,
+					Branch:                req.Branch,
+					Model:                 req.Model,
+					HarnessVersion:        req.HarnessVersion,
+					GroupByBranch:         req.GroupByBranch,
+					GroupByModel:          req.GroupByModel,
+					GroupByHarnessVersion: req.GroupByHarnessVersion,
+				},
+				Windows: []rollup.TrendWindow{{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil}},
+			})
+			if err != nil {
+				return TelemetryStatsResult{}, err
+			}
+			if len(trends) != 1 {
+				return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d previous windows, want 1", len(trends))
+			}
+		}
+		result.TrendPrevious = &TelemetryTrendBucket{
+			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
+			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+		}
+		for _, stat := range trends[len(trends)-1].Usage {
+			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
+		}
+	}
 	return result, nil
+}
+
+func validateOptionalTrendWindow(since, until time.Time, name string) error {
+	if since.IsZero() && until.IsZero() {
+		return nil
+	}
+	if since.IsZero() || until.IsZero() || !since.Before(until) {
+		return fmt.Errorf("%w: invalid %s window", ErrInvalidTelemetryRequest, name)
+	}
+	return nil
 }
 
 // TelemetryErrorSignatures returns recurring failure reasons in frequency order.
