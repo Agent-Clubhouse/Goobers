@@ -30,6 +30,12 @@ import (
 // before it, mode 3 refused every such stage, which is every stage in a
 // workflow that does not explicitly opt into scratch.
 
+// checkoutCloneURL derives the git remote for a routed repository. A package
+// var solely so a test can point the real clone path at a local bare repo:
+// without it the only coverage for the code that actually does the work is a
+// live cluster, which is how #3734's two bugs reached one.
+var checkoutCloneURL = runner.DefaultRepoCloneURL
+
 // checkoutRepoWorkspace clones the run's repository into dir when the stage
 // declared a repo workspace. It is a no-op for scratch, which keeps the
 // pre-checkout behaviour byte-identical for stages that never needed it.
@@ -52,7 +58,7 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	if ref.Provider == "" || ref.Name == "" {
 		return fmt.Errorf("repo workspace requested but the dispatcher stamped no repository")
 	}
-	cloneURL, err := runner.DefaultRepoCloneURL(ref)
+	cloneURL, err := checkoutCloneURL(ref)
 	if err != nil {
 		return fmt.Errorf("derive clone URL: %w", err)
 	}
