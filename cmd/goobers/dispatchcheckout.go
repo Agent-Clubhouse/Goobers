@@ -174,8 +174,7 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 	// repository with no usable credential can BLOCK asking for one. A stage
 	// pod has no terminal, so the ask would hang until the stage timed out and
 	// be reported as a timeout rather than as the auth failure it is.
-	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), workspaceGitEnv(dir)...)
-	cmd.Env = append(cmd.Env, env...)
+	cmd.Env = composeGitEnv(dir, env)
 	cmd.Stdout = io.Discard
 	// Tee: the pod's stderr keeps the live view, and the copy rides the error
 	// so the surrendered envelope is self-describing after disposal.
@@ -252,14 +251,68 @@ func clearDirContents(dir string) error {
 // too — real workflows run git directly (goobers push-branch commits and
 // pushes from this very tree), so fixing only our own invocations would move
 // the failure one step later instead of removing it.
-func workspaceGitEnv(dir string) []string {
+// composeGitEnv builds the git child environment from the auth environment (if
+// any) PLUS the workspace's safe.directory exemption.
+//
+// It composes rather than appends because credentials.GitAuthEnvironment
+// returns a COMPLETE environment and deliberately strips foreign GIT_CONFIG_*
+// entries before installing its own (COUNT=1, KEY_0=credential.helper).
+// Appending it after a safe.directory setting silently erased that setting —
+// MEASURED: the clone succeeded and every later git command still failed with
+// "detected dubious ownership", because the exemption was gone by the time git
+// ran. Two independent settings both wanting slot 0 is the trap; the count has
+// to be extended, not restated.
+func composeGitEnv(dir string, authEnv []string) []string {
+	safe := workspaceGitEnv(dir)
+	if len(authEnv) == 0 {
+		// No credential: strip any inherited GIT_CONFIG_* so our indices are
+		// the only ones, then claim slot 0.
+		env := make([]string, 0, len(os.Environ())+4)
+		for _, entry := range os.Environ() {
+			name, _, _ := strings.Cut(entry, "=")
+			upper := strings.ToUpper(name)
+			if upper == "GIT_CONFIG_COUNT" ||
+				strings.HasPrefix(upper, "GIT_CONFIG_KEY_") ||
+				strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
+				continue
+			}
+			env = append(env, entry)
+		}
+		return append(env,
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=safe.directory",
+			"GIT_CONFIG_VALUE_0="+safe.path,
+		)
+	}
+	// With auth: keep GitAuthEnvironment's slot 0 (credential.helper) and take
+	// slot 1, raising the count. Later entries win, so the new count replaces
+	// the one it set.
+	return append(append([]string{}, authEnv...),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_1=safe.directory",
+		"GIT_CONFIG_VALUE_1="+safe.path,
+	)
+}
+
+func workspaceGitEnv(dir string) safeDirectory {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		abs = dir
 	}
+	return safeDirectory{path: abs}
+}
+
+// safeDirectory carries the resolved workspace path plus the env form the STAGE
+// inherits, so the two cannot describe different directories.
+type safeDirectory struct{ path string }
+
+// Env renders the exemption for a child that has no other GIT_CONFIG_* of its
+// own — the stage's command.
+func (s safeDirectory) Env() []string {
 	return []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=safe.directory",
-		"GIT_CONFIG_VALUE_0=" + abs,
+		"GIT_CONFIG_VALUE_0=" + s.path,
 	}
 }

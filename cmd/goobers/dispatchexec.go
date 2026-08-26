@@ -152,7 +152,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The STAGE's git needs the same exemption: it runs in the same
 	// differently-owned workspace, and real workflows commit and push from it.
 	if mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace)); mode != "" && mode != string(apiv1.WorkspaceScratch) {
-		extraEnv = append(extraEnv, workspaceGitEnv(".")...)
+		extraEnv = append(extraEnv, workspaceGitEnv(".").Env()...)
 	}
 	credEnv := make([]string, 0, len(creds))
 	for _, cred := range creds {
