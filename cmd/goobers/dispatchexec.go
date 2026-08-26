@@ -131,6 +131,24 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		// with an error naming the provider rather than the credential plane.
 		return failureEnvelope("credential_resolve_failed", credErr.Error())
 	}
+
+	// Provision the declared workspace BEFORE the stage runs. A repo workspace
+	// checks the repository out at the run branch; scratch is a no-op, so every
+	// stage that ran before pod-side checkout existed behaves identically.
+	//
+	// Ordered after credential resolution because the checkout authenticates
+	// with a credential the stage already declared — no separate
+	// workspace-provisioning credential path exists, deliberately.
+	//
+	// The working directory IS the workspace (podspec stamps WorkingDir), so
+	// checking out into "." is what puts the stage's command inside the tree.
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, creds); err != nil {
+		// Fail closed and NAME the workspace: a stage whose repo never arrived
+		// would otherwise run against an empty directory and fail somewhere far
+		// away — a missing Makefile, a missing test file — with an error that
+		// says nothing about provisioning.
+		return failureEnvelope("workspace_provision_failed", err.Error())
+	}
 	credEnv := make([]string, 0, len(creds))
 	for _, cred := range creds {
 		credEnv = append(credEnv, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)

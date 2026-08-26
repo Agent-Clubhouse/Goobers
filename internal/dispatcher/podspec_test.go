@@ -772,3 +772,26 @@ func TestStagePodCarriesCapabilityNamesButNeverValues(t *testing.T) {
 		t.Fatalf("%s = %q, want both declared capability names", EnvStageCapabilities, found)
 	}
 }
+
+// The skew check compares the TAG to the dispatcher's embedded commit and reads
+// no registry (decision 009). That inference holds only if a tag maps to one
+// image — and a registry tag is mutable. With the IfNotPresent default, a node
+// that cached an earlier push under the same tag keeps serving it, so the skew
+// check passes while the pod runs different content.
+//
+// MEASURED: a Windows runner image rebuilt at the same commit to add the
+// daemon's CA was ignored by the node that had the old layers; the stage failed
+// x509 twice more after the fix was already in the registry.
+func TestPodSpecAlwaysPullsTheStageImage(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if len(pod.Spec.Containers) == 0 {
+		t.Fatal("no containers in the rendered pod")
+	}
+	if got := pod.Spec.Containers[0].ImagePullPolicy; got != corev1.PullAlways {
+		t.Fatalf("ImagePullPolicy = %q, want %q — a mutable tag under IfNotPresent lets a node serve stale content that the skew check cannot see",
+			got, corev1.PullAlways)
+	}
+}
