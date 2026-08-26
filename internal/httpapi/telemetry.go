@@ -94,6 +94,12 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	if err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
+	if err := validateTelemetryTrendWindow(trendSince, trendUntil, "trend"); err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	if err := validateTelemetryTrendWindow(trendPreviousSince, trendPreviousUntil, "trend previous"); err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
 	trendBuckets := 0
 	if values.Has("trendBuckets") {
 		trendBuckets, err = strconv.Atoi(values.Get("trendBuckets"))
@@ -130,6 +136,16 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 		TrendPreviousSince:    trendPreviousSince,
 		TrendPreviousUntil:    trendPreviousUntil,
 	}, nil
+}
+
+func validateTelemetryTrendWindow(since, until time.Time, name string) error {
+	if since.IsZero() && until.IsZero() {
+		return nil
+	}
+	if since.IsZero() || until.IsZero() || !since.Before(until) {
+		return fmt.Errorf("%sSince and %sUntil must form an increasing range", name, name)
+	}
+	return nil
 }
 
 func parseTelemetryGroupBy(value string) (branch, model, harnessVersion bool, err error) {

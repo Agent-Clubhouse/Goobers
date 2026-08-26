@@ -412,6 +412,12 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	if err := validateWindow(req.Since, req.Until); err != nil {
 		return TelemetryStatsResult{}, err
 	}
+	if err := validateOptionalTrendWindow(req.TrendSince, req.TrendUntil, "trend"); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := validateOptionalTrendWindow(req.TrendPreviousSince, req.TrendPreviousUntil, "trend previous"); err != nil {
+		return TelemetryStatsResult{}, err
+	}
 	if req.Branch != nil && *req.Branch < 0 {
 		return TelemetryStatsResult{}, fmt.Errorf("%w: branch must be non-negative", ErrInvalidTelemetryRequest)
 	}
@@ -600,7 +606,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 	var trends []rollup.TrendResult
 	if req.TrendBuckets > 0 {
-		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() || !req.TrendSince.Before(req.TrendUntil) {
+		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() {
 			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
 		}
 		total := req.TrendUntil.Sub(req.TrendSince)
@@ -627,10 +633,6 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			})
 		}
 		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
-			if req.TrendPreviousSince.IsZero() || req.TrendPreviousUntil.IsZero() ||
-				!req.TrendPreviousSince.Before(req.TrendPreviousUntil) {
-				return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend previous window", ErrInvalidTelemetryRequest)
-			}
 			windows = append(windows, rollup.TrendWindow{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil})
 		}
 		var err error
@@ -678,6 +680,16 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		}
 	}
 	return result, nil
+}
+
+func validateOptionalTrendWindow(since, until time.Time, name string) error {
+	if since.IsZero() && until.IsZero() {
+		return nil
+	}
+	if since.IsZero() || until.IsZero() || !since.Before(until) {
+		return fmt.Errorf("%w: invalid %s window", ErrInvalidTelemetryRequest, name)
+	}
+	return nil
 }
 
 // TelemetryErrorSignatures returns recurring failure reasons in frequency order.

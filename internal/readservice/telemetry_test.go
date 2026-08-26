@@ -341,6 +341,21 @@ func TestTelemetryStatsRejectsTrendRangeTooShortForBuckets(t *testing.T) {
 	}
 }
 
+func TestTelemetryStatsRejectsIncompletePreviousTrendWindow(t *testing.T) {
+	store := &fakeTelemetryStore{}
+	service := &Telemetry{store: store}
+
+	_, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		TrendPreviousSince: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if !errors.Is(err, ErrInvalidTelemetryRequest) {
+		t.Fatalf("incomplete previous trend error = %v, want invalid request", err)
+	}
+	if store.statsCalled != 0 {
+		t.Fatalf("stats store called %d times, want no calls", store.statsCalled)
+	}
+}
+
 func TestTelemetryErrorSignaturesProjectsScopeAndExamples(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
