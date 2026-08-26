@@ -222,6 +222,8 @@ github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer 
 # client, the stage-credential resolve, and the egress-probe acceptance tooling — whose
 # callers are the in-pod stage runtime (image contract,
 # docs/design/goobernetes-deployment-images.md) and the v1 exit smoke (#3517).
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Has # Unused: Get and Put became reachable when agentic kit delivery landed, Has and Describe did not. Has is the HEAD probe a caller would use to skip a large Get; no caller skips one yet.
+github.com/goobers/goobers/internal/dispatcher.BlobClient.Describe # Unused: diagnostic string for the blob endpoint; nothing formats it today.
 github.com/goobers/goobers/internal/dispatcher.EgressTriple.Verdict # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeTCP # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
