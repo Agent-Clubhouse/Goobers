@@ -179,6 +179,18 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	readStarted := make(chan struct{})
+	allowRead := make(chan struct{})
+	feed.readChanges = func(ctx context.Context, seq uint64, limit int) ([]Change, error) {
+		close(readStarted)
+		select {
+		case <-allowRead:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return store.Changes(ctx, seq, limit)
+	}
+
 	type result struct {
 		page FeedPosition
 		err  error
@@ -189,23 +201,21 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 		done <- result{page: page, err: err}
 	}()
 
-	// Wait until the reader has registered, then commit and notify. This
-	// deterministically places the commit in the read's registration window.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		feed.mu.Lock()
-		registered := len(feed.waiters) > 0
-		feed.mu.Unlock()
-		if registered {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("reader did not register a waiter")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-readStarted:
+	case <-ctx.Done():
+		t.Fatal("reader did not reach the feed read")
 	}
+	feed.mu.Lock()
+	registered := len(feed.waiters) > 0
+	feed.mu.Unlock()
+	if !registered {
+		t.Fatal("reader started reading before registering a waiter")
+	}
+
 	seedChange(t, store, 7)
 	feed.Notify()
+	close(allowRead)
 
 	select {
 	case result := <-done:
