@@ -6,6 +6,7 @@ import type {
   TelemetryErrorSignaturesResult,
   TelemetryStatsOptions,
   TelemetryStatsResult,
+  TelemetryTrendBucket,
   TelemetryUsageStats,
 } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
@@ -213,6 +214,17 @@ export function insightPreviousWindowFilters(
   };
 }
 
+export function selectInsightCostTrendBuckets(
+  trend: TelemetryTrendBucket[],
+  bucketCount: number,
+  hasPrevious: boolean,
+): TelemetryTrendBucket[] {
+  const combinedCount = hasPrevious ? bucketCount * 2 : bucketCount;
+  const combinedTrend = trend.slice(0, combinedCount);
+  const currentStart = hasPrevious ? bucketCount : 0;
+  return combinedTrend.slice(currentStart, currentStart + bucketCount);
+}
+
 export function useInsightCostTrend(
   client: DaemonClient,
   window: InsightWindow,
@@ -272,8 +284,11 @@ export function useInsightCostTrend(
     ).then(
       (stats) => {
         const trend = stats.trend ?? [];
-        const split = previousRange ? trend.length - bucketRanges.length : 0;
-        const buckets = (previousRange ? trend.slice(split) : trend).map(({ since, until, usage }) => ({
+        const buckets = selectInsightCostTrendBuckets(
+          trend,
+          bucketRanges.length,
+          previousRange !== undefined,
+        ).map(({ since, until, usage }) => ({
           since,
           until,
           usage,
