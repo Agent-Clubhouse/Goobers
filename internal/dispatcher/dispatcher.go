@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -77,6 +78,15 @@ type Config struct {
 	// sharing this process). In a split deployment it MUST be set, or the pod
 	// surrenders unauthenticated and the daemon rejects it (Goobers#3701).
 	TokenMinter TokenMinter
+
+	// KitWriter publishes an agentic stage's execution kit and returns its
+	// content address. Declared as a SEAM for the same reason as TokenMinter:
+	// building a kit needs the instance configuration, which lives in the
+	// worker and must not become a dependency of this package.
+	//
+	// Nil means agentic stages cannot be dispatched — Dispatch refuses them
+	// rather than creating a pod that would find no kit and fail obscurely.
+	KitWriter KitWriter
 
 	// BlobEndpoint is the URL stage pods fetch/put artifact digests against
 	// (decision 010) — stamped into every pod's environment, every runner
@@ -240,6 +250,23 @@ type Attempt struct {
 	// command; scratch (or empty) leaves it an empty directory, which is what
 	// every pod-executed stage got before pod-side checkout existed.
 	Workspace string
+	// Agentic marks a stage the pod executes by invoking a goober through its
+	// harness rather than by running a declared command. Such a stage needs its
+	// whole InvocationEnvelope and its goober's resolved execution inputs, which
+	// travel as a claim check (internal/agentickit) rather than on the pod spec.
+	Agentic bool
+	// Envelope is the invocation an AGENTIC stage executes. Nil for every
+	// deterministic stage, whose inputs are the declared command and its
+	// stamped environment.
+	//
+	// It rides the attempt rather than the pod: the kit writer needs it to
+	// resolve the goober, and the pod receives it inside the verified kit — not
+	// on a pod spec, where the run's goal and ownership boundary would be
+	// readable by anything with namespace read.
+	Envelope *apiv1.InvocationEnvelope
+	// KitDigest is the published kit's content address, set by Dispatch for an
+	// agentic attempt and stamped on the pod. Never set by a caller.
+	KitDigest string
 	// RunContext is the operational identity a goobers-CLI stage reads to learn
 	// which run it belongs to and which repository it was routed to. Empty for
 	// every other stage.
@@ -403,6 +430,12 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// KitWriter publishes an agentic stage's execution kit to content-addressed
+// storage the pod can read, returning the digest to stamp on the pod.
+type KitWriter interface {
+	WriteKit(ctx context.Context, attempt Attempt) (digest string, err error)
+}
+
 // TokenMinter issues per-run pod bearers. internal/podauth provides both
 // implementations; the dispatcher depends on the seam, never the package, so
 // a TokenReview-based minter can replace it without touching this file.
@@ -495,6 +528,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// stop the dispatch rather than silently produce a pod that cannot
 	// surrender — the failure would otherwise surface much later, as an
 	// unauthenticated PUT, and read as a daemon problem.
+	// An agentic stage's kit is published BEFORE the pod exists, and a failure
+	// to publish refuses the attempt rather than creating a pod that would find
+	// no kit and fail with something obscure inside the container.
+	if attempt.Agentic {
+		if d.cfg.KitWriter == nil {
+			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)
+		}
+		digest, kerr := d.cfg.KitWriter.WriteKit(ctx, attempt)
+		if kerr != nil {
+			return Report{}, fmt.Errorf("dispatcher: publish agentic kit for run %s stage %s attempt %d: %w", attempt.RunID, attempt.Stage, attempt.Number, kerr)
+		}
+		if digest == "" {
+			return Report{}, fmt.Errorf("dispatcher: agentic kit writer returned no digest for run %s stage %s", attempt.RunID, attempt.Stage)
+		}
+		attempt.KitDigest = digest
+	}
 	if d.cfg.TokenMinter != nil && attempt.PodToken == "" {
 		token, terr := d.cfg.TokenMinter.Mint(attempt.RunID, 0)
 		if terr != nil {
