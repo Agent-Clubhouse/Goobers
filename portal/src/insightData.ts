@@ -238,12 +238,20 @@ export function useInsightCostTrend(
     request.current = controller;
     const bucketRanges = insightTrendBuckets(window);
     const previousRange = insightPreviousWindowFilters(window);
+    const currentRange = insightWindowFilters(window);
     setState((current) =>
       (current.status === "ready" || current.status === "stale") &&
       current.data.window === window
         ? { status: "stale", data: current.data }
         : { status: "loading" },
     );
+
+    if (bucketRanges.length === 0) {
+      const data: InsightCostTrendSnapshot = { buckets: [], window };
+      cache.set(cacheKey, data, dependencies, cacheRevision);
+      setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
+      return Promise.resolve(true);
+    }
 
     const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
     const trendUntil = bucketRanges.at(-1)?.until;
@@ -252,6 +260,8 @@ export function useInsightCostTrend(
       {
         gaggle,
         workflow,
+        since: currentRange.since,
+        until: currentRange.until,
         trendSince,
         trendUntil,
         trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,

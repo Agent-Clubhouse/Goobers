@@ -292,12 +292,18 @@ describe("Insight page", () => {
       );
     });
 
+    const trendRequestsBeforeAll = getTelemetryStats.mock.calls.filter(
+      ([request]) => request?.trendBuckets !== undefined,
+    ).length;
     await user.selectOptions(screen.getByLabelText("Time window"), "all");
     expect(
       await screen.findByText(
         "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
       ),
     ).toBeInTheDocument();
+    expect(
+      getTelemetryStats.mock.calls.filter(([request]) => request?.trendBuckets !== undefined),
+    ).toHaveLength(trendRequestsBeforeAll);
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
