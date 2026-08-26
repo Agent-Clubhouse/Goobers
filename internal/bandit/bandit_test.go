@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -100,12 +101,27 @@ func TestEvaluateRequiresPerArmSampleFloors(t *testing.T) {
 }
 
 type eventJournal struct {
+	mu     sync.Mutex
 	events []journal.Event
 }
 
 func (j *eventJournal) Append(event journal.Event) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	j.events = append(j.events, event)
 	return nil
+}
+
+func (j *eventJournal) AppendIfAbsent(event journal.Event, match func(journal.Event) bool) (bool, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, existing := range j.events {
+		if match(existing) {
+			return false, nil
+		}
+	}
+	j.events = append(j.events, event)
+	return true, nil
 }
 
 func TestAssignRecordApplyAndPromotionAreJournaled(t *testing.T) {
@@ -147,6 +163,81 @@ func TestAssignRecordApplyAndPromotionAreJournaled(t *testing.T) {
 	}
 	if j.events[len(j.events)-1].Type != journal.EventBanditPromotionProposed {
 		t.Fatalf("last event = %+v, want promotion proposal", j.events[len(j.events)-1])
+	}
+}
+
+func TestEvaluateAndRecordEmitsRetirementOnlyOnTransition(t *testing.T) {
+	c := testConfig()
+	observations := []Observation{
+		{Stage: "review", Arm: "control", Success: false, Window: "train"},
+		{Stage: "review", Arm: "control", Success: false, Window: "train"},
+		{Stage: "review", Arm: "control", Success: true, Window: "eval"},
+		{Stage: "review", Arm: "control", Success: false, Window: "eval"},
+		{Stage: "review", Arm: "treatment", Success: true, Window: "train"},
+		{Stage: "review", Arm: "treatment", Success: true, Window: "train"},
+		{Stage: "review", Arm: "treatment", Success: true, Window: "eval"},
+		{Stage: "review", Arm: "treatment", Success: true, Window: "eval"},
+	}
+	observations = append(observations,
+		Observation{Stage: "review", Arm: "control", Success: false, Window: "eval"})
+	j := new(eventJournal)
+
+	if _, _, err := c.EvaluateAndRecord(observations, j); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.EvaluateAndRecord(observations, j); err != nil {
+		t.Fatal(err)
+	}
+
+	var retired int
+	for _, event := range j.events {
+		if event.Type == journal.EventBanditRetired {
+			retired++
+		}
+	}
+	if retired != 1 {
+		t.Fatalf("retirement events = %d, want 1: %+v", retired, j.events)
+	}
+}
+
+func TestEvaluateAndRecordRetirementIsAtomic(t *testing.T) {
+	c := testConfig()
+	c.MinLift = 2
+	observations := []Observation{
+		{Stage: "review", Arm: "control", Success: false, Window: "train"},
+		{Stage: "review", Arm: "control", Success: false, Window: "train"},
+		{Stage: "review", Arm: "control", Success: true, Window: "eval"},
+		{Stage: "review", Arm: "control", Success: false, Window: "eval"},
+		{Stage: "review", Arm: "control", Success: false, Window: "eval"},
+	}
+	j := new(eventJournal)
+	const calls = 20
+	errs := make(chan error, calls)
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := c.EvaluateAndRecord(observations, j)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var retired int
+	for _, event := range j.events {
+		if event.Type == journal.EventBanditRetired {
+			retired++
+		}
+	}
+	if retired != 1 {
+		t.Fatalf("retirement events = %d, want 1: %+v", retired, j.events)
 	}
 }
 

@@ -31,6 +31,15 @@ func (j *branchJournal) Append(ev journal.Event) error {
 	return j.run.Append(ev)
 }
 
+func (j *branchJournal) AppendIfAbsent(ev journal.Event, match func(journal.Event) bool) (bool, error) {
+	if ev.Branch == 0 {
+		ev.Branch = j.branch
+	}
+	return j.run.AppendIfAbsent(ev, func(existing journal.Event) bool {
+		return existing.Branch == j.branch && match(existing)
+	})
+}
+
 func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }

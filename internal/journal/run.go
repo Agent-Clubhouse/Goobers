@@ -506,6 +506,7 @@ func (r *Run) Append(ev Event) error {
 	if r.closed {
 		return ErrClosed
 	}
+
 	if err := r.append(ev); err != nil {
 		return err
 	}
@@ -537,6 +538,35 @@ func (r *Run) Append(ev Event) error {
 		r.observer(r.id.RunID, r.seq)
 	}
 	return nil
+}
+
+// AppendIfAbsent appends ev while holding the journal lock only when no
+// committed event matches match. It makes a check-and-append operation atomic.
+func (r *Run) AppendIfAbsent(ev Event, match func(Event) bool) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false, ErrClosed
+	}
+	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range events {
+		if match(existing) {
+			return false, nil
+		}
+	}
+	if err := r.append(ev); err != nil {
+		return false, err
+	}
+	if err := r.checkpoint(); err != nil {
+		return false, err
+	}
+	if r.observer != nil {
+		r.observer(r.id.RunID, r.seq)
+	}
+	return true, nil
 }
 
 // ClaimNotificationDelivery appends pending unless the journal already contains
