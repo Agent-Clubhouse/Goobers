@@ -661,7 +661,16 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		if len(trends) == 0 {
 			var err error
 			trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
-				Stats:   rollup.StatsRequest{Gaggle: req.Gaggle, Workflow: req.Workflow},
+				Stats: rollup.StatsRequest{
+					Gaggle:                req.Gaggle,
+					Workflow:              req.Workflow,
+					Branch:                req.Branch,
+					Model:                 req.Model,
+					HarnessVersion:        req.HarnessVersion,
+					GroupByBranch:         req.GroupByBranch,
+					GroupByModel:          req.GroupByModel,
+					GroupByHarnessVersion: req.GroupByHarnessVersion,
+				},
 				Windows: []rollup.TrendWindow{{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil}},
 			})
 			if err != nil {

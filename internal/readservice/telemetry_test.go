@@ -356,6 +356,57 @@ func TestTelemetryStatsRejectsIncompletePreviousTrendWindow(t *testing.T) {
 	}
 }
 
+func TestTelemetryStatsStandalonePreviousTrendPreservesFilters(t *testing.T) {
+	previousSince := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	previousUntil := previousSince.Add(24 * time.Hour)
+	branch := 3
+	store := &fakeTelemetryStore{
+		trendResults: []rollup.TrendResult{{
+			Usage: []rollup.UsageStats{{Scope: "instance", CostSamples: 1, CostUSD: 4, HasCost: true}},
+		}},
+	}
+	service := &Telemetry{store: store}
+
+	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		Gaggle:                "core",
+		Workflow:              "implement",
+		Branch:                &branch,
+		Model:                 "gpt-5.6-sol",
+		HarnessVersion:        "copilot version 1.2.3",
+		GroupByBranch:         true,
+		GroupByModel:          true,
+		GroupByHarnessVersion: true,
+		TrendPreviousSince:    previousSince,
+		TrendPreviousUntil:    previousUntil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantStats := rollup.StatsRequest{
+		Gaggle:                "core",
+		Workflow:              "implement",
+		Branch:                &branch,
+		Model:                 "gpt-5.6-sol",
+		HarnessVersion:        "copilot version 1.2.3",
+		GroupByBranch:         true,
+		GroupByModel:          true,
+		GroupByHarnessVersion: true,
+	}
+	if !reflect.DeepEqual(store.trendReq.Stats, wantStats) {
+		t.Fatalf("standalone previous trend filters = %+v, want %+v", store.trendReq.Stats, wantStats)
+	}
+	if len(store.trendReq.Windows) != 1 ||
+		!store.trendReq.Windows[0].Since.Equal(previousSince) ||
+		!store.trendReq.Windows[0].Until.Equal(previousUntil) {
+		t.Fatalf("standalone previous trend windows = %+v", store.trendReq.Windows)
+	}
+	if got.TrendPrevious == nil || len(got.TrendPrevious.Usage) != 1 ||
+		got.TrendPrevious.Usage[0].CostUSD == nil || *got.TrendPrevious.Usage[0].CostUSD != 4 {
+		t.Fatalf("standalone previous trend projection = %+v", got.TrendPrevious)
+	}
+}
+
 func TestTelemetryErrorSignaturesProjectsScopeAndExamples(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
