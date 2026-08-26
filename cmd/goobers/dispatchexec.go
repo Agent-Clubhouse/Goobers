@@ -208,7 +208,21 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// already run, and its ResultEnvelope is the authoritative outcome — losing
 	// a log artifact must not turn a completed stage into a failure. Failures
 	// are surfaced on stderr so they are visible rather than silent.
-	recordStageArtifacts(ctx, stderr, map[string][]byte{
+	//
+	// The returned pointers go on the ENVELOPE too, and that is not
+	// duplication. The journal emission and the envelope reach the run by
+	// different routes: emissions land in the LIVE journal directly, while the
+	// envelope is surrendered and replayed into Temporal history. A projection
+	// rebuilt from history therefore cannot see an emission-only artifact, and
+	// the two journals diverge — MEASURED on a live cluster, on a run that
+	// reported completed/success:
+	//   live_journal_divergence: normative event 4 diverges:
+	//     live:      type=artifact.recorded name=cli-on-pod/stdout.log
+	//     projected: type=stage.finished
+	// Carrying them on the envelope also closes the parity gap that a
+	// pod-executed stage surrendered zero artifacts where the same stage on a
+	// self runner surrendered three.
+	stageArtifacts := recordStageArtifacts(ctx, stderr, map[string][]byte{
 		"stdout.log": scrubbedOut,
 		"stderr.log": scrubbedErr,
 	})
@@ -230,8 +244,9 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			// contract, and honouring the exit code alone would report a
 			// success whose outputs the workflow cannot read.
 			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Outputs: outputs,
+				Status:    apiv1.ResultFailure,
+				Outputs:   outputs,
+				Artifacts: stageArtifacts,
 				Error: &apiv1.ErrorInfo{
 					Code:    "missing_result_file",
 					Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", resultFile),
@@ -239,15 +254,16 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			}
 		case rerr != nil && !os.IsNotExist(rerr):
 			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Outputs: outputs,
-				Error:   &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
+				Status:    apiv1.ResultFailure,
+				Outputs:   outputs,
+				Artifacts: stageArtifacts,
+				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
 			}
 		}
 	}
 
 	if runErr == nil && !timedOut {
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs}
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs, Artifacts: stageArtifacts}
 	}
 
 	code, message := "stage_failed", "stage exited with an error"
@@ -265,10 +281,15 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			code, message = "stage_interrupted", "dispatch-exec was interrupted before the stage finished"
 		}
 	}
+	// A FAILED stage carries its logs too — this is the case where they matter
+	// most. The local executor attaches them on failure as well, and a pod that
+	// surrendered artifacts only on success would make a failing stage harder
+	// to diagnose on the substrate that is already harder to reach into.
 	return apiv1.ResultEnvelope{
-		Status:  apiv1.ResultFailure,
-		Outputs: outputs,
-		Error:   &apiv1.ErrorInfo{Code: code, Message: message},
+		Status:    apiv1.ResultFailure,
+		Outputs:   outputs,
+		Artifacts: stageArtifacts,
+		Error:     &apiv1.ErrorInfo{Code: code, Message: message},
 	}
 }
 
@@ -404,12 +425,23 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 // only path — and this is what makes a pod-executed stage's output inspectable
 // after the pod is disposed, which is the whole point of a fresh-per-attempt
 // substrate.
-func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) {
+// recordStageArtifacts emits the stage's streams as artifacts through the
+// daemon's journal plane and RETURNS the pointers it emitted, so the caller can
+// carry them on the surrendered envelope as well.
+//
+// The pointers are derived, not read back: artifact storage is content
+// addressed, so journal.ArtifactRef computes the exact Ref the daemon's writer
+// will produce from the same bytes, with no extra round trip and no dependence
+// on the emit response (which returns sequence counters, not refs). This is
+// sound only because the bytes handed in are ALREADY SCRUBBED — RecordArtifact
+// scrubs before digesting, so an unscrubbed input here would silently address a
+// different blob than the one the daemon stores.
+func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	runID := os.Getenv(dispatcher.EnvRunID)
 	stage := os.Getenv(dispatcher.EnvStage)
 	if daemonAPI == "" || runID == "" || stage == "" {
-		return
+		return nil
 	}
 	attempt, err := strconv.Atoi(os.Getenv(dispatcher.EnvAttempt))
 	if err != nil || attempt < 1 {
@@ -421,10 +453,25 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 	}
 	sort.Strings(names) // deterministic op order; the daemon assigns sequence
 	ops := make([]livejournal.Op, 0, len(names))
+	pointers := make([]apiv1.ArtifactPointer, 0, len(names))
 	for _, name := range names {
 		data := streams[name]
 		if len(data) == 0 {
 			continue
+		}
+		ref, refErr := journal.ArtifactRef(data)
+		if refErr != nil {
+			// Emit the artifact regardless: a pointer we cannot derive is a
+			// missing envelope entry, not a reason to drop the journal record.
+			_, _ = fmt.Fprintf(stderr, "goobers: derive artifact ref for %s: %v\n", name, refErr)
+		} else {
+			pointers = append(pointers, apiv1.ArtifactPointer{
+				Path:      ref.Path,
+				Digest:    ref.Digest,
+				Size:      ref.Size,
+				MediaType: "text/plain",
+				Integrity: apiv1.IntegrityDerived,
+			})
 		}
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
@@ -438,7 +485,7 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		})
 	}
 	if len(ops) == 0 {
-		return
+		return nil
 	}
 	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
 	if _, err := emitter.Emit(ctx, livejournal.EmitRequest{
@@ -448,4 +495,5 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 	}); err != nil {
 		_, _ = fmt.Fprintf(stderr, "dispatch-exec: record stage artifacts: %v\n", err)
 	}
+	return pointers
 }

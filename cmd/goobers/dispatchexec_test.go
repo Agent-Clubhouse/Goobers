@@ -15,6 +15,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
@@ -433,5 +435,63 @@ func TestDispatcherControlEnvIsExactlyItsTwoHalves(t *testing.T) {
 	}
 	if !privileged[dispatcher.EnvPodToken] {
 		t.Fatal("EnvPodToken must be privileged: it authorizes surrendering this run's results")
+	}
+}
+
+// The pointers a stage pod surrenders are DERIVED from the bytes, never read
+// back from the emit response. That is sound only if the derivation matches
+// what the daemon's writer produces for the same bytes — otherwise the envelope
+// would name a blob that does not exist, which is worse than naming none.
+func TestRecordStageArtifactsDerivesTheDaemonsRef(t *testing.T) {
+	var got livejournal.EmitRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"applied":1}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv(dispatcher.EnvDaemonAPI, srv.URL)
+	t.Setenv(dispatcher.EnvRunID, "run-art")
+	t.Setenv(dispatcher.EnvStage, "build")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	data := []byte("hello artifact\n")
+	var errOut strings.Builder
+	pointers := recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": data})
+
+	if len(pointers) != 1 {
+		t.Fatalf("expected one pointer, got %d", len(pointers))
+	}
+	// The independent oracle: what the journal itself computes for these bytes.
+	want, err := journal.ArtifactRef(data)
+	if err != nil {
+		t.Fatalf("oracle: %v", err)
+	}
+	if pointers[0].Digest != want.Digest {
+		t.Fatalf("digest = %q, want the journal's %q", pointers[0].Digest, want.Digest)
+	}
+	if pointers[0].Path != want.Path {
+		t.Fatalf("path = %q, want %q", pointers[0].Path, want.Path)
+	}
+	if pointers[0].Size != want.Size {
+		t.Fatalf("size = %d, want %d", pointers[0].Size, want.Size)
+	}
+	// And the same bytes must actually have been emitted, so the derived
+	// pointer and the journal record describe one blob rather than two.
+	if len(got.Ops) != 1 || got.Ops[0].Artifact == nil {
+		t.Fatalf("expected one artifact op, got %+v", got.Ops)
+	}
+	if string(got.Ops[0].Artifact.Data) != string(data) {
+		t.Fatal("emitted bytes differ from the bytes the pointer was derived from")
+	}
+}
+
+// An empty stream is not an artifact: emitting a zero-byte blob would put a
+// pointer on the envelope for content no one wrote.
+func TestRecordStageArtifactsSkipsEmptyStreams(t *testing.T) {
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	var errOut strings.Builder
+	if got := recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": nil}); len(got) != 0 {
+		t.Fatalf("expected no pointers, got %+v", got)
 	}
 }
