@@ -64,7 +64,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 }
 
 func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequest, error) {
-	if err := validateQueryValues(values, "workflow", "gaggle", "branch", "model", "harnessVersion", "groupBy", "since", "until"); err != nil {
+	if err := validateQueryValues(values, "workflow", "gaggle", "branch", "model", "harnessVersion", "groupBy", "since", "until", "trendSince", "trendUntil", "trendBuckets", "trendPreviousSince", "trendPreviousUntil"); err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -77,6 +77,29 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	}
 	if !since.IsZero() && !until.IsZero() && since.After(until) {
 		return readservice.TelemetryStatsRequest{}, errors.New("since must not be after until")
+	}
+	trendSince, err := parseOptionalTime(values.Get("trendSince"), "trendSince")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendUntil, err := parseOptionalTime(values.Get("trendUntil"), "trendUntil")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendPreviousSince, err := parseOptionalTime(values.Get("trendPreviousSince"), "trendPreviousSince")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendPreviousUntil, err := parseOptionalTime(values.Get("trendPreviousUntil"), "trendPreviousUntil")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendBuckets := 0
+	if values.Has("trendBuckets") {
+		trendBuckets, err = strconv.Atoi(values.Get("trendBuckets"))
+		if err != nil || trendBuckets < 1 || trendBuckets > 100 || trendSince.IsZero() || trendUntil.IsZero() || !trendSince.Before(trendUntil) {
+			return readservice.TelemetryStatsRequest{}, errors.New("trendBuckets requires a valid trendSince/trendUntil range and must be between 1 and 100")
+		}
 	}
 	var branch *int
 	if values.Has("branch") {
@@ -101,6 +124,11 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 		GroupByHarnessVersion: groupByHarnessVersion,
 		Since:                 since,
 		Until:                 until,
+		TrendSince:            trendSince,
+		TrendUntil:            trendUntil,
+		TrendBuckets:          trendBuckets,
+		TrendPreviousSince:    trendPreviousSince,
+		TrendPreviousUntil:    trendPreviousUntil,
 	}, nil
 }
 

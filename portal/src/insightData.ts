@@ -245,15 +245,33 @@ export function useInsightCostTrend(
         : { status: "loading" },
     );
 
-    const fetchPeriod = (range: { since: string; until: string }) =>
-      client
-        .getTelemetryStats({ ...range, gaggle, workflow }, { signal: controller.signal })
-        .then((stats) => ({ since: range.since, until: range.until, usage: stats.usage }));
-
-    return Promise.all([
-      Promise.all(bucketRanges.map(fetchPeriod)),
-      previousRange ? fetchPeriod(previousRange) : Promise.resolve(undefined),
-    ]).then(
+    const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
+    const trendUntil = bucketRanges.at(-1)?.until;
+    const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
+    return client.getTelemetryStats(
+      {
+        gaggle,
+        workflow,
+        trendSince,
+        trendUntil,
+        trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
+        trendPreviousSince: previousRange?.since,
+        trendPreviousUntil: previousRange?.until,
+      },
+      { signal: controller.signal },
+    ).then(
+      (stats) => {
+        const trend = stats.trend ?? [];
+        const split = previousRange ? trend.length - bucketRanges.length : 0;
+        const buckets = (previousRange ? trend.slice(split) : trend).map(({ since, until, usage }) => ({
+          since,
+          until,
+          usage,
+        }));
+        const previous = previousRange ? stats.trendPrevious : undefined;
+        return [buckets, previous] as const;
+      },
+    ).then(
       ([buckets, previous]) => {
         if (controller.signal.aborted) {
           return true;

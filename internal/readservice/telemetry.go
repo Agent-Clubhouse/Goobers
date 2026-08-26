@@ -46,6 +46,11 @@ type TelemetryStatsRequest struct {
 	GroupByHarnessVersion bool
 	Since                 time.Time
 	Until                 time.Time
+	TrendSince            time.Time
+	TrendUntil            time.Time
+	TrendBuckets          int
+	TrendPreviousSince    time.Time
+	TrendPreviousUntil    time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
@@ -65,6 +70,14 @@ type TelemetryStatsResult struct {
 	PromotionCandidates []PromotionSignal      `json:"promotionCandidates,omitempty"`
 	Curation            TelemetryCurationStats `json:"curation"`
 	ReadyPool           TelemetryReadyPool     `json:"readyPool"`
+	Trend               []TelemetryTrendBucket `json:"trend,omitempty"`
+	TrendPrevious       *TelemetryTrendBucket  `json:"trendPrevious,omitempty"`
+}
+
+type TelemetryTrendBucket struct {
+	Since string                `json:"since"`
+	Until string                `json:"until"`
+	Usage []TelemetryUsageStats `json:"usage"`
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
@@ -363,6 +376,36 @@ func NewTelemetry(db *rollup.DB) (*Telemetry, error) {
 	return &Telemetry{store: db}, nil
 }
 
+func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
+	item := TelemetryUsageStats{
+		Scope: stat.Scope, Gaggle: stat.Gaggle, Workflow: stat.Workflow, Stage: stat.Stage,
+		Branch: stat.Branch, Model: stat.Model, HarnessVersion: stat.HarnessVersion,
+		TotalAttempts: stat.TotalAttempts, TokenSamples: stat.TokenSamples,
+		PremiumRequestSamples: stat.PremiumRequestSamples, CostSamples: stat.CostSamples,
+		RetryWasteAttempts: stat.RetryWasteAttempts,
+	}
+	if stat.HasTokens {
+		item.P50Tokens = int64Pointer(stat.P50Tokens)
+		item.P95Tokens = int64Pointer(stat.P95Tokens)
+	}
+	if stat.HasPremiumRequests {
+		item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
+		item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
+	}
+	if stat.HasCost {
+		item.CostUSD = float64Pointer(stat.CostUSD)
+		item.P50CostUSD = float64Pointer(stat.P50CostUSD)
+		item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+	}
+	if stat.HasRetryWasteTokens {
+		item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+	}
+	if stat.HasRetryWasteCost {
+		item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+	}
+	return item
+}
+
 // TelemetryStats returns workflow and stage aggregates in stable name order.
 func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (TelemetryStatsResult, error) {
 	if err := validateWindow(req.Since, req.Until); err != nil {
@@ -529,40 +572,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.Stages = append(result.Stages, item)
 	}
 	for _, stat := range stats.Usage {
-		item := TelemetryUsageStats{
-			Scope:                 stat.Scope,
-			Gaggle:                stat.Gaggle,
-			Workflow:              stat.Workflow,
-			Stage:                 stat.Stage,
-			Branch:                stat.Branch,
-			Model:                 stat.Model,
-			HarnessVersion:        stat.HarnessVersion,
-			TotalAttempts:         stat.TotalAttempts,
-			TokenSamples:          stat.TokenSamples,
-			PremiumRequestSamples: stat.PremiumRequestSamples,
-			CostSamples:           stat.CostSamples,
-			RetryWasteAttempts:    stat.RetryWasteAttempts,
-		}
-		if stat.HasTokens {
-			item.P50Tokens = int64Pointer(stat.P50Tokens)
-			item.P95Tokens = int64Pointer(stat.P95Tokens)
-		}
-		if stat.HasPremiumRequests {
-			item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
-			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
-		}
-		if stat.HasCost {
-			item.CostUSD = float64Pointer(stat.CostUSD)
-			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
-			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
-		}
-		if stat.HasRetryWasteTokens {
-			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
-		}
-		if stat.HasRetryWasteCost {
-			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
-		}
-		result.Usage = append(result.Usage, item)
+		result.Usage = append(result.Usage, projectTelemetryUsage(stat))
 	}
 	for _, stat := range stats.Models {
 		item := TelemetryModelStats{
@@ -586,6 +596,51 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.CostUSD = float64Pointer(stat.CostUSD)
 		}
 		result.Models = append(result.Models, item)
+	}
+	if req.TrendBuckets > 0 {
+		width := req.TrendUntil.Sub(req.TrendSince) / time.Duration(req.TrendBuckets)
+		result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
+		for index := 0; index < req.TrendBuckets; index++ {
+			since := req.TrendSince.Add(width * time.Duration(index))
+			until := req.TrendSince.Add(width * time.Duration(index+1))
+			bucketStats, err := s.store.Stats(ctx, rollup.StatsRequest{
+				Gaggle: req.Gaggle, Workflow: req.Workflow, Since: since, Until: until,
+			})
+			if err != nil {
+				return TelemetryStatsResult{}, err
+			}
+			usage := make([]TelemetryUsageStats, 0, len(bucketStats.Usage))
+			for _, stat := range bucketStats.Usage {
+				usage = append(usage, projectTelemetryUsage(stat))
+			}
+			result.Trend = append(result.Trend, TelemetryTrendBucket{
+				Since: since.UTC().Format(time.RFC3339Nano),
+				Until: until.UTC().Format(time.RFC3339Nano),
+				Usage: usage,
+			})
+		}
+	}
+	if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
+		if req.TrendPreviousSince.IsZero() || req.TrendPreviousUntil.IsZero() ||
+			!req.TrendPreviousSince.Before(req.TrendPreviousUntil) {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend previous window", ErrInvalidTelemetryRequest)
+		}
+		previous, err := s.store.Stats(ctx, rollup.StatsRequest{
+			Gaggle: req.Gaggle, Workflow: req.Workflow,
+			Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil,
+		})
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		result.TrendPrevious = &TelemetryTrendBucket{
+			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
+			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+			Usage: result.Usage,
+		}
+		result.TrendPrevious.Usage = make([]TelemetryUsageStats, 0, len(previous.Usage))
+		for _, stat := range previous.Usage {
+			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
+		}
 	}
 	return result, nil
 }

@@ -309,6 +309,25 @@ export class FixtureDaemonClient implements DaemonClient {
       models: stats.models,
       curation: stats.curation,
       readyPool: stats.readyPool,
+      trend: request?.trendBuckets
+        ? Array.from({ length: request.trendBuckets }, (_, index) => {
+            const start = new Date(request.trendSince ?? 0).getTime();
+            const end = new Date(request.trendUntil ?? 0).getTime();
+            const bucketSize = (end - start) / request.trendBuckets!;
+            const since = new Date(start + index * bucketSize).toISOString();
+            const until = new Date(
+              index === request.trendBuckets! - 1 ? end : start + (index + 1) * bucketSize,
+            ).toISOString();
+            return { since, until, usage: stats.usage };
+          })
+        : stats.trend,
+      trendPrevious: request?.trendPreviousSince && request.trendPreviousUntil
+        ? {
+            since: request.trendPreviousSince,
+            until: request.trendPreviousUntil,
+            usage: stats.usage,
+          }
+        : stats.trendPrevious,
     });
   }
 

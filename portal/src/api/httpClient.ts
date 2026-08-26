@@ -416,6 +416,11 @@ export class HttpDaemonClient implements DaemonClient {
         gaggle: request.gaggle,
         since: request.since,
         until: request.until,
+        trendSince: request.trendSince,
+        trendUntil: request.trendUntil,
+        trendBuckets: request.trendBuckets,
+        trendPreviousSince: request.trendPreviousSince,
+        trendPreviousUntil: request.trendPreviousUntil,
       },
       options,
     );
