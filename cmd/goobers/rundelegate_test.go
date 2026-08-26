@@ -224,11 +224,20 @@ func TestRunDelegatedTargetedPullRequestDispatchesExactReference(t *testing.T) {
 func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 	oldTimeout := triggerDelegationTimeout
 	oldPollInterval := delegationPollInterval
+	oldNow := delegationNow
 	triggerDelegationTimeout = 500 * time.Millisecond
 	delegationPollInterval = time.Millisecond
+	nowMu := sync.Mutex{}
+	now := time.Now()
+	delegationNow = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
 	t.Cleanup(func() {
 		triggerDelegationTimeout = oldTimeout
 		delegationPollInterval = oldPollInterval
+		delegationNow = oldNow
 	})
 
 	root := t.TempDir()
@@ -249,17 +258,19 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 		Workflow: "merge-review",
 		Signals:  []string{"github-webhook:pull_request"},
 		Starter:  starter,
-	}}, log, localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, _ int) error {
-		select {
-		case <-validationStarted:
-		default:
-			close(validationStarted)
-		}
-		<-releaseValidation
-		// Deliberately ignore cancellation. TriggerSignalExact must still check
-		// the request context before dispatching.
-		return nil
-	}))
+	}}, log,
+		localscheduler.WithClock(delegationNow, time.After),
+		localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+			select {
+			case <-validationStarted:
+			default:
+				close(validationStarted)
+			}
+			<-releaseValidation
+			// Deliberately ignore cancellation. TriggerSignalExact must still check
+			// the request context before dispatching.
+			return nil
+		}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -312,13 +323,16 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 
 	sweepDone := make(chan error, 1)
 	go func() {
-		sweepDone <- sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, time.Now)
+		sweepDone <- sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, delegationNow)
 	}()
 	select {
 	case <-validationStarted:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	nowMu.Lock()
+	now = now.Add(triggerDelegationTimeout + time.Millisecond)
+	nowMu.Unlock()
 
 	var code int
 	select {

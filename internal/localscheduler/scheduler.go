@@ -1869,6 +1869,9 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		if deadline, ok := ctx.Deadline(); ok && !s.now().Before(deadline) {
+			return "", context.DeadlineExceeded
+		}
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
