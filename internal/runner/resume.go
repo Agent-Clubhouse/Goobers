@@ -1530,8 +1530,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		return transition
 	}
 
+	branchEvents := newParallelBranchEventIndex(events[:finished], event.Parallel)
 	for branch := 1; branch <= len(spec.Branches); branch++ {
-		history := parallelBranchEvents(events[:finished], event.Parallel, branch)
+		history := branchEvents.events(branch)
 		target, task, gate := parallelBranchTerminal(history, machine)
 		if target == event.Target {
 			transition.task = task

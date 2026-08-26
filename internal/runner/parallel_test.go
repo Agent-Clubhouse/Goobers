@@ -41,6 +41,29 @@ func TestNewParallelExecAssignsIdsByDeclarationOrder(t *testing.T) {
 	}
 }
 
+func TestParallelBranchEventIndexUsesLatestParallelBoundary(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Parallel: "other", Branch: 1, Stage: "old"},
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 1, Stage: "first"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 2, Stage: "second"},
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 1, Stage: "latest"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 2, Stage: "latest-2"},
+	}
+
+	index := newParallelBranchEventIndex(events, "fan")
+	if got := index.events(1); len(got) != 1 || got[0].Stage != "latest" {
+		t.Fatalf("branch 1 events = %+v, want latest boundary only", got)
+	}
+	if got := index.events(2); len(got) != 1 || got[0].Stage != "latest-2" {
+		t.Fatalf("branch 2 events = %+v, want latest boundary only", got)
+	}
+	if got := index.events(3); len(got) != 0 {
+		t.Fatalf("missing branch events = %+v, want empty", got)
+	}
+}
+
 func TestParallelJoinPointersAreDeclarationOrderedAndBranchTagged(t *testing.T) {
 	spec := apiv1.Parallel{
 		Name: "fan",
