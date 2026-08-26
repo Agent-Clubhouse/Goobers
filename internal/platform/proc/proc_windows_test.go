@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
@@ -136,6 +139,94 @@ func TestKillTerminatesPowerShellDescendants(t *testing.T) {
 	}
 }
 
+func TestProcessTreeHelper(t *testing.T) {
+	role := os.Getenv("GOOBERS_PROC_HELPER_ROLE")
+	if role == "" {
+		return
+	}
+	pidMarker := os.Getenv("GOOBERS_PROC_HELPER_PID")
+	grandchildMarker := os.Getenv("GOOBERS_PROC_HELPER_GRANDCHILD")
+	if role == "root" {
+		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
+		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=child")
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_BREAKAWAY_FROM_JOB}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pidMarker, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	} else if role == "child" {
+		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
+		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=grandchild")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(grandchildMarker, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(30 * time.Second)
+}
+
+func TestKillTerminatesEscapedDescendants(t *testing.T) {
+	childMarker := filepath.Join(t.TempDir(), "child.pid")
+	grandchildMarker := filepath.Join(t.TempDir(), "grandchild.pid")
+	cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
+	cmd.Env = append(os.Environ(),
+		"GOOBERS_PROC_HELPER_ROLE=root",
+		"GOOBERS_PROC_HELPER_PID="+childMarker,
+		"GOOBERS_PROC_HELPER_GRANDCHILD="+grandchildMarker,
+	)
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+	}()
+
+	readPID := func(path string) int {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return 0
+		}
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr != nil {
+			return 0
+		}
+		return pid
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var childPID, grandchildPID int
+	for time.Now().Before(deadline) && (childPID == 0 || grandchildPID == 0) {
+		childPID = readPID(childMarker)
+		grandchildPID = readPID(grandchildMarker)
+		time.Sleep(10 * time.Millisecond)
+	}
+	if childPID == 0 || grandchildPID == 0 {
+		t.Fatal("escaped process tree did not record both descendant pids")
+	}
+	if !Alive(childPID) || !Alive(grandchildPID) {
+		t.Fatal("escaped descendants exited before tree termination")
+	}
+
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("parent unexpectedly exited successfully after Kill")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for (Alive(childPID) || Alive(grandchildPID)) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if Alive(childPID) || Alive(grandchildPID) {
+		t.Fatalf("escaped descendants %d and %d survived tree termination", childPID, grandchildPID)
+	}
+}
+
 func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		t.Skip("wsl.exe is not installed")
@@ -178,6 +269,13 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if !Alive(wslPID) {
 		t.Fatalf("WSL process %d exited before tree termination", wslPID)
 	}
+	guestDescendants, snapshotErr := snapshotDescendants(wslPID)
+	if snapshotErr != nil {
+		t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
+	}
+	if len(guestDescendants) == 0 {
+		t.Fatal("WSL launcher did not retain a host or guest descendant")
+	}
 
 	if err := tree.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
@@ -191,5 +289,10 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	}
 	if Alive(wslPID) {
 		t.Fatalf("WSL process %d survived tree termination", wslPID)
+	}
+	for _, descendant := range guestDescendants {
+		if Alive(descendant.pid) {
+			t.Fatalf("WSL descendant %d survived tree termination", descendant.pid)
+		}
 	}
 }

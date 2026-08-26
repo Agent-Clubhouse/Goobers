@@ -106,7 +106,7 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK,
 		},
 	}
 	if _, err := windows.SetInformationJobObject(
@@ -207,7 +207,11 @@ func (t *Tree) kill() error {
 	for {
 		for i := len(descendants) - 1; i >= 0; i-- {
 			descendant := descendants[i]
-			if current, ok := startTime(descendant.pid); ok && !descendant.startTime.IsZero() && !current.Equal(descendant.startTime) {
+			if descendant.startTime.IsZero() {
+				continue
+			}
+			current, ok := startTime(descendant.pid)
+			if !ok || !current.Equal(descendant.startTime) {
 				continue
 			}
 			if err := terminatePID(descendant.pid); err != nil && alive(descendant.pid) {
@@ -265,8 +269,6 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 		queue = queue[1:]
 		if started, ok := startTime(pid); ok {
 			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
-		} else {
-			descendants = append(descendants, processIdentity{pid: pid})
 		}
 		queue = append(queue, children[pid]...)
 	}
