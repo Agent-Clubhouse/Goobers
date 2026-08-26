@@ -235,6 +235,11 @@ type Attempt struct {
 	// own build/test suite must not see GOOBERS_* vars, or a self-hosting
 	// project's tests are silently perturbed by the live run.
 	CLIStage bool
+	// Workspace is the workspace mode the stage declared. A repo workspace
+	// makes the in-pod executor check the repository out before running the
+	// command; scratch (or empty) leaves it an empty directory, which is what
+	// every pod-executed stage got before pod-side checkout existed.
+	Workspace string
 	// RunContext is the operational identity a goobers-CLI stage reads to learn
 	// which run it belongs to and which repository it was routed to. Empty for
 	// every other stage.

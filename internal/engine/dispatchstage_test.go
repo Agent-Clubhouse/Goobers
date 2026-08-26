@@ -357,11 +357,12 @@ func TestDispatchStagePopulatesAttemptFromRun(t *testing.T) {
 // executor cannot honor any of them yet.
 func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 	for name, mutate := range map[string]func(*dispatchStageInput){
-		"repo workspace": func(in *dispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceRepo}
-		},
-		"unset workspace defaults to repo": func(in *dispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}}
+		// repo and scratch are both provisioned in-pod now (pod-side checkout);
+		// what remains refused is a mode this substrate has never had, because
+		// running it as if it were scratch would hand the stage the wrong
+		// workspace silently.
+		"workspace mode the pod cannot provision": func(in *dispatchStageInput) {
+			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceMode("shared-nfs")}
 		},
 		// Narrow, measured replacement for the blanket goobers-CLI refusal:
 		// telemetry-query reads the instance CONFIG DIRECTORY (the workflow
@@ -457,41 +458,57 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	}
 }
 
-// #3699 v1 scope, at the workflow level: a pinned stage whose Run the in-pod
-// executor cannot yet honor (here, no explicit workspace: scratch — the
-// default is repo) is refused BEFORE the dispatcher is ever consulted, so no
-// pod is created for it — dispatchRemoteTask's guard, not DispatchStage's
-// defensive re-check, is what fires here.
-func TestModeThreeRefusesUnsupportedRunBeforeDispatch(t *testing.T) {
+// A repo-workspace stage now DISPATCHES: the pod provisions the checkout
+// itself. This replaces the refusal that used to live here.
+//
+// It matters far beyond one test. Production workflows declare no `workspace:`
+// at all, so every stage in them defaults to repo — meaning the old refusal
+// blocked EVERY stage of every real workflow from mode 3, and only stages
+// explicitly authored as scratch could run in a pod.
+//
+// The DSL validator rejects an unknown workspace mode before a workflow ever
+// runs (`unknown workspace "x" (want repo, scratch, or repo-readonly)`), and
+// all three of those are provisionable in-pod now — so the unsupported-mode
+// guard that remains in dispatchRemoteTask is unreachable via valid DSL and
+// exists only for a version-skewed or hand-built input.
+func TestModeThreeDispatchesRepoWorkspaceStage(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "build",
 		Tasks: []apiv1.Task{
+			// No workspace declared: defaults to repo, exactly like every
+			// production workflow stage.
 			{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
 				Run: &apiv1.DeterministicRun{Command: []string{"build.cmd"}}},
 		},
 	}
-	in := runInput("mode-three-unsupported", spec)
+	in := runInput("mode-three-repo-ws", spec)
 	in.Placements = []PinnedPlacement{{
 		Stage: "build", Queue: dispatcher.QueueName("web", "win-ci"),
 		Eligible: remoteEligible(), Memory: "4Gi",
 	}}
-	fake := &fakeStageDispatcher{}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
 	env.ExecuteWorkflow(Run, in)
-	// dispatchRemoteTask's guard returns a plain error, exactly like the
-	// existing empty-command guard it sits beside — this is a workflow
-	// execution error, not a graceful ResultFailure branch.
-	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), "does not yet provision a pod-side repo checkout") {
-		t.Fatalf("workflow error = %v, want the unsupported-workspace refusal", err)
+
+	if fake.calls.Load() == 0 {
+		t.Fatal("a repo-workspace stage must now reach the dispatcher; the pod provisions its own checkout")
 	}
-	if fake.calls.Load() != 0 {
-		t.Fatal("the dispatcher was consulted for a stage the v1 guard should have refused first — a pod may have been created")
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	// The pod cannot check anything out without being told which repository and
+	// which workspace mode, so both must ride the attempt.
+	got := fake.attempts[0]
+	if got.Workspace != string(apiv1.WorkspaceRepo) && got.Workspace != "" {
+		t.Fatalf("attempt workspace = %q, want the declared repo mode", got.Workspace)
+	}
+	if got.RunContext[executor.RepoOwnerEnvVar] == "" && got.RunContext[executor.RepoNameEnvVar] == "" {
+		t.Fatalf("attempt carries no repository for the checkout: %v", got.RunContext)
 	}
 }
 
