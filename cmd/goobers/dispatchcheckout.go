@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -106,6 +107,16 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		return nil
 	}
 	// First stage of the run: the branch does not exist yet.
+	//
+	// The attempt above may have left partial state — git can populate the
+	// destination and only then discover the branch is missing — and a second
+	// `clone <url> .` into a non-empty directory is refused outright. Clearing
+	// first makes the fallback independent of how far the first attempt got,
+	// rather than depending on git's cleanup behaviour differing between a
+	// local file:// remote and an authenticated HTTPS one.
+	if err := clearDirContents(dir); err != nil {
+		return fmt.Errorf("clear workspace before fallback clone: %w", err)
+	}
 	if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", base, cloneURL, "."); err != nil {
 		return fmt.Errorf("clone %s at %s: %w", cloneURL, base, err)
 	}
@@ -148,7 +159,15 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 	return credentials.GitAuthEnvironment(askpass, token), nil
 }
 
+// runGit runs one git command and returns an error carrying GIT'S OWN message.
+//
+// Returning a bare exit status was a mistake worth naming: "create run branch
+// <name>: exit status 128" is unactionable, and the pod is disposed as soon as
+// the stage fails, so the stderr that would have explained it is gone before it
+// can be read. Every other failure path added tonight names its cause; this one
+// did not, and that cost a full deploy cycle to diagnose.
 func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, args ...string) error {
+	var captured strings.Builder
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	// GIT_TERMINAL_PROMPT=0 is not cosmetic: without it a clone of a private
@@ -157,8 +176,16 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 	// be reported as a timeout rather than as the auth failure it is.
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = stderr
-	return cmd.Run()
+	// Tee: the pod's stderr keeps the live view, and the copy rides the error
+	// so the surrendered envelope is self-describing after disposal.
+	cmd.Stderr = io.MultiWriter(stderr, &captured)
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(captured.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // gitToken picks a credential the stage already holds that can authenticate a
@@ -189,4 +216,19 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 	// public repository and fails loudly on a private one, which is the honest
 	// outcome and names the real cause.
 	return ""
+}
+
+// clearDirContents empties dir without removing dir itself: the workspace is a
+// mount point, so it must stay in place.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
