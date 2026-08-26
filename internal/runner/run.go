@@ -223,6 +223,7 @@ type journalAppender interface {
 
 type executionJournal interface {
 	journalAppender
+	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	Dir() string
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)

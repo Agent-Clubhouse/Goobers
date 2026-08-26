@@ -102,6 +102,7 @@ type Proposal struct {
 // projections and deterministic tests.
 type Journal interface {
 	Append(journal.Event) error
+	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 }
 
 // Validate verifies the experiment's safety and sampling constraints.
@@ -306,7 +307,14 @@ func (c Config) EvaluateAndRecord(observations []Observation, out Journal) (Deci
 	}
 	for _, arm := range c.Arms {
 		if c.Retired(arm.Name, observations) {
-			if err := out.Append(journal.Event{Type: journal.EventBanditRetired, Stage: c.Stage, Outputs: map[string]any{"arm": arm.Name, "reason": "failure-rate"}}); err != nil {
+			event := journal.Event{Type: journal.EventBanditRetired, Stage: c.Stage, Outputs: map[string]any{"arm": arm.Name, "reason": "failure-rate"}}
+			if _, err := out.AppendIfAbsent(event, func(existing journal.Event) bool {
+				if existing.Type != journal.EventBanditRetired || existing.Stage != c.Stage {
+					return false
+				}
+				recordedArm, ok := existing.Outputs["arm"].(string)
+				return ok && recordedArm == arm.Name
+			}); err != nil {
 				return Decision{}, nil, fmt.Errorf("record bandit retirement: %w", err)
 			}
 			decision.Retired = true
