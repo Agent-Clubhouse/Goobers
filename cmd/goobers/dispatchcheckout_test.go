@@ -188,3 +188,45 @@ func TestCheckoutScratchLeavesWorkspaceUntouched(t *testing.T) {
 		t.Fatalf("scratch workspace was modified: %d entries", len(entries))
 	}
 }
+
+// The run-branch attempt can leave partial state behind: git may populate the
+// destination and only then discover the branch is missing. A second
+// `clone <url> .` into a non-empty directory is refused outright, so the
+// fallback must not depend on how far the first attempt got — behaviour that
+// differs between a local file:// remote and an authenticated HTTPS one.
+func TestCheckoutFallbackSurvivesDirtyWorkspace(t *testing.T) {
+	bare := newBareRepoWithCommit(t, "main")
+	prev := checkoutCloneURL
+	checkoutCloneURL = func(apiv1.RepoRef) (string, error) { return bare, nil }
+	t.Cleanup(func() { checkoutCloneURL = prev })
+
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+	t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "acme")
+	t.Setenv(executor.RepoNameEnvVar, "widget")
+	t.Setenv(executor.BranchNamespaceEnvVar, "e2e/")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+	t.Setenv(dispatcher.EnvWorkflow, "probe")
+	t.Setenv(dispatcher.EnvRunID, "run-dirty")
+
+	ws := t.TempDir()
+	// Exactly what a partially-completed clone leaves behind.
+	if err := os.MkdirAll(filepath.Join(ws, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "leftover"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var errOut strings.Builder
+	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+		t.Fatalf("fallback must clear and re-clone: %v\nstderr: %s", err, errOut.String())
+	}
+	if _, err := os.Stat(filepath.Join(ws, "README.md")); err != nil {
+		t.Fatalf("repo content missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "leftover")); !os.IsNotExist(err) {
+		t.Fatal("stale content from the failed attempt survived into the workspace")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -106,6 +107,16 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		return nil
 	}
 	// First stage of the run: the branch does not exist yet.
+	//
+	// The attempt above may have left partial state — git can populate the
+	// destination and only then discover the branch is missing — and a second
+	// `clone <url> .` into a non-empty directory is refused outright. Clearing
+	// first makes the fallback independent of how far the first attempt got,
+	// rather than depending on git's cleanup behaviour differing between a
+	// local file:// remote and an authenticated HTTPS one.
+	if err := clearDirContents(dir); err != nil {
+		return fmt.Errorf("clear workspace before fallback clone: %w", err)
+	}
 	if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", base, cloneURL, "."); err != nil {
 		return fmt.Errorf("clone %s at %s: %w", cloneURL, base, err)
 	}
@@ -205,4 +216,19 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 	// public repository and fails loudly on a private one, which is the honest
 	// outcome and names the real cause.
 	return ""
+}
+
+// clearDirContents empties dir without removing dir itself: the workspace is a
+// mount point, so it must stay in place.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
