@@ -75,6 +75,11 @@ const (
 	// EnvStageIsCLI marks a stage whose command is the goobers CLI, so the pod
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
+
+	// EnvStageWorkspace carries the declared workspace mode so the in-pod
+	// executor knows whether to provision a checkout. Privileged: a stage that
+	// could rewrite it would change what the platform provisioned for it.
+	EnvStageWorkspace = "GOOBERS_STAGE_WORKSPACE"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -99,6 +104,7 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvStageWorkspace,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -111,9 +117,40 @@ var DispatcherPrivilegedEnv = []string{
 // other stage is still stripped, and that is the point of splitting rather than
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
-var DispatcherRunIdentityEnv = []string{
+var DispatcherRunIdentityEnv = append([]string{
 	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
+}, runContextEnv...)
+
+// runContextEnv are the run-identity variables the DISPATCHER stamps from the
+// envelope rather than deriving: which repository this run was routed to, and
+// the branch conventions its run branch is composed from.
+//
+// They are run identity, not authority, so they live in the same half as the
+// run ID: a goobers-CLI stage keeps them (providerRepo reads them), every other
+// stage is stripped of them. That matters now that a repo-workspace stage also
+// needs them stamped — the in-pod executor reads them to CHECK OUT the
+// workspace and then strips them, so a stage running the project's own build
+// still cannot see the live run (#322). Without listing them here they would
+// have leaked to exactly those stages the moment checkout began stamping them.
+var runContextEnv = []string{
+	executorRepoProviderEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
+	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
+	executorTriggerRefEnv,
 }
+
+// The executor package owns these names; they are restated rather than imported
+// because internal/dispatcher sits beneath internal/executor and importing it
+// would invert the dependency. Pinned against the originals by
+// TestRunContextEnvMatchesExecutor so the restatement cannot drift.
+const (
+	executorRepoProviderEnv    = "GOOBERS_REPO_PROVIDER"
+	executorRepoOwnerEnv       = "GOOBERS_REPO_OWNER"
+	executorRepoProjectEnv     = "GOOBERS_REPO_PROJECT"
+	executorRepoNameEnv        = "GOOBERS_REPO_NAME"
+	executorBranchNamespaceEnv = "GOOBERS_BRANCH_NAMESPACE"
+	executorBaseBranchEnv      = "GOOBERS_BASE_BRANCH"
+	executorTriggerRefEnv      = "GOOBERS_TRIGGER_REF"
+)
 
 // Workspace and temp paths — the base-image contract half of the mount
 // bindings (decisions 006/007).
@@ -576,6 +613,9 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
+	}
+	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
+		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {

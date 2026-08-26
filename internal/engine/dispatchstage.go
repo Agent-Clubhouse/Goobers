@@ -137,8 +137,11 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		if len(t.Run.Command) == 0 && t.Run.Script == "" {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 		}
-		if t.Run.Workspace != apiv1.WorkspaceScratch {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout — declare workspace: scratch to run this stage in a pod", t.Name, t.Run.Workspace)
+		// Repo and scratch are both provisioned in-pod now; anything else is a
+		// mode this substrate has never had, and running it as if it were
+		// scratch would silently give the stage the wrong workspace.
+		if ws := t.Run.Workspace; ws != "" && ws != apiv1.WorkspaceScratch && !ws.IsRepoBacked() {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q declares workspace %q, which mode-3 dispatch cannot provision in a pod", t.Name, ws)
 		}
 		if executor.StageRequiresInstanceConfig(t.Run.Command) {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs %v, which reads the instance config directory; a stage pod has no config directory — place this stage on a self runner", t.Name, t.Run.Command)
@@ -199,8 +202,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// re-assert too would mean threading the task type through the activity
 	// input, which is a wire-contract change worth its own decision.
 	if input.Run != nil {
-		if input.Run.Workspace != apiv1.WorkspaceScratch {
-			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout (fail closed)", input.Envelope.TaskID, input.Run.Workspace))
+		if ws := input.Run.Workspace; ws != "" && ws != apiv1.WorkspaceScratch && !ws.IsRepoBacked() {
+			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q, which mode-3 dispatch cannot provision in a pod (fail closed)", input.Envelope.TaskID, ws))
 		}
 		if executor.StageRequiresInstanceConfig(input.Run.Command) {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q reads the instance config directory, which a stage pod does not have (fail closed)", input.Envelope.TaskID))
@@ -240,8 +243,18 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// (The config-side instance.RepoRef already carries Token and Auth; the
 	// envelope's does not, and this is what keeps that distinction from
 	// mattering.)
-	if input.Run != nil && executor.StageInvokesGoobersCLI(input.Run.Command) {
-		attempt.CLIStage = true
+	// A repo workspace needs the same routed-repository facts a CLI stage does,
+	// because the in-pod executor uses them to CHECK THE REPOSITORY OUT. They
+	// are stamped for both and stripped from the stage's own environment for
+	// everything except a CLI stage (DispatcherRunIdentityEnv), so a stage
+	// running the project's build still cannot see the live run (#322).
+	needsRepoContext := false
+	if input.Run != nil {
+		attempt.Workspace = string(input.Run.Workspace)
+		needsRepoContext = input.Run.Workspace.IsRepoBacked() || input.Run.Workspace == ""
+	}
+	if input.Run != nil && (executor.StageInvokesGoobersCLI(input.Run.Command) || needsRepoContext) {
+		attempt.CLIStage = executor.StageInvokesGoobersCLI(input.Run.Command)
 		attempt.RunContext = map[string]string{}
 		if repo := input.Envelope.RepoRef; repo.Provider != "" {
 			attempt.RunContext[executor.RepoProviderEnvVar] = string(repo.Provider)
