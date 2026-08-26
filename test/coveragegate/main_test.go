@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -104,6 +105,20 @@ type mockExec struct {
 	functionOutput []byte
 	generateCalled bool
 	functionCalled bool
+}
+
+type directoryExec struct {
+	dir string
+}
+
+func (e *directoryExec) generateProfile(string, io.Writer, io.Writer) error {
+	return errors.New("profile generation is not expected")
+}
+
+func (e *directoryExec) functionCoverage(profile string) ([]byte, error) {
+	cmd := exec.Command("go", "tool", "cover", "-func="+profile)
+	cmd.Dir = e.dir
+	return cmd.CombinedOutput()
 }
 
 func (m *mockExec) generateProfile(profile string, stdout, stderr io.Writer) error {
@@ -303,6 +318,68 @@ func TestRunMatchesThresholdBoundary(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "FAIL: coverage 100.0% is below threshold 100.1%") {
 		t.Fatalf("failure output missing decision:\n%s", &stderr)
+	}
+}
+
+func TestLinuxOnlySourceEntersProfileAndCanFailGate(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod": `module example.com/platformcoverage
+
+go 1.26
+`,
+		"linux_only.go": `//go:build linux || coverage_platform
+
+package platformcoverage
+
+func linuxOnly() int {
+	return 42
+}
+
+func covered() {
+	_ = 1
+}
+`,
+		"linux_only_test.go": `package platformcoverage
+
+import "testing"
+
+func TestCovered(t *testing.T) {
+	covered()
+}
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	profile := filepath.Join(dir, "coverage.out")
+	cmd := exec.Command("go", "test", "-tags=coverage_platform", "-covermode=set", "-coverprofile="+profile, "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generate platform coverage profile: %v\n%s", err, output)
+	}
+
+	raw, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatalf("read generated profile: %v", err)
+	}
+	if !strings.Contains(string(raw), "linux_only.go") {
+		t.Fatalf("generated Linux coverage profile omits platform-specific source:\n%s", raw)
+	}
+
+	t.Setenv("COVERAGE_PROFILE", profile)
+	t.Setenv("COVERAGE_EXCLUDE", "$^")
+	var stdout, stderr bytes.Buffer
+	if code := runWithProviders([]string{"100"}, &stdout, &stderr, osFS{}, &directoryExec{dir: dir}); code != 1 {
+		t.Fatalf("uncovered platform-specific source must fail a 100%% gate: exit=%d\nstdout:\n%s\nstderr:\n%s", code, &stdout, &stderr)
+	}
+	if !strings.Contains(stdout.String(), "linuxOnly") ||
+		!strings.Contains(stderr.String(), "FAIL: coverage") {
+		t.Fatalf("gate output does not expose the uncovered platform-specific function:\nstdout:\n%s\nstderr:\n%s", &stdout, &stderr)
 	}
 }
 
