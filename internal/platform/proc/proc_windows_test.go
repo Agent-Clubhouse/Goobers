@@ -67,13 +67,15 @@ func TestKillTerminatesPowerShellDescendants(t *testing.T) {
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"$child = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_CHILD_PID -Value $child.Id; Start-Sleep -Seconds 30",
+		"$child = Start-Process powershell.exe -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','$grandchild = Start-Process powershell.exe -ArgumentList ''-NoLogo'',''-NoProfile'',''-NonInteractive'',''-Command'',''Start-Sleep -Seconds 30'' -PassThru; Set-Content -LiteralPath $env:GOOBERS_GRANDCHILD_PID -Value $grandchild.Id; Start-Sleep -Seconds 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_CHILD_PID -Value $child.Id; Start-Sleep -Seconds 30",
 	)
-	cmd.Env = append(os.Environ(), "GOOBERS_CHILD_PID="+marker)
+	grandchildMarker := filepath.Join(t.TempDir(), "grandchild.pid")
+	cmd.Env = append(os.Environ(), "GOOBERS_CHILD_PID="+marker, "GOOBERS_GRANDCHILD_PID="+grandchildMarker)
 	tree, err := Start(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer func() {
 		_ = tree.Kill()
 		_ = cmd.Wait()
@@ -97,6 +99,24 @@ func TestKillTerminatesPowerShellDescendants(t *testing.T) {
 	if !Alive(childPID) {
 		t.Fatalf("descendant %d exited before tree termination", childPID)
 	}
+	var grandchildPID int
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(grandchildMarker)
+		if readErr == nil {
+			grandchildPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if grandchildPID == 0 {
+		t.Fatal("grandchild did not record its pid")
+	}
+	if !Alive(grandchildPID) {
+		t.Fatalf("grandchild %d exited before tree termination", grandchildPID)
+	}
 
 	if err := tree.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
@@ -110,5 +130,66 @@ func TestKillTerminatesPowerShellDescendants(t *testing.T) {
 	}
 	if Alive(childPID) {
 		t.Fatalf("descendant %d survived tree termination", childPID)
+	}
+	if Alive(grandchildPID) {
+		t.Fatalf("grandchild %d survived tree termination", grandchildPID)
+	}
+}
+
+func TestKillTerminatesWSLDescendants(t *testing.T) {
+	if _, err := exec.LookPath("wsl.exe"); err != nil {
+		t.Skip("wsl.exe is not installed")
+	}
+
+	marker := filepath.Join(t.TempDir(), "wsl.pid")
+	cmd := exec.Command(
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
+	)
+	cmd.Env = append(os.Environ(), "GOOBERS_WSL_PID="+marker)
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = tree.Kill()
+		_ = cmd.Wait()
+	}()
+
+	var wslPID int
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(marker)
+		if readErr == nil {
+			wslPID, err = strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wslPID == 0 {
+		t.Fatal("WSL process did not record its pid")
+	}
+	if !Alive(wslPID) {
+		t.Fatalf("WSL process %d exited before tree termination", wslPID)
+	}
+
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("parent unexpectedly exited successfully after Kill")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for Alive(wslPID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if Alive(wslPID) {
+		t.Fatalf("WSL process %d survived tree termination", wslPID)
 	}
 }

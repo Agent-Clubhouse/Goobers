@@ -188,8 +188,9 @@ func resumeProcess(pid int) error {
 // kill hard-terminates every process in the tree via TerminateJobObject, then
 // releases the job handle promptly (the finalizer would otherwise hold it until
 // GC — undesirable on the timeout path, exactly when freeing resources matters).
-// WSL can broker a host process outside the job, so the process snapshot closes
-// that escape hatch as well.
+// WSL can broker a host process outside the job, so repeatedly snapshot and
+// terminate descendants after closing the job to cover descendants created
+// while the first snapshot was being processed.
 func (t *Tree) kill() error {
 	if t.job == 0 {
 		return terminatePID(t.pid)
@@ -202,13 +203,30 @@ func (t *Tree) kill() error {
 	if err != nil {
 		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
 	}
-	for _, descendant := range descendants {
-		if current, ok := startTime(descendant.pid); ok && !descendant.startTime.IsZero() && !current.Equal(descendant.startTime) {
-			continue
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for i := len(descendants) - 1; i >= 0; i-- {
+			descendant := descendants[i]
+			if current, ok := startTime(descendant.pid); ok && !descendant.startTime.IsZero() && !current.Equal(descendant.startTime) {
+				continue
+			}
+			if err := terminatePID(descendant.pid); err != nil && alive(descendant.pid) {
+				snapshotErr = errors.Join(snapshotErr, err)
+			}
 		}
-		if err := terminatePID(descendant.pid); err != nil && alive(descendant.pid) {
-			snapshotErr = errors.Join(snapshotErr, err)
+		if time.Now().After(deadline) {
+			break
 		}
+		var snapshotErr2 error
+		descendants, snapshotErr2 = snapshotDescendants(t.pid)
+		if snapshotErr2 != nil {
+			snapshotErr = errors.Join(snapshotErr, snapshotErr2)
+			break
+		}
+		if len(descendants) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return snapshotErr
 }
