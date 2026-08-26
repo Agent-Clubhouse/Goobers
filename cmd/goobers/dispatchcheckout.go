@@ -148,7 +148,15 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 	return credentials.GitAuthEnvironment(askpass, token), nil
 }
 
+// runGit runs one git command and returns an error carrying GIT'S OWN message.
+//
+// Returning a bare exit status was a mistake worth naming: "create run branch
+// <name>: exit status 128" is unactionable, and the pod is disposed as soon as
+// the stage fails, so the stderr that would have explained it is gone before it
+// can be read. Every other failure path added tonight names its cause; this one
+// did not, and that cost a full deploy cycle to diagnose.
 func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, args ...string) error {
+	var captured strings.Builder
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	// GIT_TERMINAL_PROMPT=0 is not cosmetic: without it a clone of a private
@@ -157,8 +165,16 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 	// be reported as a timeout rather than as the auth failure it is.
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	cmd.Stdout = io.Discard
-	cmd.Stderr = stderr
-	return cmd.Run()
+	// Tee: the pod's stderr keeps the live view, and the copy rides the error
+	// so the surrendered envelope is self-describing after disposal.
+	cmd.Stderr = io.MultiWriter(stderr, &captured)
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(captured.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // gitToken picks a credential the stage already holds that can authenticate a
