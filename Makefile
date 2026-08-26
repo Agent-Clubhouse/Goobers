@@ -278,10 +278,14 @@ schema-description-coverage:
 test: schema-description-coverage
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
-.PHONY: portal-install portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
+## portal-ci: Audit dependencies, install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
+.PHONY: portal-install portal-audit portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+## portal-audit: Fail when portal dependencies have known vulnerabilities.
+portal-audit: portal-install
+	$(NPM) --prefix portal audit --audit-level=low
 
 ## portal-typecheck: Install and type-check the portal.
 portal-typecheck: portal-install
@@ -310,7 +314,7 @@ portal-contract: portal-install
 	$(NPM) --prefix portal run typecheck
 	$(NPM) --prefix portal run test:contract
 
-portal-ci: portal-build portal-test portal-e2e portal-deadcode portal-contract
+portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover

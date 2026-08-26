@@ -453,7 +453,7 @@ func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck"} {
+	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck", "npm --prefix portal audit --audit-level=low"} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}
