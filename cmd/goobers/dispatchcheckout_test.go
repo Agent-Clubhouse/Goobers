@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // `git clone <url> .` refuses a non-empty destination, so NOTHING the checkout
@@ -71,9 +71,9 @@ func newBareRepoWithCommit(t *testing.T, baseBranch string) string {
 	t.Helper()
 	run := func(dir string, args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(cmd.Env,
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid",
 		)
@@ -130,7 +130,7 @@ func TestCheckoutClonesRepoWorkspaceOntoTheRunBranch(t *testing.T) {
 	// A repo workspace must land on the RUN BRANCH: that is how work moves
 	// between stages. Landing on base would look healthy and silently discard
 	// every earlier stage's commits.
-	out, err := exec.Command("git", "-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := testgit.Command("-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestCheckoutRepoReadOnlyDetachesAtBase(t *testing.T) {
 	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
-	out, err := exec.Command("git", "-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := testgit.Command("-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

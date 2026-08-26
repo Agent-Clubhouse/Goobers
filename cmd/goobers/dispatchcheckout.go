@@ -151,7 +151,11 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	// GIT_TERMINAL_PROMPT=0 is not cosmetic: without it a clone of a private
+	// repository with no usable credential can BLOCK asking for one. A stage
+	// pod has no terminal, so the ask would hang until the stage timed out and
+	// be reported as a timeout rather than as the auth failure it is.
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = stderr
 	return cmd.Run()
