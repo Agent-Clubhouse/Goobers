@@ -41,6 +41,13 @@ const (
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
+
+	// DefaultUnschedulableGrace is how long a pod may report Unschedulable
+	// before its attempt is failed. Five minutes is chosen to outlast an AKS
+	// node scale-up, which is the legitimate reason a pod is briefly
+	// unschedulable; a genuinely impossible placement stays unschedulable
+	// forever, so the grace costs it five minutes and nothing else.
+	DefaultUnschedulableGrace = 5 * time.Minute
 	// DefaultCapacityInterval paces capacity re-probes during the bounded
 	// schedule-to-start wait.
 	DefaultCapacityInterval = 15 * time.Second
@@ -90,6 +97,9 @@ type Config struct {
 	// SupervisionInterval overrides DefaultSupervisionInterval; zero uses
 	// the default.
 	SupervisionInterval time.Duration
+	// UnschedulableGrace overrides DefaultUnschedulableGrace; zero uses the
+	// default.
+	UnschedulableGrace time.Duration
 	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
 	// default.
 	CapacityInterval time.Duration
@@ -107,6 +117,18 @@ func (c Config) deadlineMargin() time.Duration {
 		return DefaultDeadlineMargin
 	}
 	return c.DeadlineMargin
+}
+
+// unschedulableGrace is how long a pod may report Unschedulable before the
+// attempt is failed. It is a GRACE, not a check interval: Unschedulable is
+// routinely transient while the cluster autoscaler adds a node, so failing on
+// first sight would break legitimate scale-up. It only has to outlast a node
+// coming up.
+func (c Config) unschedulableGrace() time.Duration {
+	if c.UnschedulableGrace <= 0 {
+		return DefaultUnschedulableGrace
+	}
+	return c.UnschedulableGrace
 }
 
 func (c Config) supervisionInterval() time.Duration {
@@ -424,6 +446,22 @@ var ErrSurrenderUnconfirmed = errors.New("dispatcher: stage outputs not surrende
 // state and disposal are reported alongside in the Report.
 var ErrStageFailed = errors.New("dispatcher: stage pod terminated in phase Failed")
 
+// ErrPodUnschedulable reports a stage pod that no node can ever accept — a
+// taint it does not tolerate, a nodeSelector nothing matches, a resource
+// request larger than any node.
+//
+// It exists because this case is NOT covered by the leak bounds the rest of
+// this file relies on. activeDeadlineSeconds is measured relative to the pod's
+// StartTime, and a pod that is never scheduled never gets one, so the deadline
+// never fires. MEASURED on a live cluster: a Windows stage pod with
+// activeDeadlineSeconds=1500 sat Pending for TWENTY HOURS, its scheduler
+// retrying 236 times, because its toleration key did not match the node taint.
+//
+// Without this the attempt burns the stage's entire activity budget and then
+// fails as a TIMEOUT, which tells the operator the stage was slow when the
+// truth is that no node could ever have run it.
+var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled onto any node")
+
 // Dispatch executes one stage attempt on the eligible runner set (the
 // solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
 // the runner (Linux-preferring), verify the image skew contract, wait
@@ -554,6 +592,7 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 // design (the journal is observability, not control flow); errors from the
 // pod read are fatal to supervision.
 func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string) (corev1.PodPhase, error) {
+	var unschedulableSince time.Time
 	for {
 		pod, err := d.pods.GetPod(ctx, namespace, name)
 		if err != nil {
@@ -566,8 +605,52 @@ func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, 
 		if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 			return phase, nil
 		}
+		// A pod no node can accept reaches NEITHER terminal phase, so without
+		// this the loop polls until the activity's own deadline expires — the
+		// stage's whole budget spent, and reported as a timeout rather than as
+		// the placement failure it is.
+		if reason, message, unschedulable := podUnschedulable(pod); unschedulable {
+			if unschedulableSince.IsZero() {
+				unschedulableSince = d.now()
+			}
+			// Grace, not a check interval: the autoscaler routinely leaves a
+			// pod Unschedulable for a minute or two while a node comes up, and
+			// failing on first sight would break that. An impossible placement
+			// never recovers, so it costs exactly this grace.
+			if waited := d.now().Sub(unschedulableSince); waited >= d.cfg.unschedulableGrace() {
+				return phase, fmt.Errorf("%w (run %s stage %s attempt %d, pod %s/%s, unschedulable for %s, reason %s): %s",
+					ErrPodUnschedulable, attempt.RunID, attempt.Stage, attempt.Number,
+					namespace, name, waited.Round(time.Second), reason, message)
+			}
+		} else {
+			// Recovered — a node arrived. Reset so a later, unrelated spell of
+			// unschedulability gets its own full grace rather than inheriting
+			// elapsed time from this one.
+			unschedulableSince = time.Time{}
+		}
 		if err := d.sleep(ctx, d.cfg.supervisionInterval()); err != nil {
 			return phase, fmt.Errorf("dispatcher: supervision of pod %s/%s interrupted: %w", namespace, name, err)
 		}
 	}
+}
+
+// podUnschedulable reports whether the scheduler has declared that no node can
+// currently take this pod, returning the reason and message it gave.
+//
+// Keyed on the PodScheduled condition rather than on the phase: Pending covers
+// both "waiting for a node" and "pulling an image", and only the condition
+// distinguishes them. The message is carried out so the failure names the
+// actual constraint — an untolerated taint reads very differently from a
+// resource request no node can satisfy.
+func podUnschedulable(pod *corev1.Pod) (reason, message string, unschedulable bool) {
+	if pod == nil {
+		return "", "", false
+	}
+	for i := range pod.Status.Conditions {
+		c := pod.Status.Conditions[i]
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable {
+			return c.Reason, c.Message, true
+		}
+	}
+	return "", "", false
 }

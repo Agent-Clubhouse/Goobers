@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,13 @@ type fakePodAPI struct {
 	deployments   map[string]*appsv1.Deployment
 	createErr     error
 	deleteErrFor  map[string]error // pod name → error DeletePod returns for it
+	// unschedulable keeps every GetPod reporting Pending with
+	// PodScheduled=False/Unschedulable, which is what a pod no node can accept
+	// looks like — it never advances to a terminal phase on its own.
+	unschedulable bool
+	// recoversAfter, when > 0, lets the pod become schedulable again after that
+	// many observations, modelling an autoscaler adding a node.
+	recoversAfter int
 }
 
 func (f *fakePodAPI) key(namespace, name string) string { return namespace + "/" + name }
@@ -63,6 +71,17 @@ func (f *fakePodAPI) GetPod(_ context.Context, namespace, name string) (*corev1.
 		return nil, fmt.Errorf("pod %s not found", key)
 	}
 	f.observations[key]++
+	if f.unschedulable && (f.recoversAfter == 0 || f.observations[key] <= f.recoversAfter) {
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.Conditions = []corev1.PodCondition{{
+			Type:    corev1.PodScheduled,
+			Status:  corev1.ConditionFalse,
+			Reason:  corev1.PodReasonUnschedulable,
+			Message: "0/3 nodes are available: 1 node(s) had untolerated taint(s)",
+		}}
+		return pod.DeepCopy(), nil
+	}
+	pod.Status.Conditions = nil
 	switch f.observations[key] {
 	case 1:
 		pod.Status.Phase = corev1.PodPending
@@ -454,5 +473,58 @@ func TestDispatchKeepsCallerSuppliedPodToken(t *testing.T) {
 	}
 	if len(minter.runIDs) != 0 {
 		t.Fatalf("minter must not be called when the attempt already carries a token, got %v", minter.runIDs)
+	}
+}
+
+// A pod no node can accept reaches neither PodSucceeded nor PodFailed, so
+// without this the supervise loop polls until the ACTIVITY's deadline expires:
+// the stage's whole budget spent, reported as a timeout, and the pod left
+// behind because dispose only runs after supervise returns.
+//
+// MEASURED on a live cluster before this existed: a Windows stage pod sat
+// Pending for 20 HOURS (scheduler retrying 236 times) because its toleration
+// key did not match the node taint. activeDeadlineSeconds=1500 was set and did
+// NOT save it — that deadline is relative to the pod's StartTime, and a pod
+// that never schedules never gets one.
+func TestDispatchFailsUnschedulablePodAndDisposesIt(t *testing.T) {
+	pods := &fakePodAPI{unschedulable: true}
+	d, err := New(testConfig(), pods, &recordingRelay{}, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	if !errors.Is(err, ErrPodUnschedulable) {
+		t.Fatalf("error = %v, want ErrPodUnschedulable", err)
+	}
+	// The scheduler's own reason must survive: an untolerated taint reads very
+	// differently from a resource request no node can satisfy.
+	if !strings.Contains(err.Error(), "untolerated taint") {
+		t.Fatalf("error must carry the scheduler's message, got: %v", err)
+	}
+	// The whole point: the pod does not leak while nothing bounds it.
+	if !report.Disposed || len(pods.deleted) != 1 {
+		t.Fatalf("report = %+v deleted = %v: an unschedulable pod must still be disposed", report, pods.deleted)
+	}
+}
+
+// Unschedulable is routinely TRANSIENT while the autoscaler adds a node.
+// Failing on first sight would break legitimate scale-up, so the grace must be
+// a grace and not a check interval.
+func TestDispatchToleratesTransientUnschedulability(t *testing.T) {
+	pods := &fakePodAPI{unschedulable: true, recoversAfter: 1}
+	d, err := New(testConfig(), pods, &recordingRelay{}, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	clock := &fakeClock{}
+	d.now = clock.Now
+	d.sleep = clock.Sleep
+
+	if _, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
+		t.Fatalf("a pod that becomes schedulable must not be failed: %v", err)
 	}
 }
