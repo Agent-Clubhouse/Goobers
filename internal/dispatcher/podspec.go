@@ -80,6 +80,11 @@ const (
 	// executor knows whether to provision a checkout. Privileged: a stage that
 	// could rewrite it would change what the platform provisioned for it.
 	EnvStageWorkspace = "GOOBERS_STAGE_WORKSPACE"
+
+	// EnvAgenticKitDigest is the content address of the stage's execution kit.
+	// Privileged: a stage that could rewrite it would choose which instructions
+	// it runs under.
+	EnvAgenticKitDigest = "GOOBERS_AGENTIC_KIT"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -104,7 +109,7 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvStageWorkspace,
+	EnvStageWorkspace, EnvAgenticKitDigest,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -616,6 +621,9 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
 		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
+	}
+	if attempt.KitDigest != "" {
+		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: attempt.KitDigest})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {
