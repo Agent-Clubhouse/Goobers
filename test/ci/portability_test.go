@@ -392,7 +392,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		"github.event_name == 'push'",
 		"needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]",
 		"issues: write",
-		"actions/github-script@v9",
+		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
 		`labels: ["goobers:critical", "type:bug", "area:workflows"]`,
 	} {
