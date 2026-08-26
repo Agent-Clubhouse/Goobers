@@ -32,7 +32,7 @@ func (db *DB) TrendStats(ctx context.Context, req TrendRequest) ([]TrendResult, 
 	bucketArgs := make([]any, 0, len(req.Windows)*3)
 	for index, window := range req.Windows {
 		bucketExpr += " WHEN r.started_at >= ? AND r.started_at < ? THEN ?"
-		bucketArgs = append(bucketArgs, window.Since, window.Until, index)
+		bucketArgs = append(bucketArgs, formatTime(window.Since).String, formatTime(window.Until).String, index)
 	}
 	bucketExpr += " END"
 	clauses = append(clauses, bucketExpr+" IS NOT NULL")
@@ -52,12 +52,16 @@ func (db *DB) TrendStats(ctx context.Context, req TrendRequest) ([]TrendResult, 
 			FROM stage_attempts GROUP BY run_id, stage, branch
 		) latest ON latest.run_id = sa.run_id AND latest.stage = sa.stage
 			AND latest.branch IS sa.branch
+			AND latest.final_traversal = sa.traversal
 		%s
 		%s
 		ORDER BY %s, r.gaggle, r.workflow, sa.stage%s, sa.run_id, sa.traversal`,
 		bucketExpr, prefixedColumns(dimensions), join, whereClause(clauses),
 		"", "1", groupedColumns(dimensions))
-	queryArgs := append(bucketArgs, args...)
+	queryArgs := make([]any, 0, len(bucketArgs)*2+len(args))
+	queryArgs = append(queryArgs, bucketArgs...)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, bucketArgs...)
 	rows, err := db.readDB().QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query trend usage: %w", err)

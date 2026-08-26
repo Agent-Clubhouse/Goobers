@@ -603,12 +603,23 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() || !req.TrendSince.Before(req.TrendUntil) {
 			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
 		}
-		width := req.TrendUntil.Sub(req.TrendSince) / time.Duration(req.TrendBuckets)
+		total := req.TrendUntil.Sub(req.TrendSince)
+		buckets := time.Duration(req.TrendBuckets)
+		if total < buckets {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: trend window is too short for requested buckets", ErrInvalidTelemetryRequest)
+		}
 		result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
 		windows := make([]rollup.TrendWindow, 0, req.TrendBuckets+1)
+		boundary := func(index int) time.Duration {
+			i := time.Duration(index)
+			return total/buckets*i + total%buckets*i/buckets
+		}
 		for index := 0; index < req.TrendBuckets; index++ {
-			since := req.TrendSince.Add(width * time.Duration(index))
-			until := req.TrendSince.Add(width * time.Duration(index+1))
+			since := req.TrendSince.Add(boundary(index))
+			until := req.TrendSince.Add(boundary(index + 1))
+			if index == req.TrendBuckets-1 {
+				until = req.TrendUntil
+			}
 			windows = append(windows, rollup.TrendWindow{Since: since, Until: until})
 			result.Trend = append(result.Trend, TelemetryTrendBucket{
 				Since: since.UTC().Format(time.RFC3339Nano),

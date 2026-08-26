@@ -174,6 +174,38 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 	}
 }
 
+func TestTrendStatsUsesOnlyFinalTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "failure", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 5, telemetry.AttrGenAIUsageOutputTokens: 10,
+			telemetry.AttrUsageCostUSD: 0.5,
+		}},
+		usageAttemptFixture{number: 1, duration: 20 * time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 15, telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD: 1.5,
+		}})
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	results, err := db.TrendStats(context.Background(), TrendRequest{
+		Stats:   StatsRequest{Workflow: "implement"},
+		Windows: []TrendWindow{{Since: fixtureStart.Add(-time.Hour), Until: fixtureStart.Add(time.Hour)}},
+	})
+	if err != nil {
+		t.Fatalf("TrendStats: %v", err)
+	}
+	if len(results) != 1 || len(results[0].Usage) != 4 {
+		t.Fatalf("trend results = %#v, want four usage aggregates", results)
+	}
+	usage := results[0].Usage[3]
+	if usage.TotalAttempts != 1 || usage.CostUSD != 1.5 || usage.TokenSamples != 2 {
+		t.Fatalf("final traversal usage = %#v, want one attempt, cost 1.5, two token samples", usage)
+	}
+}
+
 func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
