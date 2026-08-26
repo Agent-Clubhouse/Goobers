@@ -51,6 +51,17 @@ telemetry-backed signals; `quality-sprint` does not request it.)
    - **Flaky test**: require at least two distinct runs naming the same test
      and package/suite. Preserve the proposed owner and expiry for a bounded
      quarantine, and never turn it into an anonymous skip or retry.
+   - **Gate-never-fails**: treat this as a calibration/coverage signal, not
+     proof that the gate should have failed. Resolve every flagged run and
+     inspect the recorded gate input, gate contract/predicate, and actual
+     verdict. If the inputs satisfy the predicate (including advisory
+     evaluations that correctly return `pass`), do not file a behavior defect
+     or require a cited run to change outcome. Only nominate a behavior fix
+     when the evidence identifies at least one concrete expected/actual
+     mismatch, naming the input, expected verdict, and observed verdict.
+     Before filing calibration work, search open and recently resolved issues
+     and merged fixes for the same gate and finding family; reference or
+     suppress a completed calibration rather than re-filing it.
    - **Perf smell**: cite the specific measurement (duration, allocation
      count) and what it's compared against.
 4. Every filed issue includes, at minimum:
@@ -58,6 +69,10 @@ telemetry-backed signals; `quality-sprint` does not request it.)
      without further clarification, if it's genuinely that clean).
    - A body with the evidence pointers from step 3, a proposed scope (what
      "done" looks like), and an acceptance-criteria sketch.
+     For a gate-never-fails finding, the acceptance criteria must describe
+     calibration/coverage guidance unless a recorded gate input and contract
+     prove an expected/actual mismatch. Never write an acceptance criterion
+     that requires a cited run to change from pass without that proof.
    - The `goobers:nominated` label and an evidence footer citing the
      run-id(s) your finding is based on (so a human can trace it back to
      the telemetry/journal that motivated it).
