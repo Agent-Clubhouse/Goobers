@@ -74,6 +74,7 @@ type TelemetryStatsResult struct {
 	TrendPrevious       *TelemetryTrendBucket  `json:"trendPrevious,omitempty"`
 }
 
+// TelemetryTrendBucket contains usage aggregated over one bounded time window.
 type TelemetryTrendBucket struct {
 	Since string                `json:"since"`
 	Until string                `json:"until"`
