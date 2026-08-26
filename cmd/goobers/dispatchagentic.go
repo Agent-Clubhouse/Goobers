@@ -199,7 +199,7 @@ func buildPodAgenticExecutor(ctx context.Context, kit *agentickit.Kit, stderr io
 		SharedRegistry:   registry,
 		RunsDir:          runsDir,
 		SandboxPosture:   instance.SandboxPosture(kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber},
+		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir},
 		SecretRegistrar:  registry,
 		AgenticAdapter:   newAgenticAdapter,
 	})
@@ -211,9 +211,20 @@ func buildPodAgenticExecutor(ctx context.Context, kit *agentickit.Kit, stderr io
 // journal plane and their content address is DERIVED — journal.ArtifactRef
 // computes the exact Ref the daemon's writer produces for the same bytes, which
 // is the same derivation the deterministic path already relies on.
+// It must satisfy every interface buildAgenticExecutor type-asserts on the
+// recorder, because those assertions fail at CONSTRUCTION rather than at first
+// use — so a missing method is a stage that never starts, reported as
+// "recorder does not implement X" with no other context.
+//
+// The full set, swept from the construction path rather than discovered one
+// failed run at a time: harness.SpanRecorder, harness.ArtifactRecorder,
+// interface{ Dir() string }, and (for the external-telemetry path)
+// executor.BoundedArtifactRecorder. The SecretRegistrar must separately be a
+// journal.Scrubber, which *journal.RegistryScrubber already is.
 type podArtifactRecorder struct {
 	stderr   io.Writer
 	scrubber journal.Scrubber
+	dir      string
 }
 
 func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
@@ -231,3 +242,36 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 	recordStageArtifacts(context.Background(), r.stderr, map[string][]byte{name: scrubbed})
 	return ref, nil
 }
+
+// RecordSpanWithSchema satisfies harness.SpanRecorder. A span is an artifact
+// under a "spans" prefix — the same shape the worker-side recorder uses, so a
+// span produced in a pod lands under the same name it would locally.
+func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
+	_ = stage
+	_ = dataSchema
+	return r.RecordArtifact("spans/"+name, data)
+}
+
+// RecordArtifactBounded satisfies executor.BoundedArtifactRecorder. The limit
+// is applied AFTER scrubbing, at the same boundary that digests the bytes, so
+// a truncated artifact still has a digest committing to what was stored.
+func (r podArtifactRecorder) RecordArtifactBounded(name string, data []byte, maxBytes int) (journal.Ref, error) {
+	return r.RecordArtifactBoundedWithIntegrity(name, data, apiv1.IntegrityDerived, maxBytes)
+}
+
+// RecordArtifactBoundedWithIntegrity is RecordArtifactBounded with an explicit
+// provenance grade.
+func (r podArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, data []byte, _ apiv1.Integrity, maxBytes int) (journal.Ref, error) {
+	scrubbed := data
+	if r.scrubber != nil {
+		scrubbed = r.scrubber.Scrub(data)
+	}
+	if maxBytes > 0 && len(scrubbed) > maxBytes {
+		scrubbed = scrubbed[:maxBytes]
+	}
+	return r.RecordArtifact(name, scrubbed)
+}
+
+// Dir satisfies the interface{ Dir() string } the executor asserts for its
+// staging directory.
+func (r podArtifactRecorder) Dir() string { return r.dir }

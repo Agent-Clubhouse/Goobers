@@ -3,6 +3,11 @@ package main
 import (
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 )
@@ -47,5 +52,31 @@ func TestEnvCapabilitiesSurviveTheKit(t *testing.T) {
 	}
 	if back.EnvCapabilities["agent:model"] != copilotModelEnv {
 		t.Fatalf("mapping lost in transport: %v", back.EnvCapabilities)
+	}
+}
+
+// buildAgenticExecutor type-asserts its recorder against several interfaces and
+// fails at CONSTRUCTION when one is missing — so a missing method is a stage
+// that never starts, reported as "recorder does not implement X" with nothing
+// else to go on. MEASURED exactly that way on the cluster:
+//
+//	agentic_executor_unavailable: runner artifact recorder does not
+//	implement harness.SpanRecorder
+//
+// These assertions move that failure to COMPILE TIME. Each one costs a
+// rebuild-and-deploy cycle to find otherwise, which is how the first was found.
+var (
+	_ harness.SpanRecorder             = podArtifactRecorder{}
+	_ harness.ArtifactRecorder         = podArtifactRecorder{}
+	_ executor.BoundedArtifactRecorder = podArtifactRecorder{}
+	_ interface{ Dir() string }        = podArtifactRecorder{}
+	_ runner.ArtifactRecorder          = podArtifactRecorder{}
+)
+
+// The SecretRegistrar is asserted to journal.Scrubber in the same constructor.
+func TestPodSecretRegistrarIsAScrubber(t *testing.T) {
+	registry, _ := journal.DefaultScrubber()
+	if _, ok := interface{}(registry).(journal.Scrubber); !ok {
+		t.Fatal("the registry handed in as SecretRegistrar must also be a journal.Scrubber")
 	}
 }
