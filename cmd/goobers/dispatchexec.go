@@ -222,6 +222,20 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// Carrying them on the envelope also closes the parity gap that a
 	// pod-executed stage surrendered zero artifacts where the same stage on a
 	// self runner surrendered three.
+	// The exit code is a MEASUREMENT of the run and belongs on every envelope
+	// below, success or failure. The local executor records it unconditionally
+	// (shell.go: result.Metrics["exitCode"]), so a gate or report reading it
+	// found a number on a self runner and nothing at all on a pod.
+	exitCode := 0
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(runErr, &exitErr):
+		exitCode = exitErr.ExitCode()
+	case runErr != nil:
+		exitCode = -1
+	}
+	stageMetrics := map[string]float64{"exitCode": float64(exitCode)}
+
 	stageArtifacts := recordStageArtifacts(ctx, stderr, map[string][]byte{
 		"stdout.log": scrubbedOut,
 		"stderr.log": scrubbedErr,
@@ -247,6 +261,8 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 				Status:    apiv1.ResultFailure,
 				Outputs:   outputs,
 				Artifacts: stageArtifacts,
+				Metrics:   stageMetrics,
+				Summary:   "declared result file missing",
 				Error: &apiv1.ErrorInfo{
 					Code:    "missing_result_file",
 					Message: fmt.Sprintf("stage declared result file %q and exited 0 without writing it", resultFile),
@@ -257,13 +273,35 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 				Status:    apiv1.ResultFailure,
 				Outputs:   outputs,
 				Artifacts: stageArtifacts,
+				Metrics:   stageMetrics,
+				Summary:   "declared result file unreadable",
 				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
 			}
 		}
 	}
 
 	if runErr == nil && !timedOut {
-		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs, Artifacts: stageArtifacts}
+		// noWork is a DISTINCT terminal status, not a flavour of success, and
+		// the local executor has always treated it that way. A pod that
+		// flattened it to success made a stage's "nothing to do" invisible —
+		// the workflow would take the did-work path on a pod and the no-work
+		// path on a self runner, from the same stage and the same outputs.
+		if v, ok := outputs[executor.OutputNoWork].(bool); ok && v {
+			return apiv1.ResultEnvelope{
+				Status:    apiv1.ResultNoWork,
+				Outputs:   outputs,
+				Artifacts: stageArtifacts,
+				Metrics:   stageMetrics,
+				Summary:   "stage found no work to do",
+			}
+		}
+		return apiv1.ResultEnvelope{
+			Status:    apiv1.ResultSuccess,
+			Outputs:   outputs,
+			Artifacts: stageArtifacts,
+			Metrics:   stageMetrics,
+			Summary:   "stage completed",
+		}
 	}
 
 	code, message := "stage_failed", "stage exited with an error"
@@ -285,12 +323,53 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// most. The local executor attaches them on failure as well, and a pod that
 	// surrendered artifacts only on success would make a failing stage harder
 	// to diagnose on the substrate that is already harder to reach into.
+	// A TYPED error reported through the result file beats the generic
+	// stage_failed: the command knew why it failed and said so structurally.
+	// The local executor gives it precedence for exactly that reason, so
+	// without this the same failure journals as a specific code (e.g.
+	// github_rate_limited, with the reset time) on a self runner and as an
+	// opaque stage_failed on a pod — the classification a retry policy reads.
+	if typedCode, typedMessage, retryable := consumeErrorOutputs(outputs); typedCode != "" {
+		if typedMessage == "" {
+			typedMessage = message
+		}
+		return apiv1.ResultEnvelope{
+			Status:    apiv1.ResultFailure,
+			Outputs:   outputs,
+			Artifacts: stageArtifacts,
+			Metrics:   stageMetrics,
+			Summary:   typedMessage,
+			Error:     &apiv1.ErrorInfo{Code: typedCode, Message: typedMessage, Retryable: retryable},
+		}
+	}
 	return apiv1.ResultEnvelope{
 		Status:    apiv1.ResultFailure,
 		Outputs:   outputs,
 		Artifacts: stageArtifacts,
+		Metrics:   stageMetrics,
+		Summary:   message,
 		Error:     &apiv1.ErrorInfo{Code: code, Message: message},
 	}
+}
+
+// consumeErrorOutputs reads the well-known typed-failure keys a command sets in
+// its declared result file and REMOVES them from Outputs, mirroring the local
+// executor's helper of the same name (internal/executor/shell.go).
+//
+// Deliberately mirrored rather than shared: this package cannot reach the
+// executor's unexported helper, and the KEYS are the contract — they are
+// exported constants, used here, so the two cannot drift on the names. The
+// removal matters as much as the read: leaving errorCode in Outputs would hand
+// downstream stages a key the self runner consumed, which is itself a parity
+// gap.
+func consumeErrorOutputs(outputs map[string]interface{}) (code, message string, retryable bool) {
+	code, _ = outputs[executor.OutputErrorCode].(string)
+	message, _ = outputs[executor.OutputErrorMessage].(string)
+	retryable, _ = outputs[executor.OutputErrorRetryable].(bool)
+	delete(outputs, executor.OutputErrorCode)
+	delete(outputs, executor.OutputErrorMessage)
+	delete(outputs, executor.OutputErrorRetryable)
+	return code, message, retryable
 }
 
 func failureEnvelope(code, message string) apiv1.ResultEnvelope {
