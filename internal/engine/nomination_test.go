@@ -62,6 +62,25 @@ func loadNominator(t *testing.T) apiv1.GooberSpec {
 	return g.Spec
 }
 
+func TestNominatorInstructionsRequireGateOutcomeEvidence(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(nominationConfigRoot, "goobers", "nominator", "instructions.md"))
+	if err != nil {
+		t.Fatalf("read nominator instructions: %v", err)
+	}
+	instructions := string(raw)
+	for _, required := range []string{
+		"advisory evaluation",
+		"expected/actual mismatch",
+		"recently",
+		"merged fixes",
+		"change outcome",
+	} {
+		if !strings.Contains(instructions, required) {
+			t.Errorf("nominator instructions omit gate-never-fails safeguard %q", required)
+		}
+	}
+}
+
 type candidateFindingsFixture struct {
 	Schema              string                        `json:"schema"`
 	Window              string                        `json:"window"`
@@ -119,6 +138,21 @@ type nominatedIssue struct {
 	title     string
 	evidence  string
 	labels    []string
+}
+
+func gateNomination(s rollup.Finding) (title, evidence string, behaviorDefect bool) {
+	if s.Kind != rollup.FindingGateNeverFails {
+		return "nominated: " + s.Subject, s.Subject, true
+	}
+
+	// The connector fixture records the contract-derived expected and observed
+	// outcomes so this test exercises the nominator's evidence boundary.
+	expected, hasExpected := s.Metrics["expectedPass"]
+	observed, hasObserved := s.Metrics["observedPass"]
+	if !hasExpected || !hasObserved || expected == observed {
+		return "calibration: " + s.Subject + " coverage", "no observed non-pass outcome; calibrate coverage for " + s.Subject, false
+	}
+	return "nominated: " + s.Subject, fmt.Sprintf("%s expected pass=%g, observed pass=%g", s.Subject, expected, observed), true
 }
 
 // nominateFixture applies the same evidence-first, capped, dedupe-first
@@ -183,10 +217,11 @@ func nominateFixture(
 		if autoApprove {
 			labels = append(labels, "goobers:approved")
 		}
+		title, evidence, _ := gateNomination(s)
 		filed = append(filed, nominatedIssue{
 			dedupeKey: dedupeKey,
-			title:     "nominated: " + s.Subject,
-			evidence:  s.Subject,
+			title:     title,
+			evidence:  evidence,
 			labels:    labels,
 		})
 	}
@@ -522,6 +557,47 @@ func TestWorkNominationCreditGuardrailContract(t *testing.T) {
 	filed, _ = nominateFixture([]rollup.Finding{signal}, eligible, nil, 5, nil)
 	if len(filed) != 0 {
 		t.Fatalf("credit finding without upstream-cause contract was filed: %+v", filed)
+	}
+}
+
+func TestWorkNominationGateNoiseRequiresOutcomeMismatch(t *testing.T) {
+	allPass := rollup.Finding{
+		Kind: rollup.FindingGateNeverFails, Subject: "advisory-verdict",
+		Metrics: map[string]float64{
+			"totalEvaluations": 20, "expectedPass": 1, "observedPass": 1,
+		},
+		Threshold:   5,
+		FlaggedRuns: []rollup.JournalPointer{{RunID: "run-advisory-pass"}},
+	}
+	filed, deduped := nominateFixture([]rollup.Finding{allPass}, nil, nil, 5, nil)
+	if deduped != 0 || len(filed) != 1 {
+		t.Fatalf("all-pass gate finding filed = %+v, deduped = %d, want one calibration nomination", filed, deduped)
+	}
+	if filed[0].title != "calibration: advisory-verdict coverage" ||
+		strings.Contains(filed[0].evidence, "should fail") {
+		t.Fatalf("all-pass gate finding used behavior-defect language: %+v", filed[0])
+	}
+
+	filed, deduped = nominateFixture(
+		[]rollup.Finding{allPass}, nil,
+		map[string]bool{"advisory-verdict": true}, 5, nil,
+	)
+	if len(filed) != 0 || deduped != 1 {
+		t.Fatalf("completed calibration was refiled: filed=%+v deduped=%d", filed, deduped)
+	}
+
+	mismatch := allPass
+	mismatch.Metrics = map[string]float64{
+		"totalEvaluations": 20, "expectedPass": 0, "observedPass": 1,
+	}
+	filed, deduped = nominateFixture([]rollup.Finding{mismatch}, nil, nil, 5, nil)
+	if deduped != 0 || len(filed) != 1 {
+		t.Fatalf("mismatched gate finding = %+v, deduped = %d, want one behavior nomination", filed, deduped)
+	}
+	if filed[0].title != "nominated: advisory-verdict" ||
+		!strings.Contains(filed[0].evidence, "expected pass=0") ||
+		!strings.Contains(filed[0].evidence, "observed pass=1") {
+		t.Fatalf("mismatched gate finding omitted outcome evidence: %+v", filed[0])
 	}
 }
 

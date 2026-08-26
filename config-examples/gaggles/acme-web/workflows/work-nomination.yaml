@@ -60,7 +60,9 @@ spec:
         promotionCandidates boundary; never nominate from promotionSignals or
         a correlational fallback. Then honor nomination_guardrails: require an
         upstream-cause check, dedupe by its exact key, and apply its governing-
-        target treatment.
+        target treatment. Treat gate-never-fails as calibration evidence:
+        require a recorded expected/actual mismatch before describing a
+        behavior defect or requiring a cited run to change.
         Query existing goobers:nominated issues first and skip
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a

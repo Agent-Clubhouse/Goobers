@@ -32,7 +32,12 @@ have — never speculate about a gap you can't point to:
 2. **Recurring failures.** A stage failure-rate or error-signature finding
    whose metrics meet the artifact's recorded threshold.
 3. **Gate noise.** A never-failing or repass-churn gate finding whose journal
-   pointers show a repeated, low-signal pattern.
+   pointers show a repeated, low-signal pattern. A `gate-never-fails` finding
+   is calibration/coverage evidence, not proof that the gate should have
+   failed. Resolve each cited run and compare its recorded input and
+   gate contract/predicate with the actual verdict. In particular, an
+   advisory evaluation that satisfies its contract and returns `pass` is
+   correct and must not become a behavior-defect nomination.
 4. **Credit assignment.** Treat `promotionCandidates` as the only
    machine-authorized list of nodes for credit-based nomination. Never nominate
    a node from `promotionSignals`, including a signal whose source is
@@ -45,6 +50,15 @@ Do not nominate speculative "nice to have" work, style preferences, or
 anything you can't back with either a telemetry signature or a concrete code
 reference (file/line, a specific untested branch, a specific repeated
 failure).
+
+For `gate-never-fails`, file a behavior-fix issue only when diagnosis records
+at least one concrete expected/actual mismatch: cite the gate input, the
+contract or policy that determines the expected verdict, and both expected
+and observed outcomes. Without that evidence, use calibration/coverage
+language rather than claiming the gate should fail or requiring any cited run
+to change outcome. Before filing calibration work, query open and recently
+resolved issues and merged fixes for the same gate and finding family; refer
+to or suppress a completed calibration instead of filing it again.
 
 ## Dedupe first — query before you file
 
@@ -85,6 +99,8 @@ Every issue you file MUST have:
    the first slice, not the whole thing).
 3. **An acceptance sketch** — a short, testable description of what "done"
    looks like for whoever implements it.
+   For `gate-never-fails`, this must be calibration/coverage guidance unless
+   the recorded input and gate contract prove an expected/actual mismatch.
 4. **The `goobers:nominated` label**, plus an evidence footer at the end of
    the issue body in this exact form so the provenance is machine-readable
    and human-traceable:

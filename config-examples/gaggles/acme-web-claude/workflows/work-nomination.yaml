@@ -65,7 +65,11 @@ spec:
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a
         repro, a proposed scope, and an acceptance sketch. Stop at the
-        configured per-run cap.
+        configured per-run cap. Treat gate-never-fails as calibration evidence:
+        require a recorded expected/actual mismatch before describing a behavior
+        defect or requiring a cited run to change. Compare the gate with open and
+        recently resolved calibrations for the same gate and finding family before
+        filing new calibration work.
       capabilities:
         - repo:read
         - telemetry:read
