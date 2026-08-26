@@ -119,7 +119,7 @@ func writePriorityTriggerRequest(schedulerDir, gaggle, workflow, sourceRun strin
 }
 
 func triggerRequestLifetime(ctx context.Context, timeout time.Duration) (time.Time, time.Time) {
-	createdAt := time.Now().UTC()
+	createdAt := delegationNow().UTC()
 	deadline := createdAt.Add(timeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline.UTC()
@@ -173,7 +173,7 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 // observing up.lock held and writing its request).
 func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (runID string, err error) {
 	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
-	deadline := time.Now().Add(timeout)
+	deadline := delegationNow().Add(timeout)
 	for {
 		if data, rerr := os.ReadFile(respPath); rerr == nil {
 			// The writer (sweepPendingTriggers / a test responder) publishes via
@@ -193,7 +193,7 @@ func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, ti
 				return resp.RunID, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if delegationNow().After(deadline) {
 			return "", fmt.Errorf("delegate: timed out after %s waiting for the live `goobers up` daemon to pick up the trigger request "+
 				"(request left at %s — is the daemon still running and healthy?)", timeout, filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix))
 		}
@@ -213,6 +213,8 @@ var delegationPollInterval = 100 * time.Millisecond
 // const, for the same reason. 30s comfortably exceeds delegationSweepInterval
 // (up.go) by a wide margin under any normal daemon load.
 var triggerDelegationTimeout = 30 * time.Second
+
+var delegationNow = time.Now
 
 // priorityTriggerTimeout keeps an internally-requested re-tick alive while the
 // source workflow's concurrent runs finish. Unlike an interactive delegation,
