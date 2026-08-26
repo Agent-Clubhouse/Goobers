@@ -263,11 +263,34 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	class := restrictionSet(runner.Restrictions)
 
 	container := corev1.Container{
-		Name:    StageContainerName,
-		Image:   runner.Host,
-		Command: []string{"goobers"},
-		Args:    []string{DispatchExecCommand},
-		Env:     stageEnv(cfg, attempt),
+		Name:  StageContainerName,
+		Image: runner.Host,
+		// ALWAYS, not the IfNotPresent default, and this is a correctness
+		// requirement rather than a freshness preference.
+		//
+		// Decision 009 makes the tag load-bearing: the skew check compares the
+		// TAG STRING to the dispatcher's embedded commit — "no registry read,
+		// the tag IS the comparison". That inference only holds if a tag maps to
+		// ONE image. A registry tag is mutable, so with IfNotPresent a node that
+		// cached an earlier push serves THAT content under the same tag, and the
+		// skew check passes while the pod runs a different binary. The check
+		// would be proving something true about the tag and false about the pod.
+		//
+		// MEASURED, exactly this: a Windows runner image was rebuilt at the same
+		// commit to add the daemon's CA. The tag did not change, so every node
+		// with the old layers kept serving them — the stage failed x509 twice
+		// more, identically, after the fix was already in the registry. Verified
+		// by reading imagePullPolicy off the live pod (IfNotPresent) and then
+		// watching the rebuilt image be ignored.
+		//
+		// The cost is one manifest check per pod. Stage pods are single-use by
+		// construction (D1: one attempt per pod, disposed after), so there is no
+		// long-lived pod for which a cached layer would amortise anyway, and the
+		// layers themselves still cache — only the manifest is re-read.
+		ImagePullPolicy: corev1.PullAlways,
+		Command:         []string{"goobers"},
+		Args:            []string{DispatchExecCommand},
+		Env:             stageEnv(cfg, attempt),
 	}
 
 	// Extra (non-goobers.dev) metadata merges FIRST; the dispatcher-owned
