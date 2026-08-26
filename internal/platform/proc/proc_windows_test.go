@@ -146,7 +146,8 @@ func TestProcessTreeHelper(t *testing.T) {
 	}
 	pidMarker := os.Getenv("GOOBERS_PROC_HELPER_PID")
 	grandchildMarker := os.Getenv("GOOBERS_PROC_HELPER_GRANDCHILD")
-	if role == "root" {
+	switch role {
+	case "root":
 		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
 		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=child")
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_BREAKAWAY_FROM_JOB}
@@ -156,7 +157,7 @@ func TestProcessTreeHelper(t *testing.T) {
 		if err := os.WriteFile(pidMarker, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
 			t.Fatal(err)
 		}
-	} else if role == "child" {
+	case "child":
 		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
 		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=grandchild")
 		if err := cmd.Start(); err != nil {
