@@ -735,3 +735,45 @@ func TestDispatchStageNonCLIStageCarriesNoRunContext(t *testing.T) {
 		t.Fatalf("non-CLI stage must carry no run context, got %v", got.RunContext)
 	}
 }
+
+// An AGENTIC stage pinned to a remote runner is refused before the dispatcher
+// is consulted, so no pod is created.
+//
+// Without the guard this is not a graceful failure: agentic tasks skip every
+// check in dispatchRemoteTask (they all sit inside the deterministic branch),
+// a pod IS created, and the pod entrypoint — which can only run a declared
+// command or script — finds neither and returns "stage_declaration_invalid".
+// That blames the author's YAML for a substrate limitation, after spending a
+// pod to say it. The inventory can already pin agentic stages remotely (a
+// harnesses:[copilot] runner class resolves), so this is reachable, not
+// hypothetical.
+func TestModeThreeRefusesAgenticStageBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "agentic-edit",
+		Tasks: []apiv1.Task{
+			// Agentic: no Run at all, which is precisely how it reaches dispatch.
+			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo"},
+		},
+	}
+	in := runInput("mode-three-agentic", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "agentic-edit", Queue: dispatcher.QueueName("web", "linux-agentic"),
+		Eligible: remoteEligible(), Memory: "2Gi",
+	}}
+	fake := &fakeStageDispatcher{}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "agentic") {
+		t.Fatalf("workflow error = %v, want the agentic refusal naming the real reason", err)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("the dispatcher was consulted for an agentic stage — a pod may have been created to fail in")
+	}
+}

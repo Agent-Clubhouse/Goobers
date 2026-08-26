@@ -112,6 +112,24 @@ type dispatchStageInput struct {
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
 func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity) (apiv1.ResultEnvelope, error) {
+	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
+	// declared command or script (dispatchexec), and invoking a goober through
+	// its harness has no pod-side path at all — the local arm reaches it via
+	// ActInvokeGoober, which the dispatch activity does not have.
+	//
+	// Refused HERE for the same reason as every other cut in this function:
+	// without it, an agentic task sails past the guards below (they are all
+	// inside the deterministic branch), a pod IS created, and the entrypoint
+	// finds no command and returns "stage_declaration_invalid" — an error that
+	// blames the workflow author's YAML for a substrate limitation, after
+	// spending a pod to say it.
+	//
+	// The runner inventory can already pin an agentic stage here: a
+	// harnesses:[copilot] runner class resolves and places, so this is
+	// reachable today rather than hypothetical.
+	if t.Type == apiv1.TaskAgentic {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is agentic; mode-3 dispatch does not yet run a goober harness in a stage pod — place agentic stages on a self runner", t.Name)
+	}
 	if t.Type == apiv1.TaskDeterministic {
 		if t.Run == nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
@@ -172,6 +190,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// workflow-side refusal happened, but re-check anyway" idiom the self-
 	// placement check above already applies, and the activity boundary is
 	// where a version-skewed or hand-built input would actually surface.
+	// NOT re-asserted at this boundary, deliberately, unlike the guards below.
+	// dispatchStageInput carries no task type, so the activity cannot tell an
+	// agentic stage from a deterministic one whose Run it simply was not given
+	// — the pod reads its command from the spec the dispatcher already stamped.
+	// Inferring "Run == nil means agentic" would refuse legitimate inputs. The
+	// workflow-side refusal is what prevents the pod; making this boundary
+	// re-assert too would mean threading the task type through the activity
+	// input, which is a wire-contract change worth its own decision.
 	if input.Run != nil {
 		if input.Run.Workspace != apiv1.WorkspaceScratch {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q; mode-3 dispatch does not yet provision a pod-side repo checkout (fail closed)", input.Envelope.TaskID, input.Run.Workspace))
