@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -120,7 +121,12 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 
 	build := version.Get()
 	d, err := dispatcher.New(dispatcher.Config{
-		TokenMinter:     minter,
+		TokenMinter: minter,
+		// The kit writer needs the same signing key's peer facility — the blob
+		// plane — plus the instance config only the worker has. Nil when no
+		// blob endpoint is configured, which makes Dispatch refuse agentic
+		// stages explicitly instead of creating a pod that would find no kit.
+		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), os.Getenv("GOOBERS_POD_TOKEN")),
 		Namespace:       namespace,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
@@ -176,4 +182,20 @@ func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 		return nil, err
 	}
 	return signed, nil
+}
+
+// agenticKitWriterFor builds the kit writer, or returns nil when this worker
+// cannot publish kits. Returning a TYPED nil would make the dispatcher's
+// KitWriter != nil check pass and then panic — the same interface trap the
+// token minter already documents — so the nil is returned through the
+// interface type explicitly.
+func agenticKitWriterFor(instanceRoot, blobEndpoint, podToken string) dispatcher.KitWriter {
+	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" {
+		return nil
+	}
+	return agenticKitWriter{
+		instanceRoot: instanceRoot,
+		blobs:        &dispatcher.BlobClient{BaseURL: blobEndpoint, Token: podToken},
+		registrar:    journal.NewRegistryScrubber(),
+	}
 }

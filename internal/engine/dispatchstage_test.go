@@ -753,25 +753,24 @@ func TestDispatchStageNonCLIStageCarriesNoRunContext(t *testing.T) {
 	}
 }
 
-// An AGENTIC stage pinned to a remote runner is refused before the dispatcher
-// is consulted, so no pod is created.
+// An AGENTIC stage pinned to a remote runner now DISPATCHES, and must carry the
+// invocation the pod needs to execute it.
 //
-// Without the guard this is not a graceful failure: agentic tasks skip every
-// check in dispatchRemoteTask (they all sit inside the deterministic branch),
-// a pod IS created, and the pod entrypoint — which can only run a declared
-// command or script — finds neither and returns "stage_declaration_invalid".
-// That blames the author's YAML for a substrate limitation, after spending a
-// pod to say it. The inventory can already pin agentic stages remotely (a
-// harnesses:[copilot] runner class resolves), so this is reachable, not
-// hypothetical.
-func TestModeThreeRefusesAgenticStageBeforeDispatch(t *testing.T) {
+// This replaces the refusal that stood here. The refusal was correct while the
+// pod had no way to invoke a goober; it now does, via a kit published to the
+// blob plane and verified by digest on arrival.
+//
+// The two assertions below are the contract: without Agentic the dispatcher
+// would not publish a kit, and without the Envelope the kit writer has nothing
+// to resolve the goober from — either way the pod would start and find no
+// instructions, which is the silent-wrong-result this design exists to avoid.
+func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "agentic-edit",
 		Tasks: []apiv1.Task{
-			// Agentic: no Run at all, which is precisely how it reaches dispatch.
-			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo"},
+			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo", Goober: "implementer"},
 		},
 	}
 	in := runInput("mode-three-agentic", spec)
@@ -779,18 +778,27 @@ func TestModeThreeRefusesAgenticStageBeforeDispatch(t *testing.T) {
 		Stage: "agentic-edit", Queue: dispatcher.QueueName("web", "linux-agentic"),
 		Eligible: remoteEligible(), Memory: "2Gi",
 	}}
-	fake := &fakeStageDispatcher{}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
 	env.ExecuteWorkflow(Run, in)
 
-	err := env.GetWorkflowError()
-	if err == nil || !strings.Contains(err.Error(), "agentic") {
-		t.Fatalf("workflow error = %v, want the agentic refusal naming the real reason", err)
+	if fake.calls.Load() == 0 {
+		t.Fatal("an agentic stage must now reach the dispatcher")
 	}
-	if fake.calls.Load() != 0 {
-		t.Fatal("the dispatcher was consulted for an agentic stage — a pod may have been created to fail in")
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	got := fake.attempts[0]
+	if !got.Agentic {
+		t.Fatal("attempt is not marked agentic; the dispatcher would publish no kit and the pod would find no instructions")
+	}
+	if got.Envelope == nil {
+		t.Fatal("attempt carries no envelope; the kit writer has nothing to resolve the goober from")
+	}
+	if got.Envelope.Goober == "" {
+		t.Fatalf("envelope names no goober: %+v", got.Envelope)
 	}
 }

@@ -127,9 +127,6 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 	// The runner inventory can already pin an agentic stage here: a
 	// harnesses:[copilot] runner class resolves and places, so this is
 	// reachable today rather than hypothetical.
-	if t.Type == apiv1.TaskAgentic {
-		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is agentic; mode-3 dispatch does not yet run a goober harness in a stage pod — place agentic stages on a self runner", t.Name)
-	}
 	if t.Type == apiv1.TaskDeterministic {
 		if t.Run == nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
@@ -230,6 +227,17 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
 	attempt.Capabilities = input.Envelope.Capabilities
+
+	// An agentic stage executes by invoking a goober rather than running a
+	// command, so the pod needs the whole invocation. It travels as a verified
+	// claim check (internal/agentickit) — the dispatcher publishes the kit and
+	// stamps only its digest, keeping the run's goal and ownership boundary off
+	// a pod spec that anything with namespace read can list.
+	if input.Run == nil {
+		attempt.Agentic = true
+		envelope := input.Envelope
+		attempt.Envelope = &envelope
+	}
 
 	// A goobers-CLI stage needs the run's operational identity to do its job:
 	// providerRepo() reads GOOBERS_REPO_* to learn which repository it was

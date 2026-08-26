@@ -100,6 +100,14 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
 func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+	// An AGENTIC stage has no declared command: it executes by invoking a
+	// goober through its harness, using the kit the dispatcher published. The
+	// kit digest is what distinguishes the two, and it is stamped only for
+	// agentic attempts.
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
+		return runAgenticStage(ctx, stdout, stderr)
+	}
+
 	run := apiv1.DeterministicRun{Script: os.Getenv(dispatcher.EnvStageScript)}
 	if encoded := os.Getenv(dispatcher.EnvStageCommand); encoded != "" {
 		if err := json.Unmarshal([]byte(encoded), &run.Command); err != nil {
