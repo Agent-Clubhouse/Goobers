@@ -125,6 +125,30 @@ func buildPodAgenticExecutor(ctx context.Context, kit *agentickit.Kit, stderr io
 		registry.Register([]byte(c.Value))
 	}
 
+	// APPLY THE CAPABILITY→ENV MAPPING the kit carries. The harness reads its
+	// credential from the environment (agent:model -> COPILOT_GITHUB_TOKEN),
+	// and on the worker that variable is ambient — supplied by the deployment.
+	// A pod has no ambient credentials by design, so without this the harness
+	// preflight fails before the stage ever starts:
+	//
+	//	harness "copilot" preflight failed in pod:
+	//	  Error: No authentication information found.
+	//
+	// Sourcing it from the PLANE rather than a deployment secret is strictly
+	// better than the worker's posture: the value is scoped to this run, and
+	// no long-lived model credential sits in a pod spec or a mounted secret.
+	// Every value is registered with the scrubber above before it is set here,
+	// so a harness that echoes it into a transcript still cannot leak it.
+	for _, c := range minted {
+		envVar, ok := kit.EnvCapabilities[c.Capability]
+		if !ok || envVar == "" || c.Value == "" {
+			continue
+		}
+		if err := os.Setenv(envVar, c.Value); err != nil {
+			return nil, fmt.Errorf("apply credential for capability %s: %w", c.Capability, err)
+		}
+	}
+
 	grants := make([]credentials.Grant, 0, len(kit.Grants))
 	for _, g := range kit.Grants {
 		grants = append(grants, credentials.Grant{Goober: g.Goober, Capability: g.Capability, Ref: g.Ref})
