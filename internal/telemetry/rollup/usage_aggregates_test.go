@@ -201,8 +201,9 @@ func TestTrendStatsUsesOnlyFinalTraversal(t *testing.T) {
 		t.Fatalf("trend results = %#v, want four usage aggregates", results)
 	}
 	usage := results[0].Usage[3]
-	if usage.TotalAttempts != 1 || usage.CostUSD != 1.5 || usage.TokenSamples != 2 {
-		t.Fatalf("final traversal usage = %#v, want one attempt, cost 1.5, two token samples", usage)
+	if usage.TotalAttempts != 1 || usage.CostUSD != 1.5 || usage.TokenSamples != 1 ||
+		usage.P50Tokens != 35 || usage.P95Tokens != 35 {
+		t.Fatalf("final traversal usage = %#v, want one attempt, cost 1.5, one 35-token sample", usage)
 	}
 }
 

@@ -101,11 +101,15 @@ func (db *DB) TrendStats(ctx context.Context, req TrendRequest) ([]TrendResult, 
 		if duration.Valid && duration.Int64 >= 0 {
 			accum.durations = append(accum.durations, duration.Int64)
 		}
-		if input.Valid {
-			accum.tokens = append(accum.tokens, input.Int64)
-		}
-		if output.Valid {
-			accum.tokens = append(accum.tokens, output.Int64)
+		if input.Valid && output.Valid {
+			if input.Int64 < 0 || output.Int64 < 0 {
+				return nil, fmt.Errorf("rollup: stage %s has negative token usage", key.stage)
+			}
+			tokens, err := addNonnegativeInt64(input.Int64, output.Int64)
+			if err != nil {
+				return nil, fmt.Errorf("rollup: sum token usage for stage %s: %w", key.stage, err)
+			}
+			accum.tokens = append(accum.tokens, tokens)
 		}
 		if premium.Valid {
 			accum.premiumRequests = append(accum.premiumRequests, premium.Float64)
