@@ -230,3 +230,35 @@ func TestCheckoutFallbackSurvivesDirtyWorkspace(t *testing.T) {
 		t.Fatal("stale content from the failed attempt survived into the workspace")
 	}
 }
+
+// The safe.directory exemption must name the workspace PATH and never the "*"
+// wildcard: the protection exists to stop git trusting a repository someone
+// else planted, and a pod that disabled it globally would trust anything
+// mounted into it.
+func TestWorkspaceGitEnvScopesSafeDirectoryToThePath(t *testing.T) {
+	ws := t.TempDir()
+	env := workspaceGitEnv(ws)
+
+	var key, value string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case "GIT_CONFIG_KEY_0":
+			key = v
+		case "GIT_CONFIG_VALUE_0":
+			value = v
+		}
+	}
+	if key != "safe.directory" {
+		t.Fatalf("key = %q, want safe.directory", key)
+	}
+	if value == "*" {
+		t.Fatal("safe.directory must not be the wildcard: that trusts every repository in the pod")
+	}
+	if !filepath.IsAbs(value) {
+		t.Fatalf("safe.directory = %q, want an absolute path", value)
+	}
+	if value != ws {
+		t.Fatalf("safe.directory = %q, want the workspace %q", value, ws)
+	}
+}

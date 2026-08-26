@@ -174,7 +174,8 @@ func runGit(ctx context.Context, dir string, env []string, stderr io.Writer, arg
 	// repository with no usable credential can BLOCK asking for one. A stage
 	// pod has no terminal, so the ask would hang until the stage timed out and
 	// be reported as a timeout rather than as the auth failure it is.
-	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), workspaceGitEnv(dir)...)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdout = io.Discard
 	// Tee: the pod's stderr keeps the live view, and the copy rides the error
 	// so the surrendered envelope is self-describing after disposal.
@@ -231,4 +232,34 @@ func clearDirContents(dir string) error {
 		}
 	}
 	return nil
+}
+
+// workspaceGitEnv marks the workspace as a safe git directory.
+//
+// A stage pod runs as a non-root uid while its workspace volume is created
+// root-owned, so git refuses every command after the clone:
+//
+//	fatal: detected dubious ownership in repository at '/workspace'
+//
+// MEASURED on a live cluster — the clone SUCCEEDS (it is creating files) and
+// the very next command fails, which is why this surfaced as a branch-creation
+// failure rather than a checkout one.
+//
+// Scoped to the workspace PATH, never the "*" wildcard: the protection exists
+// to stop git trusting a repository someone else planted, and a pod that
+// disabled it globally would trust anything mounted into it. Delivered through
+// the environment rather than a config file so the STAGE'S OWN git inherits it
+// too — real workflows run git directly (goobers push-branch commits and
+// pushes from this very tree), so fixing only our own invocations would move
+// the failure one step later instead of removing it.
+func workspaceGitEnv(dir string) []string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=" + abs,
+	}
 }
