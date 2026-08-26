@@ -277,6 +277,23 @@ type StatsResult struct {
 	ReadyPool ReadyPoolHealth `json:"readyPool"`
 }
 
+// TrendRequest describes the windows to aggregate in one rollup read.
+type TrendRequest struct {
+	Stats   StatsRequest
+	Windows []TrendWindow
+}
+
+// TrendWindow identifies one inclusive/exclusive trend range.
+type TrendWindow struct {
+	Since time.Time
+	Until time.Time
+}
+
+// TrendResult contains usage aggregates in the same order as TrendRequest.Windows.
+type TrendResult struct {
+	Usage []UsageStats
+}
+
 // InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
 // `goobers stats`. SuccessRate follows RunStats: completed / (completed +
 // failed − infraFailed), excluding phases and infra-fault terminals that do

@@ -30,6 +30,8 @@ type fakeTelemetryStore struct {
 	signatureLimit int
 	errorReqs      []rollup.ErrorsRequest
 	statsCalled    int
+	trendReq       rollup.TrendRequest
+	trendResults   []rollup.TrendResult
 	signatureCalls int
 }
 
@@ -51,6 +53,11 @@ func (f *fakeTelemetryStore) Stats(_ context.Context, req rollup.StatsRequest) (
 	f.statsCalled++
 	f.statsReq = req
 	return f.stats, f.err
+}
+
+func (f *fakeTelemetryStore) TrendStats(_ context.Context, req rollup.TrendRequest) ([]rollup.TrendResult, error) {
+	f.trendReq = req
+	return f.trendResults, f.err
 }
 
 func (f *fakeTelemetryStore) TopErrorSignatures(_ context.Context, req rollup.StatsRequest, limit int) ([]rollup.ErrorSignature, error) {
@@ -249,6 +256,7 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if got.Gaggles == nil || got.Runs == nil || got.Stages == nil || got.Usage == nil || got.Models == nil ||
 		len(got.Gaggles) != 0 || len(got.Runs) != 0 || len(got.Stages) != 0 || len(got.Usage) != 0 || len(got.Models) != 0 {
 		t.Fatalf("empty stats = %#v", got)
@@ -267,6 +275,52 @@ func TestTelemetryStatsEmptySlicesAndInvalidWindow(t *testing.T) {
 	negativeBranch := -1
 	if _, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{Branch: &negativeBranch}); !errors.Is(err, ErrInvalidTelemetryRequest) {
 		t.Fatalf("negative branch error = %v", err)
+	}
+}
+
+func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T) {
+	since := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	until := since.Add(24 * time.Hour)
+	previousSince := since.Add(-24 * time.Hour)
+	previousUntil := since
+	branch := 3
+	store := &fakeTelemetryStore{
+		trendResults: []rollup.TrendResult{
+			{Usage: []rollup.UsageStats{{Scope: "instance", CostSamples: 1, CostUSD: 1, HasCost: true}}},
+			{Usage: []rollup.UsageStats{{Scope: "instance", CostSamples: 1, CostUSD: 2, HasCost: true}}},
+			{Usage: []rollup.UsageStats{{Scope: "instance", CostSamples: 1, CostUSD: 3, HasCost: true}}},
+		},
+	}
+	service := &Telemetry{store: store}
+	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		Gaggle: "core", Workflow: "implement", Branch: &branch,
+		GroupByBranch: true, TrendSince: since, TrendUntil: until,
+		TrendBuckets: 2, TrendPreviousSince: previousSince, TrendPreviousUntil: previousUntil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.statsCalled != 1 || len(store.trendReq.Windows) != 3 {
+		t.Fatalf("stats calls = %d, trend windows = %d; want one base query and three windows",
+			store.statsCalled, len(store.trendReq.Windows))
+	}
+	if !store.trendReq.Windows[0].Since.Equal(since) ||
+		!store.trendReq.Windows[0].Until.Equal(since.Add(12*time.Hour)) ||
+		!store.trendReq.Windows[1].Until.Equal(until) ||
+		!store.trendReq.Windows[2].Since.Equal(previousSince) ||
+		!store.trendReq.Windows[2].Until.Equal(previousUntil) {
+		t.Fatalf("trend windows = %+v", store.trendReq.Windows)
+	}
+	if store.trendReq.Stats.Gaggle != "core" || store.trendReq.Stats.Workflow != "implement" ||
+		store.trendReq.Stats.Branch == nil || *store.trendReq.Stats.Branch != branch ||
+		!store.trendReq.Stats.GroupByBranch {
+		t.Fatalf("trend filters = %+v", store.trendReq.Stats)
+	}
+	if len(got.Trend) != 2 || len(got.Trend[0].Usage) != 1 ||
+		got.Trend[1].Usage[0].CostUSD == nil || *got.Trend[1].Usage[0].CostUSD != 2 ||
+		got.TrendPrevious == nil || got.TrendPrevious.Usage[0].CostUSD == nil ||
+		*got.TrendPrevious.Usage[0].CostUSD != 3 {
+		t.Fatalf("trend projection = %+v, previous = %+v", got.Trend, got.TrendPrevious)
 	}
 }
 
