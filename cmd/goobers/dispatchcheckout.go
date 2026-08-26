@@ -121,7 +121,18 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 	if token == "" {
 		return nil, nil
 	}
-	askpass, err := credentials.WriteAskpassScript(dir)
+	// OUTSIDE the workspace, deliberately. `git clone <url> .` refuses a
+	// non-empty destination, so a helper written into the workspace makes the
+	// clone fail before it starts:
+	//   fatal: destination path '.' already exists and is not an empty directory
+	// The worker-side path has always kept this in a control directory beside
+	// the worktree rather than inside it (workcopies/auth); this is the same
+	// separation, and the reason for it is now recorded where it bites.
+	authDir, err := os.MkdirTemp("", "goobers-auth-*")
+	if err != nil {
+		return nil, fmt.Errorf("create auth dir: %w", err)
+	}
+	askpass, err := credentials.WriteAskpassScript(authDir)
 	if err != nil {
 		return nil, fmt.Errorf("write askpass helper: %w", err)
 	}
@@ -150,7 +161,15 @@ func gitToken(creds []dispatcher.MintedCredential) string {
 		if c.Value == "" {
 			continue
 		}
-		if strings.Contains(name, "repo") || strings.Contains(name, "git") {
+		// "repo" ONLY. Matching "git" as well looked harmless and was not:
+		// "github:issues:read" contains it, so an issues-only token would have
+		// been handed to git — the exact scope widening the comment below says
+		// this must not do. Caught by
+		// TestCheckoutRefusesToSubstituteAnUnrelatedCredential.
+		//
+		// "repo" covers the capabilities production stages actually declare:
+		// repo:push, push-repository-branch, modify-repository.
+		if strings.Contains(name, "repo") {
 			return c.Value
 		}
 	}
