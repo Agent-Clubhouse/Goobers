@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -11,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/secretstore"
 )
 
@@ -29,14 +31,26 @@ import (
 // agenticKitWriter satisfies dispatcher.KitWriter.
 type agenticKitWriter struct {
 	instanceRoot string
-	blobs        *dispatcher.BlobClient
-	registrar    *journal.RegistryScrubber
+	blobEndpoint string
+	// minter issues the per-run bearer this writer presents to the blob plane.
+	//
+	// The worker holds the signing KEY, never a pod token: a pod token is
+	// scoped to one run, and the worker serves many. Reading GOOBERS_POD_TOKEN
+	// here — which is what the first version did — sends an empty Authorization
+	// header and the plane answers 401. That is the same mistake #3726 fixed
+	// for live-journal emission, in the same process, for the same reason.
+	minter    *podauth.SignedKey
+	registrar *journal.RegistryScrubber
 }
+
+// kitTokenTTL bounds a minted publish bearer. Short because it is used
+// immediately by the PUT that mints it and never stored.
+const kitTokenTTL = 5 * time.Minute
 
 // WriteKit resolves the stage's goober, publishes its kit, and returns the
 // content address to stamp on the pod.
 func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attempt) (string, error) {
-	if w.blobs == nil {
+	if w.blobEndpoint == "" {
 		return "", fmt.Errorf("agentic kit writer has no blob endpoint")
 	}
 	if attempt.Envelope == nil {
@@ -57,7 +71,17 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	}
 	// Idempotent by content address: a retried attempt republishing an
 	// identical kit is a no-op rather than a conflict.
-	if err := w.blobs.Put(ctx, digest, data); err != nil {
+	// Minted per run, scoped to the run being published for — never an ambient
+	// credential, and never one run's authority used to publish another's.
+	var token string
+	if w.minter != nil {
+		token, err = w.minter.Mint(attempt.RunID, kitTokenTTL)
+		if err != nil {
+			return "", fmt.Errorf("mint publish bearer for run %s: %w", attempt.RunID, err)
+		}
+	}
+	blobs := &dispatcher.BlobClient{BaseURL: w.blobEndpoint, Token: token}
+	if err := blobs.Put(ctx, digest, data); err != nil {
 		return "", fmt.Errorf("publish agentic kit: %w", err)
 	}
 	return digest, nil

@@ -126,7 +126,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 		// plane — plus the instance config only the worker has. Nil when no
 		// blob endpoint is configured, which makes Dispatch refuse agentic
 		// stages explicitly instead of creating a pod that would find no kit.
-		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), os.Getenv("GOOBERS_POD_TOKEN")),
+		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
 		Namespace:       namespace,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
@@ -189,13 +189,14 @@ func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 // KitWriter != nil check pass and then panic — the same interface trap the
 // token minter already documents — so the nil is returned through the
 // interface type explicitly.
-func agenticKitWriterFor(instanceRoot, blobEndpoint, podToken string) dispatcher.KitWriter {
+func agenticKitWriterFor(instanceRoot, blobEndpoint string, minter *podauth.SignedKey) dispatcher.KitWriter {
 	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" {
 		return nil
 	}
 	return agenticKitWriter{
 		instanceRoot: instanceRoot,
-		blobs:        &dispatcher.BlobClient{BaseURL: blobEndpoint, Token: podToken},
+		blobEndpoint: blobEndpoint,
+		minter:       minter,
 		registrar:    journal.NewRegistryScrubber(),
 	}
 }
