@@ -277,6 +277,29 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		t.Fatal("WSL launcher did not retain a host or guest descendant")
 	}
 
+	// Terminating the job alone must not be enough: WSL can broker a host
+	// descendant outside the job, which Tree.Kill must clean up separately.
+	if err := windows.TerminateJobObject(tree.job, 1); err != nil {
+		t.Fatalf("terminate WSL job: %v", err)
+	}
+	var brokeredDescendant processIdentity
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, descendant := range guestDescendants {
+			if Alive(descendant.pid) {
+				brokeredDescendant = descendant
+				break
+			}
+		}
+		if brokeredDescendant.pid != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if brokeredDescendant.pid == 0 {
+		t.Fatal("WSL host descendant did not survive job termination")
+	}
+
 	if err := tree.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
@@ -290,9 +313,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if Alive(wslPID) {
 		t.Fatalf("WSL process %d survived tree termination", wslPID)
 	}
-	for _, descendant := range guestDescendants {
-		if Alive(descendant.pid) {
-			t.Fatalf("WSL descendant %d survived tree termination", descendant.pid)
-		}
+	if Alive(brokeredDescendant.pid) {
+		t.Fatalf("WSL host descendant %d survived tree termination", brokeredDescendant.pid)
 	}
 }

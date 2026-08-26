@@ -106,7 +106,9 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+				windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK |
+				windows.JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
 		},
 	}
 	if _, err := windows.SetInformationJobObject(
@@ -263,16 +265,19 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 		children[process.parent] = append(children[process.parent], process.pid)
 	}
 	var descendants []processIdentity
+	var identityErr error
 	queue := append([]int(nil), children[root]...)
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]
 		if started, ok := startTime(pid); ok {
 			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
+		} else if alive(pid) {
+			identityErr = errors.Join(identityErr, fmt.Errorf("proc: read start time for descendant %d", pid))
 		}
 		queue = append(queue, children[pid]...)
 	}
-	return descendants, nil
+	return descendants, identityErr
 }
 
 // terminatePID force-terminates a single process by pid — the degraded path when
