@@ -256,7 +256,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		t.Fatal("required-ci aggregate has no needs list")
 	}
 	for _, gate := range []string{
-		"checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-macos",
+		"checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "unit-macos",
 		"shipped", "deadcode", "windows-smoke", "vulnerability-scan",
 		"integration", "sandbox", "linux-validation",
 	} {
@@ -277,6 +277,14 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 
 	// The value each deleted job uniquely carried must still be enforced
 	// somewhere. These are the exact seams that keep the deletion a no-op.
+	unitLinuxCoverage := workflowJob(workflow, "unit-linux-coverage")
+	if !strings.Contains(unitLinuxCoverage, "runs-on: ubuntu-latest") ||
+		!strings.Contains(unitLinuxCoverage, "GOOBERS_CI_RACE: \"0\"") ||
+		!strings.Contains(unitLinuxCoverage, "go run ./test/ci group unit") ||
+		!strings.Contains(unitLinuxCoverage, "make cover-gate") ||
+		strings.Contains(unitLinuxCoverage, "GOOBERS_CI_SHARD") {
+		t.Error("Linux coverage gate must run an unsharded whole-tree unit profile on Linux")
+	}
 	unitMacOS := workflowJob(workflow, "unit-macos")
 	if !strings.Contains(unitMacOS, "make cover-gate") {
 		t.Error("the coverage threshold moved onto unit-macos; it must still run `make cover-gate` against the whole-tree profile that job already produces")
@@ -342,7 +350,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		if section == "" {
 			t.Errorf("CI workflow is missing main validation job %q", job)
@@ -390,7 +398,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]",
+		"needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -400,7 +408,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)

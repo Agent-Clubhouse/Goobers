@@ -405,8 +405,46 @@ jobs:
           GOOBERS_CI_SHARD: ${{ matrix.shard }}
         run: go run ./test/ci group unit
 
+  # Linux runs the whole behavioural unit suite (no -race) separately from the
+  # race shards so its coverage profile includes Linux-only files.
+  unit-linux-coverage:
+    name: unit coverage gate (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Unit suite and Linux coverage profile
+        env:
+          GOOBERS_CI_RACE: "0"
+        run: go run ./test/ci group unit
+
+      - name: Enforce the repository coverage threshold
+        run: make cover-gate
+
   # macOS runs the whole behavioural unit suite (no -race) in one process, so it
-  # owns the per-test timing budget artifact and the informational coverage
+  # owns the per-test timing budget artifact and a second OS-specific coverage
   # profile. Race coverage is provided by the Linux shards above.
   unit-macos:
     name: unit behavioral suite (macos)
@@ -1133,12 +1171,12 @@ jobs:
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
     # CI-setup network exposure (#3139/#3322) for zero coverage.
     #
-    # e2e, envtest and coverage were wired in here by #3207 (having been added
+    # e2e and envtest were wired in here by #3207 (having been added
     # as jobs the day before by #3152), and conformance long predates both. All
     # four are now GONE — not un-required, but deleted as jobs, because each was
     # an unsharded re-run of a suite another required job already runs. Their
-    # distinct value moved rather than lapsed: the coverage threshold onto
-    # unit-macos, the envtest control plane onto integration, and the
+    # distinct value moved rather than lapsed: the coverage thresholds onto
+    # unit-linux-coverage and unit-macos, the envtest control plane onto integration, and the
     # conformance and e2e tests were already executing unfiltered in the unit
     # shards. Nothing that this aggregate used to enforce stopped being enforced.
     #
@@ -1148,7 +1186,7 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -1159,6 +1197,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
+          UNIT_LINUX_COVERAGE_RESULT: ${{ needs.unit-linux-coverage.result }}
           UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
           SHIPPED_RESULT: ${{ needs.shipped.result }}
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
@@ -1184,6 +1223,7 @@ jobs:
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
+          check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
           # unit-macos also carries the coverage threshold gate (cover-gate).
           check "unit behavioral suite + coverage (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
@@ -1308,12 +1348,13 @@ jobs:
           needs.deploy-reference.result == 'failure' ||
           needs.lint.result == 'failure' ||
           needs.unit.result == 'failure' ||
+          needs.unit-linux-coverage.result == 'failure' ||
           needs.unit-macos.result == 'failure' ||
           needs.shipped.result == 'failure' ||
           needs.windows-smoke.result == 'failure'
         )
       }}
-    needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]
+    needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
