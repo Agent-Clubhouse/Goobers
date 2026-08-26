@@ -20,12 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -88,7 +88,7 @@ jobs:
             "${baseline[@]}"
 
       - name: Upload unsigned artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-unsigned
           path: dist/
@@ -102,7 +102,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Download unsigned artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: dist-unsigned
           path: dist
@@ -215,7 +215,7 @@ jobs:
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-signed
           path: dist/
@@ -236,7 +236,7 @@ jobs:
     environment: release
     steps:
       - name: Download signed artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: dist-signed
           path: dist
@@ -252,7 +252,7 @@ jobs:
           unzip -q "dist/goobers_${TAG}_windows_amd64.zip" -d winsign
 
       - name: Azure login
-        uses: azure/login@v3
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -264,7 +264,7 @@ jobs:
       # one Apple Developer ID for both. No separate Windows identity or
       # Azure resource is needed.
       - name: Sign goobers.exe
-        uses: azure/trusted-signing-action@v2
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82
         with:
           endpoint: https://wus2.codesigning.azure.net/
           trusted-signing-account-name: Clubhouse-Win-Signing
@@ -335,7 +335,7 @@ jobs:
           rm SHA256SUMS.new
 
       - name: Upload fully-signed artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-signed
           path: dist/
@@ -353,18 +353,18 @@ jobs:
       # single-job design got this for free; a download-artifact-only
       # workspace has no .git at all).
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Download signed artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: dist-signed
           path: dist
