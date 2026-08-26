@@ -237,7 +237,7 @@ func TestCheckoutFallbackSurvivesDirtyWorkspace(t *testing.T) {
 // mounted into it.
 func TestWorkspaceGitEnvScopesSafeDirectoryToThePath(t *testing.T) {
 	ws := t.TempDir()
-	env := workspaceGitEnv(ws)
+	env := workspaceGitEnv(ws).Env()
 
 	var key, value string
 	for _, kv := range env {
@@ -260,5 +260,71 @@ func TestWorkspaceGitEnvScopesSafeDirectoryToThePath(t *testing.T) {
 	}
 	if value != ws {
 		t.Fatalf("safe.directory = %q, want the workspace %q", value, ws)
+	}
+}
+
+// The safe.directory exemption must SURVIVE composition with the credential
+// environment.
+//
+// credentials.GitAuthEnvironment returns a COMPLETE environment and strips
+// foreign GIT_CONFIG_* before installing its own (COUNT=1,
+// KEY_0=credential.helper). Appending it after a safe.directory setting erased
+// that setting — MEASURED on a live cluster: the clone succeeded and every
+// later git command still failed with "detected dubious ownership".
+//
+// The previous test passed throughout, because it checked the helper in
+// isolation and never composed it with auth. This one composes.
+func TestComposedGitEnvKeepsBothConfigSlots(t *testing.T) {
+	ws := t.TempDir()
+	auth := []string{
+		"PATH=/usr/bin",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=",
+		"GIT_ASKPASS=/tmp/askpass",
+	}
+	env := composeGitEnv(ws, auth)
+
+	// Later entries win, so read the EFFECTIVE value of each name.
+	eff := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		eff[k] = v
+	}
+	if eff["GIT_CONFIG_COUNT"] != "2" {
+		t.Fatalf("GIT_CONFIG_COUNT = %q, want 2 — git reads only the first COUNT entries", eff["GIT_CONFIG_COUNT"])
+	}
+	if eff["GIT_CONFIG_KEY_0"] != "credential.helper" {
+		t.Fatalf("slot 0 = %q, want credential.helper preserved", eff["GIT_CONFIG_KEY_0"])
+	}
+	if eff["GIT_CONFIG_KEY_1"] != "safe.directory" {
+		t.Fatalf("slot 1 = %q, want safe.directory", eff["GIT_CONFIG_KEY_1"])
+	}
+	if eff["GIT_CONFIG_VALUE_1"] != ws {
+		t.Fatalf("safe.directory = %q, want the workspace %q", eff["GIT_CONFIG_VALUE_1"], ws)
+	}
+	if eff["GIT_ASKPASS"] != "/tmp/askpass" {
+		t.Fatal("the credential helper must survive composition")
+	}
+}
+
+// Without a credential the exemption takes slot 0, and any inherited
+// GIT_CONFIG_* must be cleared so the indices are unambiguous.
+func TestComposedGitEnvWithoutAuthClaimsSlotZero(t *testing.T) {
+	ws := t.TempDir()
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "inherited.key")
+	t.Setenv("GIT_CONFIG_VALUE_0", "inherited")
+
+	eff := map[string]string{}
+	for _, kv := range composeGitEnv(ws, nil) {
+		k, v, _ := strings.Cut(kv, "=")
+		eff[k] = v
+	}
+	if eff["GIT_CONFIG_KEY_0"] != "safe.directory" {
+		t.Fatalf("slot 0 = %q, want safe.directory to replace the inherited entry", eff["GIT_CONFIG_KEY_0"])
+	}
+	if eff["GIT_CONFIG_COUNT"] != "1" {
+		t.Fatalf("COUNT = %q, want 1", eff["GIT_CONFIG_COUNT"])
 	}
 }
