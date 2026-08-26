@@ -64,6 +64,66 @@ func TestParallelBranchEventIndexUsesLatestParallelBoundary(t *testing.T) {
 	}
 }
 
+var benchmarkParallelBranchEventCount int
+
+func BenchmarkParallelBranchEventIndex(b *testing.B) {
+	for _, branchCount := range []int{8, 32, 128} {
+		events := benchmarkParallelBranchEvents(branchCount, 4096)
+		b.Run(fmt.Sprintf("Indexed/branches=%d", branchCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(len(events)), "events")
+			b.ReportMetric(float64(branchCount), "branches")
+			b.ResetTimer()
+			for b.Loop() {
+				index := newParallelBranchEventIndex(events, "fan")
+				for branch := 1; branch <= branchCount; branch++ {
+					benchmarkParallelBranchEventCount += len(index.events(branch))
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("Rescan/branches=%d", branchCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(len(events)), "events")
+			b.ReportMetric(float64(branchCount), "branches")
+			b.ResetTimer()
+			for b.Loop() {
+				for branch := 1; branch <= branchCount; branch++ {
+					benchmarkParallelBranchEventCount += len(scanParallelBranchEvents(events, "fan", branch))
+				}
+			}
+		})
+	}
+}
+
+func benchmarkParallelBranchEvents(branchCount, eventCount int) []journal.Event {
+	events := make([]journal.Event, 1, eventCount+1)
+	events[0] = journal.Event{Type: journal.EventParallelStarted, Parallel: "fan"}
+	for i := 0; i < eventCount; i++ {
+		events = append(events, journal.Event{
+			Type:     journal.EventStageFinished,
+			Parallel: "fan",
+			Branch:   i%branchCount + 1,
+		})
+	}
+	return events
+}
+
+func scanParallelBranchEvents(events []journal.Event, parallel string, branch int) []journal.Event {
+	start := 0
+	for i, event := range events {
+		if event.Type == journal.EventParallelStarted && event.Parallel == parallel {
+			start = i + 1
+		}
+	}
+	out := make([]journal.Event, 0)
+	for _, event := range events[start:] {
+		if event.Branch == branch {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
 func TestParallelJoinPointersAreDeclarationOrderedAndBranchTagged(t *testing.T) {
 	spec := apiv1.Parallel{
 		Name: "fan",
