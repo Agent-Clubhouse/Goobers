@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -493,5 +494,83 @@ func TestRecordStageArtifactsSkipsEmptyStreams(t *testing.T) {
 	var errOut strings.Builder
 	if got := recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": nil}); len(got) != 0 {
 		t.Fatalf("expected no pointers, got %+v", got)
+	}
+}
+
+// runStageWithResultFile runs one stage in a temp workspace whose command
+// writes the given result-file JSON, then returns the surrendered envelope.
+func runStageWithResultFile(t *testing.T, resultJSON string, exitCode int) apiv1.ResultEnvelope {
+	t.Helper()
+	dir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	script := fmt.Sprintf("printf '%%s' '%s' > out.json; exit %d", resultJSON, exitCode)
+	t.Setenv(dispatcher.EnvStageCommand, fmt.Sprintf(`["sh","-c",%q]`, script))
+	t.Setenv(dispatcher.InputEnvVar("resultFile"), "out.json")
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+
+	var out, errOut bytes.Buffer
+	return runDeclaredStage(context.Background(), &out, &errOut)
+}
+
+// noWork is a DISTINCT terminal status. Flattening it to success makes a
+// workflow take the did-work path on a pod and the no-work path on a self
+// runner, from the same stage and the same outputs.
+func TestDispatchExecHonoursNoWork(t *testing.T) {
+	got := runStageWithResultFile(t, `{"noWork":true}`, 0)
+	if got.Status != apiv1.ResultNoWork {
+		t.Fatalf("status = %q, want %q", got.Status, apiv1.ResultNoWork)
+	}
+	if got.Summary == "" {
+		t.Fatal("a no-work stage must carry a summary, as it does locally")
+	}
+}
+
+// A typed errorCode beats the generic stage_failed — it is the classification a
+// retry policy reads, and it was opaque on a pod while specific on self.
+func TestDispatchExecHonoursTypedErrorCode(t *testing.T) {
+	got := runStageWithResultFile(t, `{"errorCode":"github_rate_limited","errorMessage":"resets at 10:00","errorRetryable":true}`, 1)
+	if got.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %q, want failure", got.Status)
+	}
+	if got.Error == nil || got.Error.Code != "github_rate_limited" {
+		t.Fatalf("error = %+v, want the typed code", got.Error)
+	}
+	if !got.Error.Retryable {
+		t.Fatal("retryable must survive: it is what a retry policy reads")
+	}
+	// The keys are CONSUMED, not left for downstream stages to trip over.
+	for _, k := range []string{"errorCode", "errorMessage", "errorRetryable"} {
+		if _, present := got.Outputs[k]; present {
+			t.Fatalf("%q must be consumed from Outputs, as the local executor does", k)
+		}
+	}
+}
+
+// exitCode is a measurement of the run and belongs on every envelope.
+func TestDispatchExecRecordsExitCodeMetric(t *testing.T) {
+	for name, tc := range map[string]struct {
+		exit int
+		want float64
+	}{"success": {0, 0}, "failure": {3, 3}} {
+		t.Run(name, func(t *testing.T) {
+			got := runStageWithResultFile(t, `{"ok":true}`, tc.exit)
+			if got.Metrics == nil {
+				t.Fatal("no metrics recorded; a self runner always records exitCode")
+			}
+			if got.Metrics["exitCode"] != tc.want {
+				t.Fatalf("exitCode = %v, want %v", got.Metrics["exitCode"], tc.want)
+			}
+			if got.Summary == "" {
+				t.Fatal("every terminal envelope carries a summary locally")
+			}
+		})
 	}
 }
