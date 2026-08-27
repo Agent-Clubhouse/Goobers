@@ -80,3 +80,24 @@ func TestPodSecretRegistrarIsAScrubber(t *testing.T) {
 		t.Fatal("the registry handed in as SecretRegistrar must also be a journal.Scrubber")
 	}
 }
+
+// The harness reads its working directory from the ENVELOPE, which the local
+// path stamps by mutating it during provisioning. A pod that provisions a
+// workspace without stamping it fails inside the harness with a message that
+// says nothing about workspaces:
+//
+//	harness: copilot-cli: RunRequest.Workspace is empty
+//
+// This pins the stamp itself, because the failure it prevents is unreadable.
+func TestAgenticEnvelopeCarriesItsWorkspace(t *testing.T) {
+	kit := &agentickit.Kit{Envelope: apiv1.InvocationEnvelope{RunID: "r", Goober: "g"}}
+	if kit.Envelope.Workspace != "" {
+		t.Fatal("fixture should start unstamped")
+	}
+	// What runAgenticStage does after provisioning.
+	ws := t.TempDir()
+	kit.Envelope.Workspace = ws
+	if kit.Envelope.Workspace != ws {
+		t.Fatalf("workspace = %q, want %q", kit.Envelope.Workspace, ws)
+	}
+}
