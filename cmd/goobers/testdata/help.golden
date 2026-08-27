@@ -22,7 +22,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--github-progress] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -72,7 +72,7 @@ Usage:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--github-progress] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -124,7 +124,7 @@ Core commands:
                                 serve and open the local operations portal
   goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
                                 serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+  goobers run [--gaggle <name>] [--github-progress] <workflow> [--no-wait] [path]
                                 trigger a run manually (still honors run conditions)
   goobers signal <name> [path]  fire an external signal, dispatching every
                                 subscribed type=signal-trigger workflow
@@ -147,6 +147,8 @@ Advanced operator commands:
                                 run non-interactive onboarding actions
   goobers agent-kit install|check|update [flags] [path]
                                 install, inspect, or explicitly update the release-matched agent toolkit
+  goobers portal-extension install|status|update [flags]
+                                manage the release-matched user-scoped Portal canvas extension
   goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 lint config via the single authoritative validation engine (alias for validate)
   goobers fix --to <version> [--write] [path]
@@ -1043,7 +1045,8 @@ with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
 then validates both. It can optionally preview and install the release-matched
 agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
+choice. When the GitHub Copilot app is detected, setup also offers the
+release-matched user-scoped Portal canvas extension. The source may be new or existing locally, cloned from GitHub, or
 optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
@@ -1253,6 +1256,37 @@ are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token
 when API auth is enabled.
 
 Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+
+### portal-extension
+Usage: goobers portal-extension <subcommand> [flags]
+
+Install, inspect, or update the user-scoped Goobers Portal canvas extension.
+The extension is bundled with this binary, so its installed release identity
+always matches the Goobers version supplying it.
+
+Subcommands:
+  install  install the bundled extension for the current user
+  status   report installed version, drift, and updates
+  update   replace a managed installation with this binary's version
+
+### portal-extension install
+Usage: goobers portal-extension install [--copilot-home <path>]
+
+Install the Portal canvas extension beneath the current user's Copilot home.
+Existing unmanaged, outdated, or locally modified directories are not replaced.
+
+### portal-extension status
+Usage: goobers portal-extension status [--copilot-home <path>]
+
+Compare the installed Portal extension with the version bundled in this binary.
+Exit codes: 0 = current, 1 = not installed, outdated, modified, or unmanaged.
+
+### portal-extension update
+Usage: goobers portal-extension update [--replace-modified] [--copilot-home <path>]
+
+Update a managed Portal extension through a staged, crash-recoverable replacement
+binary. Local changes require --replace-modified. Persisted Portal sources and
+preferences live outside the code directory and are preserved.
 
 ### post-merge
 Usage: goobers post-merge [path]
@@ -1497,7 +1531,7 @@ without claiming those local changes landed.
 processed, 1 = business error, 2 = usage/IO error.
 
 ### run
-Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--github-progress] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run cancel <run-id> [path]
@@ -1515,6 +1549,11 @@ completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
+--github-progress publishes the versioned hosted-progress contract to one
+GitHub Check Run whenever the journal sequence advances. It requires
+checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
+cannot be combined with --no-wait, and does not replace the final journal
+artifact.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
 If a live `goobers up` daemon already holds that run's journal lock, abort

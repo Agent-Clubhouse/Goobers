@@ -210,10 +210,12 @@ func runGuidedInit(
 			return nil, guidedInitResult{}, 2, fmt.Errorf("create GitHub config repository: %w", err)
 		}
 	}
-
 	res, err := instance.InitGuidedFromSource(root, source.Root, cfg)
 	if err != nil {
 		return nil, guidedInitResult{}, 2, err
+	}
+	if err := offerGuidedPortalExtension(p); err != nil {
+		pf(stdout, "Portal extension setup skipped: %v\nInstall or update it later with `goobers portal-extension install` or `goobers portal-extension update`.\n", err)
 	}
 	return res, result, 0, nil
 }

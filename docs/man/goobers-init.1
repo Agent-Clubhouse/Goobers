@@ -17,7 +17,8 @@ with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
 then validates both. It can optionally preview and install the release-matched
 agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
+choice. When the GitHub Copilot app is detected, setup also offers the
+release-matched user-scoped Portal canvas extension. The source may be new or existing locally, cloned from GitHub, or
 optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead

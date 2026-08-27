@@ -242,6 +242,12 @@ export PATH="$PWD/bin:$PATH"
 goobers init --guided ./my-instance
 ```
 
+When the GitHub Copilot app is already installed, the guided flow also offers
+the release-matched Goobers Portal canvas extension. Declining does not affect
+setup. Install it later (or after installing the app) with `goobers
+portal-extension install`; after upgrading Goobers, use `goobers
+portal-extension status` and `goobers portal-extension update`.
+
 The guided flow uses the same configuration sequence as the release installer.
 It separately selects a checked-in config source and target GitHub application
 repository, prompts for credential references and canonical workflows, and

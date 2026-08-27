@@ -72,6 +72,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
+| [`goobers portal-extension`](#goobers-portal-extension) | manage the release-matched user-scoped Portal canvas extension |
+| [`goobers portal-extension install`](#goobers-portal-extension-install) | install the release-matched Portal canvas extension |
+| [`goobers portal-extension status`](#goobers-portal-extension-status) | report Portal extension version and drift |
+| [`goobers portal-extension update`](#goobers-portal-extension-update) | update the Portal extension to this Goobers version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
@@ -1473,7 +1477,8 @@ with instance.yaml or a populated config/ before prompting. It separately
 selects a checked-in config source and target GitHub application repository,
 then validates both. It can optionally preview and install the release-matched
 agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
+choice. When the GitHub Copilot app is detected, setup also offers the
+release-matched user-scoped Portal canvas extension. The source may be new or existing locally, cloned from GitHub, or
 optionally backed by a newly confirmed GitHub repository.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
@@ -1834,6 +1839,83 @@ Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 
 ~~~console
 $ goobers override --rationale="accepted risk" <run-id> <gate>
+~~~
+
+## `goobers portal-extension`
+
+manage the release-matched user-scoped Portal canvas extension
+
+~~~text
+Usage: goobers portal-extension <subcommand> [flags]
+
+Install, inspect, or update the user-scoped Goobers Portal canvas extension.
+The extension is bundled with this binary, so its installed release identity
+always matches the Goobers version supplying it.
+
+Subcommands:
+  install  install the bundled extension for the current user
+  status   report installed version, drift, and updates
+  update   replace a managed installation with this binary's version
+~~~
+
+**Examples**
+
+~~~console
+$ goobers portal-extension install
+$ goobers portal-extension status
+~~~
+
+## `goobers portal-extension install`
+
+install the release-matched Portal canvas extension
+
+~~~text
+Usage: goobers portal-extension install [--copilot-home <path>]
+
+Install the Portal canvas extension beneath the current user's Copilot home.
+Existing unmanaged, outdated, or locally modified directories are not replaced.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers portal-extension install
+~~~
+
+## `goobers portal-extension status`
+
+report Portal extension version and drift
+
+~~~text
+Usage: goobers portal-extension status [--copilot-home <path>]
+
+Compare the installed Portal extension with the version bundled in this binary.
+Exit codes: 0 = current, 1 = not installed, outdated, modified, or unmanaged.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers portal-extension status
+~~~
+
+## `goobers portal-extension update`
+
+update the Portal extension to this Goobers version
+
+~~~text
+Usage: goobers portal-extension update [--replace-modified] [--copilot-home <path>]
+
+Update a managed Portal extension through a staged, crash-recoverable replacement
+binary. Local changes require --replace-modified. Persisted Portal sources and
+preferences live outside the code directory and are preserved.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers portal-extension update
+$ goobers portal-extension update --replace-modified
 ~~~
 
 ## `goobers post-merge`

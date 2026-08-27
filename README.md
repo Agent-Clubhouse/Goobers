@@ -28,6 +28,20 @@ places `goobers` in `$HOME/.local/bin`. See
 [Release installation and verification](docs/guides/releases.md) for
 prerequisites, install-directory overrides, and the Windows path.
 
+If the GitHub Copilot app is present, `goobers init --guided` offers to install
+the release-matched Goobers Portal canvas extension for the current user. You
+can decline and install it later, or install it after adding the Copilot app:
+
+```sh
+goobers portal-extension install
+goobers portal-extension status
+```
+
+After upgrading Goobers, use `goobers portal-extension update` to replace the
+managed extension with the copy bundled in the new binary. The installed
+manifest records the exact Goobers version and commit; Portal sources and
+preferences are preserved separately from the installed code.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,

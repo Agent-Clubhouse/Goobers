@@ -8,37 +8,18 @@
 // re-probed live (see client.mjs), so this file never goes stale in a way
 // that could mislead the UI.
 
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import os from "node:os";
 import { parseWorkflowURL } from "./actions-source.mjs";
-
-function copilotHome() {
-    return process.env.COPILOT_HOME || path.join(os.homedir(), ".copilot");
-}
-
-function registryPath() {
-    return path.join(copilotHome(), "extensions", "goobers-portal", "artifacts", "sources.json");
-}
+import { readState, writeState } from "./storage.mjs";
 
 async function readRegistry() {
-    try {
-        const raw = await fs.readFile(registryPath(), "utf8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed?.sources)) return parsed.sources;
-        return [];
-    } catch (err) {
-        if (err && err.code === "ENOENT") return [];
-        throw err;
-    }
+    const raw = await readState("sources.json");
+    if (raw === undefined) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.sources) ? parsed.sources : [];
 }
 
 async function writeRegistry(sources) {
-    const file = registryPath();
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    const tmp = file + ".tmp";
-    await fs.writeFile(tmp, JSON.stringify({ sources }, null, 2) + "\n", "utf8");
-    await fs.rename(tmp, file);
+    await writeState("sources.json", JSON.stringify({ sources }, null, 2) + "\n");
 }
 
 function normalizeId(kind, value) {

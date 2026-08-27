@@ -96,6 +96,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	copilotModelLister = testCopilotModelLister{}
+	detectCopilotAppForInit = func() bool { return false }
 
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
