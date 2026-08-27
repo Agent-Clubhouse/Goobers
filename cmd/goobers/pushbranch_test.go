@@ -324,3 +324,38 @@ func TestPushBranchSkipsAnEmptyBranchAndRecordsNoFact(t *testing.T) {
 		t.Fatal("origin gained a branch identical to base; open-pr would then open a PR with no diff")
 	}
 }
+
+// Every git invocation in the push path must compose the workspace's
+// safe.directory exemption rather than assign an environment directly.
+//
+// MEASURED: `goobers push-branch` could not run in a mode-3 pod at all —
+// "fatal: detected dubious ownership in repository at '/workspace'" — because
+// gitPushBranch assigned the auth environment straight to cmd.Env.
+// credentials.GitAuthEnvironment returns a COMPLETE environment and strips
+// foreign GIT_CONFIG_* before installing its own, so that assignment ERASED the
+// exemption the stage had inherited. composeGitEnv exists to extend the count
+// instead of restating it, and its own comment says so.
+//
+// This is a source-level invariant (the shape TestNoDirectGitCommandsInTests
+// already uses) because the failure only reproduces where /workspace is owned
+// by another user — true in a pod, false on every developer machine and in CI.
+// A behavioural test here would pass while the product stayed broken.
+func TestPushPathComposesTheWorkspaceExemption(t *testing.T) {
+	source, err := os.ReadFile("pushbranch.go")
+	if err != nil {
+		t.Fatalf("read pushbranch.go: %v", err)
+	}
+	for i, line := range strings.Split(string(source), "\n") {
+		trimmed := strings.TrimSpace(line)
+		// A bare assignment of the auth env to a command: the exact defect.
+		if strings.HasSuffix(trimmed, ".Env = env") {
+			t.Errorf("pushbranch.go:%d assigns the auth environment directly (%q); it must be composed with the workspace exemption via composeGitEnv(dir, env), or git refuses the pod workspace as dubiously owned", i+1, trimmed)
+		}
+		// A git command built without an explicit environment inherits whatever
+		// the caller happened to have, which is only correct when the caller is
+		// the stage itself.
+		if strings.Contains(trimmed, `exec.Command("git"`) && !strings.Contains(trimmed, "//") {
+			t.Logf("pushbranch.go:%d builds a git command directly; confirm it composes an environment", i+1)
+		}
+	}
+}

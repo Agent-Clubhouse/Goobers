@@ -175,17 +175,17 @@ func rebaseOntoRemoteBranch(dir, branch string, env []string) error {
 	}
 	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
 	fetch.Dir = dir
-	fetch.Env = env
+	fetch.Env = composeGitEnv(dir, env)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		return fmt.Errorf("fetch remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
 	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
 	rebase.Dir = dir
-	rebase.Env = env
+	rebase.Env = composeGitEnv(dir, env)
 	if out, err := rebase.CombinedOutput(); err != nil {
 		abort := exec.Command("git", "rebase", "--abort")
 		abort.Dir = dir
-		abort.Env = env
+		abort.Env = composeGitEnv(dir, env)
 		_ = abort.Run()
 		return fmt.Errorf("rebase onto remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
@@ -326,7 +326,14 @@ func gitPushBranch(dir, branch string, env []string) error {
 	}
 	cmd := exec.Command("git", "push", url, branch+":"+branch)
 	cmd.Dir = dir
-	cmd.Env = env
+	// composeGitEnv, not env: credentials.GitAuthEnvironment returns a COMPLETE
+	// environment and strips foreign GIT_CONFIG_* before installing its own, so
+	// assigning it directly ERASED the workspace's safe.directory exemption.
+	// MEASURED in-pod — "fatal: detected dubious ownership in repository at
+	// '/workspace'" — which made `goobers push-branch` unable to run in mode 3
+	// at all. composeGitEnv extends the count instead of restating it, exactly
+	// as its own comment prescribes.
+	cmd.Env = composeGitEnv(dir, env)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
@@ -419,8 +426,7 @@ func gitAuthEnv(token string) []string {
 
 // originURL resolves the worktree's "origin" remote to its configured URL.
 func originURL(dir string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve origin URL: %w", err)
