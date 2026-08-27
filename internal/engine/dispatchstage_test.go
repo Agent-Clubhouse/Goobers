@@ -770,7 +770,8 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "agentic-edit",
 		Tasks: []apiv1.Task{
-			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo", Goober: "implementer"},
+			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo", Goober: "implementer",
+				Workspace: apiv1.WorkspaceRepoReadOnly},
 		},
 	}
 	in := runInput("mode-three-agentic", spec)
@@ -792,6 +793,13 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 		t.Fatal("no attempt recorded")
 	}
 	got := fake.attempts[0]
+	// An agentic task declares its workspace on the TASK — it has no
+	// DeterministicRun to carry one. Without this the pod stamps no workspace
+	// mode, its checkout no-ops, and the agent runs against an empty directory
+	// and truthfully reports the repo's files missing.
+	if got.Workspace != string(apiv1.WorkspaceRepoReadOnly) {
+		t.Fatalf("attempt workspace = %q, want the task-level %q", got.Workspace, apiv1.WorkspaceRepoReadOnly)
+	}
 	if !got.Agentic {
 		t.Fatal("attempt is not marked agentic; the dispatcher would publish no kit and the pod would find no instructions")
 	}

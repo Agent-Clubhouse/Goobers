@@ -90,6 +90,9 @@ type dispatchStageInput struct {
 	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
 	Placement PinnedPlacement          `json:"placement"`
 	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
+	// Workspace is the TASK-level declaration, which is the only place an
+	// agentic stage can express one — it carries no DeterministicRun.
+	Workspace apiv1.WorkspaceMode `json:"workspace,omitempty"`
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -148,7 +151,7 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run}).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	})
@@ -256,11 +259,28 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// are stamped for both and stripped from the stage's own environment for
 	// everything except a CLI stage (DispatcherRunIdentityEnv), so a stage
 	// running the project's build still cannot see the live run (#322).
+	// An AGENTIC task has no DeterministicRun, so its workspace is declared on
+	// the TASK — that field exists for exactly this case ("stages that cannot
+	// express it through Run — i.e. agentic tasks"). Reading only Run.Workspace
+	// left every agentic stage with no workspace mode stamped, so the pod's
+	// checkout no-opped and the agent ran against an empty directory.
+	//
+	// MEASURED: the agent reported "README.md was not found at
+	// /workspace/README.md" for a repository whose root contains one. It was
+	// right, and the substrate was wrong — the worst shape of bug, since a
+	// well-behaved agent reports the absence rather than failing loudly.
+	//
+	// Run.Workspace takes precedence when both are set, matching the field's
+	// documented contract.
 	needsRepoContext := false
-	if input.Run != nil {
-		attempt.Workspace = string(input.Run.Workspace)
-		needsRepoContext = input.Run.Workspace.IsRepoBacked() || input.Run.Workspace == ""
+	workspace := input.Workspace
+	if input.Run != nil && input.Run.Workspace != "" {
+		workspace = input.Run.Workspace
 	}
+	if workspace != "" {
+		attempt.Workspace = string(workspace)
+	}
+	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
 	if input.Run != nil && (executor.StageInvokesGoobersCLI(input.Run.Command) || needsRepoContext) {
 		attempt.CLIStage = executor.StageInvokesGoobersCLI(input.Run.Command)
 		attempt.RunContext = map[string]string{}
