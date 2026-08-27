@@ -43,6 +43,7 @@ test("runs filters include the stage required by outcome and population", () => 
     assert.match(html, /id="filter-outcome"/);
     assert.match(html, /id="filter-population"/);
     assert.match(html, /if \(data\.error\)/);
+    assert.match(html, /Close and reopen this canvas to reconnect/);
 });
 
 test("GitHub Actions rejects unsupported telemetry filters", async () => {

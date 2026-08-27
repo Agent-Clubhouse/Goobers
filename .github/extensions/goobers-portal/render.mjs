@@ -495,6 +495,14 @@ export function renderHtml(instanceId, themePreference = "system") {
   // background-poll re-renders.
   const pendingToggles = new Map();
 
+  function portalRequestError(err) {
+    const message = String(err && err.message ? err.message : err);
+    if (message === "Failed to fetch" || message.includes("NetworkError")) {
+      return "Portal extension connection was lost. Close and reopen this canvas to reconnect.";
+    }
+    return message;
+  }
+
   function applyThemePreference(preference) {
     const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";
     const resolved = normalized === "system" ? (systemTheme.matches ? "dark" : "light") : normalized;
@@ -951,7 +959,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       renderRuns(lastRuns);
     } catch (err) {
       if (requestSequence !== filterRequestSequence) return;
-      errorEl.textContent = String(err);
+      errorEl.textContent = portalRequestError(err);
     }
   }
 
@@ -1523,7 +1531,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       const data = await fetchSnapshot();
       if (data) renderSnapshot(data);
     } catch (err) {
-      errorEl.textContent = String(err);
+      errorEl.textContent = portalRequestError(err);
     }
   }
 
@@ -1590,7 +1598,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   }
 
   function showDirectoryError(err) {
-    errorEl.textContent = String(err.message || err);
+    errorEl.textContent = portalRequestError(err);
   }
 
   document.getElementById("browse-local").addEventListener("click", async () => {
@@ -1618,7 +1626,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       await connectSource({ kind: "local", value: root });
       document.getElementById("local-root").value = "";
     } catch (err) {
-      errorEl.textContent = String(err.message || err);
+      errorEl.textContent = portalRequestError(err);
     }
   });
 
@@ -1631,7 +1639,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       document.getElementById("remote-url").value = "";
       document.getElementById("remote-token").value = "";
     } catch (err) {
-      errorEl.textContent = String(err.message || err);
+      errorEl.textContent = portalRequestError(err);
     }
   });
 
@@ -1643,7 +1651,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       await connectSource({ kind: "github-actions", value: url });
       input.value = "";
     } catch (err) {
-      errorEl.textContent = String(err.message || err);
+      errorEl.textContent = portalRequestError(err);
     }
   });
 
@@ -1651,7 +1659,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     try {
       await refreshAll();
     } catch (err) {
-      errorEl.textContent = String(err.message || err);
+      errorEl.textContent = portalRequestError(err);
     } finally {
       const kind = sourceSelect.selectedOptions[0]?.dataset.kind;
       setTimeout(poll, kind === "github-actions" ? 30000 : 5000);

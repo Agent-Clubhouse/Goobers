@@ -30,10 +30,52 @@ import {
 
 // instanceId -> { server, url, selectedSourceId }
 const servers = new Map();
+let loggedInitialSourceProbeBatch = false;
+
+function logEvent(event, details = {}) {
+    process.stderr.write(`[goobers-portal] ${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        event,
+        ...details,
+    })}\n`);
+}
 
 async function listSourcesWithStatus() {
     const known = await listKnownSources();
-    return await Promise.all(known.map((s) => probeSource(s)));
+    const startedAt = Date.now();
+    const logBatchDetails = !loggedInitialSourceProbeBatch;
+    loggedInitialSourceProbeBatch = true;
+    if (logBatchDetails) logEvent("source_probe_batch_started", { count: known.length });
+    const sources = await Promise.all(known.map(async (source) => {
+        const probeStartedAt = Date.now();
+        try {
+            const result = await probeSource(source);
+            const durationMs = Date.now() - probeStartedAt;
+            if (logBatchDetails || !result.connected || durationMs >= 1000) {
+                logEvent("source_probe_finished", {
+                    sourceId: source.id,
+                    kind: source.kind,
+                    connected: result.connected,
+                    mode: result.mode,
+                    durationMs,
+                });
+            }
+            return result;
+        } catch (err) {
+            logEvent("source_probe_failed", {
+                sourceId: source.id,
+                kind: source.kind,
+                durationMs: Date.now() - probeStartedAt,
+                error: err.message || String(err),
+            });
+            throw err;
+        }
+    }));
+    const durationMs = Date.now() - startedAt;
+    if (logBatchDetails || durationMs >= 1000) {
+        logEvent("source_probe_batch_finished", { count: sources.length, durationMs });
+    }
+    return sources;
 }
 
 async function snapshotFor(sourceId) {
@@ -42,12 +84,23 @@ async function snapshotFor(sourceId) {
     if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
     const resolved = await resolveSource(source);
     if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
         return { sourceId, connected: false, reason: resolved.reason, source };
     }
     try {
         const data = await loadSnapshot(resolved);
         return { sourceId, connected: true, source, ...data };
     } catch (err) {
+        logEvent("snapshot_load_failed", {
+            sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
         return { sourceId, connected: false, reason: err.message || String(err), source };
     }
 }
@@ -58,12 +111,23 @@ async function runsFor(sourceId, filters) {
     if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
     const resolved = await resolveSource(source);
     if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
         return { connected: false, reason: resolved.reason };
     }
     try {
         const data = await loadRuns(resolved, filters);
         return { connected: true, ...data };
     } catch (err) {
+        logEvent("runs_load_failed", {
+            sourceId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
         return { connected: false, reason: err.message || String(err) };
     }
 }
@@ -74,6 +138,11 @@ async function runDetailFor(sourceId, runId) {
     if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
     const resolved = await resolveSource(source);
     if (!resolved.ok) {
+        logEvent("source_resolution_failed", {
+            sourceId,
+            kind: source.kind,
+            error: resolved.reason,
+        });
         return { connected: false, reason: resolved.reason };
     }
 
@@ -81,6 +150,13 @@ async function runDetailFor(sourceId, runId) {
         const run = await loadRunDetail(resolved, runId);
         return { connected: true, run };
     } catch (err) {
+        logEvent("run_detail_load_failed", {
+            sourceId,
+            runId,
+            kind: source.kind,
+            mode: resolved.mode,
+            error: err.message || String(err),
+        });
         return { connected: false, reason: err.message || String(err) };
     }
 }
@@ -144,6 +220,27 @@ async function browseDirectories(requestedPath) {
 async function startServer(instanceId) {
     const server = createServer(async (req, res) => {
         const url = new URL(req.url, "http://localhost");
+        const startedAt = Date.now();
+        res.on("finish", () => {
+            const durationMs = Date.now() - startedAt;
+            if (res.statusCode >= 400 || durationMs >= 1000) {
+                logEvent("http_request_finished", {
+                    instanceId,
+                    method: req.method,
+                    path: url.pathname,
+                    statusCode: res.statusCode,
+                    durationMs,
+                });
+            }
+        });
+        req.on("aborted", () => {
+            logEvent("http_request_aborted", {
+                instanceId,
+                method: req.method,
+                path: url.pathname,
+                durationMs: Date.now() - startedAt,
+            });
+        });
         try {
             if (url.pathname === "/api/selected-source") {
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -287,20 +384,32 @@ async function startServer(instanceId) {
                 }
                 return;
             }
+            res.setHeader("Content-Type", "text/html; charset=utf-8");
+            const preferences = await readPreferences();
+            res.end(renderHtml(instanceId, preferences.theme));
         } catch (err) {
+            logEvent("http_request_failed", {
+                instanceId,
+                method: req.method,
+                path: url.pathname,
+                durationMs: Date.now() - startedAt,
+                error: err.message || String(err),
+            });
             res.statusCode = 500;
             res.setHeader("Content-Type", "application/json; charset=utf-8");
             res.end(JSON.stringify({ error: err.message || String(err) }));
-            return;
         }
-        res.setHeader("Content-Type", "text/html; charset=utf-8");
-        const preferences = await readPreferences();
-        res.end(renderHtml(instanceId, preferences.theme));
+    });
+    server.on("close", () => logEvent("http_server_closed", { instanceId }));
+    server.on("error", (err) => {
+        logEvent("http_server_error", { instanceId, error: err.message || String(err) });
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
-    return { server, url: `http://127.0.0.1:${port}/`, selectedSourceId: null };
+    const url = `http://127.0.0.1:${port}/`;
+    logEvent("http_server_started", { instanceId, url });
+    return { server, url, selectedSourceId: null };
 }
 
 const inputSchema = {
@@ -460,6 +569,10 @@ const canvases = [
             ],
             open: async (ctx) => {
                 let entry = servers.get(ctx.instanceId);
+                logEvent("canvas_open_started", {
+                    instanceId: ctx.instanceId,
+                    reusedServer: Boolean(entry),
+                });
                 if (!entry) {
                     entry = await startServer(ctx.instanceId);
                     servers.set(ctx.instanceId, entry);
@@ -474,6 +587,11 @@ const canvases = [
                     const src = await addSource({ kind: "github-actions", value: ctx.input.workflowUrl });
                     entry.selectedSourceId = src.id;
                 }
+                logEvent("canvas_open_finished", {
+                    instanceId: ctx.instanceId,
+                    url: entry.url,
+                    selectedSourceId: entry.selectedSourceId,
+                });
                 return {
                     title: "Goobers Portal",
                     url: entry.url,
@@ -481,6 +599,10 @@ const canvases = [
             },
             onClose: async (ctx) => {
                 const entry = servers.get(ctx.instanceId);
+                logEvent("canvas_close_received", {
+                    instanceId: ctx.instanceId,
+                    hadServer: Boolean(entry),
+                });
                 if (entry) {
                     servers.delete(ctx.instanceId);
                     await new Promise((resolve) => entry.server.close(() => resolve()));
@@ -496,3 +618,5 @@ canvases[0].declaration.icon = "goober-mascot.png";
 const session = await joinSession({
     canvases,
 });
+
+logEvent("extension_joined", { sessionId: session.sessionId });
