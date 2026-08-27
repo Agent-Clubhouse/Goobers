@@ -281,8 +281,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		attempt.Workspace = string(workspace)
 	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
-	if input.Run != nil && (executor.StageInvokesGoobersCLI(input.Run.Command) || needsRepoContext) {
-		attempt.CLIStage = executor.StageInvokesGoobersCLI(input.Run.Command)
+	// Gating the stamp on input.Run != nil would defeat needsRepoContext for the
+	// exact case it was added to serve: an agentic task HAS no DeterministicRun,
+	// so requiring one skipped the block and stamped no repository at all. The
+	// CLI question still needs Run — it inspects Run.Command — but the repo
+	// question does not, so the two are separated rather than nested.
+	cliStage := input.Run != nil && executor.StageInvokesGoobersCLI(input.Run.Command)
+	if cliStage || needsRepoContext {
+		attempt.CLIStage = cliStage
 		attempt.RunContext = map[string]string{}
 		if repo := input.Envelope.RepoRef; repo.Provider != "" {
 			attempt.RunContext[executor.RepoProviderEnvVar] = string(repo.Provider)

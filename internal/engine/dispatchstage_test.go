@@ -809,4 +809,17 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 	if got.Envelope.Goober == "" {
 		t.Fatalf("envelope names no goober: %+v", got.Envelope)
 	}
+	// A repo-backed workspace is useless without the repository to check out.
+	// Stamping the mode while withholding the identity is the failure this
+	// guards: the pod refused with "repo workspace requested but the dispatcher
+	// stamped no repository", because the stamp was gated on the stage having a
+	// DeterministicRun and an agentic task has none.
+	if got.RunContext[executor.RepoOwnerEnvVar] == "" || got.RunContext[executor.RepoNameEnvVar] == "" {
+		t.Fatalf("agentic repo workspace carries no repository for the checkout: %v", got.RunContext)
+	}
+	// The repo facts must NOT make it look like a CLI stage: that flag controls
+	// whether the run identity survives in the stage's own environment (#322).
+	if got.CLIStage {
+		t.Fatal("agentic stage marked as a goobers-CLI stage; run identity would leak into the stage environment")
+	}
 }
