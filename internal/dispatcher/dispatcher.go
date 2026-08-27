@@ -233,6 +233,11 @@ type Attempt struct {
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
 
+	// WorkspaceDelta is the blob digest of the git bundle carrying what earlier
+	// stages of this run committed (#3763). The pod applies it after checkout so
+	// this stage continues from their work instead of from base — the worker
+	// gets this for free from a shared branch ref, a pod does not.
+	WorkspaceDelta string
 	// Capabilities is the stage's declared credential capabilities
 	// (apiv1.InvocationEnvelope.Capabilities). The pod resolves them against
 	// the daemon's credential plane at stage START — the dispatch payload

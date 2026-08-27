@@ -823,3 +823,101 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 		t.Fatal("agentic stage marked as a goobers-CLI stage; run identity would leak into the stage environment")
 	}
 }
+
+// The engine must hand what one pod committed to the next one (#3763). On the
+// worker this needs no carrier: every attempt gets a worktree on the same run
+// branch in the same mirror clone. A pod is disposed after surrender, so
+// without this threading the second stage clones base and silently continues
+// from it — MEASURED on run e1cfcfe2, where the pod arm's observe stage
+// reported the PRE-COMMIT head and reported success.
+func TestModeThreeThreadsWorkspaceDeltaToTheNextStage(t *testing.T) {
+	const delta = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "commit",
+		Tasks: []apiv1.Task{
+			{Name: "commit", Type: apiv1.TaskDeterministic, Goal: "commit",
+				Run: &apiv1.DeterministicRun{Command: []string{"commit.sh"}, Workspace: apiv1.WorkspaceRepo}, Next: "consume"},
+			{Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
+				Run: &apiv1.DeterministicRun{Command: []string{"consume.sh"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-delta", spec)
+	in.Placements = []PinnedPlacement{
+		{Stage: "commit", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+		{Stage: "consume", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+	}
+	surrenders := surrenderStore(t)
+	// The first stage surrenders a delta, exactly as a pod that committed does.
+	putSurrendered(t, surrenders, in.RunID, "commit", 1, dispatcher.SurrenderedResult{
+		Result:         apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		WorkspaceDelta: delta,
+	})
+	putSurrendered(t, surrenders, in.RunID, "consume", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) < 2 {
+		t.Fatalf("expected both stages to dispatch, got %d attempt(s)", len(fake.attempts))
+	}
+	// The FIRST stage has nothing to continue from — a delta here would mean
+	// the engine invented one.
+	if got := fake.attempts[0].WorkspaceDelta; got != "" {
+		t.Fatalf("first stage carried workspace delta %q; nothing precedes it", got)
+	}
+	// The SECOND stage must receive what the first surrendered.
+	if got := fake.attempts[1].WorkspaceDelta; got != delta {
+		t.Fatalf("second stage carried workspace delta %q, want %q — without it the pod clones base and silently drops the first stage's commits", got, delta)
+	}
+}
+
+// A read-only or scratch stage must never be handed a delta: applying one would
+// move a repo-readonly stage off the pinned base it exists to read, turning a
+// research stage into a consumer of unreviewed work.
+func TestModeThreeWithholdsWorkspaceDeltaFromReadOnlyStages(t *testing.T) {
+	const delta = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "commit",
+		Tasks: []apiv1.Task{
+			{Name: "commit", Type: apiv1.TaskDeterministic, Goal: "commit",
+				Run: &apiv1.DeterministicRun{Command: []string{"commit.sh"}, Workspace: apiv1.WorkspaceRepo}, Next: "read"},
+			{Name: "read", Type: apiv1.TaskDeterministic, Goal: "read",
+				Run: &apiv1.DeterministicRun{Command: []string{"read.sh"}, Workspace: apiv1.WorkspaceRepoReadOnly}},
+		},
+	}
+	in := runInput("mode-three-delta-readonly", spec)
+	in.Placements = []PinnedPlacement{
+		{Stage: "commit", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+		{Stage: "read", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+	}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "commit", 1, dispatcher.SurrenderedResult{
+		Result:         apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		WorkspaceDelta: delta,
+	})
+	putSurrendered(t, surrenders, in.RunID, "read", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) < 2 {
+		t.Fatalf("expected both stages to dispatch, got %d attempt(s)", len(fake.attempts))
+	}
+	if got := fake.attempts[1].WorkspaceDelta; got != "" {
+		t.Fatalf("a repo-readonly stage was handed workspace delta %q; it must read the pinned base", got)
+	}
+}

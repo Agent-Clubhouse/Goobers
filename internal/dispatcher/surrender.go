@@ -84,6 +84,14 @@ type SurrenderedResult struct {
 	// MutationIssues carry malformed-provenance notes without converting a
 	// successful stage into a failure (the sidecar's own rule).
 	MutationIssues []string `json:"mutationIssues,omitempty"`
+	// WorkspaceDelta is the blob digest of a git bundle carrying whatever this
+	// stage committed beyond the run's base (#3763). Empty when the stage has
+	// no repo workspace or committed nothing, which is the common case.
+	//
+	// The engine threads this to the NEXT stage exactly as it already threads
+	// workspaceBranch: a pod is disposed after surrender, so a commit that does
+	// not leave through here does not exist for anything downstream.
+	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
 }
 
 // ReadSurrenderedResult fetches and decodes one attempt's surrendered result.

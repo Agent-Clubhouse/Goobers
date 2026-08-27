@@ -299,6 +299,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
+	// The mode-3 counterpart of workspaceBranch. A pod is disposed after
+	// surrender, so what one stage committed reaches the next only as a bundle
+	// digest threaded here (#3763); on the worker the shared branch ref does
+	// this and this stays empty.
+	var workspaceDelta string
 	state := in.Spec.Start
 	steps := 0
 
@@ -318,7 +323,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, workspaceDelta, &workspaceDelta, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -473,7 +478,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, workspaceDelta string, deltaOut *string, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -535,7 +540,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
 		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
 		produced := engineProducedIntegrity(t, env, upstreamResult)
-		return dispatchRemoteTask(ctx, t, rec, env, placement, produced)
+		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceDelta, deltaOut)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)
@@ -550,7 +555,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
-		})
+		}, nil)
 	}
 	// Fail closed on an absent or zero-value run (#626/#156): a
 	// DeterministicRun{} previously masked nil and dispatched an empty run. The
@@ -570,7 +575,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
-	})
+	}, nil)
 }
 
 // evaluateGate dispatches one gate evaluation and returns the evaluator

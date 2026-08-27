@@ -234,6 +234,33 @@ func currentBranch(dir string) (string, error) {
 	return branch, nil
 }
 
+// resolveBaseRef finds the local ref naming the run's base commit.
+//
+// The two substrates store it differently and BOTH must resolve, or whatever
+// depends on it silently degrades to "cannot tell" on one of them: a pod's
+// `git clone --branch <base>` yields a remote-tracking origin/<base>, while the
+// worker's worktrees come off a `git clone --mirror`, which has no
+// refs/remotes/* at all and carries the base at refs/heads/<base>.
+func resolveBaseRef(dir, base string) (string, error) {
+	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
+		verify := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		verify.Dir = dir
+		if err := verify.Run(); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("base %q not present locally as origin/%s, refs/heads/%s, or %s", base, base, base, base)
+}
+
+// stageBaseBranch is the base branch name the run context names, defaulting to
+// "main" exactly as the in-pod checkout does so both agree on what base means.
+func stageBaseBranch() string {
+	if base := strings.TrimSpace(os.Getenv(executor.BaseBranchEnvVar)); base != "" {
+		return base
+	}
+	return "main"
+}
+
 // branchHasNoCommitsBeyondBase reports whether branch carries nothing origin's
 // base branch does not already have.
 //
@@ -246,10 +273,7 @@ func currentBranch(dir string) (string, error) {
 // a wrong "empty" verdict would silently drop a real diff, which is worse than
 // the problem being fixed.
 func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
-	base := strings.TrimSpace(os.Getenv(executor.BaseBranchEnvVar))
-	if base == "" {
-		base = "main"
-	}
+	base := stageBaseBranch()
 	// Two substrates store the base under different refs and BOTH must resolve,
 	// or the check silently degrades to "cannot tell" on one of them. A pod's
 	// `git clone --branch <base>` yields a remote-tracking origin/<base>; the
@@ -257,17 +281,9 @@ func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
 	// refs/remotes/* at all and carries the base at refs/heads/<base>.
 	// MEASURED: origin/<base> alone made this permanently undecidable on the
 	// worker, which is the substrate where the check matters most today.
-	baseRef := ""
-	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
-		verify := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
-		verify.Dir = dir
-		if err := verify.Run(); err == nil {
-			baseRef = candidate
-			break
-		}
-	}
-	if baseRef == "" {
-		return false, fmt.Errorf("base %q not present locally as origin/%s, refs/heads/%s, or %s", base, base, base, base)
+	baseRef, err := resolveBaseRef(dir, base)
+	if err != nil {
+		return false, err
 	}
 	count := exec.Command("git", "rev-list", "--count", baseRef+".."+branch)
 	count.Dir = dir
