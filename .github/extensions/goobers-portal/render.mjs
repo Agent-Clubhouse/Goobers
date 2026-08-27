@@ -429,6 +429,7 @@ export function renderHtml(instanceId, themePreference = "system") {
           <option value="item">item</option>
           <option value="webhook">webhook</option>
         </select>
+        <input id="filter-stage" type="text" placeholder="Stage" title="Stage name (daemon sources)" />
         <select id="filter-outcome">
           <option value="">All outcomes</option>
           <option value="finished">finished</option>
@@ -436,6 +437,15 @@ export function renderHtml(instanceId, themePreference = "system") {
           <option value="success">success</option>
           <option value="failure">failure</option>
           <option value="other">other</option>
+        </select>
+        <select id="filter-population">
+          <option value="">All populations</option>
+          <option value="attempts">attempts</option>
+          <option value="measured">measured</option>
+          <option value="token-measured">token measured</option>
+          <option value="premium-measured">premium measured</option>
+          <option value="cost-measured">cost measured</option>
+          <option value="retry-waste">retry waste</option>
         </select>
         <input id="filter-since" type="datetime-local" title="Since" />
         <input id="filter-until" type="datetime-local" title="Until" />
@@ -788,6 +798,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
+    setAdvancedFilterSupport((data.mode || "daemon") === "daemon");
     // Background polling refreshes the whole snapshot every few seconds; if
     // the operator has an active filter, re-fetch through the filtered path
     // instead of clobbering the table with the unfiltered snapshot runs.
@@ -804,12 +815,16 @@ export function renderHtml(instanceId, themePreference = "system") {
   const filterWorkflow = document.getElementById("filter-workflow");
   const filterPhase = document.getElementById("filter-phase");
   const filterTrigger = document.getElementById("filter-trigger");
+  const filterStage = document.getElementById("filter-stage");
   const filterOutcome = document.getElementById("filter-outcome");
+  const filterPopulation = document.getElementById("filter-population");
   const filterSince = document.getElementById("filter-since");
   const filterUntil = document.getElementById("filter-until");
   let lastRuns = [];
   let sortKey = "startedAt";
   let sortDir = "desc";
+  let advancedFiltersSupported = false;
+  let filterRequestSequence = 0;
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = filterGaggle.value;
@@ -829,10 +844,28 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (filterWorkflow.value) f.workflow = filterWorkflow.value;
     if (filterPhase.value) f.phase = filterPhase.value;
     if (filterTrigger.value) f.trigger = filterTrigger.value;
+    if (filterStage.value.trim()) f.stage = filterStage.value.trim();
     if (filterOutcome.value) f.outcome = filterOutcome.value;
+    if (filterPopulation.value) f.population = filterPopulation.value;
     if (filterSince.value) f.since = new Date(filterSince.value).toISOString();
     if (filterUntil.value) f.until = new Date(filterUntil.value).toISOString();
     return f;
+  }
+
+  function setAdvancedFilterSupport(supported) {
+    advancedFiltersSupported = supported;
+    filterStage.disabled = !supported;
+    filterStage.title = supported ? "Stage name" : "Requires a running Goobers daemon";
+    if (!supported) filterStage.value = "";
+
+    const hasStage = supported && Boolean(filterStage.value.trim());
+    for (const el of [filterOutcome, filterPopulation]) {
+      el.disabled = !hasStage;
+      el.title = !supported
+        ? "Requires a running Goobers daemon"
+        : hasStage ? "" : "Choose a stage first";
+      if (!hasStage) el.value = "";
+    }
   }
 
   function hasActiveFilters() {
@@ -897,28 +930,46 @@ export function renderHtml(instanceId, themePreference = "system") {
   async function applyFilters() {
     const sourceId = sourceSelect.value;
     if (!sourceId) return;
+    const requestSequence = ++filterRequestSequence;
     try {
       const params = new URLSearchParams({ source: sourceId, ...currentFilters() });
       const res = await fetch("/api/runs?" + params.toString());
       const data = await res.json();
+      if (requestSequence !== filterRequestSequence) return;
       if (!data.connected) {
         errorEl.textContent = data.reason || "Could not load runs.";
         return;
       }
+      if (data.error) {
+        errorEl.textContent = data.error;
+        lastRuns = [];
+        renderRuns(lastRuns);
+        return;
+      }
+      errorEl.textContent = "";
       lastRuns = data.runs || [];
       renderRuns(lastRuns);
     } catch (err) {
+      if (requestSequence !== filterRequestSequence) return;
       errorEl.textContent = String(err);
     }
   }
 
-  for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterOutcome, filterSince, filterUntil]) {
+  for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterSince, filterUntil]) {
     el.addEventListener("change", applyFilters);
   }
+  filterStage.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      setAdvancedFilterSupport(advancedFiltersSupported);
+      applyFilters();
+    }
+  });
+  filterStage.addEventListener("input", () => setAdvancedFilterSupport(advancedFiltersSupported));
   document.getElementById("filters-clear").addEventListener("click", () => {
-    for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterOutcome, filterSince, filterUntil]) {
+    for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterSince, filterUntil]) {
       el.value = "";
     }
+    setAdvancedFilterSupport(advancedFiltersSupported);
     applyFilters();
   });
 

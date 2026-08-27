@@ -307,12 +307,41 @@ function buildRunsQuery(filters = {}) {
     return params.toString();
 }
 
+export function filterRunSummaries(runs, filters = {}) {
+    return (runs || []).filter((run) => {
+        if (filters.gaggle && run.gaggle !== filters.gaggle) return false;
+        if (filters.workflow && run.workflow !== filters.workflow) return false;
+        if (filters.phase) {
+            const phases = String(filters.phase).split(",").filter(Boolean);
+            if (!phases.includes(run.phase)) return false;
+        }
+        if (filters.trigger && run.trigger?.kind !== filters.trigger) return false;
+        if (filters.since && new Date(run.startedAt) < new Date(filters.since)) return false;
+        if (filters.until && new Date(run.startedAt) > new Date(filters.until)) return false;
+        return true;
+    });
+}
+
 /** Fetch just the runs list for a resolved connection, with optional filters. */
 export async function loadRuns(resolved, filters = {}) {
-    if (resolved.mode === "actions") return await loadActionsRuns(resolved, filters);
+    if (resolved.mode === "actions") {
+        if (filters.stage || filters.outcome || filters.population) {
+            return {
+                runs: [],
+                error: "Stage, outcome, and population filters are not available for GitHub Actions sources.",
+            };
+        }
+        return await loadActionsRuns(resolved, filters);
+    }
     if (resolved.mode === "standalone") {
         const snapshot = await loadStandaloneSnapshot(resolved.root);
-        return { runs: snapshot.runs };
+        if (filters.stage || filters.outcome || filters.population) {
+            return {
+                runs: [],
+                error: "Stage, outcome, and population filters require a running Goobers daemon.",
+            };
+        }
+        return { runs: filterRunSummaries(snapshot.runs, filters) };
     }
     const { baseUrl, token } = resolved;
     try {
