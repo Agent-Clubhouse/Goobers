@@ -921,3 +921,134 @@ func TestModeThreeWithholdsWorkspaceDeltaFromReadOnlyStages(t *testing.T) {
 		t.Fatalf("a repo-readonly stage was handed workspace delta %q; it must read the pinned base", got)
 	}
 }
+
+// A stage needing a repo workspace must get a credential to CLONE it without
+// having to declare repository authority it does not otherwise need (#3770).
+//
+// MEASURED: open-pr declares provider:pr:write alone and could not run in a
+// pod at all — "could not read Username for 'https://github.com'" — because the
+// in-pod checkout authenticated with the stage's BUSINESS capabilities. The
+// worker never had this problem: it provisions worktrees with instance
+// credentials regardless of what the stage declares, so the same workflow
+// worked on self and failed on a pod.
+func TestModeThreeNamesACheckoutCapabilityForRepoWorkspaces(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "open-pr",
+		Tasks: []apiv1.Task{
+			// Exactly production open-pr's shape: provider authority, a repo
+			// workspace, and no repo-shaped capability.
+			{Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
+				Capabilities:  []string{"provider:pr:write"},
+				PolicyActions: []string{"open-or-update-pr"},
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "open-pr", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "2Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "open-pr", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatalf("no attempt recorded; workflow error = %v", env.GetWorkflowError())
+	}
+	got := fake.attempts[0]
+	if got.CheckoutCapability == "" {
+		t.Fatal("no checkout capability named for a repo workspace; the pod would clone anonymously and fail on a private repository")
+	}
+	// It must NOT have been folded into the stage's own capabilities: those are
+	// exported to the stage's environment as GOOBERS_CRED_*, so widening them
+	// would hand a push token to a stage that never asked for one.
+	for _, c := range got.Capabilities {
+		if strings.Contains(strings.ToLower(c), "repo") {
+			t.Fatalf("checkout capability leaked into the stage's declared capabilities (%v); those reach the stage environment", got.Capabilities)
+		}
+	}
+}
+
+// A stage that ALREADY declares repository access needs no second credential —
+// the checkout uses the one it has.
+func TestModeThreeSkipsCheckoutCapabilityWhenTheStageHasRepoAccess(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "push",
+		Tasks: []apiv1.Task{
+			{Name: "push", Type: apiv1.TaskDeterministic, Goal: "push",
+				Capabilities: []string{"repo:push"},
+				// A plain command: what is under test is that a declared repo
+				// capability suppresses the separate checkout mint, not how a
+				// goobers-CLI stage dispatches.
+				Run: &apiv1.DeterministicRun{Command: []string{"build.sh"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap-skip", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "push", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "2Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "push", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	if got := fake.attempts[0].CheckoutCapability; got != "" {
+		t.Fatalf("named checkout capability %q for a stage that already declares repo:push; the checkout uses the one it has", got)
+	}
+}
+
+// A scratch workspace clones nothing and must never be handed a credential.
+func TestModeThreeNamesNoCheckoutCapabilityForScratch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "probe",
+		Tasks: []apiv1.Task{
+			{Name: "probe", Type: apiv1.TaskDeterministic, Goal: "probe",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap-scratch", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "probe", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "probe", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	if got := fake.attempts[0].CheckoutCapability; got != "" {
+		t.Fatalf("named checkout capability %q for a scratch workspace, which clones nothing", got)
+	}
+}

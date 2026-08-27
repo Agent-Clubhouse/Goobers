@@ -176,7 +176,12 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	//
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
-	if err := checkoutRepoWorkspace(ctx, ".", stderr, creds); err != nil {
+	// The checkout may use a credential the stage itself never receives.
+	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	if checkoutErr != nil {
+		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
+	}
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
@@ -188,6 +193,10 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	if mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace)); mode != "" && mode != string(apiv1.WorkspaceScratch) {
 		extraEnv = append(extraEnv, workspaceGitEnv(".").Env()...)
 	}
+	// Built from the STAGE's credentials only. checkoutCreds is deliberately
+	// absent: it exists to provision the working tree, and exporting it here
+	// would hand repository authority to a stage that never declared it —
+	// the over-grant #3770 exists to avoid.
 	credEnv := make([]string, 0, len(creds))
 	for _, cred := range creds {
 		credEnv = append(credEnv, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
@@ -542,9 +551,26 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 	if err := json.Unmarshal([]byte(encoded), &capabilities); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", dispatcher.EnvStageCapabilities, err)
 	}
-	if len(capabilities) == 0 {
+	return resolveCapabilities(ctx, capabilities)
+}
+
+// resolveCheckoutCredential mints the credential that provisions a repo
+// workspace, when the dispatcher named one (#3770).
+//
+// SEPARATE from the stage's credentials on purpose: the result authenticates
+// the clone inside this process and is never added to credEnv, so a stage does
+// not gain repository authority merely by needing a working tree. Returns nil
+// when the stage already declares a repo-shaped capability — the checkout uses
+// that one, and minting a second would be pointless.
+func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	capability := strings.TrimSpace(os.Getenv(dispatcher.EnvCheckoutCapability))
+	if capability == "" {
 		return nil, nil
 	}
+	return resolveCapabilities(ctx, []string{capability})
+}
+
+func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatcher.MintedCredential, error) {
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	if daemonAPI == "" {
 		return nil, fmt.Errorf("stage declares capabilities %v but %s is unset; the pod cannot reach the credential plane", capabilities, dispatcher.EnvDaemonAPI)

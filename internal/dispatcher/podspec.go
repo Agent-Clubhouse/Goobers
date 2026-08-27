@@ -81,6 +81,20 @@ const (
 	// the pod's own token can fetch, and a stage has no business reading or
 	// forging it.
 	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
+	// EnvCheckoutCapability names the capability the pod may mint SOLELY to
+	// provision a repo workspace (#3770). Privileged, and deliberately separate
+	// from EnvStageCapabilities: the resulting credential authenticates the
+	// checkout inside the goobers process and is never exported to the stage's
+	// environment, so a stage does not gain repository authority by needing a
+	// working tree.
+	//
+	// Without this the checkout authenticated with the stage's BUSINESS
+	// capabilities, so a repo workspace could only be provisioned when the
+	// stage happened to declare a repo-shaped one for unrelated reasons —
+	// open-pr declares provider:pr:write alone and could not run in a pod at
+	// all. The worker has never had this problem: it provisions worktrees with
+	// instance credentials regardless of what the stage declares.
+	EnvCheckoutCapability = "GOOBERS_CHECKOUT_CAPABILITY"
 	// EnvStageWorkspace carries the declared workspace mode so the in-pod
 	// executor knows whether to provision a checkout. Privileged: a stage that
 	// could rewrite it would change what the platform provisioned for it.
@@ -114,7 +128,7 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta,
+	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvCheckoutCapability,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -629,6 +643,9 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	if attempt.KitDigest != "" {
 		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: attempt.KitDigest})
+	}
+	if cap := attempt.CheckoutCapability; cap != "" {
+		env = append(env, corev1.EnvVar{Name: EnvCheckoutCapability, Value: cap})
 	}
 	if attempt.WorkspaceDelta != "" {
 		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: attempt.WorkspaceDelta})
