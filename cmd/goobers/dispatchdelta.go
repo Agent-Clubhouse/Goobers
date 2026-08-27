@@ -81,13 +81,19 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (s
 	}
 	branch, err := currentBranch(dir)
 	if err != nil {
-		// Detached HEAD in a writable repo workspace: nothing sensible to
-		// bundle, and this is not the place to diagnose it.
-		pf(stderr, "workspace delta: no checked-out branch (%v); nothing to carry\n", err)
-		return "", nil
+		// NOT "nothing to carry". This stage declared a writable repo
+		// workspace, so it may well have committed; being unable to name the
+		// branch means we cannot tell, and answering "" would silently drop
+		// whatever it did. That is the exact failure shape this mechanism
+		// exists to remove, and writing it as an ordinary case here cost five
+		// deploy cycles to find: in-pod every git call failed on dubious
+		// ownership, and this swallowed it as a benign skip.
+		return "", fmt.Errorf("workspace delta: cannot determine the checked-out branch of the writable repo workspace: %w", err)
 	}
 	empty, err := branchHasNoCommitsBeyondBase(dir, branch)
 	if err != nil {
+		// Still not fatal — bundling an empty delta is wasteful, skipping a
+		// real one loses work, so the uncertain direction is to bundle.
 		// Cannot prove there is nothing to carry, so do not claim there isn't.
 		// Falling through to bundle is the safe direction: an empty bundle is
 		// wasteful, a skipped one loses work.
