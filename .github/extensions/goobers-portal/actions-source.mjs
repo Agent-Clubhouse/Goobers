@@ -93,8 +93,18 @@ function triggerKind(event) {
     return "webhook";
 }
 
-function actionRunSummary(resolved, workflow, run) {
+export function actionRunSummary(resolved, workflow, run, pullMetadata) {
     const phase = actionPhase(run);
+    const pull = run.pull_requests?.[0];
+    const operator = pull ? {
+        pullRequest: {
+            provider: "github",
+            kind: "pr",
+            id: String(pull.number),
+            url: pullMetadata?.url || `https://github.com/${resolved.owner}/${resolved.repo}/pull/${pull.number}`,
+        },
+        pullRequestTitle: pullMetadata?.title || "",
+    } : undefined;
     return {
         id: String(run.id),
         runId: String(run.id),
@@ -109,7 +119,29 @@ function actionRunSummary(resolved, workflow, run) {
         actionsURL: run.html_url,
         actionsAttempt: run.run_attempt,
         actionsConclusion: run.conclusion,
+        operator,
     };
+}
+
+async function actionPullMetadata(resolved, workflowRuns) {
+    const numbers = [...new Set(workflowRuns
+        .flatMap((run) => run.pull_requests || [])
+        .map((pull) => Number(pull.number))
+        .filter((number) => Number.isInteger(number) && number > 0))];
+    if (!numbers.length) return new Map();
+    const selections = numbers
+        .map((number, index) => `pr${index}: pullRequest(number: ${number}) { number title url }`)
+        .join("\n");
+    const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){${selections}}}`;
+    const response = await ghJSON([
+        "api", "graphql",
+        "-f", `query=${query}`,
+        "-F", `owner=${resolved.owner}`,
+        "-F", `name=${resolved.repo}`,
+    ]);
+    return new Map(Object.values(response.data?.repository || {})
+        .filter(Boolean)
+        .map((pull) => [Number(pull.number), pull]));
 }
 
 async function workflowRuns(resolved, filters = {}) {
@@ -119,7 +151,12 @@ async function workflowRuns(resolved, filters = {}) {
         `repos/${resolved.owner}/${resolved.repo}/actions/workflows/${encodeURIComponent(resolved.workflow)}/runs?per_page=${limit}`,
     ]);
     const workflow = await workflowMetadata(resolved);
-    let runs = (response.workflow_runs || []).map((run) => actionRunSummary(resolved, workflow, run));
+    const workflowRuns = response.workflow_runs || [];
+    const pullMetadata = await actionPullMetadata(resolved, workflowRuns);
+    let runs = workflowRuns.map((run) => {
+        const pullNumber = Number(run.pull_requests?.[0]?.number);
+        return actionRunSummary(resolved, workflow, run, pullMetadata.get(pullNumber));
+    });
     if (filters.gaggle) runs = runs.filter((run) => run.gaggle === filters.gaggle);
     if (filters.workflow) runs = runs.filter((run) => run.workflow === filters.workflow);
     if (filters.phase) runs = runs.filter((run) => run.phase === filters.phase);
@@ -692,16 +729,24 @@ async function projectOperator(resolved, runDirectory, events, phase) {
         claim: { leaseStatus: "none", providerMarker: "not-recorded" },
         potentialBlockers: [],
     };
+    const referenceTitles = new Map();
     for (const event of events) {
-        if (event.type === "stage.finished" && event.outputs?.id && event.outputs?.title && !operator.issue) {
-            operator.issue = { number: String(event.outputs.id), title: String(event.outputs.title) };
+        if (event.type === "stage.finished" && event.outputs?.id && event.outputs?.title) {
+            referenceTitles.set(String(event.outputs.id), String(event.outputs.title));
+            if (!operator.issue) {
+                operator.issue = { number: String(event.outputs.id), title: String(event.outputs.title) };
+            }
         }
         if (event.type === "ref.touched" && event.externalRef?.kind === "issue") {
             operator.issue = operator.issue || { number: String(event.externalRef.id) };
+            if (String(operator.issue.number) === String(event.externalRef.id) && event.externalRef.url) {
+                operator.issue.url = event.externalRef.url;
+            }
             if (event.runner?.operation === "claim") operator.claim.providerMarker = "recorded";
         }
         if (event.type === "ref.touched" && event.externalRef?.kind === "pr") {
             operator.pullRequest = event.externalRef;
+            operator.pullRequestTitle = referenceTitles.get(String(event.externalRef.id)) || "";
         }
         if (event.error) operator.latestError = event.error;
         if (event.type === "gate.evaluated" && event.gate === "review") {
@@ -722,9 +767,10 @@ async function projectOperator(resolved, runDirectory, events, phase) {
             const issue = await ghJSON([
                 "issue", "view", String(operator.issue.number),
                 "--repo", `${resolved.owner}/${resolved.repo}`,
-                "--json", "title",
+                "--json", "title,url",
             ]);
             operator.issue.title = issue.title || "";
+            operator.issue.url = issue.url || operator.issue.url;
         } catch (err) {
             operator.diagnosticsLimitations = [
                 ...(operator.diagnosticsLimitations || []),
@@ -737,9 +783,11 @@ async function projectOperator(resolved, runDirectory, events, phase) {
             const pull = await ghJSON([
                 "pr", "view", String(operator.pullRequest.id),
                 "--repo", `${resolved.owner}/${resolved.repo}`,
-                "--json", "body",
+                "--json", "body,title,url",
             ]);
             operator.pullRequestBody = pull.body || "";
+            operator.pullRequestTitle = pull.title || operator.pullRequestTitle || "";
+            operator.pullRequest.url = pull.url || operator.pullRequest.url;
         } catch (err) {
             operator.diagnosticsLimitations = [`pull request description unavailable: ${err.message || err}`];
         }

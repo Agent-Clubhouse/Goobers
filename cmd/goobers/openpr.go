@@ -223,7 +223,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "warning: could not re-check issue #%s state before opening PR (%v) — proceeding\n", issueID, checkErr)
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
-			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {
+			if err := writeOpenPRResult(resultFile, false, 0, "", ""); err != nil {
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -276,7 +276,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL); err != nil {
+	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, title); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -299,14 +299,16 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 }
 
 // writeOpenPRResult writes open-pr's declared result file. It always emits the
-// `opened` flag the open-pr-gate routes on (#947); prNumber/pull-request-url
-// are present only on the opened path (ci-poll reads them via inputsFrom, and
-// ci-poll only runs when opened=true).
-func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string) error {
+// `opened` flag the open-pr-gate routes on (#947); PR facts are present only
+// on the opened path (ci-poll reads prNumber/pull-request-url via inputsFrom,
+// and the run projection correlates id/title for portal display).
+func writeOpenPRResult(resultFile string, opened bool, prNumber int, url, title string) error {
 	out := map[string]string{"opened": strconv.FormatBool(opened)}
 	if opened {
 		out["prNumber"] = strconv.Itoa(prNumber)
 		out["pull-request-url"] = url
+		out["id"] = strconv.Itoa(prNumber)
+		out["title"] = title
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

@@ -1,6 +1,44 @@
 // Renders the goobers-portal HTML shell. Kept out of extension.mjs so the
 // wiring file stays focused on SDK plumbing.
 
+function escapeAssociationHtml(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+    })[character]);
+}
+
+function safeAssociationUrl(value) {
+    try {
+        const url = new URL(value);
+        return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+    } catch {
+        return "";
+    }
+}
+
+export function renderRunAssociations(operator) {
+    const links = [];
+    const issueURL = safeAssociationUrl(operator?.issue?.url);
+    if (issueURL) {
+        const title = String(operator.issue.title || "").trim();
+        const label = "Issue #" + operator.issue.number + (title ? ": " + title : "");
+        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(issueURL) +
+            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    }
+    const pullURL = safeAssociationUrl(operator?.pullRequest?.url);
+    if (pullURL) {
+        const title = String(operator.pullRequestTitle || "").trim();
+        const label = "PR #" + operator.pullRequest.id + (title ? ": " + title : "");
+        links.push('<a class="run-association-link" href="' + escapeAssociationHtml(pullURL) +
+            '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
+    }
+    return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
+}
+
 export function renderHtml(instanceId, themePreference = "system") {
     return `<!doctype html>
 <html data-theme-preference="${themePreference}">
@@ -205,6 +243,15 @@ export function renderHtml(instanceId, themePreference = "system") {
     text-decoration: none;
   }
   .actions-run-link:hover { background: var(--background-color-hover, #f6f8fa); }
+  .run-associations { display: flex; flex-direction: column; gap: 3px; min-width: 180px; }
+  .run-association-link {
+    color: var(--true-color-blue, #0969da);
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run-association-link:hover { text-decoration: underline; }
   .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 20px; }
   .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; }
   .kv-wide { grid-column: 1 / -1; }
@@ -460,6 +507,7 @@ export function renderHtml(instanceId, themePreference = "system") {
             <th data-sort="gaggle">Gaggle</th>
             <th data-sort="trigger">Trigger</th>
             <th data-sort="phase">Phase</th>
+            <th>Associated work</th>
             <th data-sort="startedAt">Started</th>
             <th data-sort="lastActivityAt">Last activity</th>
           </tr>
@@ -916,6 +964,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         ? ' <a class="actions-run-link" href="' + escapeHtml(actionsUrl) +
           '" target="_blank" rel="noopener noreferrer" title="Open GitHub Actions run">Action &#8599;</a>'
         : "";
+      const associations = renderRunAssociations(r.operator);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
       tr.innerHTML =
@@ -924,14 +973,16 @@ export function renderHtml(instanceId, themePreference = "system") {
         "<td>" + (r.gaggle || "") + "</td>" +
         "<td>" + escapeHtml(r.trigger?.kind || "\u2014") + "</td>" +
         '<td><span class="phase">' + (r.phase || "") + "</span></td>" +
+        "<td>" + associations + "</td>" +
         "<td>" + fmtTime(r.startedAt) + "</td>" +
         "<td>" + fmtTime(r.lastActivityAt) + "</td>";
-      tr.querySelector(".actions-run-link")?.addEventListener("click", (event) => event.stopPropagation());
+      tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
+        link.addEventListener("click", (event) => event.stopPropagation()));
       tr.addEventListener("click", () => openRun(runId));
       runsBody.appendChild(tr);
     }
     if (sorted.length === 0) {
-      runsBody.innerHTML = '<tr><td colspan="7" class="muted">No runs match the current filters.</td></tr>';
+      runsBody.innerHTML = '<tr><td colspan="8" class="muted">No runs match the current filters.</td></tr>';
     }
     updateSortIndicators();
   }
@@ -1340,6 +1391,10 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
   }
 
+  const renderRunAssociations = ${renderRunAssociations.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+
   function externalRefsFrom(events) {
     const refs = [];
     const seen = new Set();
@@ -1379,7 +1434,9 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
     if (op.pullRequest) {
       const pullUrl = safeExternalUrl(op.pullRequest.url);
-      const pullLabel = escapeHtml(op.pullRequest.provider + " " + op.pullRequest.kind + " #" + op.pullRequest.id);
+      const pullTitle = String(op.pullRequestTitle || "").trim();
+      const pullLabel = escapeHtml(op.pullRequest.provider + " " + op.pullRequest.kind + " #" +
+        op.pullRequest.id + (pullTitle ? ": " + pullTitle : ""));
       parts.push(["Pull request", pullUrl
         ? '<a href="' + escapeHtml(pullUrl) + '" target="_blank" rel="noopener noreferrer">' + pullLabel + "</a>"
         : pullLabel]);

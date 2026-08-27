@@ -41,9 +41,14 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 	clock.now = startedAt.Add(2 * time.Minute)
 	if err := run.Append(journal.Event{
-		Type:        journal.EventRefTouched,
-		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "issue", ID: "3088"},
-		Runner:      map[string]any{"operation": "claim"},
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: "github",
+			Kind:     "issue",
+			ID:       "3088",
+			URL:      "https://github.com/acme/app/issues/3088",
+		},
+		Runner: map[string]any{"operation": "claim"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +122,7 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
 		return providers.WorkItem{
 			Title:  "Operator status cannot answer run progress",
+			URL:    "https://github.com/acme/app/issues/3088",
 			Labels: []string{providers.LabelClaimed},
 		}, nil
 	}
@@ -137,8 +143,13 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 	got := runs[0].Operator
 	if got.Issue == nil || got.Issue.Number != "3088" ||
-		got.Issue.Title != "Operator status cannot answer run progress" {
+		got.Issue.Title != "Operator status cannot answer run progress" ||
+		got.Issue.URL != "https://github.com/acme/app/issues/3088" {
 		t.Fatalf("issue = %+v", got.Issue)
+	}
+	if got.PullRequest == nil || got.PullRequest.URL != "https://example.test/pulls/4001" ||
+		got.PullRequestTitle != "PR title must not replace issue title" {
+		t.Fatalf("pull request = %+v title=%q", got.PullRequest, got.PullRequestTitle)
 	}
 	if got.CurrentStage != "implementation" || got.Trajectory != "implementing" ||
 		got.LastHeartbeatAt == nil || !got.LastHeartbeatAt.Equal(startedAt.Add(4*time.Minute)) ||

@@ -123,6 +123,9 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			if runs[i].Operator.Issue.Title == "" {
 				runs[i].Operator.Issue.Title = item.Title
 			}
+			if runs[i].Operator.Issue.URL == "" {
+				runs[i].Operator.Issue.URL = item.URL
+			}
 		}
 		if markerVerified &&
 			runs[i].Operator.Claim.LeaseStatus != "active" &&
