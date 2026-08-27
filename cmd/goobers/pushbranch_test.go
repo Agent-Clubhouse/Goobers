@@ -266,3 +266,61 @@ func TestPushBranchDetachedHeadFailsClosed(t *testing.T) {
 		t.Fatalf("stderr = %q, want a mention of detached HEAD", stderr)
 	}
 }
+
+// A branch with no commits beyond its base pushes CLEANLY today: git exits 0
+// and origin gains a ref identical to base. The stage then records a branch
+// push fact, which #3366's re-claim discovery reads as "this run did not
+// strand its diff" — so an empty push asserts no work was lost at exactly the
+// moment work may have been. Mode 3 makes that reachable (#3763): a commit
+// made by one stage does not survive into the next, so the pushing stage
+// genuinely arrives with an empty branch.
+//
+// The stage still SUCCEEDS — this cannot tell "the agent correctly changed
+// nothing" from "the diff was stranded" — but it must stop claiming a push it
+// did not perform.
+func TestPushBranchSkipsAnEmptyBranchAndRecordsNoFact(t *testing.T) {
+	origin := initBareOrigin(t)
+
+	mgr, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wt, err := mgr.Create(t.Context(), worktree.CreateOptions{
+		RepoURL: origin,
+		RunID:   "run-3763",
+		BaseRef: "main",
+		Branch:  "goobers/implementation/run-3763",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = wt.Remove(t.Context(), worktree.RemoveOptions{}) })
+
+	// The whole point: NO commit is made on the branch.
+	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "canary-token")
+
+	code, stdout, stderr := runArgs(t, "push-branch", wt.Path)
+	if code != 0 {
+		t.Fatalf("push-branch on an empty branch: code = %d, want 0 (legitimate no-work must not fail); stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "no commits beyond its base") {
+		t.Fatalf("stderr = %q, want the empty branch named loudly", stderr)
+	}
+
+	// The load-bearing assertion: no branch-push fact. With one, #3366 treats
+	// a possibly-stranded run as definitively not stranded and never offers
+	// the work as recoverable.
+	sidecar := filepath.Join(wt.Path, mutationsSidecarFile)
+	if data, err := os.ReadFile(sidecar); err == nil {
+		if strings.Contains(string(data), "\"push\"") {
+			t.Fatalf("a branch push fact was recorded for a push that never happened: %s", data)
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("read mutation sidecar: %v", err)
+	}
+
+	// And origin must not have gained a ref for a branch that shipped nothing.
+	if branchExistsOnOrigin(t, origin, "goobers/implementation/run-3763") {
+		t.Fatal("origin gained a branch identical to base; open-pr would then open a PR with no diff")
+	}
+}

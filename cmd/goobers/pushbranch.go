@@ -12,10 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
@@ -68,6 +70,35 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// NOTHING TO PUSH is not the same as a successful push, and the difference
+	// is load-bearing. A branch with no commits beyond its base pushes cleanly:
+	// git exits 0, origin gains a ref identical to base, and the stage reports
+	// success having shipped nothing.
+	//
+	// The fact recorded below is what makes that dangerous rather than merely
+	// useless. #3366's re-claim discovery reads a journaled branch push as
+	// "this run did not strand its diff" — so an empty push actively asserts
+	// that no work was lost, which is exactly wrong in the case where work WAS
+	// lost. That is how a stranded diff becomes unrecoverable instead of
+	// recoverable. MEASURED as reachable in mode 3 (#3763): a commit made by
+	// one stage does not survive into the next, so the pushing stage genuinely
+	// arrives with nothing.
+	//
+	// DELIBERATELY NOT A FAILURE. This cannot distinguish "the agent correctly
+	// made no changes" from "the diff was stranded" — both arrive here with an
+	// empty branch — and failing the stage would regress the first case on
+	// substrates where it is legitimate. So the stage still succeeds; what it
+	// stops doing is claiming a push that did not happen.
+	empty, emptyErr := branchHasNoCommitsBeyondBase(dir, branch)
+	if emptyErr != nil {
+		// Cannot tell: preserve today's behaviour exactly rather than guess.
+		pf(stderr, "warning: could not determine whether %q has commits to push (%v); pushing anyway\n", branch, emptyErr)
+	} else if empty {
+		pf(stderr, "warning: branch %q has no commits beyond its base — nothing to push\n", branch)
+		pf(stdout, "no commits to push on %s; skipped (no branch-push fact recorded)\n", branch)
+		return 0
+	}
+
 	if err := pushBranchWithRetry(dir, branch, env, stderr); err != nil {
 		pf(stderr, "error: push branch %q: %v\n", branch, err)
 		return 1
@@ -201,6 +232,54 @@ func currentBranch(dir string) (string, error) {
 		return "", fmt.Errorf("worktree at %s has no checked-out branch (detached HEAD)", dir)
 	}
 	return branch, nil
+}
+
+// branchHasNoCommitsBeyondBase reports whether branch carries nothing origin's
+// base branch does not already have.
+//
+// The base is read from the run context the executor injects, defaulting to
+// "main" exactly as the in-pod checkout does, so both substrates agree on what
+// "base" means. When the base ref is not present locally — a worktree that
+// never fetched it, an unusual remote layout — this returns an error rather
+// than a verdict: the caller then preserves the pre-existing behaviour instead
+// of skipping a push it cannot prove is empty. Refusing to guess is the point;
+// a wrong "empty" verdict would silently drop a real diff, which is worse than
+// the problem being fixed.
+func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
+	base := strings.TrimSpace(os.Getenv(executor.BaseBranchEnvVar))
+	if base == "" {
+		base = "main"
+	}
+	// Two substrates store the base under different refs and BOTH must resolve,
+	// or the check silently degrades to "cannot tell" on one of them. A pod's
+	// `git clone --branch <base>` yields a remote-tracking origin/<base>; the
+	// worker's worktrees come off a `git clone --mirror`, which has no
+	// refs/remotes/* at all and carries the base at refs/heads/<base>.
+	// MEASURED: origin/<base> alone made this permanently undecidable on the
+	// worker, which is the substrate where the check matters most today.
+	baseRef := ""
+	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
+		verify := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		verify.Dir = dir
+		if err := verify.Run(); err == nil {
+			baseRef = candidate
+			break
+		}
+	}
+	if baseRef == "" {
+		return false, fmt.Errorf("base %q not present locally as origin/%s, refs/heads/%s, or %s", base, base, base, base)
+	}
+	count := exec.Command("git", "rev-list", "--count", baseRef+".."+branch)
+	count.Dir = dir
+	out, err := count.Output()
+	if err != nil {
+		return false, fmt.Errorf("count commits on %s beyond %s: %w", branch, baseRef, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return false, fmt.Errorf("parse commit count %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return n == 0, nil
 }
 
 // gitPushBranch pushes branch to origin, authenticated via gitAuthEnv (#237's
