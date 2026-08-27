@@ -104,33 +104,47 @@ func fetchAgenticKit(ctx context.Context, digest string) (*agentickit.Kit, error
 // The plane is CAPABILITY-keyed while the resolver is asked for a credential
 // REF, so the kit's grants provide the mapping: a ref names the credential a
 // grant entitles, and the grant names the capability the plane resolves.
+//
+// ONE REF BACKS MANY CAPABILITIES, so this is deliberately ref -> []capability.
+// credentials.RunnerGrants assigns the SAME default ref (the project repo's
+// token) to every credentialed capability, so a map[string]string here keeps
+// only the last grant written and every lookup returns that one capability.
+// MEASURED: a stage declaring repo:push resolved to "ado:pr:complete" — the
+// last element of credentialedCapabilities — and failed with that capability
+// "not materialised", naming a capability the workflow never mentioned.
+//
+// A ref names ONE underlying credential, so any capability it backs that the
+// plane did materialise yields the same token: the first hit is the answer.
 type podCredentialResolver struct {
-	byRef map[string]string // credential ref -> capability
-	vals  map[string]string // capability -> resolved value
+	byRef map[string][]string // credential ref -> capabilities it backs
+	vals  map[string]string   // capability -> resolved value
 }
 
 func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, error) {
-	capability, ok := r.byRef[name]
+	capabilities, ok := r.byRef[name]
 	if !ok {
 		return "", fmt.Errorf("credential %q is not granted to this stage", name)
 	}
-	value, ok := r.vals[capability]
-	if !ok {
-		// The plane did not materialise it. Say which capability, not just
-		// which ref, because the capability is what the operator granted.
-		return "", fmt.Errorf("capability %q was not materialised by the credential plane", capability)
+	for _, capability := range capabilities {
+		if value, ok := r.vals[capability]; ok {
+			return value, nil
+		}
 	}
-	return value, nil
+	// The plane materialised none of them. Name every capability the ref backs
+	// rather than an arbitrary one: the operator granted a capability, and
+	// which of these is missing is exactly what they need to see.
+	return "", fmt.Errorf("credential %q is backed by capabilities %s, none of which were materialised by the credential plane",
+		name, strings.Join(capabilities, ", "))
 }
 
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
 func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
-	resolver := podCredentialResolver{byRef: map[string]string{}, vals: map[string]string{}}
+	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
-		if g.Ref != "" {
-			resolver.byRef[g.Ref] = g.Capability
+		if g.Ref != "" && g.Capability != "" {
+			resolver.byRef[g.Ref] = append(resolver.byRef[g.Ref], g.Capability)
 		}
 	}
 	registry, scrubber := journal.DefaultScrubber()
