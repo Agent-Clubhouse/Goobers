@@ -99,6 +99,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.backlog-item` | 1.4 | ga | deprecated | dev |
 | `trigger.backlog-item.selector` | 1.4 | ga | deprecated | dev |
 | `trigger.backlog-item.trustLabel` | 1.4 | ga | deprecated | dev |
+| `trigger.enabled` | 1.4 | ga | deprecated | dev |
 | `trigger.fieldPredicate` | 1.4 | ga | deprecated | dev |
 | `trigger.labelPredicate` | 1.4 | ga | deprecated | dev |
 | `trigger.manual` | 1.4 | ga | deprecated | dev |
@@ -255,6 +256,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `trigger.backlog-item` | 2.0 | ga | supported | dev |
 | `trigger.backlog-item.selector` | 2.0 | ga | supported | dev |
 | `trigger.backlog-item.trustLabel` | 2.0 | ga | supported | dev |
+| `trigger.enabled` | 2.0 | ga | supported | dev |
 | `trigger.fieldPredicate` | 2.0 | ga | supported | dev |
 | `trigger.idleBackoff` | 2.0 | ga | supported | dev |
 | `trigger.idleBackoff.ceiling` | 2.0 | ga | supported | dev |

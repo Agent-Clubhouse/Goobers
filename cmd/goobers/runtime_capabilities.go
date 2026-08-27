@@ -333,7 +333,7 @@ func init() {
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
-			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait"),
+			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait", "goobers run --github-progress implement-locally"),
 		runtimeCommand("approve", "approve", runApprove).
 			withSynopsis(synopsisByID["approve"]).
 			withHelp("approve a paused or escalated gate", approveHelp).

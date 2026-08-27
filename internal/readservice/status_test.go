@@ -86,6 +86,12 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implementation"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "4001", URL: "https://example.test/pulls/4001"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +119,13 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 			Title:  "Operator status cannot answer run progress",
 			Labels: []string{providers.LabelClaimed},
 		}, nil
+	}
+	const pullRequestBody = "## Summary\n\nThe complete pull request description.\n\n- Includes details\n- Includes validation"
+	service.sources.PullRequestLookup = func(_ context.Context, gaggle, pullID string) (providers.PullRequestSummary, error) {
+		if gaggle != "goobers" || pullID != "4001" {
+			t.Fatalf("PullRequestLookup(%q, %q), want goobers, 4001", gaggle, pullID)
+		}
+		return providers.PullRequestSummary{Body: pullRequestBody}, nil
 	}
 
 	runs, err := service.ListStatusRuns(context.Background())
@@ -142,6 +155,13 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 	if got.NextTransition != "finish implementation" || len(got.PotentialBlockers) != 2 {
 		t.Fatalf("next/blockers = %+v", got)
+	}
+	detail, err := service.GetRun(context.Background(), "operator-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Operator.PullRequestBody != pullRequestBody {
+		t.Fatalf("pull request body = %q, want %q", detail.Operator.PullRequestBody, pullRequestBody)
 	}
 
 	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {

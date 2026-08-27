@@ -192,6 +192,7 @@ type handlerConfig struct {
 	interventions       InterventionService
 	interventionContext context.Context
 	runRevealer         func(context.Context, string) error
+	workflowMutations   WorkflowMutationService
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -255,6 +256,18 @@ func WithRunRevealer(reveal func(context.Context, string) error) HandlerOption {
 			return errors.New("run revealer is required")
 		}
 		config.runRevealer = reveal
+		return nil
+	}
+}
+
+// WithWorkflowMutations enables the workflow-config mutation route (currently
+// enable/disable of non-manual triggers).
+func WithWorkflowMutations(service WorkflowMutationService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API workflow mutation service is required")
+		}
+		config.workflowMutations = service
 		return nil
 	}
 }
@@ -420,6 +433,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			return
 		}
 		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
+		portalConfig.Capabilities.WorkflowEnable = config.workflowMutations != nil
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
@@ -428,6 +442,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
+	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {

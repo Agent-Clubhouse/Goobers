@@ -23,6 +23,7 @@ export const apiRoutes = {
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
   "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
+  "workflowEnabled": { method: "PUT", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled", actionClass: "maintenance" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

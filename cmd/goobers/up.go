@@ -429,6 +429,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// of the divergence it exists to remove).
 		ReadModel:      setup.ReadModel,
 		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
+		PullRequestLookup: statusPullRequestLookup(
+			l.Root,
+			setup.Config,
+			setup.Definitions,
+			setup.SecretStores,
+			setup.SharedRegistry,
+		),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -480,9 +487,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	workflowMutations := newWorkflowMutationService(l)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithWorkflowMutations(workflowMutations),
 	)
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
@@ -742,6 +751,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,
 	}
+	workflowMutations.AttachReloader(reloader)
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks

@@ -407,6 +407,7 @@ const (
 	featureTriggerSchedule                FeatureID = "trigger.schedule"
 	featureTriggerSignal                  FeatureID = "trigger.signal"
 	featureTriggerWebhook                 FeatureID = "trigger.webhook"
+	featureTriggerEnabled                 FeatureID = "trigger.enabled"
 	featureTaskName                       FeatureID = "task.name"
 	featureTaskDeterministic              FeatureID = "task.deterministic"
 	featureTaskAgentic                    FeatureID = "task.agentic"
@@ -537,6 +538,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTriggerSchedule,
 		featureTriggerSignal,
 		featureTriggerWebhook,
+		featureTriggerEnabled,
 		featureTaskName,
 		featureTaskDeterministic,
 		featureTaskAgentic,
@@ -806,6 +808,9 @@ func addTriggerFeatures(used featureSet, trigger apiv1.Trigger) {
 		used.add(featureTriggerSignal)
 	case apiv1.TriggerWebhook:
 		used.add(featureTriggerWebhook)
+	}
+	if trigger.Enabled != nil {
+		used.add(featureTriggerEnabled)
 	}
 }
 

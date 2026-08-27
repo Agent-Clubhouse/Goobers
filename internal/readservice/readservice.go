@@ -92,6 +92,7 @@ type LocalSources struct {
 	// live instance came to hold a .lock file.
 	ReadModel          readmodel.Reader
 	WorkItemLookup     WorkItemLookup
+	PullRequestLookup  PullRequestLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 }

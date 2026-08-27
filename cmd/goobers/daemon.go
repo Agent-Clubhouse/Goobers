@@ -709,6 +709,16 @@ func buildSchedulerDefinitions(
 		var pollPriority int32
 		pollPrioritySet := false
 		for _, trigger := range wf.Spec.Triggers {
+			// Enabled defaults to true and has no effect on type=manual (WF-010's
+			// manual path never goes through this loop at all — it dispatches via
+			// Scheduler.Trigger/TriggerExact, unaffected by anything built here).
+			// A disabled non-manual trigger is treated as if it were absent: it
+			// contributes no schedule, signal, webhook subscription, or backlog-item
+			// poll priority, so the portal's enable/disable toggle can pause
+			// automation without deleting the trigger's configuration.
+			if trigger.Enabled != nil && !*trigger.Enabled {
+				continue
+			}
 			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" {
 				schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
 				if err != nil {

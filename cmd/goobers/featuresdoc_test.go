@@ -156,6 +156,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		},
 		"Trigger.Signal": {"trigger.signal"},
 		"Trigger.Events": {"trigger.webhook"},
+		"Trigger.Enabled": {"trigger.enabled"},
 
 		"Task.Name":                 {"task.name"},
 		"Task.Type":                 {"task.deterministic", "task.agentic"},

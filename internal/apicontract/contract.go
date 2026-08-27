@@ -44,6 +44,10 @@ const (
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
+
+	// WorkflowEnabledPath toggles whether a workflow's non-manual triggers may
+	// fire, without deleting or re-authoring the workflow's config (WF-010).
+	WorkflowEnabledPath = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}/enabled"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -74,6 +78,8 @@ const (
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
+
+	RouteWorkflowEnabled RouteID = "workflowEnabled"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -169,6 +175,8 @@ var v1Routes = []Route{
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+
+	{ID: RouteWorkflowEnabled, Method: http.MethodPut, Path: WorkflowEnabledPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

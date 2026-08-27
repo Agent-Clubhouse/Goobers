@@ -88,6 +88,7 @@ task.timeoutSeconds                                1.4          ga              
 trigger.backlog-item                               1.4          ga               deprecated       dev
 trigger.backlog-item.selector                      1.4          ga               deprecated       dev
 trigger.backlog-item.trustLabel                    1.4          ga               deprecated       dev
+trigger.enabled                                    1.4          ga               deprecated       dev
 trigger.fieldPredicate                             1.4          ga               deprecated       dev
 trigger.labelPredicate                             1.4          ga               deprecated       dev
 trigger.manual                                     1.4          ga               deprecated       dev
@@ -111,4 +112,4 @@ workflow.terminal.abort                            1.4          ga              
 workflow.terminal.complete                         1.4          ga               deprecated       dev
 workflow.terminal.escalate                         1.4          ga               deprecated       dev
 
-111 feature/version row(s)
+112 feature/version row(s)

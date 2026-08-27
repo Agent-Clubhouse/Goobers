@@ -199,6 +199,7 @@ type OperatorRunSummary struct {
 	Liveness           string               `json:"liveness"`
 	Trajectory         string               `json:"trajectory"`
 	PullRequest        *journal.ExternalRef `json:"pullRequest,omitempty"`
+	PullRequestBody    string               `json:"pullRequestBody,omitempty"`
 	PROpenerStage      string               `json:"prOpenerStage,omitempty"`
 	Claim              OperatorClaim        `json:"claim"`
 	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
@@ -2928,6 +2929,21 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	out, err := s.getRunUnannotated(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
+	}
+	if out.Operator.PullRequest != nil && s.sources.PullRequestLookup != nil {
+		pull, lookupErr := s.sources.PullRequestLookup(
+			ctx,
+			out.Gaggle,
+			out.Operator.PullRequest.ID,
+		)
+		if lookupErr != nil {
+			out.Operator.DiagnosticsLimitations = append(
+				out.Operator.DiagnosticsLimitations,
+				"pull request description unavailable: "+lookupErr.Error(),
+			)
+		} else {
+			out.Operator.PullRequestBody = pull.Body
+		}
 	}
 	if out.Phase == journal.PhaseRunning && s.sources.SchedulerHeartbeat != nil {
 		lastTickAt, err := s.sources.SchedulerHeartbeat()
