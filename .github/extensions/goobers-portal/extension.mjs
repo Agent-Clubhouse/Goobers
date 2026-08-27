@@ -321,8 +321,7 @@ const inputSchema = {
     },
 };
 
-const session = await joinSession({
-    canvases: [
+const canvases = [
         createCanvas({
             id: "goobers-portal",
             displayName: "Goobers Portal",
@@ -488,5 +487,12 @@ const session = await joinSession({
                 }
             },
         }),
-    ],
+];
+
+// The current SDK's createCanvas helper omits the protocol's icon field, so
+// attach it to the mutable wire declaration before joining.
+canvases[0].declaration.icon = "goober-mascot.png";
+
+const session = await joinSession({
+    canvases,
 });
