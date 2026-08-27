@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
@@ -102,5 +104,65 @@ func TestAgenticEnvelopeCarriesItsWorkspace(t *testing.T) {
 	kit.Envelope.Workspace = ws
 	if kit.Envelope.Workspace != ws {
 		t.Fatalf("workspace = %q, want %q", kit.Envelope.Workspace, ws)
+	}
+}
+
+// One credential ref backs MANY capabilities: credentials.RunnerGrants assigns
+// the same default ref (the project repo's token) to every credentialed
+// capability. A ref -> capability map therefore keeps only the last grant
+// written, and every lookup returns that one capability regardless of what the
+// stage declared.
+//
+// MEASURED on the cluster: an agentic stage declaring repo:push failed with
+//
+//	materialize credential key "repo:push": capability "ado:pr:complete" was
+//	not materialised by the credential plane
+//
+// naming ado:pr:complete — the last element of credentialedCapabilities — for a
+// workflow that never mentions ADO at all.
+func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T) {
+	const ref = "masra91/Goobers-Site"
+	// Grant order mirrors credentialedCapabilities: the capability the stage
+	// actually declared is FIRST and the collision winner LAST, so a
+	// last-write-wins map fails exactly as the cluster did.
+	grants := []agentickit.Grant{
+		{Capability: "repo:push", Ref: ref},
+		{Capability: "github:pr:merge", Ref: ref},
+		{Capability: "ado:pr:complete", Ref: ref},
+	}
+	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
+	for _, g := range grants {
+		if g.Ref != "" && g.Capability != "" {
+			resolver.byRef[g.Ref] = append(resolver.byRef[g.Ref], g.Capability)
+		}
+	}
+	// The plane materialises ONLY what the stage declared — never the whole
+	// credentialed set. This is the asymmetry the bug lived in.
+	resolver.vals["repo:push"] = "ghs_stage_token"
+
+	got, err := resolver.Resolve(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Resolve(%q) = error %v; the ref is backed by a materialised capability", ref, err)
+	}
+	if got != "ghs_stage_token" {
+		t.Fatalf("Resolve(%q) = %q, want the materialised token", ref, got)
+	}
+
+	// An ungranted ref must still be refused rather than silently empty.
+	if _, err := resolver.Resolve(context.Background(), "someone-else/repo"); err == nil {
+		t.Fatal("Resolve on an ungranted ref returned no error; an unknown ref must be refused")
+	}
+
+	// A granted ref whose capabilities were all withheld must name them all,
+	// so the operator sees which grant to look at.
+	resolver.vals = map[string]string{}
+	_, err = resolver.Resolve(context.Background(), ref)
+	if err == nil {
+		t.Fatal("Resolve succeeded with nothing materialised")
+	}
+	for _, want := range []string{"repo:push", "github:pr:merge", "ado:pr:complete"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name capability %q", err, want)
+		}
 	}
 }
