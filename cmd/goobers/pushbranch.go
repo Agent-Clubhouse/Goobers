@@ -220,9 +220,24 @@ func appendBranchPushFact(dir, branch string) {
 // process started. push-branch pushes exactly that branch rather than
 // reconstructing a name from GOOBERS_RUN_ID/GOOBERS_WORKFLOW, so it can never
 // drift from what the worktree actually has checked out.
-func currentBranch(dir string) (string, error) {
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+// workspaceGitCommand builds a git command carrying the workspace's
+// safe.directory exemption.
+//
+// A stage pod's /workspace is not owned by the container user, so bare git
+// refuses it with "detected dubious ownership" and exit 128. The stage's own
+// command inherits the exemption (safeDirectory.Env); code running in the
+// dispatch-exec process does NOT, so a raw exec.Command("git", ...) fails there
+// and nowhere else. MEASURED: every git call in the workspace-delta path failed
+// this way in-pod while passing on the worker and in tests.
+func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, nil)
+	return cmd
+}
+
+func currentBranch(dir string) (string, error) {
+	cmd := workspaceGitCommand(dir, "symbolic-ref", "--short", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("determine checked-out branch (detached HEAD?): %w", err)
@@ -243,8 +258,7 @@ func currentBranch(dir string) (string, error) {
 // refs/remotes/* at all and carries the base at refs/heads/<base>.
 func resolveBaseRef(dir, base string) (string, error) {
 	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
-		verify := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
-		verify.Dir = dir
+		verify := workspaceGitCommand(dir, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
 		if err := verify.Run(); err == nil {
 			return candidate, nil
 		}
@@ -285,9 +299,7 @@ func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	count := exec.Command("git", "rev-list", "--count", baseRef+".."+branch)
-	count.Dir = dir
-	out, err := count.Output()
+	out, err := workspaceGitCommand(dir, "rev-list", "--count", baseRef+".."+branch).Output()
 	if err != nil {
 		return false, fmt.Errorf("count commits on %s beyond %s: %w", branch, baseRef, err)
 	}

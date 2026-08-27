@@ -169,3 +169,38 @@ func TestWorkspaceDeltaRefusesASubstitutedBundle(t *testing.T) {
 		t.Fatalf("error = %v, want a digest mismatch refusal", err)
 	}
 }
+
+// A writable repo workspace whose branch cannot be determined must FAIL, not
+// report "nothing to carry".
+//
+// MEASURED, and the reason this test exists: in-pod, every git call in the
+// delta path failed with "detected dubious ownership" (exit 128) because
+// /workspace is not owned by the container user and only the STAGE's own
+// command inherits the safe.directory exemption. publishWorkspaceDelta treated
+// the resulting currentBranch failure as an ordinary skip, so four consecutive
+// runs reported success while carrying nothing — the exact silent shape #3763
+// exists to remove, reintroduced by its own fix.
+//
+// Any git failure here is indistinguishable from "the stage committed and we
+// cannot tell", so the only safe answer is to fail loudly.
+func TestWorkspaceDeltaFailsLoudlyWhenTheBranchCannotBeDetermined(t *testing.T) {
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+
+	// Not a git repository at all: currentBranch cannot succeed, standing in
+	// for every reason git might refuse the workspace.
+	notARepo := t.TempDir()
+
+	digest, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	if err == nil {
+		t.Fatalf("publishWorkspaceDelta returned digest %q and no error; a writable repo workspace whose branch is undeterminable must fail rather than silently carry nothing", digest)
+	}
+	if digest != "" {
+		t.Fatalf("publishWorkspaceDelta returned digest %q alongside an error", digest)
+	}
+	if !strings.Contains(err.Error(), "cannot determine the checked-out branch") {
+		t.Fatalf("error = %v, want it to name the undeterminable branch", err)
+	}
+}
