@@ -44,7 +44,13 @@ const (
 // attempt's recorded failure type (attemptFailureClass). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error)) (apiv1.ResultEnvelope, error) {
+// deltaOut, when non-nil, receives the workspace delta digest the winning
+// attempt produced (#3763), so the caller can hand it to the next stage. It is
+// an out-param rather than a return value because only the pod arm produces
+// one: a self-placed stage's commits are already on the shared run branch, and
+// widening the return type would oblige every arm to answer a question only one
+// of them has.
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *string) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -103,6 +109,13 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
 				emitErr = rec.emitPending(ctx)
 				if emitErr == nil {
+					// Only a WINNING attempt's delta is carried forward. A
+					// retried attempt's bundle describes a workspace that was
+					// thrown away with its pod, and building the next stage on
+					// it would resurrect abandoned work.
+					if deltaOut != nil && activityResult.WorkspaceDelta != "" {
+						*deltaOut = activityResult.WorkspaceDelta
+					}
 					return res, nil
 				}
 			}

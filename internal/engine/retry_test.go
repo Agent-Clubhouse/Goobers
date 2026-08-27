@@ -318,7 +318,7 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 						return stageActivityResult{}, temporal.NewTimeoutError(test.timeoutType, nil)
 					}
 					return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
-				})
+				}, nil)
 				return err
 			})
 

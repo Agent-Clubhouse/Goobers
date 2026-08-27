@@ -103,8 +103,13 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// already pushed to it, that is the state this stage must continue from —
 	// which is exactly how continuity works on the worker side, where each
 	// attempt gets a fresh worktree on the same branch.
+	//
+	// A PUSHED run branch is not the only way work arrives, and assuming it was
+	// is what #3763 measured: the universal idiom commits in one stage and
+	// pushes in a later one, so the common case is unpushed commits that must
+	// still reach this stage. applyStageWorkspaceDelta covers that.
 	if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, "."); err == nil {
-		return nil
+		return applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr)
 	}
 	// First stage of the run: the branch does not exist yet.
 	//
@@ -125,7 +130,20 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	if err := runGit(ctx, dir, gitEnv, stderr, "checkout", "--quiet", "-b", branch); err != nil {
 		return fmt.Errorf("create run branch %s: %w", branch, err)
 	}
-	return nil
+	return applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr)
+}
+
+// applyStageWorkspaceDelta moves the freshly-checked-out branch onto whatever
+// earlier stages of this run committed, when the dispatcher handed this pod a
+// delta to apply (#3763). No delta stamped means nothing to continue from —
+// the first writable stage of a run, or a run whose earlier stages committed
+// nothing — and the base checkout already standing is correct.
+func applyStageWorkspaceDelta(ctx context.Context, dir string, gitEnv []string, stderr io.Writer) error {
+	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceDelta))
+	if digest == "" {
+		return nil
+	}
+	return applyWorkspaceDelta(ctx, dir, digest, gitEnv, stderr)
 }
 
 // gitAuthEnv builds the git child environment from a credential the stage

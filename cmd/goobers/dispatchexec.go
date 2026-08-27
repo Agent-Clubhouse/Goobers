@@ -80,7 +80,33 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 
 	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken}
 	envelope := runDeclaredStage(ctx, stdout, stderr)
-	data, err := json.Marshal(dispatcher.SurrenderedResult{Result: envelope})
+
+	// Carry whatever this stage committed to the next one (#3763). This pod is
+	// about to be disposed, so a commit that does not leave here does not exist
+	// downstream — on the worker the shared branch ref does this for free.
+	//
+	// Only for a stage that SUCCEEDED: a failed stage's half-finished commits
+	// are not a base for the next stage to build on, and the engine retries it
+	// on a fresh pod from the last good delta.
+	//
+	// A publish failure converts the stage to a FAILURE. The commits exist and
+	// nothing else will carry them, so surrendering success here would strand
+	// exactly the diff this mechanism protects — the silent shape #3763 is about.
+	var delta string
+	if envelope.Status == apiv1.ResultSuccess {
+		published, derr := publishWorkspaceDelta(ctx, ".", stderr)
+		if derr != nil {
+			pf(stderr, "dispatch-exec: %v\n", derr)
+			envelope = apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "stage committed work that could not be carried to the next stage",
+				Error:   &apiv1.ErrorInfo{Code: "workspace_delta_failed", Message: derr.Error()},
+			}
+		} else {
+			delta = published
+		}
+	}
+	data, err := json.Marshal(dispatcher.SurrenderedResult{Result: envelope, WorkspaceDelta: delta})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)
 		return 1

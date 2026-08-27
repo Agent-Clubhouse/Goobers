@@ -76,6 +76,11 @@ const (
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
 
+	// EnvWorkspaceDelta carries the blob digest of the git bundle holding what
+	// earlier stages of this run committed (#3763). Privileged: it names a blob
+	// the pod's own token can fetch, and a stage has no business reading or
+	// forging it.
+	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
 	// EnvStageWorkspace carries the declared workspace mode so the in-pod
 	// executor knows whether to provision a checkout. Privileged: a stage that
 	// could rewrite it would change what the platform provisioned for it.
@@ -109,7 +114,7 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvStageWorkspace, EnvAgenticKitDigest,
+	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -624,6 +629,9 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	if attempt.KitDigest != "" {
 		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: attempt.KitDigest})
+	}
+	if attempt.WorkspaceDelta != "" {
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: attempt.WorkspaceDelta})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {

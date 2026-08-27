@@ -96,6 +96,11 @@ type stageActivityResult struct {
 	apiv1.ResultEnvelope
 	Mutations      []mutationFact `json:"mutations,omitempty"`
 	MutationIssues []string       `json:"mutationIssues,omitempty"`
+	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
+	// committed (#3763), for the engine to hand to the next stage. Only a
+	// pod-dispatched stage produces one; a self-placed stage needs none,
+	// because its commits are already on the shared run branch.
+	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
 }
 
 type mutationFact struct {

@@ -93,6 +93,9 @@ type dispatchStageInput struct {
 	// Workspace is the TASK-level declaration, which is the only place an
 	// agentic stage can express one — it carries no DeterministicRun.
 	Workspace apiv1.WorkspaceMode `json:"workspace,omitempty"`
+	// WorkspaceDelta is the blob digest of what earlier stages of this run
+	// committed (#3763), for this pod to continue from.
+	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -114,7 +117,7 @@ type dispatchStageInput struct {
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *string) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -151,10 +154,10 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace}).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
-	})
+	}, deltaOut)
 }
 
 // StageDispatcher is the mode-3 substrate seam the dispatch activity executes
@@ -280,6 +283,13 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
+	// What earlier stages committed (#3763). Only meaningful for a workspace
+	// the pod can commit into; handing it to a scratch or read-only stage
+	// would be a no-op at best and a silent rewrite of a read-only stage's
+	// pinned base at worst.
+	if workspace.IsWritableRepo() {
+		attempt.WorkspaceDelta = input.WorkspaceDelta
+	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
 	// Gating the stamp on input.Run != nil would defeat needsRepoContext for the
 	// exact case it was added to serve: an agentic task HAS no DeterministicRun,
@@ -369,6 +379,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		ResultEnvelope: surrendered.Result,
 		Mutations:      surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues: surrendered.MutationIssues,
+		WorkspaceDelta: surrendered.WorkspaceDelta,
 	})
 }
 
