@@ -71,6 +71,9 @@ var (
 	_ executor.BoundedArtifactRecorder = podArtifactRecorder{}
 	_ interface{ Dir() string }        = podArtifactRecorder{}
 	_ runner.ArtifactRecorder          = podArtifactRecorder{}
+	// Asserted at INVOCATION time in four places, not construction — a missing
+	// Append fails mid-run rather than at startup, which is how it was found.
+	_ harness.EventAppender = podArtifactRecorder{}
 )
 
 // The SecretRegistrar is asserted to journal.Scrubber in the same constructor.
