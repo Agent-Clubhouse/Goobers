@@ -39,7 +39,30 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 		return failureEnvelope("agentic_kit_unavailable", err.Error())
 	}
 
-	exec, err := buildPodAgenticExecutor(ctx, kit, stderr)
+	// An agentic stage needs its workspace PROVISIONED and STAMPED, exactly as
+	// the local path does — provisionWorkspace mutates the envelope so the
+	// harness knows where to work. Missing either half fails inside the
+	// harness with nothing about workspaces in the message:
+	//
+	//	harness: copilot-cli: RunRequest.Workspace is empty
+	//
+	// The credential is resolved first because the checkout authenticates with
+	// it, and resolving twice would mint two credentials for one stage.
+	minted, err := resolveStageCredentials(ctx)
+	if err != nil {
+		return failureEnvelope("credential_resolve_failed", err.Error())
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("resolve workspace: %v", err))
+	}
+	if err := checkoutRepoWorkspace(ctx, workspace, stderr, minted); err != nil {
+		return failureEnvelope("workspace_provision_failed", err.Error())
+	}
+	// The stamp the harness actually reads.
+	kit.Envelope.Workspace = workspace
+
+	exec, err := buildPodAgenticExecutor(kit, stderr, minted)
 	if err != nil {
 		return failureEnvelope("agentic_executor_unavailable", err.Error())
 	}
@@ -101,16 +124,8 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
-func buildPodAgenticExecutor(ctx context.Context, kit *agentickit.Kit, stderr io.Writer) (invoke.Goober, error) {
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
-
-	// Credentials come from the plane, resolved at stage start exactly as a
-	// deterministic stage resolves its own — no credential material ever rode
-	// the kit.
-	minted, err := resolveStageCredentials(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("resolve stage credentials: %w", err)
-	}
 	resolver := podCredentialResolver{byRef: map[string]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
 		if g.Ref != "" {
@@ -172,7 +187,7 @@ func buildPodAgenticExecutor(ctx context.Context, kit *agentickit.Kit, stderr io
 	if err != nil {
 		return nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
 	}
-	info, err := adapter.Preflight(ctx)
+	info, err := adapter.Preflight(context.Background())
 	if err != nil {
 		// Fail closed with the harness's own message: an unusable harness
 		// discovered mid-invocation is a burned attempt with the cause buried
