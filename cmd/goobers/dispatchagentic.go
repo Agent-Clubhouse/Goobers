@@ -57,7 +57,15 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	if err != nil {
 		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("resolve workspace: %v", err))
 	}
-	if err := checkoutRepoWorkspace(ctx, workspace, stderr, minted); err != nil {
+	// The checkout may use a credential the AGENT never receives (#3770): it
+	// provisions the working tree and is excluded from buildPodAgenticExecutor
+	// below, so the goober's resolver and its environment see only what the
+	// stage actually declared.
+	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	if checkoutErr != nil {
+		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
+	}
+	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
 		return failureEnvelope("workspace_provision_failed", err.Error())
 	}
 	// The stamp the harness actually reads.

@@ -233,6 +233,9 @@ type Attempt struct {
 	// gate outcomes rather than failing (Goobers#3699 v1 cut).
 	Inputs map[string]string
 
+	// CheckoutCapability is the capability the pod may mint solely to provision
+	// a repo workspace (#3770) — never exported to the stage's environment.
+	CheckoutCapability string
 	// WorkspaceDelta is the blob digest of the git bundle carrying what earlier
 	// stages of this run committed (#3763). The pod applies it after checkout so
 	// this stage continues from their work instead of from base — the worker

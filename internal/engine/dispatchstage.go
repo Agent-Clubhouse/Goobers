@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
@@ -290,6 +291,20 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	if workspace.IsWritableRepo() {
 		attempt.WorkspaceDelta = input.WorkspaceDelta
 	}
+	// A repo workspace has to be CLONED, and cloning a private repository needs
+	// a credential. The pod used to take that from the stage's declared
+	// business capabilities, so provisioning silently depended on the stage
+	// happening to declare a repo-shaped one — open-pr declares
+	// provider:pr:write alone and could not run in a pod at all (#3770).
+	//
+	// Naming it here rather than widening the stage's capabilities keeps the
+	// two separate: the pod mints this for the checkout and never exports it to
+	// the stage's environment, so a stage does not gain repository authority by
+	// needing a working tree. The worker has always behaved this way — it
+	// provisions worktrees with instance credentials, not the stage's.
+	if workspace.IsRepoBacked() && !declaresRepoCapability(attempt.Capabilities) {
+		attempt.CheckoutCapability = string(capability.RepoPush)
+	}
 	needsRepoContext = workspace.IsRepoBacked() || (input.Run != nil && workspace == "")
 	// Gating the stamp on input.Run != nil would defeat needsRepoContext for the
 	// exact case it was added to serve: an agentic task HAS no DeterministicRun,
@@ -381,6 +396,20 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		MutationIssues: surrendered.MutationIssues,
 		WorkspaceDelta: surrendered.WorkspaceDelta,
 	})
+}
+
+// declaresRepoCapability reports whether the stage already holds a repo-shaped
+// capability, in which case the checkout has one and no separate mint is
+// needed. Matches gitToken's rule exactly — "repo" only — so the two cannot
+// disagree about what counts: a stage declaring github:issues:read must not be
+// read as already having repository access.
+func declaresRepoCapability(capabilities []string) bool {
+	for _, c := range capabilities {
+		if strings.Contains(strings.ToLower(c), "repo") {
+			return true
+		}
+	}
+	return false
 }
 
 // surrenderedMutationFacts converts the surrendered wire shape to the
