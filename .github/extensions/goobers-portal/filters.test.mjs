@@ -44,6 +44,8 @@ test("runs filters include the stage required by outcome and population", () => 
     assert.match(html, /id="filter-population"/);
     assert.match(html, /if \(data\.error\)/);
     assert.match(html, /Close and reopen this canvas to reconnect/);
+    assert.match(html, /\.kv-wide \{ grid-column: 1 \/ -1; \}/);
+    assert.match(html, /label === "Latest error" \? " kv-wide"/);
 });
 
 test("GitHub Actions rejects unsupported telemetry filters", async () => {

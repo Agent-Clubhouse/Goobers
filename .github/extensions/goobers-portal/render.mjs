@@ -207,6 +207,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   .actions-run-link:hover { background: var(--background-color-hover, #f6f8fa); }
   .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 20px; }
   .kv { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; padding: 10px 12px; }
+  .kv-wide { grid-column: 1 / -1; }
   .kv .label { color: var(--text-color-muted, #656d76); font-size: 12px; }
   .kv .value { font-size: 14px; margin-top: 2px; word-break: break-word; }
   .kv .value a { color: inherit; }
@@ -1386,7 +1387,9 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (op.liveness) parts.push(["Liveness", op.liveness]);
     if (op.trajectory) parts.push(["Trajectory", op.trajectory]);
     if (op.latestError) parts.push(["Latest error", "<code>" + escapeHtml(op.latestError.code) + "</code> " + escapeHtml(op.latestError.message || "")]);
-    let html = '<div class="kv-grid">' + parts.map(([label, value]) => '<div class="kv"><div class="label">' + label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
+    let html = '<div class="kv-grid">' + parts.map(([label, value]) =>
+      '<div class="kv' + (label === "Latest error" ? " kv-wide" : "") + '"><div class="label">' +
+      label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
     if (op.review) {
       html += '<h3>Review</h3><p><span class="badge-' + op.review.verdict + '">' + op.review.verdict + "</span></p>";
       if (op.review.rationale) html += '<p class="rationale">' + escapeHtml(op.review.rationale) + "</p>";

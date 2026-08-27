@@ -619,4 +619,15 @@ const session = await joinSession({
     canvases,
 });
 
+session.on("session.canvas.opened", (event) => {
+    if (event.data.extensionId !== "project:goobers-portal") return;
+    logEvent("canvas_open_event_observed", {
+        instanceId: event.data.instanceId,
+        icon: event.data.icon,
+        url: event.data.url,
+        reopen: event.data.reopen,
+        availability: event.data.availability,
+    });
+});
+
 logEvent("extension_joined", { sessionId: session.sessionId });
