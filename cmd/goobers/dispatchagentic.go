@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -290,3 +291,39 @@ func (r podArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, dat
 // Dir satisfies the interface{ Dir() string } the executor asserts for its
 // staging directory.
 func (r podArtifactRecorder) Dir() string { return r.dir }
+
+// Append satisfies harness.EventAppender, which the executor asserts at
+// INVOCATION time — not construction — in four places: sandbox posture,
+// structured agent telemetry, and two others. A recorder without it fails
+// mid-invocation with
+//
+//	structured agent telemetry requires a journal-backed recorder;
+//	main.podArtifactRecorder cannot append events
+//
+// A pod has no run journal on disk, so the event goes through the journal
+// plane — the same route artifacts take, and the same route the worker's live
+// journal uses. This is what makes an agentic stage's telemetry land in the
+// run's journal at all rather than being dropped because the pod is not the
+// daemon.
+func (r podArtifactRecorder) Append(ev journal.Event) error {
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	runID := os.Getenv(dispatcher.EnvRunID)
+	if daemonAPI == "" || runID == "" {
+		// No plane configured: the loopback/no-journal posture. Dropping the
+		// event is correct here and must NOT fail the stage — the agent's work
+		// is the outcome, its telemetry is not.
+		return nil
+	}
+	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
+	event := ev
+	_, err := emitter.Emit(context.Background(), livejournal.EmitRequest{
+		RunID:  runID,
+		Gaggle: os.Getenv(dispatcher.EnvGaggle),
+		Ops: []livejournal.Op{{
+			Kind:  livejournal.OpAppend,
+			Key:   fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Event: &event,
+		}},
+	})
+	return err
+}
