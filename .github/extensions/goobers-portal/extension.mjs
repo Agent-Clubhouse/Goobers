@@ -451,6 +451,7 @@ async function startServer(instanceId) {
             const preferences = await readPreferences();
             res.end(renderHtml(instanceId, preferences.theme));
         } catch (err) {
+            if (req.aborted || res.destroyed || res.writableEnded) return;
             logEvent("http_request_failed", {
                 instanceId,
                 method: req.method,
@@ -458,6 +459,10 @@ async function startServer(instanceId) {
                 durationMs: Date.now() - startedAt,
                 error: err.message || String(err),
             });
+            if (res.headersSent) {
+                res.destroy(err);
+                return;
+            }
             res.statusCode = 500;
             res.setHeader("Content-Type", "application/json; charset=utf-8");
             res.end(JSON.stringify({ error: err.message || String(err) }));
