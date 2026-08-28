@@ -28,16 +28,53 @@ export function attentionKey(run) {
     return `${run?.runId || run?.id || ""}:${run?.lastActivityAt || run?.updatedAt || run?.eventSeq || ""}`;
 }
 
+function attentionWorkSource(run) {
+    const operator = run?.operator || {};
+    const issue = operator.issue || run?.issue || operator.workItem || run?.workItem;
+    if (issue) {
+        const identity = issue.url || issue.externalId || issue.number || issue.id;
+        if (identity !== undefined && identity !== null && identity !== "") {
+            return `work:${issue.provider || issue.kind || ""}:${identity}`;
+        }
+    }
+    const pullRequest = operator.pullRequest || run?.pullRequest;
+    if (pullRequest) {
+        const identity = pullRequest.url || pullRequest.externalId || pullRequest.number || pullRequest.id;
+        if (identity !== undefined && identity !== null && identity !== "") {
+            return `pr:${pullRequest.provider || ""}:${identity}`;
+        }
+    }
+    const trigger = run?.trigger || {};
+    if (trigger.ref || trigger.kind) return `trigger:${trigger.kind || ""}:${trigger.ref || ""}`;
+    return `run:${run?.runId || run?.id || ""}`;
+}
+
+function attentionRecency(run, index) {
+    for (const value of [run?.startedAt, run?.createdAt, run?.lastActivityAt, run?.updatedAt, run?.finishedAt]) {
+        const parsed = Date.parse(value || "");
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return -index;
+}
+
 export function deriveAttention(runs, { now = Date.now(), limit = 8 } = {}) {
-    return (runs || [])
-        .map((run) => {
+    const latestByWork = new Map();
+    (runs || []).forEach((run, index) => {
+        const group = `${run?.gaggle || ""}/${run?.workflow || ""}|${attentionWorkSource(run)}`;
+        const recency = attentionRecency(run, index);
+        const existing = latestByWork.get(group);
+        if (!existing || recency > existing.recency) latestByWork.set(group, { run, recency });
+    });
+
+    return [...latestByWork.values()]
+        .map(({ run, recency }) => {
             const phase = runPhase(run);
             const stale = String(run?.operator?.liveness || run?.liveness || "").toLowerCase() === "stale" ||
                 phase === "stale";
             const concurrencyBlocked = Boolean(run?.concurrencyBlocked || run?.operator?.concurrencyBlocked);
             if (!ATTENTION_PHASES.has(phase) && !stale && !concurrencyBlocked) return null;
             const kind = stale ? "stale" : concurrencyBlocked ? "concurrency-blocked" : phase;
-            return {
+            return { recency, item: {
                 id: run?.runId || run?.id,
                 workflow: run?.workflow || "",
                 gaggle: run?.gaggle || "",
@@ -52,11 +89,12 @@ export function deriveAttention(runs, { now = Date.now(), limit = 8 } = {}) {
                         kind === "escalated" || kind === "awaiting-human" ? "Review and decide" :
                             kind === "blocked" || kind === "concurrency-blocked" ? "Resolve the blocker" : "Inspect run activity"),
                 key: attentionKey(run),
-            };
+            } };
         })
         .filter(Boolean)
-        .sort((a, b) => (b.elapsedMillis ?? -1) - (a.elapsedMillis ?? -1))
-        .slice(0, Math.max(0, limit));
+        .sort((a, b) => b.recency - a.recency)
+        .slice(0, Math.max(0, limit))
+        .map(({ item }) => item);
 }
 
 const BOOLEAN_FILTER_KEYS = new Set(["showNoWork"]);

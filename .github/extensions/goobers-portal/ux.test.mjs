@@ -31,6 +31,40 @@ test("deriveAttention returns bounded actionable states with causal details", ()
     assert.equal(attentionKey(runs[0]), "failed:");
 });
 
+test("deriveAttention keeps only the newest failed run per workflow and work source", () => {
+    const issue = { number: 42, url: "https://github.com/octo/app/issues/42" };
+    const result = deriveAttention([
+        { id: "old-failure", workflow: "implement", phase: "failed", startedAt: "2026-08-28T10:00:00Z", operator: { issue } },
+        { id: "new-failure", workflow: "implement", phase: "failed", startedAt: "2026-08-28T10:30:00Z", operator: { issue } },
+        { id: "other-work", workflow: "implement", phase: "failed", startedAt: "2026-08-28T10:15:00Z", operator: { issue: { number: 43 } } },
+    ]);
+    assert.deepEqual(result.map((item) => item.id), ["new-failure", "other-work"]);
+});
+
+test("deriveAttention suppresses an older failure when the latest run succeeded", () => {
+    const issue = { number: 42 };
+    const result = deriveAttention([
+        { id: "failed", workflow: "implement", phase: "failed", startedAt: "2026-08-28T10:00:00Z", operator: { issue } },
+        { id: "fixed", workflow: "implement", phase: "completed", startedAt: "2026-08-28T11:00:00Z", operator: { issue } },
+    ]);
+    assert.deepEqual(result, []);
+});
+
+test("deriveAttention uses the issue as the stable work source when a later run also has a PR", () => {
+    const issue = { number: 42 };
+    const result = deriveAttention([
+        { id: "failed", workflow: "implement", phase: "failed", startedAt: "2026-08-28T10:00:00Z", operator: { issue } },
+        {
+            id: "fixed",
+            workflow: "implement",
+            phase: "completed",
+            startedAt: "2026-08-28T11:00:00Z",
+            operator: { issue, pullRequest: { id: 7 } },
+        },
+    ]);
+    assert.deepEqual(result, []);
+});
+
 test("view state round trips filters and selected run", () => {
     const encoded = encodeViewState({ phase: "failed", showNoWork: true, empty: "" }, "run/7");
     assert.deepEqual(decodeViewState(encoded), {
