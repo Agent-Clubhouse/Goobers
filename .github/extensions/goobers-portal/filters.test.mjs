@@ -74,6 +74,22 @@ test("telemetry insights render unavailable values and measured zeroes", () => {
     assert.match(renderHtml("insights-test"), /Telemetry insights/);
 });
 
+test("telemetry insights keep sub-second durations distinct from zero", () => {
+    const html = renderTelemetryInsights({ durationMillis: 250 });
+    assert.match(html, /250ms/);
+});
+
+test("telemetry insights disclose omitted hotspot stages", () => {
+    const events = Array.from({ length: 6 }, (_, index) => ({
+        type: "stage.finished",
+        stage: "stage-" + index,
+        attempt: 1,
+        status: "failed",
+        time: "2026-08-28T10:00:0" + index + "Z",
+    }));
+    assert.match(renderTelemetryInsights({ events }), /\+1 more hotspots\./);
+});
+
 test("run associations render safe issue and PR title links", () => {
     const html = renderRunAssociations({
         issue: {

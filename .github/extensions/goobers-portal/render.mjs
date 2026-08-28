@@ -122,7 +122,11 @@ export function renderExecutionWaterfall(run = {}) {
 
 export function renderTelemetryInsights(run = {}) {
     const insights = deriveTelemetryInsights(run);
-    const formatDuration = (value) => value === null ? "Unknown" : Math.round(value / 1000) + "s";
+    const formatDuration = (value) => {
+        if (value === null) return "Unknown";
+        if (value < 1000) return value + "ms";
+        return Math.round(value / 1000) + "s";
+    };
     const formatMeasure = (measure) => measure.value === 0 ? "0 " + measure.unit : measure.value.toLocaleString() + " " + measure.unit;
     const durationRows = [
         ["Run duration", formatDuration(insights.duration.totalMillis)],
@@ -136,9 +140,12 @@ export function renderTelemetryInsights(run = {}) {
     const rows = (items) => items.map(([label, value]) =>
         '<div class="kv"><div class="label">' + escapeAssociationHtml(label) + '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
     ).join("");
+    const visibleHotspots = insights.hotspots.slice(0, 5);
+    const omittedHotspots = insights.hotspots.length - visibleHotspots.length;
     const hotspotRows = insights.hotspots.length
-        ? insights.hotspots.slice(0, 5).map((item) => "<li><strong>" + escapeAssociationHtml(item.stage) +
-            "</strong>: " + item.failures + " failures, " + item.retries + " retries</li>").join("")
+        ? visibleHotspots.map((item) => "<li><strong>" + escapeAssociationHtml(item.stage) +
+            "</strong>: " + item.failures + " failures, " + item.retries + " retries</li>").join("") +
+            (omittedHotspots ? '<li class="muted">+' + omittedHotspots + " more hotspots.</li>" : "")
         : '<li class="muted">Unknown: no stage attempt telemetry.</li>';
     const usage = insights.usage.length
         ? insights.usage.map((item) => [item.label, formatMeasure(item)])
