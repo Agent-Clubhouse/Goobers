@@ -38,6 +38,22 @@ export const apiRoutes = {
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];
 
+export const configAuthoringRoutes = {
+  "configSources": { method: "GET", path: "/api/v1/config/sources", actionClass: "read-only-navigation" },
+  "configSourceDocuments": { method: "GET", path: "/api/v1/config/sources/{source}/documents", actionClass: "read-only-navigation" },
+  "configSourceDocument": { method: "GET", path: "/api/v1/config/sources/{source}/document", actionClass: "read-only-navigation" },
+  "configSourcePreview": { method: "POST", path: "/api/v1/config/sources/{source}/preview", actionClass: "config-time" },
+  "configSourceChanges": { method: "PUT", path: "/api/v1/config/sources/{source}/changes", actionClass: "config-time" },
+} as const;
+
+export type ConfigAuthoringRoute =
+  (typeof configAuthoringRoutes)[keyof typeof configAuthoringRoutes];
+
+export const configAuthoringErrorCodes = ["config_source_not_found", "config_document_not_found", "config_stale_revision", "config_unsupported_capability", "config_validation_failed", "config_authorization_failed", "config_projection_lag"] as const;
+
+export type ConfigAuthoringErrorCode =
+  (typeof configAuthoringErrorCodes)[number];
+
 export const runtimeMutationCapabilities = ["approve", "override", "rerun"] as const;
 
 export type RuntimeMutationCapabilityId =

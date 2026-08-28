@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "tsc --noEmit -p tsconfig.e2e.json && playwright test",
-    "test:contract": "vitest run src/api/wireContract.test.ts",
+    "test:contract": "vitest run src/api/wireContract.test.ts src/api/authoringContract.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
