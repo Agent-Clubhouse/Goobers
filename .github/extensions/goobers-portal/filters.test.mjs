@@ -41,6 +41,8 @@ test("rendered browser script is valid JavaScript", () => {
     ]) {
         assert.match(browserScript, new RegExp(`const ${helper} =`));
     }
+    assert.match(browserScript, /data-expand-attention/);
+    assert.match(html, /\.attention-item \{[\s\S]*height: 84px/);
 });
 
 test("filterRunSummaries applies standalone-supported filters together", () => {

@@ -295,18 +295,40 @@ export function renderHtml(instanceId, themePreference = "system") {
     display: grid;
     grid-template-columns: minmax(110px, auto) 1fr auto;
     gap: 8px 12px;
-    align-items: baseline;
+    align-items: start;
+    box-sizing: border-box;
+    height: 84px;
+    overflow: hidden;
     border: 1px solid var(--true-color-red-muted, #cf222e66);
     border-left: 4px solid var(--true-color-red, #cf222e);
     border-radius: 6px;
     padding: 9px 12px;
   }
+  .attention-item.is-expanded { height: auto; min-height: 84px; }
   .attention-item a { color: inherit; }
-  .attention-reason { min-width: 0; overflow-wrap: anywhere; }
-  .attention-action { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .attention-reason {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .attention-item.is-expanded .attention-reason {
+    display: block;
+    overflow: visible;
+  }
+  .attention-action {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-color-muted, #656d76);
+    font-size: 12px;
+  }
   .freshness { color: var(--text-color-muted, #656d76); font-size: 12px; }
   @media (max-width: 640px) {
-    .attention-item { grid-template-columns: 1fr; gap: 3px; }
+    .attention-item { grid-template-columns: 1fr; gap: 3px; height: 118px; }
+    .attention-item.is-expanded { min-height: 118px; }
     main { padding: 10px; }
     table { display: block; overflow-x: auto; white-space: nowrap; }
   }
@@ -740,6 +762,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   let freshnessTimer = null;
   let liveConnectionEstablished = false;
   const dismissedAttention = new Map();
+  const expandedAttention = new Set();
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
@@ -922,18 +945,24 @@ export function renderHtml(instanceId, themePreference = "system") {
       }));
       return;
     }
-    const markup = '<div class="attention-list">' + visible.map((item) => {
+    const markup = '<div class="attention-list">' + visible.map((item, index) => {
       const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
       const runLabel = escapeHtml(item.id || "unknown run");
       const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
       const elapsed = item.elapsedMillis == null ? "" : " · " + Math.round(item.elapsedMillis / 60000) + "m";
-      return '<div class="attention-item">' +
+      const expanded = expandedAttention.has(item.id);
+      const detailsId = "attention-details-" + index;
+      return '<div class="attention-item' + (expanded ? " is-expanded" : "") + '" data-attention-item="' +
+        escapeHtml(item.id) + '">' +
         '<strong>' + escapeHtml(item.phase) + '</strong>' +
-        '<span class="attention-reason">' +
+        '<span class="attention-reason" id="' + detailsId + '">' +
         (run ? '<a href="#run=' + encodeURIComponent(item.id) + '" data-attention-run="' + escapeHtml(item.id) + '">' : "") +
         '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + elapsed +
         (run ? "</a>" : "") + '<br />' + escapeHtml(item.reason) + '</span>' +
         '<span class="attention-action">' + escapeHtml(item.nextAction) +
+        ' <button type="button" data-expand-attention="' + escapeHtml(item.id) +
+        '" aria-expanded="' + String(expanded) + '" aria-controls="' + detailsId + '">' +
+        (expanded ? "Less" : "More") + '</button>' +
         ' <button type="button" data-dismiss-attention="' + escapeHtml(item.id) +
         '" aria-label="Dismiss attention for ' + runLabel + '">Dismiss</button></span></div>';
     }).join("") + "</div>";
@@ -948,6 +977,17 @@ export function renderHtml(instanceId, themePreference = "system") {
         const item = attention.find((candidate) => candidate.id === button.dataset.dismissAttention);
         if (item) dismissedAttention.set(item.id, item.key);
         renderAttention(attention, runs);
+      }));
+    attentionListEl.querySelectorAll("[data-expand-attention]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const id = button.dataset.expandAttention;
+        const card = button.closest("[data-attention-item]");
+        const expanded = !expandedAttention.has(id);
+        if (expanded) expandedAttention.add(id);
+        else expandedAttention.delete(id);
+        card?.classList.toggle("is-expanded", expanded);
+        button.setAttribute("aria-expanded", String(expanded));
+        button.textContent = expanded ? "Less" : "More";
       }));
   }
 
