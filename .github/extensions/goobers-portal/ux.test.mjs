@@ -5,9 +5,12 @@ import {
     attentionKey,
     decodeStreamEvent,
     decodeViewState,
+    deriveAttemptLineage,
     deriveAttention,
+    deriveFailureBreadcrumbs,
     deriveFreshnessState,
     encodeViewState,
+    filterTranscriptEntries,
     isInvalidCursorError,
     mergeRunPage,
     shouldApplyRestoredFilters,
@@ -114,6 +117,34 @@ test("partial restored-filter state decodes correctly", () => {
 test("restored-filter execution requests a filtered run load", () => {
     assert.equal(shouldApplyRestoredFilters({ phase: "failed" }), true);
     assert.equal(shouldApplyRestoredFilters({}), false);
+});
+
+test("causal diagnosis derives attempt lineage and terminal breadcrumbs", () => {
+    const run = {
+        phase: "failed",
+        events: [
+            { type: "stage.started", stage: "build", attempt: 1, time: "2026-08-28T10:00:00Z" },
+            { type: "stage.finished", stage: "build", attempt: 1, status: "failed", time: "2026-08-28T10:01:00Z", error: "npm test failed" },
+            { type: "stage.started", stage: "build", attempt: 2, time: "2026-08-28T10:02:00Z" },
+            { type: "stage.finished", stage: "build", attempt: 2, status: "failed", time: "2026-08-28T10:03:00Z", error: "timeout waiting for dependencies" },
+        ],
+        transitions: [{ source: "build", target: "final", verdict: "failed", terminal: true, status: "failed" }],
+    };
+    const diagnosis = deriveAttemptLineage(run);
+    assert.deepEqual(diagnosis.attempts.map((item) => item.attempt), [1, 2]);
+    assert.equal(diagnosis.breadcrumbs[0].detail, "failed");
+    assert.equal(diagnosis.breadcrumbs[diagnosis.breadcrumbs.length - 1].label, "Latest error");
+    assert.deepEqual(deriveFailureBreadcrumbs(run).map((item) => item.label), ["Terminal outcome", "Responsible stage", "Latest error"]);
+});
+
+test("transcript filtering narrows by stage, role, attempt, and text", () => {
+    const entries = [
+        { stage: "build", role: "assistant", attempt: 1, message: "First pass" },
+        { stage: "test", role: "tool", attempt: 2, message: "Second pass" },
+        { stage: "build", role: "assistant", attempt: 2, message: "Retry after timeout" },
+    ];
+    assert.deepEqual(filterTranscriptEntries(entries, { stage: "build", attempt: 2 }).length, 1);
+    assert.deepEqual(filterTranscriptEntries(entries, { role: "tool", text: "Second" }).map((item) => item.stage), ["test"]);
 });
 
 test("cursor recovery identifies cursor failures and resets the page", () => {

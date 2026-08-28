@@ -50,6 +50,8 @@ test("runs filters include the stage required by outcome and population", () => 
     assert.match(html, /Issue #" \+ operator\.issue\.number/);
     assert.match(html, /operator\.pullRequestTitle/);
     assert.match(html, /class="run-association-link"/);
+    assert.match(html, /graph-legend/);
+    assert.match(html, /legend-chip/);
 });
 
 test("run associations render safe issue and PR title links", () => {

@@ -4,7 +4,10 @@
 import {
   decodeStreamEvent,
   decodeViewState,
+  deriveAttemptLineage,
+  deriveFailureBreadcrumbs,
   deriveFreshnessState,
+  filterTranscriptEntries,
   isInvalidCursorError,
   mergeRunPage,
   shouldApplyRestoredFilters,
@@ -46,6 +49,54 @@ export function renderRunAssociations(operator) {
             '" target="_blank" rel="noopener noreferrer">' + escapeAssociationHtml(label) + "</a>");
     }
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
+}
+
+export function renderGraphLegend() {
+    return '<div class="graph-legend" aria-label="Workflow state legend">' +
+        '<strong>State legend:</strong> ' +
+        ['pending', 'running', 'succeeded', 'failed', 'skipped', 'blocked']
+            .map((state) => '<span class="legend-chip ' + state + '"><span class="legend-swatch"></span>' + state.charAt(0).toUpperCase() + state.slice(1) + '</span>')
+            .join(" ") +
+        '</div>';
+}
+
+export function renderCausalDiagnosis(run = {}) {
+    const diagnosis = deriveAttemptLineage(run);
+    const breadcrumbs = deriveFailureBreadcrumbs(run);
+    const attempts = diagnosis.attempts || [];
+    const trace = attempts.length
+        ? attempts.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · attempt ' + entry.attempt + ' · ' + escapeAssociationHtml(entry.status || 'pending') + '</li>').join("")
+        : '<li class="muted">No stage attempt lineage is recorded yet.</li>';
+    const breadcrumbHtml = breadcrumbs.length
+        ? breadcrumbs.map((entry) => '<li><strong>' + escapeAssociationHtml(entry.label) + ':</strong> ' + escapeAssociationHtml(entry.detail || '') + (entry.attempt ? ' (attempt ' + entry.attempt + ')' : '') + '</li>').join("")
+        : '<li class="muted">No failure breadcrumbs are available.</li>';
+    return '<div class="causal-diagnosis">' +
+        '<div class="kv-grid">' +
+        '<div class="kv"><div class="label">Attempt lineage</div><div class="value"><ul class="causal-list">' + trace + '</ul></div></div>' +
+        '<div class="kv kv-wide"><div class="label">Failure breadcrumb</div><div class="value"><ul class="causal-list">' + breadcrumbHtml + '</ul></div></div>' +
+        '</div>' +
+        '</div>';
+}
+
+export function renderExecutionWaterfall(run = {}) {
+    const diagnosis = deriveAttemptLineage(run);
+    const entries = diagnosis.attempts || [];
+    if (!entries.length) {
+        return '<p class="muted">No execution waterfall is available yet.</p>';
+    }
+    const start = entries.map((entry) => new Date(entry.start || Date.now())).find((value) => Number.isFinite(value.getTime()));
+    const end = entries.map((entry) => new Date(entry.end || entry.start || Date.now())).find((value) => Number.isFinite(value.getTime()));
+    const startMs = start ? start.getTime() : 0;
+    const endMs = end ? end.getTime() : startMs;
+    const duration = Math.max(1, endMs - startMs);
+    const rows = entries.map((entry) => {
+        const itemStart = entry.start ? new Date(entry.start).getTime() : startMs;
+        const itemEnd = entry.end ? new Date(entry.end).getTime() : itemStart;
+        const left = startMs ? ((itemStart - startMs) / duration) * 100 : 0;
+        const width = startMs && itemEnd >= itemStart ? Math.max(6, ((itemEnd - itemStart) / duration) * 100) : 0;
+        return '<div class="waterfall-row"><div class="waterfall-stage">' + escapeAssociationHtml(entry.stage) + ' · attempt ' + entry.attempt + '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' + escapeAssociationHtml(entry.status || 'pending') + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' + escapeAssociationHtml(entry.status || 'pending') + '</div></div>';
+    }).join("");
+    return '<div class="execution-waterfall">' + rows + '</div>';
 }
 
 export function renderHtml(instanceId, themePreference = "system") {
@@ -317,11 +368,37 @@ export function renderHtml(instanceId, themePreference = "system") {
   #graph-svg.is-panning { cursor: grabbing; }
   .node-rect { fill: var(--border-color-default, #d0d7de33); stroke: var(--border-color-default, #d0d7de); }
   .node-rect.visited { fill: var(--true-color-blue-muted, #ddf4ff); stroke: var(--true-color-blue, #0969da); }
-  .node-rect.completed { fill: var(--true-color-green-muted, #dafbe1); stroke: var(--true-color-green, #1a7f37); }
+  .node-rect.pending { fill: var(--background-color-default, #ffffff); stroke: var(--border-color-default, #d0d7de); }
+  .node-rect.completed, .node-rect.succeeded { fill: var(--true-color-green-muted, #dafbe1); stroke: var(--true-color-green, #1a7f37); }
   .node-rect.running { fill: var(--true-color-blue-muted, #ddf4ff); stroke: var(--true-color-blue, #0969da); stroke-width: 2; }
   .node-rect.failed { fill: var(--true-color-red-muted, #ffebe9); stroke: var(--true-color-red, #cf222e); }
+  .node-rect.blocked { fill: var(--true-color-yellow, #9a670033); stroke: var(--true-color-yellow, #9a6700); }
+  .node-rect.skipped { fill: var(--border-color-default, #d0d7de22); stroke: var(--text-color-muted, #656d76); }
   .node-rect.terminal { stroke-width: 3; }
   .node-label { font-size: 10px; fill: var(--text-color-default, #1f2328); }
+  .graph-legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .legend-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border-color-default, #d0d7de); border-radius: 999px; padding: 3px 8px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; background: var(--border-color-default, #d0d7de); }
+  .legend-chip.pending .legend-swatch { background: var(--background-color-default, #fff); border: 1px solid var(--border-color-default, #d0d7de); }
+  .legend-chip.running .legend-swatch { background: var(--true-color-blue-muted, #ddf4ff); border: 1px solid var(--true-color-blue, #0969da); }
+  .legend-chip.succeeded .legend-swatch { background: var(--true-color-green-muted, #dafbe1); border: 1px solid var(--true-color-green, #1a7f37); }
+  .legend-chip.failed .legend-swatch { background: var(--true-color-red-muted, #ffebe9); border: 1px solid var(--true-color-red, #cf222e); }
+  .legend-chip.skipped .legend-swatch { background: var(--border-color-default, #d0d7de22); border: 1px solid var(--text-color-muted, #656d76); }
+  .legend-chip.blocked .legend-swatch { background: var(--true-color-yellow, #9a670033); border: 1px solid var(--true-color-yellow, #9a6700); }
+  .causal-diagnosis { margin: 12px 0 20px; }
+  .causal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .execution-waterfall { display: grid; gap: 8px; margin-top: 8px; }
+  .waterfall-row { display: grid; grid-template-columns: minmax(140px, 210px) minmax(140px, 1fr) minmax(70px, 110px); gap: 10px; align-items: center; }
+  .waterfall-stage { font-size: 12px; }
+  .waterfall-bar-wrap { position: relative; height: 14px; border: 1px solid var(--border-color-default, #d0d7de); border-radius: 999px; background: var(--background-color-hover, #f6f8fa); overflow: hidden; }
+  .waterfall-bar { position: absolute; top: 1px; bottom: 1px; left: 0; border-radius: 999px; }
+  .waterfall-bar.pending { background: var(--border-color-default, #d0d7de); }
+  .waterfall-bar.running { background: var(--true-color-blue-muted, #ddf4ff); border: 1px solid var(--true-color-blue, #0969da); }
+  .waterfall-bar.succeeded { background: var(--true-color-green-muted, #dafbe1); border: 1px solid var(--true-color-green, #1a7f37); }
+  .waterfall-bar.failed { background: var(--true-color-red-muted, #ffebe9); border: 1px solid var(--true-color-red, #cf222e); }
+  .waterfall-bar.blocked { background: var(--true-color-yellow, #9a670033); border: 1px solid var(--true-color-yellow, #9a6700); }
+  .waterfall-bar.skipped { background: var(--border-color-default, #d0d7de22); border: 1px solid var(--text-color-muted, #656d76); }
+  .waterfall-status { font-size: 12px; color: var(--text-color-muted, #656d76); text-transform: capitalize; }
   .node-status { font-size: 8px; fill: var(--text-color-muted, #656d76); }
   .edge-traversed { stroke: var(--true-color-blue, #0969da); stroke-width: 2; fill: none; }
   .edge { stroke: var(--border-color-default, #d0d7de); stroke-width: 1; fill: none; }
@@ -1426,7 +1503,9 @@ export function renderHtml(instanceId, themePreference = "system") {
     for (const event of events || []) {
       if (!event.stage) continue;
       if (event.type === "stage.started") stageStates.set(event.stage, "running");
-      if (event.type === "stage.finished") stageStates.set(event.stage, event.status || "completed");
+      if (event.type === "stage.finished") stageStates.set(event.stage, String(event.status || "completed").toLowerCase());
+      if (event.type === "stage.skipped") stageStates.set(event.stage, "skipped");
+      if (event.type === "stage.blocked") stageStates.set(event.stage, "blocked");
     }
     const edgeGroups = new Map();
     for (const e of graphForLayout.edges) {
@@ -1474,11 +1553,14 @@ export function renderHtml(instanceId, themePreference = "system") {
       if (!p) continue;
       let cls = "node-rect";
       if (visited.has(n.id)) cls += " visited";
-      const state = stageStates.get(n.id);
+      const state = stageStates.get(n.id) || "pending";
       if (state === "running") cls += " running";
-      else if (state === "success" || state === "completed" || state === "no-work") cls += " completed";
+      else if (state === "success" || state === "succeeded" || state === "completed" || state === "no-work") cls += " succeeded";
       else if (state === "failed" || state === "error" || state === "escalated") cls += " failed";
-      if (n.id === finalNodeId) cls += " terminal " + (run.phase === "failed" || run.phase === "escalated" ? "failed" : "completed");
+      else if (state === "blocked") cls += " blocked";
+      else if (state === "skipped") cls += " skipped";
+      else cls += " pending";
+      if (n.id === finalNodeId) cls += " terminal " + (run.phase === "failed" || run.phase === "escalated" ? "failed" : "succeeded");
       svg += '<rect class="' + cls + '" x="' + p.x + '" y="' + p.y + '" width="' + layout.nodeW + '" height="' + layout.nodeH + '" rx="6" />';
       const label = n.id === finalNodeId ? "Final: " + finalLabel : n.id + (n.owner ? " (" + n.owner + ")" : "");
       svg += '<text class="node-label" x="' + (p.x + 7) + '" y="' + (p.y + 17) + '">' + escapeHtml(label.length > 24 ? label.slice(0, 23) + "\\u2026" : label) + "</text>";
@@ -1503,7 +1585,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       '<svg id="graph-svg" tabindex="0" role="img" aria-label="Workflow graph" viewBox="0 0 ' +
       layout.width + " " + layout.height + '" data-base-width="' + layout.width +
       '" data-base-height="' + layout.height + '" xmlns="http://www.w3.org/2000/svg"><g>' +
-      svg + "</g></svg></div>";
+      svg + "</g></svg>" + renderGraphLegend() + "</div>";
   }
 
   function initGraphInteractions(graph, transitions, events, run) {
@@ -1706,7 +1788,18 @@ export function renderHtml(instanceId, themePreference = "system") {
 
   function renderRunEvents(events, sourceId, runId) {
     if (!events || !events.length) return '<p class="muted">No events recorded.</p>';
-    return '<div class="event-list">' + events.map((event) => {
+    const transcriptEvents = events.filter((event) => {
+      const name = String(event?.name || "").toLowerCase();
+      return name.includes("transcript") || event?.role || event?.stage || event?.attempt !== undefined;
+    });
+    const transcriptFilterHtml = transcriptEvents.length ? '<div class="filters-bar" aria-label="Transcript filters">' +
+      '<input type="text" data-transcript-filter="stage" placeholder="Stage" />' +
+      '<input type="text" data-transcript-filter="role" placeholder="Role" />' +
+      '<input type="number" min="1" data-transcript-filter="attempt" placeholder="Attempt" />' +
+      '<input type="text" data-transcript-filter="text" placeholder="Text" />' +
+      '</div>' : '';
+    const displayedEvents = transcriptEvents.length ? filterTranscriptEntries(events, {}) : events;
+    return transcriptFilterHtml + '<div class="event-list">' + displayedEvents.map((event) => {
       const status = event.status || event.verdict || event.decision || "";
       const stage = event.stage ? " · " + escapeHtml(event.stage) : "";
       const summary =
@@ -1807,6 +1900,8 @@ export function renderHtml(instanceId, themePreference = "system") {
       }
       html += '<h2>Workflow graph</h2><div id="graph-container">' +
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
+      html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
+      html += "<h2>Execution waterfall</h2>" + renderExecutionWaterfall(r);
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);
       html += "<h2>Events, logs, and messages</h2>" + renderRunEvents(events, sourceId, runId);
       runContentEl.innerHTML = html;

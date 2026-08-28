@@ -141,3 +141,118 @@ export function deriveFreshnessState({ lastUpdatedAt, connected = true, mode = "
     if (age <= offlineAfterMs) return "Stale";
     return "Offline";
 }
+
+function asString(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (typeof value === "object") {
+        if (typeof value.message === "string") return value.message.trim();
+        if (typeof value.error === "string") return value.error.trim();
+        if (typeof value.reason === "string") return value.reason.trim();
+        if (typeof value.text === "string") return value.text.trim();
+        if (typeof value.content === "string") return value.content.trim();
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
+    }
+    return String(value).trim();
+}
+
+export function deriveAttemptLineage(run = {}) {
+    const events = Array.isArray(run.events) ? run.events : [];
+    const transitions = Array.isArray(run.transitions) ? run.transitions : [];
+    const stageEvents = events
+        .filter((event) => event && (event.stage || event.name))
+        .map((event) => {
+            const stage = event.stage || event.name || "unknown";
+            const attempt = Number(event.attempt ?? event.runAttempt ?? event.policyAttempt ?? event.attemptNumber ?? 1);
+            const state = event.status || event.verdict || event.decision || (event.type === "stage.started" ? "running" : "completed");
+            return {
+                stage,
+                kind: event.type && String(event.type).startsWith("gate.") ? "gate" : "stage",
+                attempt: Number.isFinite(attempt) && attempt > 0 ? attempt : 1,
+                type: event.type,
+                status: String(state).toLowerCase(),
+                time: event.time || event.startedAt || event.finishedAt || "",
+                seq: Number(event.seq) || 0,
+                reason: asString(event.reason || event.rationale || event.error),
+            };
+        })
+        .sort((a, b) => (a.time || "").localeCompare(b.time || "") || a.seq - b.seq);
+
+    const byStageAttempt = new Map();
+    for (const item of stageEvents) {
+        const key = `${item.stage}|${item.attempt}`;
+        const entry = byStageAttempt.get(key) || { stage: item.stage, attempt: item.attempt, events: [], states: [] };
+        entry.events.push(item);
+        entry.states.push(item.status);
+        byStageAttempt.set(key, entry);
+    }
+
+    const attempts = [...byStageAttempt.values()].map((item) => {
+        const start = item.events[0]?.time || "";
+        const end = item.events[item.events.length - 1]?.time || start;
+        const status = item.states[item.states.length - 1] || item.states[0] || "pending";
+        return {
+            stage: item.stage,
+            attempt: item.attempt,
+            status,
+            start,
+            end,
+            events: item.events,
+        };
+    }).sort((a, b) => a.stage.localeCompare(b.stage) || a.attempt - b.attempt);
+
+    const terminal = [...transitions].reverse().find((transition) => transition && transition.terminal);
+    const breadcrumbs = [];
+    if (terminal) {
+        breadcrumbs.push({ label: "Terminal outcome", detail: terminal.verdict || terminal.status || run.phase || "terminal", kind: "terminal" });
+        if (terminal.source) {
+            const attempt = attempts.filter((entry) => entry.stage === terminal.source).slice(-1)[0]?.attempt || 1;
+            breadcrumbs.push({ label: "Responsible stage", detail: terminal.source, attempt, kind: "stage" });
+        }
+    }
+    const lastError = [...events].reverse().find((event) => {
+        const candidate = asString(event?.error || event?.reason || event?.rationale || event?.raw || event?.outputs?.error || event?.latestError?.message);
+        return !!candidate && /error|failed|timeout|blocked|escalated|reject|panic/i.test(candidate);
+    });
+    const errorText = lastError ? asString(lastError.error || lastError.reason || lastError.rationale || lastError.raw || lastError.outputs?.error || lastError.latestError?.message) : "";
+    if (errorText) breadcrumbs.push({ label: "Latest error", detail: errorText, kind: "error" });
+
+    return {
+        attempts,
+        lineage: attempts,
+        breadcrumbs: breadcrumbs.filter((entry) => entry.detail),
+        terminal,
+    };
+}
+
+export function deriveFailureBreadcrumbs(run = {}) {
+    return deriveAttemptLineage(run).breadcrumbs;
+}
+
+export function filterTranscriptEntries(entries = [], filters = {}) {
+    const stageFilter = String(filters.stage || "").trim().toLowerCase();
+    const roleFilter = String(filters.role || "").trim().toLowerCase();
+    const attemptFilter = filters.attempt;
+    const textFilter = String(filters.text || "").trim().toLowerCase();
+
+    return (entries || []).filter((entry) => {
+        const stage = String(entry?.stage || entry?.stageName || entry?.component || "").toLowerCase();
+        const role = String(entry?.role || entry?.actor || entry?.author || entry?.speaker || "").toLowerCase();
+        const attempt = Number(entry?.attempt ?? entry?.attemptNumber ?? entry?.runAttempt ?? 0);
+        const payload = asString(entry?.message || entry?.content || entry?.text || entry?.body || entry?.entry || entry || "").toLowerCase();
+
+        if (stageFilter && !stage.includes(stageFilter)) return false;
+        if (roleFilter && !role.includes(roleFilter)) return false;
+        if (attemptFilter !== undefined && attemptFilter !== "" && attemptFilter !== null) {
+            const target = Number(attemptFilter);
+            if (Number.isFinite(target) && target !== attempt) return false;
+        }
+        if (textFilter && !payload.includes(textFilter)) return false;
+        return true;
+    });
+}
