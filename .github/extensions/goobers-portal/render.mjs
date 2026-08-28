@@ -1,7 +1,7 @@
 // Renders the goobers-portal HTML shell. Kept out of extension.mjs so the
 // wiring file stays focused on SDK plumbing.
 
-import { decodeViewState, encodeViewState } from "./ux.mjs";
+import { decodeViewState, encodeViewState, deriveFreshnessState } from "./ux.mjs";
 
 function escapeAssociationHtml(value) {
     return String(value).replace(/[&<>"']/g, (character) => ({
@@ -845,7 +845,13 @@ export function renderHtml(instanceId, themePreference = "system") {
     const workflows = data.workflows || [];
     const runs = data.runs || [];
     lastUpdatedAt = Date.now();
-    freshnessEl.textContent = (data.mode === "daemon" ? "Live" : "Polling") + " · Updated " + fmtTime(lastUpdatedAt);
+    const freshness = deriveFreshnessState({
+      lastUpdatedAt,
+      connected: true,
+      mode: data.mode === "daemon" ? "daemon" : "polling",
+      now: Date.now(),
+    });
+    setFreshnessState(freshness, lastUpdatedAt);
     renderAttention(data.attention, runs);
     const inFlight = workflows.reduce((n, w) => n + (w.concurrency?.activeRuns || 0), 0);
 
@@ -948,7 +954,14 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
+    // Only refresh saved filters if this is a new connection (not a background poll).
+    // Store the current selection so we can restore it.
+    const prevPresetSelection = savedFilterPresets.value;
+    const prevPresetFocused = document.activeElement === savedFilterPresets;
     loadSavedFilters();
+    if (prevPresetSelection) savedFilterPresets.value = prevPresetSelection;
+    if (prevPresetFocused) savedFilterPresets.focus();
+
     const restored = restoreFiltersFromUrl();
     setAdvancedFilterSupport((data.mode || "daemon") === "daemon");
     // Background polling refreshes the whole snapshot every few seconds; if
@@ -989,6 +1002,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   let restoredFilters = false;
   let lastCursor = "";
   let hasMoreRuns = false;
+  let invalidCursorRecoveryInProgress = false;
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = filterGaggle.value;
@@ -1129,7 +1143,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     try {
       const entries = JSON.parse(localStorage.getItem("goobers-portal-filter-presets") || "{}");
       const options = ["<option value=\"\">Saved filters</option>"];
-      for (const [name, value] of Object.entries(entries)) {
+      for (const name of Object.keys(entries)) {
         options.push('<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>');
       }
       savedFilterPresets.innerHTML = options.join("");
@@ -1188,9 +1202,12 @@ export function renderHtml(instanceId, themePreference = "system") {
       }
       if (data.error) {
         const invalidCursor = /cursor/i.test(data.error || "");
-        if (invalidCursor) {
+        if (invalidCursor && !invalidCursorRecoveryInProgress) {
+          invalidCursorRecoveryInProgress = true;
           lastCursor = "";
-          return applyFilters({ append: false });
+          const result = applyFilters({ append: false });
+          invalidCursorRecoveryInProgress = false;
+          return result;
         }
         errorEl.textContent = data.error;
         lastRuns = [];
@@ -1819,9 +1836,10 @@ export function renderHtml(instanceId, themePreference = "system") {
     return await res.json();
   }
 
-  function setFreshnessState(state) {
-    const timestamp = lastUpdatedAt || Date.now();
-    freshnessEl.textContent = state + " · Updated " + fmtTime(timestamp);
+  function setFreshnessState(state, freshAt = null) {
+    const timestamp = freshAt || lastUpdatedAt;
+    const timeStr = timestamp ? fmtTime(timestamp) : "never";
+    freshnessEl.textContent = state + " · Updated " + timeStr;
   }
 
   async function refreshAll() {
@@ -1834,18 +1852,13 @@ export function renderHtml(instanceId, themePreference = "system") {
     const sourceId = sourceSelect.value;
     const mode = sourceSelect.selectedOptions[0]?.dataset.kind;
     if (!sourceId || mode !== "local" && mode !== "remote") return;
-    const backoffMs = 1000;
-    const retryMs = Math.min(10000, Math.max(1000, backoffMs));
-    eventSource = new EventSource("/api/events?source=" + encodeURIComponent(sourceId));
-    eventSource.onopen = () => {
-      setFreshnessState("Live");
-    };
-    eventSource.onmessage = () => {
-      lastUpdatedAt = Date.now();
-      setFreshnessState("Live");
-      void loadSnapshot();
-    };
-    eventSource.onerror = () => {
+
+    let attemptCount = 0;
+    let freshnessTimer = null;
+
+    function scheduleReconnect() {
+      const delay = Math.min(10000, 1000 * Math.pow(2, attemptCount));
+      attemptCount++;
       setFreshnessState("Reconnecting");
       window.setTimeout(() => {
         if (eventSource) {
@@ -1856,7 +1869,56 @@ export function renderHtml(instanceId, themePreference = "system") {
             connectLiveEvents();
           }
         }
-      }, retryMs);
+      }, delay);
+    }
+
+    function startFreshnessTimer() {
+      if (freshnessTimer) clearInterval(freshnessTimer);
+      freshnessTimer = setInterval(() => {
+        const freshness = deriveFreshnessState({
+          lastUpdatedAt,
+          connected: true,
+          mode: mode === "remote" ? "polling" : "daemon",
+          now: Date.now(),
+        });
+        setFreshnessState(freshness, lastUpdatedAt);
+      }, 1000);
+    }
+
+    function stopFreshnessTimer() {
+      if (freshnessTimer) {
+        clearInterval(freshnessTimer);
+        freshnessTimer = null;
+      }
+    }
+
+    eventSource = new EventSource("/api/events?source=" + encodeURIComponent(sourceId));
+    eventSource.onopen = () => {
+      attemptCount = 0;
+      lastUpdatedAt = Date.now();
+      const freshness = deriveFreshnessState({
+        lastUpdatedAt,
+        connected: true,
+        mode: mode === "remote" ? "polling" : "daemon",
+        now: Date.now(),
+      });
+      setFreshnessState(freshness, lastUpdatedAt);
+      startFreshnessTimer();
+    };
+    eventSource.onmessage = () => {
+      lastUpdatedAt = Date.now();
+      const freshness = deriveFreshnessState({
+        lastUpdatedAt,
+        connected: true,
+        mode: mode === "remote" ? "polling" : "daemon",
+        now: Date.now(),
+      });
+      setFreshnessState(freshness, lastUpdatedAt);
+      void loadSnapshot();
+    };
+    eventSource.onerror = () => {
+      stopFreshnessTimer();
+      scheduleReconnect();
     };
   }
 
