@@ -231,6 +231,20 @@ export function RunStageInspector({
   const decision = selectedVisit
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
+  const transcriptStageOptions = Array.from(
+    new Set(
+      events
+        .filter((event) => event.stage !== undefined && event.stage !== "")
+        .map((event) => event.stage as string),
+    ),
+  );
+  const transcriptAttemptOptions = Array.from(
+    new Set(
+      events
+        .filter((event) => event.attempt !== undefined)
+        .map((event) => event.attempt as number),
+    ),
+  );
 
   const selectAttempt = (attempt: StageAttempt) => {
     setSelectedId(attempt.id);
@@ -305,11 +319,13 @@ export function RunStageInspector({
 
       {selectedEvidence ? (
         <EvidenceDetail
+          attemptOptions={transcriptAttemptOptions}
           client={client}
           event={selectedEvidence}
           key={`${selectedEvidence.branch}-${selectedEvidence.seq}`}
           node={node}
           runId={runId}
+          stageOptions={transcriptStageOptions}
           visit={selectedEvidenceVisit}
         />
       ) : (
@@ -414,12 +430,16 @@ function EvidenceDetail({
   node,
   runId,
   visit,
+  stageOptions,
+  attemptOptions,
 }: {
   client: DaemonClient;
   event: RunEvent;
   node: WorkflowGraphNode;
   runId: string;
   visit?: number;
+  stageOptions?: string[];
+  attemptOptions?: number[];
 }) {
   return (
     <div className="attempt-content">
@@ -430,9 +450,11 @@ function EvidenceDetail({
         <strong>{eventHeading(event)}</strong>
       </div>
       <EvidencePayload
+        attemptOptions={attemptOptions}
         client={client}
         event={event}
         runId={runId}
+        stageOptions={stageOptions}
         visit={visit}
       />
     </div>
@@ -449,18 +471,24 @@ export function EvidencePayload({
   event,
   runId,
   visit,
+  stageOptions,
+  attemptOptions,
 }: {
   client: DaemonClient;
   event: RunEvent;
   runId: string;
   visit?: number;
+  stageOptions?: string[];
+  attemptOptions?: number[];
 }) {
   if (isTranscriptEvent(event)) {
     return (
       <TranscriptRow
+        attemptOptions={attemptOptions}
         client={client}
         event={event}
         runId={runId}
+        stageOptions={stageOptions}
       />
     );
   }
@@ -491,10 +519,14 @@ function TranscriptRow({
   client,
   event,
   runId,
+  stageOptions,
+  attemptOptions,
 }: {
   client: DaemonClient;
   event: RunEvent;
   runId: string;
+  stageOptions?: string[];
+  attemptOptions?: number[];
 }) {
   const [content, setContent] = useState<string>();
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
@@ -535,8 +567,10 @@ function TranscriptRow({
         </button>
       ) : (
         <TranscriptView
-          stage={event.stage}
           attempt={event.attempt}
+          attemptOptions={attemptOptions}
+          stage={event.stage}
+          stageOptions={stageOptions}
           text={content}
         />
       )}
@@ -587,21 +621,46 @@ export function TranscriptView({
   text,
   stage,
   attempt,
+  stageOptions,
+  attemptOptions,
 }: {
   text: string;
   stage?: string;
   attempt?: number;
+  stageOptions?: string[];
+  attemptOptions?: number[];
 }) {
   const [query, setQuery] = useState("");
   const [role, setRole] = useState<TranscriptTurn["role"] | "">("");
+  const [stageFilter, setStageFilter] = useState("");
+  const [attemptFilter, setAttemptFilter] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [raw, setRaw] = useState(false);
+
+  const stageChoices = Array.from(new Set((stageOptions ?? (stage !== undefined ? [stage] : [])).filter(Boolean)));
+  const attemptChoices = Array.from(
+    new Set((attemptOptions ?? (attempt !== undefined ? [attempt] : [])).filter((value): value is number => value !== undefined).map(String)),
+  );
+
+  useEffect(() => {
+    if (stageChoices.length > 0 && !stageChoices.includes(stageFilter)) {
+      setStageFilter("");
+    }
+  }, [stageChoices, stageFilter]);
+
+  useEffect(() => {
+    if (attemptChoices.length > 0 && !attemptChoices.includes(attemptFilter)) {
+      setAttemptFilter("");
+    }
+  }, [attemptChoices, attemptFilter]);
 
   const parsed = parseTranscript(text);
   const turns = parsed.turns.filter(
     (turn) =>
       !isEmptyTurn(turn) &&
-      (!role || turn.role === role),
+      (!role || turn.role === role) &&
+      (!stageFilter || stageFilter === stage) &&
+      (!attemptFilter || attemptFilter === String(attempt)),
   );
   const matches = transcriptSearchMatches(turns, query);
   const matching = query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
@@ -653,6 +712,40 @@ export function TranscriptView({
             ))}
           </select>
         </label>
+        {stageChoices.length > 1 && (
+          <label className="transcript-role-filter">
+            <span className="sr-only">Filter transcript by stage</span>
+            <select
+              aria-label="Filter transcript by stage"
+              onChange={(event) => setStageFilter(event.target.value)}
+              value={stageFilter}
+            >
+              <option value="">All stages</option>
+              {stageChoices.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {attemptChoices.length > 1 && (
+          <label className="transcript-role-filter">
+            <span className="sr-only">Filter transcript by attempt</span>
+            <select
+              aria-label="Filter transcript by attempt"
+              onChange={(event) => setAttemptFilter(event.target.value)}
+              value={attemptFilter}
+            >
+              <option value="">All attempts</option>
+              {attemptChoices.map((value) => (
+                <option key={value} value={value}>
+                  Attempt {value}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button className="artifact-action" onClick={() => setRaw(true)} type="button">
           Show raw JSONL
         </button>
