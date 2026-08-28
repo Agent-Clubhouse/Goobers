@@ -250,3 +250,44 @@ test("telemetry insights aggregate retry and failure hotspots", () => {
         { stage: "test", attempts: 1, failures: 1, retries: 0, score: 1 },
     ]);
 });
+
+test("telemetry insights preserves zero counts when telemetry arrays are present", () => {
+    const result = deriveTelemetryInsights({
+        events: [{ type: "run.started" }],
+        transitions: [{ source: "build" }],
+    });
+    assert.deepEqual(result.counts, { failures: 0, repasses: 0 });
+});
+
+test("telemetry insights does not fabricate queue wait from overlapping attempts", () => {
+    const result = deriveTelemetryInsights({
+        startedAt: "2026-08-28T10:00:00Z",
+        finishedAt: "2026-08-28T10:00:10Z",
+        events: [
+            { type: "stage.started", stage: "build", time: "2026-08-28T10:00:01Z" },
+            { type: "stage.finished", stage: "build", status: "succeeded", time: "2026-08-28T10:00:09Z" },
+            { type: "gate.started", stage: "approval", time: "2026-08-28T10:00:02Z" },
+            { type: "gate.finished", stage: "approval", status: "succeeded", time: "2026-08-28T10:00:08Z" },
+        ],
+    });
+    assert.equal(result.duration.executionMillis, 8000);
+    assert.equal(result.duration.queueMillis, 2000);
+});
+
+test("telemetry insights reports unknown queue wait when execution exceeds total duration", () => {
+    const result = deriveTelemetryInsights({
+        durationMillis: 1000,
+        executionMillis: 2000,
+    });
+    assert.equal(result.duration.queueMillis, null);
+});
+
+test("telemetry insights honors explicit usage units and omits unitless values", () => {
+    const result = deriveTelemetryInsights({
+        metrics: {
+            costUSD: { value: 5, unit: "EUR" },
+            inputTokens: 10,
+        },
+    });
+    assert.deepEqual(result.usage, [{ label: "Cost", value: 5, unit: "EUR" }]);
+});

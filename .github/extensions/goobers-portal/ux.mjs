@@ -242,18 +242,21 @@ export function numericValue(value) {
     return null;
 }
 
-export function explicitMeasure(source, keys) {
+export function explicitMeasure(source, keys, requireUnit = false) {
     for (const key of keys) {
         if (!Object.prototype.hasOwnProperty.call(source || {}, key)) continue;
         const value = numericValue(source[key]);
-        if (value !== null) return { value, unit: source[key]?.unit || key };
+        const unit = typeof source[key] === "object" && source[key] !== null
+            ? String(source[key].unit || "").trim()
+            : "";
+        if (value !== null && (!requireUnit || unit)) return { value, unit: unit || key };
     }
     return null;
 }
 
-export function measureFromPayload(payload, keys) {
+export function measureFromPayload(payload, keys, requireUnit = false) {
     for (const source of [payload, payload?.telemetry, payload?.usage, payload?.metrics]) {
-        const result = explicitMeasure(source, keys);
+        const result = explicitMeasure(source, keys, requireUnit);
         if (result) return result;
     }
     return null;
@@ -270,11 +273,24 @@ export function deriveTelemetryInsights(run = {}) {
         (Number.isFinite(Date.parse(run.startedAt)) && Number.isFinite(Date.parse(run.finishedAt))
             ? { value: Date.parse(run.finishedAt) - Date.parse(run.startedAt), unit: "durationMillis" }
             : null);
-    const executionMillis = execution?.value ?? durations.reduce((sum, [, end], index) => sum + end - durations[index][0], 0);
+    const mergedDurations = durations
+        .sort((a, b) => a[0] - b[0])
+        .reduce((merged, [start, end]) => {
+            const previous = merged[merged.length - 1];
+            if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+            else merged.push([start, end]);
+            return merged;
+        }, []);
+    const derivedExecutionMillis = mergedDurations.reduce((sum, [start, end]) => sum + end - start, 0);
+    const executionMillis = execution?.value ?? derivedExecutionMillis;
     const executionKnown = execution?.value !== undefined || durations.length > 0;
     const queueWait = measureFromPayload(run, ["queueWaitMillis", "queueWaitDurationMillis", "queueDurationMillis"]);
     const totalMillis = runDuration?.value ?? null;
-    const queueMillis = queueWait?.value ?? (totalMillis !== null && executionKnown ? Math.max(0, totalMillis - executionMillis) : null);
+    const queueMillis = queueWait?.value ?? (
+        totalMillis !== null && executionKnown && totalMillis >= executionMillis
+            ? totalMillis - executionMillis
+            : null
+    );
 
     const stageMap = new Map();
     for (const attempt of attempts) {
@@ -290,33 +306,35 @@ export function deriveTelemetryInsights(run = {}) {
     const eventFailures = (run.events || []).filter((event) =>
         ["failed", "failure", "error", "blocked"].includes(String(event?.status || event?.verdict || "").toLowerCase()),
     ).length;
+    const hasEvents = Array.isArray(run.events);
     const failures = Object.prototype.hasOwnProperty.call(run, "failureCount")
         ? numericValue(run.failureCount)
-        : (eventFailures || (hotspots.length ? hotspots.reduce((sum, item) => sum + item.failures, 0) : null));
+        : (hasEvents ? eventFailures : (hotspots.length ? hotspots.reduce((sum, item) => sum + item.failures, 0) : null));
+    const hasTransitions = Array.isArray(run.transitions);
     const repasses = Object.prototype.hasOwnProperty.call(run, "repassCount")
         ? numericValue(run.repassCount)
-        : ((run.transitions || []).filter((transition) => transition?.repass).length || null);
+        : (hasTransitions ? run.transitions.filter((transition) => transition?.repass).length : null);
 
     const model = run.model || run.telemetry?.model || null;
     const usage = [];
     const usageKeys = [
-        ["Input tokens", ["inputTokens", "input_tokens", "gen_ai.usage.input_tokens"], "tokens"],
-        ["Output tokens", ["outputTokens", "output_tokens", "gen_ai.usage.output_tokens"], "tokens"],
-        ["Tokens", ["tokens", "totalTokens", "total_tokens"], "tokens"],
-        ["Premium requests", ["copilotPremiumRequests", "premiumRequests", "goobers.usage.copilot_premium_requests"], "requests"],
-        ["Cost", ["costUSD", "cost_usd", "goobers.usage.cost_usd"], "USD"],
+        ["Input tokens", ["inputTokens", "input_tokens", "gen_ai.usage.input_tokens"]],
+        ["Output tokens", ["outputTokens", "output_tokens", "gen_ai.usage.output_tokens"]],
+        ["Tokens", ["tokens", "totalTokens", "total_tokens"]],
+        ["Premium requests", ["copilotPremiumRequests", "premiumRequests", "goobers.usage.copilot_premium_requests"]],
+        ["Cost", ["costUSD", "cost_usd", "goobers.usage.cost_usd"]],
     ];
-    for (const [label, keys, unit] of usageKeys) {
-        const measure = measureFromPayload(run, keys);
-        if (measure) usage.push({ label, value: measure.value, unit });
+    for (const [label, keys] of usageKeys) {
+        const measure = measureFromPayload(run, keys, true);
+        if (measure) usage.push({ label, value: measure.value, unit: measure.unit });
     }
     const budgets = [];
-    for (const [label, keys, unit] of [
-        ["Token budget", ["maxTokens", "max_tokens"], "tokens"],
-        ["Cost budget", ["maxCostUSD", "max_cost_usd"], "USD"],
+    for (const [label, keys] of [
+        ["Token budget", ["maxTokens", "max_tokens"]],
+        ["Cost budget", ["maxCostUSD", "max_cost_usd"]],
     ]) {
-        const measure = measureFromPayload(run, keys);
-        if (measure) budgets.push({ label, value: measure.value, unit });
+        const measure = measureFromPayload(run, keys, true);
+        if (measure) budgets.push({ label, value: measure.value, unit: measure.unit });
     }
     return {
         duration: { totalMillis, queueMillis, executionMillis: executionKnown ? executionMillis : null },
