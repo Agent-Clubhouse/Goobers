@@ -523,7 +523,11 @@ function TranscriptRow({
           {state === "loading" ? "Loading…" : "View transcript"}
         </button>
       ) : (
-        <TranscriptView text={content} />
+        <TranscriptView
+          attempt={event.attempt}
+          stage={event.stage}
+          text={content}
+        />
       )}
       {state === "error" && (
         <p className="artifact-load-error" role="alert">
@@ -568,13 +572,24 @@ function usageSummary(usage: TranscriptUsage): string {
  * it. As raw JSONL that was possible but not practical. Raw bytes stay one
  * click away — this replaces the default view, not the evidence.
  */
-export function TranscriptView({ text }: { text: string }) {
+export function TranscriptView({
+  text,
+  stage,
+  attempt,
+}: {
+  text: string;
+  stage?: string;
+  attempt?: number;
+}) {
   const [query, setQuery] = useState("");
+  const [role, setRole] = useState<TranscriptTurn["role"] | "">("");
   const [expanded, setExpanded] = useState(false);
   const [raw, setRaw] = useState(false);
 
   const parsed = parseTranscript(text);
-  const turns = parsed.turns.filter((turn) => !isEmptyTurn(turn));
+  const turns = parsed.turns.filter(
+    (turn) => !isEmptyTurn(turn) && (!role || turn.role === role),
+  );
   const matches = transcriptSearchMatches(turns, query);
   const matching = query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
   const visible = expanded ? matching : matching.slice(0, TRANSCRIPT_WINDOW);
@@ -610,6 +625,21 @@ export function TranscriptView({ text }: { text: string }) {
             ? `${turns.length} ${turns.length === 1 ? "turn" : "turns"}`
             : `${matching.length} of ${turns.length} matching`}
         </span>
+        <label className="transcript-role-filter">
+          <span className="sr-only">Filter transcript by role</span>
+          <select
+            aria-label="Filter transcript by role"
+            onChange={(event) => setRole(event.target.value as TranscriptTurn["role"] | "")}
+            value={role}
+          >
+            <option value="">All roles</option>
+            {(["system", "user", "assistant", "tool", "unknown"] as const).map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
         <button className="artifact-action" onClick={() => setRaw(true)} type="button">
           Show raw JSONL
         </button>
@@ -645,6 +675,11 @@ export function TranscriptView({ text }: { text: string }) {
         <button className="artifact-action" onClick={() => setExpanded(true)} type="button">
           Show {hidden} more turn{hidden === 1 ? "" : "s"}
         </button>
+      )}
+      {(stage !== undefined || attempt !== undefined) && (
+        <p className="transcript-scope">
+          Stage {stage ?? "unavailable"} · Attempt {attempt ?? "unavailable"}
+        </p>
       )}
     </div>
   );
