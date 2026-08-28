@@ -4,10 +4,34 @@ import test from "node:test";
 import {
     interventionCapability,
     interventionIdempotencyKey,
+    loadRuns,
     requireDurableInterventionResult,
     runStageIntervention,
     validateIntervention,
 } from "./client.mjs";
+
+test("multi-value filters fan out daemon queries and merge unique runs", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url) => {
+        requests.push(url);
+        const phase = new URL(url).searchParams.get("phase");
+        return new Response(JSON.stringify({
+            runs: [{ id: phase, phase, startedAt: phase === "failed" ? "2026-08-28T02:00:00Z" : "2026-08-28T01:00:00Z" }],
+        }), { status: 200 });
+    };
+    try {
+        const result = await loadRuns(
+            { mode: "daemon", baseUrl: "http://daemon" },
+            { phase: ["running", "failed"] },
+        );
+        assert.equal(requests.length, 2);
+        assert.deepEqual(result.runs.map((run) => run.id), ["failed", "running"]);
+        assert.equal(result.cursor, "");
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
 
 test("run interventions validate actor and action-specific fields", () => {
     assert.throws(() => validateIntervention("approve", { decision: "pass" }), /actor is required/);

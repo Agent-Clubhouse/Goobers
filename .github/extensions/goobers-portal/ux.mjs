@@ -103,6 +103,11 @@ export function normalizeViewFilters(filters = {}) {
     const normalized = {};
     for (const [key, value] of Object.entries(filters || {})) {
         if (value === undefined || value === null || value === "") continue;
+        if (Array.isArray(value)) {
+            const values = [...new Set(value.map(String).map((item) => item.trim()).filter(Boolean))];
+            if (values.length) normalized[key] = values;
+            continue;
+        }
         if (BOOLEAN_FILTER_KEYS.has(key)) {
             if (value === true || value === "true" || value === "1") normalized[key] = true;
             else if (value === false || value === "false" || value === "0") normalized[key] = false;
@@ -117,6 +122,10 @@ export function encodeViewState(filters = {}, selectedRun = "") {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(normalizeViewFilters(filters))) {
         if (value === false) continue;
+        if (Array.isArray(value)) {
+            for (const item of value) params.append(key, item);
+            continue;
+        }
         if (value === true) {
             params.set(key, "");
             continue;
@@ -137,7 +146,11 @@ export function decodeViewState(search = "") {
             filters[key] = value === "" || value === "true" || value === "1";
             continue;
         }
-        filters[key] = value;
+        if (Object.hasOwn(filters, key)) {
+            filters[key] = Array.isArray(filters[key]) ? [...filters[key], value] : [filters[key], value];
+        } else {
+            filters[key] = value;
+        }
     }
     return { filters, selectedRun };
 }

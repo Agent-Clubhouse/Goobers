@@ -15,7 +15,7 @@ import path from "node:path";
 import { createCanvas, joinSession, CanvasError } from "@github/copilot-sdk/extension";
 import { renderHtml } from "./render.mjs";
 import { listKnownSources, addSource, removeSource } from "./registry.mjs";
-import { readPreferences, setThemePreference } from "./preferences.mjs";
+import { readPreferences, setFilterPreferences, setThemePreference } from "./preferences.mjs";
 import {
     probeSource,
     resolveSource,
@@ -291,7 +291,9 @@ async function startServer(instanceId) {
                     const chunks = [];
                     for await (const chunk of req) chunks.push(chunk);
                     const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-                    const preferences = await setThemePreference(body.theme);
+                    const preferences = Object.hasOwn(body, "filters")
+                        ? await setFilterPreferences(body.filters)
+                        : await setThemePreference(body.theme);
                     res.setHeader("Content-Type", "application/json; charset=utf-8");
                     res.end(JSON.stringify(preferences));
                     return;
@@ -340,8 +342,8 @@ async function startServer(instanceId) {
                 }
                 const filters = {};
                 for (const key of ["gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger", "since", "until", "showNoWork", "limit", "cursor"]) {
-                    const v = url.searchParams.get(key);
-                    if (v) filters[key] = v;
+                    const values = url.searchParams.getAll(key).filter(Boolean);
+                    if (values.length) filters[key] = values.length === 1 ? values[0] : values;
                 }
                 const data = await runsFor(sourceId, filters);
                 res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -449,7 +451,7 @@ async function startServer(instanceId) {
             }
             res.setHeader("Content-Type", "text/html; charset=utf-8");
             const preferences = await readPreferences();
-            res.end(renderHtml(instanceId, preferences.theme));
+            res.end(renderHtml(instanceId, preferences.theme, preferences.filters));
         } catch (err) {
             if (req.aborted || res.destroyed || res.writableEnded) return;
             logEvent("http_request_failed", {

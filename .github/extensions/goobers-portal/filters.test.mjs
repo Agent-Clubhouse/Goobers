@@ -46,6 +46,9 @@ test("rendered browser script is valid JavaScript", () => {
     assert.match(html, /aria-label="Dashboard sections"/);
     assert.match(browserScript, /aria-label="Run detail sections"/);
     assert.match(browserScript, /function initInternalTabs/);
+    assert.match(browserScript, /const persistedFilterState =/);
+    assert.match(html, /id="filter-phase" multiple/);
+    assert.match(html, />Reset<\/button>/);
     assert.match(html, /\[role="tabpanel"\]\[hidden\] \{ display: none !important; \}/);
     assert.doesNotMatch(
         browserScript,

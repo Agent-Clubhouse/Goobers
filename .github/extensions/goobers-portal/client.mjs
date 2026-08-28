@@ -317,14 +317,16 @@ function buildRunsQuery(filters = {}) {
 }
 
 export function filterRunSummaries(runs, filters = {}) {
+    const includes = (filter, value) => {
+        if (!filter) return true;
+        const values = Array.isArray(filter) ? filter : String(filter).split(",");
+        return values.includes(value);
+    };
     return (runs || []).filter((run) => {
-        if (filters.gaggle && run.gaggle !== filters.gaggle) return false;
-        if (filters.workflow && run.workflow !== filters.workflow) return false;
-        if (filters.phase) {
-            const phases = String(filters.phase).split(",").filter(Boolean);
-            if (!phases.includes(run.phase)) return false;
-        }
-        if (filters.trigger && run.trigger?.kind !== filters.trigger) return false;
+        if (!includes(filters.gaggle, run.gaggle)) return false;
+        if (!includes(filters.workflow, run.workflow)) return false;
+        if (!includes(filters.phase, run.phase)) return false;
+        if (!includes(filters.trigger, run.trigger?.kind)) return false;
         if (filters.since && new Date(run.startedAt) < new Date(filters.since)) return false;
         if (filters.until && new Date(run.startedAt) > new Date(filters.until)) return false;
         return true;
@@ -333,6 +335,28 @@ export function filterRunSummaries(runs, filters = {}) {
 
 /** Fetch just the runs list for a resolved connection, with optional filters. */
 export async function loadRuns(resolved, filters = {}) {
+    const multiEntries = Object.entries(filters).filter(([, value]) => Array.isArray(value));
+    if (multiEntries.length) {
+        let combinations = [{ ...filters }];
+        for (const [key, values] of multiEntries) {
+            combinations = combinations.flatMap((combination) =>
+                values.map((value) => ({ ...combination, [key]: value })));
+        }
+        if (combinations.length > 64) {
+            return { runs: [], error: "The selected filters produce too many combinations. Narrow one or more filters." };
+        }
+        const pages = await Promise.all(combinations.map((combination) => loadRuns(resolved, combination)));
+        const failed = pages.find((page) => page.error);
+        if (failed) return { runs: [], error: failed.error };
+        const byId = new Map();
+        for (const page of pages) {
+            for (const run of page.runs || []) byId.set(run.runId || run.id, run);
+        }
+        const runs = [...byId.values()]
+            .sort((a, b) => Date.parse(b.startedAt || 0) - Date.parse(a.startedAt || 0))
+            .slice(0, Number(filters.limit) || 50);
+        return { runs, cursor: "" };
+    }
     if (resolved.mode === "actions") {
         if (filters.stage || filters.outcome || filters.population) {
             return {

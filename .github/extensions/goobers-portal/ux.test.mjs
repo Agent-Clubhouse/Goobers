@@ -66,9 +66,9 @@ test("deriveAttention uses the issue as the stable work source when a later run 
 });
 
 test("view state round trips filters and selected run", () => {
-    const encoded = encodeViewState({ phase: "failed", showNoWork: true, empty: "" }, "run/7");
+    const encoded = encodeViewState({ phase: ["failed", "escalated"], showNoWork: true, empty: "" }, "run/7");
     assert.deepEqual(decodeViewState(encoded), {
-        filters: { phase: "failed", showNoWork: true },
+        filters: { phase: ["failed", "escalated"], showNoWork: true },
         selectedRun: "run/7",
     });
 });

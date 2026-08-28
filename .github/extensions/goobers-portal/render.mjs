@@ -161,7 +161,8 @@ export function renderTelemetryInsights(run = {}) {
         "<h3>Stage and retry hotspots</h3><ul class=\"causal-list\">" + hotspotRows + "</ul></div>";
 }
 
-export function renderHtml(instanceId, themePreference = "system") {
+export function renderHtml(instanceId, themePreference = "system", persistedFilters = {}) {
+  const initialFilters = JSON.stringify(persistedFilters).replaceAll("<", "\\u003c");
     return `<!doctype html>
 <html data-theme-preference="${themePreference}">
 <head>
@@ -524,6 +525,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   .artifact-links a { color: inherit; }
   .filters-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
   .filters-bar select, .filters-bar input { font-size: 12px; padding: 4px 8px; }
+  .filters-bar select[multiple] { height: 38px; min-width: 132px; }
   th[data-sort] { cursor: pointer; user-select: none; }
   th[data-sort]:hover { color: var(--text-color-default, #1f2328); }
   th[data-sort] .sort-arrow { font-size: 10px; margin-left: 4px; color: var(--text-color-muted, #656d76); }
@@ -692,34 +694,30 @@ export function renderHtml(instanceId, themePreference = "system") {
     <section id="dashboard-panel-runs" role="tabpanel" aria-labelledby="dashboard-tab-runs" hidden>
       <h2>Runs</h2>
       <div class="filters-bar" id="runs-filters">
-        <select id="filter-gaggle"><option value="">All gaggles</option></select>
-        <select id="filter-workflow"><option value="">All workflows</option></select>
-        <select id="filter-phase">
-          <option value="">All phases</option>
+        <select id="filter-gaggle" multiple title="Select one or more gaggles"><option value="">All gaggles</option></select>
+        <select id="filter-workflow" multiple title="Select one or more workflows"><option value="">All workflows</option></select>
+        <select id="filter-phase" multiple title="Select one or more phases">
           <option value="running">running</option>
           <option value="completed">completed</option>
           <option value="failed">failed</option>
           <option value="aborted">aborted</option>
           <option value="escalated">escalated</option>
         </select>
-        <select id="filter-trigger">
-          <option value="">All triggers</option>
+        <select id="filter-trigger" multiple title="Select one or more triggers">
           <option value="manual">manual</option>
           <option value="schedule">schedule</option>
           <option value="item">item</option>
           <option value="webhook">webhook</option>
         </select>
         <input id="filter-stage" type="text" placeholder="Stage" title="Stage name (daemon sources)" />
-        <select id="filter-outcome">
-          <option value="">All outcomes</option>
+        <select id="filter-outcome" multiple title="Select one or more outcomes">
           <option value="finished">finished</option>
           <option value="terminal">terminal</option>
           <option value="success">success</option>
           <option value="failure">failure</option>
           <option value="other">other</option>
         </select>
-        <select id="filter-population">
-          <option value="">All populations</option>
+        <select id="filter-population" multiple title="Select one or more populations">
           <option value="attempts">attempts</option>
           <option value="measured">measured</option>
           <option value="token-measured">token measured</option>
@@ -734,7 +732,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         <button id="save-filter-preset" type="button">Save</button>
         <input id="filter-since" type="datetime-local" title="Since" />
         <input id="filter-until" type="datetime-local" title="Until" />
-        <button id="filters-clear">Clear filters</button>
+        <button id="filters-clear" type="button">Reset</button>
       </div>
       <table id="runs-table">
         <thead>
@@ -1285,28 +1283,40 @@ export function renderHtml(instanceId, themePreference = "system") {
   let lastCursor = "";
   let hasMoreRuns = false;
   let invalidCursorRecoveryInProgress = false;
+  let filterPersistenceTimer = null;
+  const persistedFilterState = ${initialFilters};
+
+  function selectedValues(element) {
+    return [...element.selectedOptions].map((option) => option.value).filter(Boolean);
+  }
+
+  function setSelectedValues(element, values) {
+    const selected = new Set(Array.isArray(values) ? values : values ? [values] : []);
+    for (const option of element.options) option.selected = selected.has(option.value);
+  }
 
   function populateFilterOptions(gaggles, workflows) {
-    const prevGaggle = filterGaggle.value;
+    const prevGaggle = selectedValues(filterGaggle);
     const gaggleNames = gaggles.length ? gaggles.map((g) => g.name) : [...new Set(workflows.map((w) => (w.identity ? w.identity.gaggle : w.gaggle)))];
-    filterGaggle.innerHTML = '<option value="">All gaggles</option>' + gaggleNames.filter(Boolean).map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + "</option>").join("");
-    if (gaggleNames.includes(prevGaggle)) filterGaggle.value = prevGaggle;
+    filterGaggle.innerHTML = gaggleNames.filter(Boolean).map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + "</option>").join("");
+    setSelectedValues(filterGaggle, prevGaggle);
 
-    const prevWorkflow = filterWorkflow.value;
+    const prevWorkflow = selectedValues(filterWorkflow);
     const workflowNames = [...new Set(workflows.map((w) => (w.identity ? w.identity.name : w.name)))].filter(Boolean);
-    filterWorkflow.innerHTML = '<option value="">All workflows</option>' + workflowNames.map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + "</option>").join("");
-    if (workflowNames.includes(prevWorkflow)) filterWorkflow.value = prevWorkflow;
+    filterWorkflow.innerHTML = workflowNames.map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + "</option>").join("");
+    setSelectedValues(filterWorkflow, prevWorkflow);
   }
 
   function currentFilters() {
     const f = {};
-    if (filterGaggle.value) f.gaggle = filterGaggle.value;
-    if (filterWorkflow.value) f.workflow = filterWorkflow.value;
-    if (filterPhase.value) f.phase = filterPhase.value;
-    if (filterTrigger.value) f.trigger = filterTrigger.value;
+    for (const [key, element] of [
+      ["gaggle", filterGaggle], ["workflow", filterWorkflow], ["phase", filterPhase],
+      ["trigger", filterTrigger], ["outcome", filterOutcome], ["population", filterPopulation],
+    ]) {
+      const values = selectedValues(element);
+      if (values.length) f[key] = values;
+    }
     if (filterStage.value.trim()) f.stage = filterStage.value.trim();
-    if (filterOutcome.value) f.outcome = filterOutcome.value;
-    if (filterPopulation.value) f.population = filterPopulation.value;
     if (filterNoWork.checked) f.showNoWork = true;
     if (filterSince.value) f.since = new Date(filterSince.value).toISOString();
     if (filterUntil.value) f.until = new Date(filterUntil.value).toISOString();
@@ -1319,10 +1329,25 @@ export function renderHtml(instanceId, themePreference = "system") {
     window.history.replaceState(null, "", next ? "?" + next : window.location.pathname);
   }
 
+  function persistFilters() {
+    clearTimeout(filterPersistenceTimer);
+    filterPersistenceTimer = setTimeout(() => {
+      void fetch("/api/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filters: currentFilters() }),
+      }).catch((err) => {
+        errorEl.textContent = portalRequestError(err);
+      });
+    }, 150);
+  }
+
   function restoreFiltersFromUrl() {
     if (restoredFilters) return;
     restoredFilters = true;
-    const { filters, selectedRun } = decodeViewState(window.location.search);
+    const decoded = decodeViewState(window.location.search);
+    const filters = Object.keys(decoded.filters).length ? decoded.filters : persistedFilterState;
+    const { selectedRun } = decoded;
     restoredRunId = selectedRun;
     for (const [key, element] of [
       ["gaggle", filterGaggle], ["workflow", filterWorkflow], ["phase", filterPhase],
@@ -1330,7 +1355,9 @@ export function renderHtml(instanceId, themePreference = "system") {
       ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
     ]) {
       const value = filters[key];
-      if (typeof value === "string") {
+      if (element.multiple) {
+        setSelectedValues(element, value);
+      } else if (typeof value === "string") {
         element.value = element.type === "datetime-local"
           ? value.slice(0, 16)
           : value;
@@ -1458,10 +1485,14 @@ export function renderHtml(instanceId, themePreference = "system") {
         ["trigger", filterTrigger], ["stage", filterStage], ["outcome", filterOutcome],
         ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
       ]) {
-        if (value[key] !== undefined) element.value = typeof value[key] === "string" ? value[key] : String(value[key]);
+        if (value[key] !== undefined) {
+          if (element.multiple) setSelectedValues(element, value[key]);
+          else element.value = typeof value[key] === "string" ? value[key] : String(value[key]);
+        }
       }
       filterNoWork.checked = value.showNoWork === true;
       setAdvancedFilterSupport(advancedFiltersSupported);
+      persistFilters();
       applyFilters();
     } catch {
       errorEl.textContent = "Could not restore the selected filter preset.";
@@ -1473,7 +1504,11 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (!sourceId) return;
     const requestSequence = ++filterRequestSequence;
     try {
-      const params = new URLSearchParams({ source: sourceId, ...currentFilters() });
+      const params = new URLSearchParams({ source: sourceId });
+      for (const [key, value] of Object.entries(currentFilters())) {
+        if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
+        else params.set(key, value);
+      }
       if (append && lastCursor) params.set("cursor", lastCursor);
       const res = await fetch("/api/runs?" + params.toString());
       const data = await res.json();
@@ -1518,23 +1553,27 @@ export function renderHtml(instanceId, themePreference = "system") {
   for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterNoWork, filterSince, filterUntil]) {
     el.addEventListener("change", () => {
       lastCursor = "";
+      persistFilters();
       applyFilters();
     });
   }
   filterStage.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       setAdvancedFilterSupport(advancedFiltersSupported);
+      persistFilters();
       applyFilters();
     }
   });
   filterStage.addEventListener("input", () => setAdvancedFilterSupport(advancedFiltersSupported));
   document.getElementById("filters-clear").addEventListener("click", () => {
     for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterSince, filterUntil]) {
-      el.value = "";
+      if (el.multiple) setSelectedValues(el, []);
+      else el.value = "";
     }
     filterNoWork.checked = false;
     setAdvancedFilterSupport(advancedFiltersSupported);
     lastCursor = "";
+    persistFilters();
     applyFilters();
   });
 
@@ -1550,12 +1589,13 @@ export function renderHtml(instanceId, themePreference = "system") {
 
   function filterToWorkflow(gaggle, name) {
     if (gaggle && [...filterGaggle.options].some((o) => o.value === gaggle)) {
-      filterGaggle.value = gaggle;
+      setSelectedValues(filterGaggle, [gaggle]);
     }
     if (name && [...filterWorkflow.options].some((o) => o.value === name)) {
-      filterWorkflow.value = name;
+      setSelectedValues(filterWorkflow, [name]);
     }
     activateInternalTab(dashboardEl, "runs");
+    persistFilters();
     applyFilters();
     document.getElementById("runs-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
