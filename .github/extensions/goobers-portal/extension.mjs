@@ -204,15 +204,16 @@ async function setWorkflowEnabledFor(sourceId, gaggle, workflow, enabled) {
         throw new CanvasError("not_connected", resolved.reason || "source is not connected");
     }
 
-    async function runStageInterventionFor(sourceId, action, runId, stage, input) {
-        const known = await listKnownSources();
-        const source = known.find((s) => s.id === sourceId);
-        if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
-        const resolved = await resolveSource(source);
-        if (!resolved.ok) throw new CanvasError("not_connected", resolved.reason || "source is not connected");
-        return await runStageIntervention(resolved, action, runId, stage, input);
-    }
     return await setWorkflowEnabled(resolved, gaggle, workflow, enabled);
+}
+
+async function runStageInterventionFor(sourceId, action, runId, stage, input) {
+    const known = await listKnownSources();
+    const source = known.find((s) => s.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) throw new CanvasError("not_connected", resolved.reason || "source is not connected");
+    return await runStageIntervention(resolved, action, runId, stage, input);
 }
 
 async function startDaemonFor(sourceId) {

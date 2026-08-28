@@ -744,6 +744,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   // background-poll re-renders.
   const pendingToggles = new Map();
   const workflowUndo = new Map();
+  const pendingRunActions = new Map();
 
   function portalRequestError(err) {
     const message = String(err && err.message ? err.message : err);
@@ -1970,21 +1971,34 @@ export function renderHtml(instanceId, themePreference = "system") {
     controls.forEach((input) => input.addEventListener("input", update));
   }
 
-  function runActionPanel(run, events) {
-    const available = ["approve", "override", "rerun"].filter((action) => lastCapabilities[action]);
+  function runActionKey(sourceId, runId) {
+    return sourceId + "/" + runId;
+  }
+
+  function runActionPanel(run, events, sourceId) {
+    const available = ["approve", "override", "rerun"].filter((action) => lastCapabilities.revealRun);
     if (!available.length) return "";
     const currentStage = run.currentStage || [...events].reverse().find((event) => event.stage)?.stage || "";
     const journalSeq = run.journalSeq || [...events].reverse().find((event) => Number(event.seq) > 0)?.seq || "unavailable";
+    const pending = pendingRunActions.get(runActionKey(sourceId, run.id));
+    const confirmation = pending ? '<strong>Confirm:</strong> ' + escapeHtml(pending.effect) + '. ' +
+      'Actor: <code>' + escapeHtml(pending.actor) + '</code>. ' +
+      (pending.rationale ? 'Rationale: <q>' + escapeHtml(pending.rationale) + '</q>. ' : '') +
+      (pending.instructionAddendum ? 'Addendum: <q>' + escapeHtml(pending.instructionAddendum) + '</q>. ' : '') +
+      '<button id="run-action-confirm" type="button"' + (pending.sending ? " disabled" : "") + ">" +
+      (pending.sending ? "Sending\u2026" : "Confirm and send") + "</button>" : "";
     return '<section class="run-actions"><h2>Safe operator actions</h2>' +
       '<p>Run <code>' + escapeHtml(run.id) + '</code>, stage <code>' + escapeHtml(currentStage || "unknown") +
       '</code>, journal sequence <code>' + escapeHtml(journalSeq) + '</code>.</p>' +
       '<div class="run-actions-grid">' +
-      '<label>Action<select id="run-action">' + available.map((action) => '<option value="' + action + '">' + action + '</option>').join("") + '</select></label>' +
-      '<label>Actor<input id="run-action-actor" type="text" autocomplete="username" /></label>' +
-      '<label>Rationale (override)<input id="run-action-rationale" type="text" /></label>' +
-      '<label>Instruction addendum (rerun)<input id="run-action-addendum" type="text" /></label>' +
+      '<label>Action<select id="run-action">' + available.map((action) => '<option value="' + action + '"' +
+      (pending?.action === action ? " selected" : "") + ">" + action + "</option>").join("") + '</select></label>' +
+      '<label>Actor<input id="run-action-actor" type="text" autocomplete="username" value="' + escapeHtml(pending?.actor || "") + '" /></label>' +
+      '<label>Rationale (override)<input id="run-action-rationale" type="text" value="' + escapeHtml(pending?.rationale || "") + '" /></label>' +
+      '<label>Instruction addendum (rerun)<input id="run-action-addendum" type="text" value="' + escapeHtml(pending?.instructionAddendum || "") + '" /></label>' +
       '<button id="run-action-review" type="button">Review action</button></div>' +
-      '<div id="run-action-confirmation" class="run-action-confirmation" hidden></div></section>';
+      '<div id="run-action-confirmation" class="run-action-confirmation"' + (pending ? "" : " hidden") + ">" +
+      confirmation + "</div></section>";
   }
 
   function initRunActions(run, events, sourceId) {
@@ -1995,6 +2009,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     const actorInput = runContentEl.querySelector("#run-action-actor");
     const rationaleInput = runContentEl.querySelector("#run-action-rationale");
     const addendumInput = runContentEl.querySelector("#run-action-addendum");
+    const actionKey = runActionKey(sourceId, run.id);
     review.addEventListener("click", () => {
       const action = actionInput.value;
       const actor = actorInput.value.trim();
@@ -2007,6 +2022,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       const effect = action === "approve" ? "approve the stage with decision=pass" :
         action === "override" ? "override the stage using the entered rationale" :
         "rerun the stage using the entered instruction addendum";
+      pendingRunActions.set(actionKey, { action, actor, rationale, instructionAddendum, effect, sending: false });
       confirmation.hidden = false;
       confirmation.innerHTML = '<strong>Confirm:</strong> ' + escapeHtml(effect) + '. ' +
         'Actor: <code>' + escapeHtml(actor) + '</code>. ' +
@@ -2014,6 +2030,9 @@ export function renderHtml(instanceId, themePreference = "system") {
         (instructionAddendum ? 'Addendum: <q>' + escapeHtml(instructionAddendum) + '</q>. ' : '') +
         '<button id="run-action-confirm" type="button">Confirm and send</button>';
       confirmation.querySelector("button").addEventListener("click", async () => {
+        const pending = pendingRunActions.get(actionKey);
+        if (!pending || pending.sending) return;
+        pending.sending = true;
         confirmation.querySelector("button").disabled = true;
         runStatusEl.textContent = "Sending " + action + "\u2026";
         try {
@@ -2031,9 +2050,12 @@ export function renderHtml(instanceId, themePreference = "system") {
           if (!data.ok) throw new Error((data.code ? data.code + ": " : "") + (data.reason || "action failed"));
           if (!Number(data.result?.journalSeq)) throw new Error("The server did not confirm a durable journal position.");
           runStatusEl.textContent = action + " accepted at journal sequence " + data.result.journalSeq + ".";
+          pendingRunActions.delete(actionKey);
           await openRun(run.id);
+          runContentEl.querySelector("#run-action")?.focus();
         } catch (err) {
           runStatusEl.textContent = "Action failed: " + (err.message || err);
+          pending.sending = false;
           confirmation.querySelector("button").disabled = false;
         }
       });
@@ -2096,7 +2118,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       if (refs.length) {
         html += "<h2>Associated work</h2>" + renderExternalRefs(refs);
       }
-      html += runActionPanel(r, events);
+      html += runActionPanel(r, events, sourceId);
       html += '<h2>Workflow graph</h2><div id="graph-container">' +
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);

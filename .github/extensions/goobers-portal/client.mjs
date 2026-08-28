@@ -462,8 +462,9 @@ export function validateIntervention(action, input = {}) {
 }
 
 export function interventionCapability(capabilities, action) {
-    const capability = interventionCapabilities[action];
-    return Boolean(capability && (capabilities || {})[capability]);
+    // revealRun is the daemon's advertised permission for the run-detail
+    // surface; action-specific mutation capabilities are not in portal config.
+    return Boolean(interventionCapabilities[action] && capabilities?.revealRun);
 }
 
 export function requireDurableInterventionResult(result) {
@@ -483,6 +484,8 @@ export async function runStageIntervention(resolved, action, runId, stage, input
     validateIntervention(action, input);
     if (resolved.mode !== "daemon") throw new Error("Run actions require a running Goobers daemon.");
     const key = interventionIdempotencyKey(runId, stage, action);
+    // sendJSON may retry transport failures; reuse this key so the daemon
+    // treats every attempt as the same pending action.
     const path = `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stage)}/${action}`;
     const result = await sendJSON("POST", `${resolved.baseUrl}${path}`, input, {
         token: resolved.token, headers: { "Idempotency-Key": key },
