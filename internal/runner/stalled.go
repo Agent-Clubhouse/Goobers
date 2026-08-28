@@ -412,6 +412,18 @@ func setStalledAttemptContext(ctx context.Context) {
 	}
 }
 
+// newestTimestamped returns the time of the most recent event carrying a
+// non-zero timestamp, or the zero time when none does. Callers treat that zero
+// as "cannot determine", never as "idle forever".
+func newestTimestamped(events []journal.Event) time.Time {
+	for i := len(events) - 1; i >= 0; i-- {
+		if !events[i].Time.IsZero() {
+			return events[i].Time
+		}
+	}
+	return time.Time{}
+}
+
 type stalledCandidate struct {
 	phase        journal.RunPhase
 	lastActivity time.Time
@@ -441,7 +453,27 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if events[len(events)-1].Type == journal.EventGatePaused {
 		return candidate, false, nil
 	}
-	candidate.lastActivity = events[len(events)-1].Time
+	// Take the newest event that actually carries a TIMESTAMP. An event written
+	// without one says nothing about when activity happened, and reading its
+	// zero Time as "last active at year 1" makes every subsequent comparison
+	// trivially true — the run is then escalated no matter how large the
+	// timeout is, which is the tell that no configuration can fix it.
+	//
+	// MEASURED (#3774): run 8238995d was escalated 11 minutes into a 60-minute
+	// agentic stage. Its newest event was agent.lifecycle, written with
+	// time 0001-01-01T00:00:00Z, so lastActivity was zero and the message read
+	// "no journal progress for 2562047h47m16s" — while four correctly stamped
+	// events sat directly above it. The stamp is missing at the writer, which is
+	// its own defect; this is the reader refusing to draw a conclusion the data
+	// does not support.
+	//
+	// The practical effect: an agentic stage emits agent.lifecycle and then
+	// works silently, so ANY run whose newest event is that one was killed on
+	// the next sweep. Long agentic work could not complete in mode 3 at all.
+	candidate.lastActivity = newestTimestamped(events)
+	if candidate.lastActivity.IsZero() {
+		return candidate, false, nil
+	}
 	if !candidate.lastActivity.Before(now.Add(-timeout)) {
 		return candidate, false, nil
 	}
