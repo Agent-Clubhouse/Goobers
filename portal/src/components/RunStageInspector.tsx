@@ -583,12 +583,18 @@ export function TranscriptView({
 }) {
   const [query, setQuery] = useState("");
   const [role, setRole] = useState<TranscriptTurn["role"] | "">("");
+  const [stageFilter, setStageFilter] = useState("");
+  const [attemptFilter, setAttemptFilter] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [raw, setRaw] = useState(false);
 
   const parsed = parseTranscript(text);
   const turns = parsed.turns.filter(
-    (turn) => !isEmptyTurn(turn) && (!role || turn.role === role),
+    (turn) =>
+      !isEmptyTurn(turn) &&
+      (!role || turn.role === role) &&
+      (!stageFilter || stageFilter === stage) &&
+      (!attemptFilter || attemptFilter === String(attempt)),
   );
   const matches = transcriptSearchMatches(turns, query);
   const matching = query.trim() === "" ? turns : turns.filter((turn) => matches.includes(turn.index));
@@ -638,6 +644,28 @@ export function TranscriptView({
                 {value}
               </option>
             ))}
+          </select>
+        </label>
+        <label className="transcript-role-filter">
+          <span className="sr-only">Filter transcript by stage</span>
+          <select
+            aria-label="Filter transcript by stage"
+            onChange={(event) => setStageFilter(event.target.value)}
+            value={stageFilter}
+          >
+            <option value="">All stages</option>
+            {stage !== undefined && <option value={stage}>{stage}</option>}
+          </select>
+        </label>
+        <label className="transcript-role-filter">
+          <span className="sr-only">Filter transcript by attempt</span>
+          <select
+            aria-label="Filter transcript by attempt"
+            onChange={(event) => setAttemptFilter(event.target.value)}
+            value={attemptFilter}
+          >
+            <option value="">All attempts</option>
+            {attempt !== undefined && <option value={String(attempt)}>Attempt {attempt}</option>}
           </select>
         </label>
         <button className="artifact-action" onClick={() => setRaw(true)} type="button">

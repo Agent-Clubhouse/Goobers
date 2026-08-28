@@ -1,5 +1,9 @@
 import type { RunDetail, RunEvent } from "../api/types";
-import { deriveVisitLineage, deriveWaterfall } from "../causalDiagnosis";
+import {
+  deriveFailureBreadcrumb,
+  deriveVisitLineage,
+  deriveWaterfall,
+} from "../causalDiagnosis";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 
 export function CausalDiagnosis({ run, events }: { run: RunDetail; events: RunEvent[] }) {
@@ -27,8 +31,7 @@ export function CausalDiagnosis({ run, events }: { run: RunDetail; events: RunEv
         <div className="diagnosis-breadcrumb" role="status">
           <strong>Failure path</strong>
           <span>
-            {runFailureText(run, events)}
-            {lineage.at(-1)?.stage ? ` → ${lineage.at(-1)?.stage}` : ""}
+            {deriveFailureBreadcrumb(run, events)}
           </span>
         </div>
       )}
@@ -62,10 +65,4 @@ export function CausalDiagnosis({ run, events }: { run: RunDetail; events: RunEv
       </div>
     </section>
   );
-}
-
-function runFailureText(run: RunDetail, events: RunEvent[]): string {
-  const error = events.find((event) => event.error?.message || event.error?.code);
-  if (error?.error) return `${error.error.code}${error.error.message ? `: ${error.error.message}` : ""}`;
-  return run.phase === "failed" ? "Run failed without a recorded error" : `Run ${run.phase}`;
 }
