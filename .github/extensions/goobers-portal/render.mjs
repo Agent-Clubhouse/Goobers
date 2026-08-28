@@ -423,6 +423,8 @@ export function renderHtml(instanceId, themePreference = "system") {
       <option value="dark">Dark theme</option>
     </select>
     <select id="source-select"><option value="">No sources yet</option></select>
+    <input id="run-jump" type="text" placeholder="Run ID" aria-label="Jump to a run" style="max-width: 180px;" />
+    <button id="run-jump-button" type="button">Jump</button>
     <button id="refresh">Refresh</button>
   </div>
 </header>
@@ -522,6 +524,11 @@ export function renderHtml(instanceId, themePreference = "system") {
           <option value="cost-measured">cost measured</option>
           <option value="retry-waste">retry waste</option>
         </select>
+        <label class="filter-toggle"><input id="filter-show-no-work" type="checkbox" /> Show no-work</label>
+        <select id="saved-filter-presets" aria-label="Saved filters">
+          <option value="">Saved filters</option>
+        </select>
+        <button id="save-filter-preset" type="button">Save</button>
         <input id="filter-since" type="datetime-local" title="Since" />
         <input id="filter-until" type="datetime-local" title="Until" />
         <button id="filters-clear">Clear filters</button>
@@ -541,6 +548,9 @@ export function renderHtml(instanceId, themePreference = "system") {
         </thead>
         <tbody></tbody>
       </table>
+      <div style="margin-top: 10px; display: flex; justify-content: flex-end;">
+        <button id="runs-load-more" type="button" style="display:none">Load more</button>
+      </div>
     </section>
   </div>
   <div id="run-view">
@@ -560,6 +570,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   const workflowsBody = document.querySelector("#workflows-table tbody");
   const runsBody = document.querySelector("#runs-table tbody");
   const sourceSelect = document.getElementById("source-select");
+  const runJumpInput = document.getElementById("run-jump");
+  const runJumpButton = document.getElementById("run-jump-button");
   const themeSelect = document.getElementById("theme-select");
   const directoryDialog = document.getElementById("directory-dialog");
   const directoryCurrent = document.getElementById("directory-current");
@@ -818,6 +830,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (!data.connected) {
       emptyEl.style.display = data.reason ? "block" : "none";
       dashboardEl.style.display = "none";
+      setFreshnessState("Offline");
       if (data.reason) {
         errorEl.textContent = data.source
           ? "Not connected to " + (data.source.label || data.source.value) + ": " + data.reason
@@ -935,6 +948,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
+    loadSavedFilters();
     const restored = restoreFiltersFromUrl();
     setAdvancedFilterSupport((data.mode || "daemon") === "daemon");
     // Background polling refreshes the whole snapshot every few seconds; if
@@ -961,14 +975,20 @@ export function renderHtml(instanceId, themePreference = "system") {
   const filterStage = document.getElementById("filter-stage");
   const filterOutcome = document.getElementById("filter-outcome");
   const filterPopulation = document.getElementById("filter-population");
+  const filterNoWork = document.getElementById("filter-show-no-work");
   const filterSince = document.getElementById("filter-since");
   const filterUntil = document.getElementById("filter-until");
+  const savedFilterPresets = document.getElementById("saved-filter-presets");
+  const saveFilterPresetButton = document.getElementById("save-filter-preset");
+  const loadMoreButton = document.getElementById("runs-load-more");
   let lastRuns = [];
   let sortKey = "startedAt";
   let sortDir = "desc";
   let advancedFiltersSupported = false;
   let filterRequestSequence = 0;
   let restoredFilters = false;
+  let lastCursor = "";
+  let hasMoreRuns = false;
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = filterGaggle.value;
@@ -991,6 +1011,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (filterStage.value.trim()) f.stage = filterStage.value.trim();
     if (filterOutcome.value) f.outcome = filterOutcome.value;
     if (filterPopulation.value) f.population = filterPopulation.value;
+    if (filterNoWork.checked) f.showNoWork = true;
     if (filterSince.value) f.since = new Date(filterSince.value).toISOString();
     if (filterUntil.value) f.until = new Date(filterUntil.value).toISOString();
     return f;
@@ -1019,6 +1040,7 @@ export function renderHtml(instanceId, themePreference = "system") {
           : value;
       }
     }
+    if (filters.showNoWork === true) filterNoWork.checked = true;
     return Object.keys(filters).length > 0;
   }
 
@@ -1036,6 +1058,9 @@ export function renderHtml(instanceId, themePreference = "system") {
         : hasStage ? "" : "Choose a stage first";
       if (!hasStage) el.value = "";
     }
+    filterNoWork.disabled = !supported;
+    filterNoWork.title = supported ? "Include no-work runs" : "Requires a running Goobers daemon";
+    if (!supported) filterNoWork.checked = false;
   }
 
   function hasActiveFilters() {
@@ -1100,12 +1125,60 @@ export function renderHtml(instanceId, themePreference = "system") {
     updateSortIndicators();
   }
 
-  async function applyFilters() {
+  function loadSavedFilters() {
+    try {
+      const entries = JSON.parse(localStorage.getItem("goobers-portal-filter-presets") || "{}");
+      const options = ["<option value=\"\">Saved filters</option>"];
+      for (const [name, value] of Object.entries(entries)) {
+        options.push('<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>');
+      }
+      savedFilterPresets.innerHTML = options.join("");
+    } catch {
+      savedFilterPresets.innerHTML = '<option value="">Saved filters</option>';
+    }
+  }
+
+  function persistCurrentFilterPreset() {
+    const name = window.prompt("Name this filter preset", "");
+    if (!name) return;
+    try {
+      const existing = JSON.parse(localStorage.getItem("goobers-portal-filter-presets") || "{}") || {};
+      existing[name] = currentFilters();
+      localStorage.setItem("goobers-portal-filter-presets", JSON.stringify(existing));
+      loadSavedFilters();
+      savedFilterPresets.value = name;
+    } catch {
+      errorEl.textContent = "Could not save the current filter preset.";
+    }
+  }
+
+  function restoreSavedFilterPreset(name) {
+    try {
+      const entries = JSON.parse(localStorage.getItem("goobers-portal-filter-presets") || "{}") || {};
+      const value = entries[name];
+      if (!value) return;
+      for (const [key, element] of [
+        ["gaggle", filterGaggle], ["workflow", filterWorkflow], ["phase", filterPhase],
+        ["trigger", filterTrigger], ["stage", filterStage], ["outcome", filterOutcome],
+        ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
+      ]) {
+        if (value[key] !== undefined) element.value = typeof value[key] === "string" ? value[key] : String(value[key]);
+      }
+      filterNoWork.checked = value.showNoWork === true;
+      setAdvancedFilterSupport(advancedFiltersSupported);
+      applyFilters();
+    } catch {
+      errorEl.textContent = "Could not restore the selected filter preset.";
+    }
+  }
+
+  async function applyFilters({ append = false } = {}) {
     const sourceId = sourceSelect.value;
     if (!sourceId) return;
     const requestSequence = ++filterRequestSequence;
     try {
       const params = new URLSearchParams({ source: sourceId, ...currentFilters() });
+      if (append && lastCursor) params.set("cursor", lastCursor);
       const res = await fetch("/api/runs?" + params.toString());
       const data = await res.json();
       if (requestSequence !== filterRequestSequence) return;
@@ -1114,13 +1187,25 @@ export function renderHtml(instanceId, themePreference = "system") {
         return;
       }
       if (data.error) {
+        const invalidCursor = /cursor/i.test(data.error || "");
+        if (invalidCursor) {
+          lastCursor = "";
+          return applyFilters({ append: false });
+        }
         errorEl.textContent = data.error;
         lastRuns = [];
+        lastCursor = "";
+        hasMoreRuns = false;
+        loadMoreButton.style.display = "none";
         renderRuns(lastRuns);
         return;
       }
       errorEl.textContent = "";
-      lastRuns = data.runs || [];
+      const nextRuns = data.runs || [];
+      lastRuns = append ? [...lastRuns, ...nextRuns] : nextRuns;
+      lastCursor = data.cursor || "";
+      hasMoreRuns = Boolean(lastCursor);
+      loadMoreButton.style.display = hasMoreRuns ? "inline-flex" : "none";
       syncViewUrl();
       renderRuns(lastRuns);
     } catch (err) {
@@ -1129,8 +1214,11 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
   }
 
-  for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterSince, filterUntil]) {
-    el.addEventListener("change", applyFilters);
+  for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterNoWork, filterSince, filterUntil]) {
+    el.addEventListener("change", () => {
+      lastCursor = "";
+      applyFilters();
+    });
   }
   filterStage.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -1143,8 +1231,20 @@ export function renderHtml(instanceId, themePreference = "system") {
     for (const el of [filterGaggle, filterWorkflow, filterPhase, filterTrigger, filterStage, filterOutcome, filterPopulation, filterSince, filterUntil]) {
       el.value = "";
     }
+    filterNoWork.checked = false;
     setAdvancedFilterSupport(advancedFiltersSupported);
+    lastCursor = "";
     applyFilters();
+  });
+
+  saveFilterPresetButton.addEventListener("click", persistCurrentFilterPreset);
+  savedFilterPresets.addEventListener("change", () => {
+    if (!savedFilterPresets.value) return;
+    restoreSavedFilterPreset(savedFilterPresets.value);
+  });
+  loadMoreButton.addEventListener("click", () => {
+    if (!hasMoreRuns) return;
+    applyFilters({ append: true });
   });
 
   function filterToWorkflow(gaggle, name) {
@@ -1719,6 +1819,11 @@ export function renderHtml(instanceId, themePreference = "system") {
     return await res.json();
   }
 
+  function setFreshnessState(state) {
+    const timestamp = lastUpdatedAt || Date.now();
+    freshnessEl.textContent = state + " · Updated " + fmtTime(timestamp);
+  }
+
   async function refreshAll() {
     await loadSources();
     await loadSnapshot();
@@ -1729,17 +1834,29 @@ export function renderHtml(instanceId, themePreference = "system") {
     const sourceId = sourceSelect.value;
     const mode = sourceSelect.selectedOptions[0]?.dataset.kind;
     if (!sourceId || mode !== "local" && mode !== "remote") return;
+    const backoffMs = 1000;
+    const retryMs = Math.min(10000, Math.max(1000, backoffMs));
     eventSource = new EventSource("/api/events?source=" + encodeURIComponent(sourceId));
     eventSource.onopen = () => {
-      freshnessEl.textContent = "Live · Updated " + fmtTime(lastUpdatedAt);
+      setFreshnessState("Live");
     };
     eventSource.onmessage = () => {
       lastUpdatedAt = Date.now();
-      freshnessEl.textContent = "Live · Updated " + fmtTime(lastUpdatedAt);
+      setFreshnessState("Live");
       void loadSnapshot();
     };
     eventSource.onerror = () => {
-      freshnessEl.textContent = "Reconnecting · Updated " + fmtTime(lastUpdatedAt);
+      setFreshnessState("Reconnecting");
+      window.setTimeout(() => {
+        if (eventSource) {
+          const selected = sourceSelect.value;
+          if (selected) {
+            eventSource.close();
+            eventSource = null;
+            connectLiveEvents();
+          }
+        }
+      }, retryMs);
     };
   }
 
@@ -1747,6 +1864,20 @@ export function renderHtml(instanceId, themePreference = "system") {
   sourceSelect.addEventListener("change", () => {
     if (eventSource) eventSource.close();
     void loadSnapshot().then(connectLiveEvents);
+  });
+  function jumpToRun() {
+    const runId = runJumpInput.value.trim();
+    if (!runId) return;
+    restoredRunId = runId;
+    syncViewUrl(runId);
+    void openRun(runId);
+  }
+  runJumpButton.addEventListener("click", jumpToRun);
+  runJumpInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      jumpToRun();
+    }
   });
 
   async function connectSource(payload) {

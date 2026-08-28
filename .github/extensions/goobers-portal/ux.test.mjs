@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { attentionKey, decodeViewState, deriveAttention, encodeViewState } from "./ux.mjs";
+import { attentionKey, decodeViewState, deriveAttention, deriveFreshnessState, encodeViewState } from "./ux.mjs";
 
 test("deriveAttention returns bounded actionable states with causal details", () => {
     const runs = [
@@ -20,7 +20,7 @@ test("deriveAttention returns bounded actionable states with causal details", ()
 test("view state round trips filters and selected run", () => {
     const encoded = encodeViewState({ phase: "failed", showNoWork: true, empty: "" }, "run/7");
     assert.deepEqual(decodeViewState(encoded), {
-        filters: { phase: "failed", showNoWork: "true" },
+        filters: { phase: "failed", showNoWork: true },
         selectedRun: "run/7",
     });
 });
@@ -33,4 +33,24 @@ test("elapsed time preserves finished runs at the Unix epoch", () => {
         finishedAt: "1970-01-01T00:00:01Z",
     }], { now: Date.parse("2026-08-28T11:00:00Z") });
     assert.equal(result[0].elapsedMillis, 1000);
+});
+
+test("view state keeps boolean no-work flags and partial query strings readable", () => {
+    const encoded = encodeViewState({ phase: "failed", showNoWork: true, empty: "" }, "run/7");
+    assert.match(encoded, /showNoWork=/);
+    assert.deepEqual(decodeViewState("phase=failed&showNoWork&run=run/7"), {
+        filters: { phase: "failed", showNoWork: true },
+        selectedRun: "run/7",
+    });
+    assert.deepEqual(decodeViewState(encoded), {
+        filters: { phase: "failed", showNoWork: true },
+        selectedRun: "run/7",
+    });
+});
+
+test("freshness status transitions live to stale and offline as age grows", () => {
+    const now = Date.parse("2026-08-28T11:00:00Z");
+    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now - 5000, mode: "daemon", now }), "Live");
+    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now - 60000, mode: "daemon", now }), "Stale");
+    assert.equal(deriveFreshnessState({ connected: false, lastUpdatedAt: now - 60000, mode: "daemon", now }), "Offline");
 });

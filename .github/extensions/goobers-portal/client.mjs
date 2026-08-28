@@ -302,8 +302,11 @@ async function loadStandaloneSnapshot(root) {
 function buildRunsQuery(filters = {}) {
     const params = new URLSearchParams();
     params.set("limit", String(filters.limit || 50));
-    for (const key of ["gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger", "since", "until", "cursor"]) {
-        if (filters[key]) params.set(key, filters[key]);
+    for (const key of ["gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger", "since", "until", "cursor", "showNoWork"]) {
+        const value = filters[key];
+        if (value === undefined || value === null || value === "") continue;
+        if (value === true) params.set(key, "true");
+        else params.set(key, String(value));
     }
     return params.toString();
 }
