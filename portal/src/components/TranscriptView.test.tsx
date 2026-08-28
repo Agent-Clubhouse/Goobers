@@ -69,6 +69,26 @@ describe("transcript rendering", () => {
     expect(screen.getByText("Implement the claimed issue end to end.")).toBeInTheDocument();
   });
 
+  it("preserves the selected role and focused search field across transcript refreshes", async () => {
+    const user = userEvent.setup();
+    const view = render(<TranscriptView text={transcript} />);
+
+    const search = screen.getByRole("searchbox", { name: "Search transcript" });
+    const roleFilter = screen.getByRole("combobox", { name: "Filter transcript by role" });
+    search.focus();
+    await user.type(search, "widget");
+    await user.selectOptions(roleFilter, "assistant");
+    expect(roleFilter).toHaveValue("assistant");
+
+    search.focus();
+    view.rerender(<TranscriptView text={transcript.replace("Committed the widget fix.", "Committed the widget fix and reran the suite.")} />);
+
+    const refreshedSearch = screen.getByRole("searchbox", { name: "Search transcript" });
+    expect(refreshedSearch).toHaveValue("widget");
+    expect(screen.getByRole("combobox", { name: "Filter transcript by role" })).toHaveValue("assistant");
+    expect(refreshedSearch).toHaveFocus();
+  });
+
   it("reports when nothing matches rather than rendering an empty list", async () => {
     const user = userEvent.setup();
     openTranscript();

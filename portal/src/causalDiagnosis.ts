@@ -104,7 +104,6 @@ export function deriveWaterfall(events: RunEvent[], runId?: string): WaterfallRo
       continue;
     }
     const stage = eventNodeId(event, runId) ?? event.stage ?? event.gate ?? event.parallel ?? "unknown";
-    const started = millis(event.time);
     const row: WaterfallRow = {
       key: `${event.branch}:${event.seq}`,
       branch: event.branch,

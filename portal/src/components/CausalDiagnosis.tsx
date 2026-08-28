@@ -9,6 +9,11 @@ import { formatDuration, formatTimestamp } from "../runDetailData";
 export function CausalDiagnosis({ run, events }: { run: RunDetail; events: RunEvent[] }) {
   const lineage = deriveVisitLineage(events, run.id);
   const waterfall = deriveWaterfall(events, run.id);
+  const maxDuration = Math.max(
+    ...waterfall.map((row) => row.durationMillis ?? 0),
+    run.durationMillis ?? 0,
+    1,
+  );
   if (lineage.length === 0 && waterfall.length === 0) {
     return (
       <section aria-labelledby="causal-diagnosis-title" className="causal-diagnosis">
@@ -51,15 +56,20 @@ export function CausalDiagnosis({ run, events }: { run: RunDetail; events: RunEv
         <div>
           <h3>Execution waterfall</h3>
           <ol className="diagnosis-waterfall">
-            {waterfall.map((row) => (
-              <li key={row.key}>
-                <div className="waterfall-bar" style={{ width: `${Math.max(4, Math.min(100, (row.durationMillis ?? 0) / Math.max(run.durationMillis, 1) * 100))}%` }} />
-                <span className="mono">{formatTimestamp(row.startedAt)}</span>
-                <strong>{row.stage}</strong>
-                <span>{row.durationMillis !== undefined ? formatDuration(row.durationMillis) : "Duration unavailable"} · {row.status ?? "running"}</span>
-                {row.idleBeforeMillis > 0 && <small>Idle gap {formatDuration(row.idleBeforeMillis)}</small>}
-              </li>
-            ))}
+            {waterfall.map((row) => {
+              const width = row.durationMillis === undefined
+                ? 0
+                : Math.max(4, Math.min(100, (row.durationMillis / maxDuration) * 100));
+              return (
+                <li key={row.key}>
+                  <div className="waterfall-bar" style={{ width: `${width}%` }} />
+                  <span className="mono">{formatTimestamp(row.startedAt)}</span>
+                  <strong>{row.stage}</strong>
+                  <span>{row.durationMillis !== undefined ? formatDuration(row.durationMillis) : "Duration unavailable"} · {row.status ?? "running"}</span>
+                  {row.idleBeforeMillis > 0 && <small>Idle gap {formatDuration(row.idleBeforeMillis)}</small>}
+                </li>
+              );
+            })}
           </ol>
         </div>
       </div>

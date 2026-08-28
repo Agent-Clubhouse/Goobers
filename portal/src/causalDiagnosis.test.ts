@@ -1,5 +1,8 @@
+import { render, screen } from "@testing-library/react";
+import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import type { RunDetail, RunEvent } from "./api/types";
+import { CausalDiagnosis } from "./components/CausalDiagnosis";
 import { deriveFailureBreadcrumb, deriveVisitLineage, deriveWaterfall } from "./causalDiagnosis";
 
 function event(fields: Partial<RunEvent>): RunEvent {
@@ -82,5 +85,15 @@ describe("causal diagnosis helpers", () => {
       event({ seq: 2, stage: "failed-stage", attempt: 4, error: { code: "new", message: "new error" } }),
     ]);
     expect(breadcrumb).toBe("new error → failed-stage · Attempt 4");
+  });
+
+  it("renders the empty diagnosis state when no transitions exist", () => {
+    render(
+      createElement(CausalDiagnosis, {
+        events: [],
+        run: { id: "run-1", phase: "running" } as RunDetail,
+      }),
+    );
+    expect(screen.getByText("No stage transitions are available for this run.")).toBeInTheDocument();
   });
 });
