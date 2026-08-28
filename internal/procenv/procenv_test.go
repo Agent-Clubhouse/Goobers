@@ -304,6 +304,40 @@ func TestBaseEnvPassesThroughWindowsRuntimeWithoutSecrets(t *testing.T) {
 	}
 }
 
+// TestBaseEnvPassesThroughWindowsProgramRootsWithoutSecrets covers #3753: NuGet
+// builds its machine-wide settings path from the Program* family, so a stage
+// shelling out to `dotnet build`/`dotnet test`/`msbuild` without them fails on
+// "Failed to load NuGet settings. Value cannot be null. (Parameter 'path1')".
+// These are filesystem paths and carry no secret material — the allowlist stays
+// default-deny.
+func TestBaseEnvPassesThroughWindowsProgramRootsWithoutSecrets(t *testing.T) {
+	programVars := map[string]string{
+		"ProgramData":             `C:\ProgramData`,
+		"ProgramFiles":            `C:\Program Files`,
+		"ProgramFiles(x86)":       `C:\Program Files (x86)`,
+		"ProgramW6432":            `C:\Program Files`,
+		"CommonProgramFiles":      `C:\Program Files\Common Files`,
+		"CommonProgramFiles(x86)": `C:\Program Files (x86)\Common Files`,
+	}
+	for name, value := range programVars {
+		t.Setenv(name, value)
+	}
+	t.Setenv("NUGET_API_KEY", "must-not-pass")
+
+	for _, env := range [][]string{BaseEnv(), BaseEnvWith(nil)} {
+		for name, value := range programVars {
+			if !contains(env, name+"="+value) {
+				t.Fatalf("Windows program root %s did not pass through: %v", name, env)
+			}
+		}
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "NUGET_API_KEY=") {
+				t.Fatalf("ambient token leaked through program-root allowlist: %v", env)
+			}
+		}
+	}
+}
+
 // TestBaseEnvExpandedAllowlistStillBlocksSecrets proves the polyglot expansion
 // stays default-deny: credential-shaped ambient vars must not pass, including
 // an npm per-registry setting — which is why the Node cache is allowlisted by
