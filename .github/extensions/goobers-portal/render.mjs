@@ -1315,7 +1315,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   function loadSavedFilters() {
     try {
       const entries = JSON.parse(localStorage.getItem("goobers-portal-filter-presets") || "{}");
-      const options = ["<option value=\"\">Saved filters</option>"];
+      const options = ['<option value="">Saved filters</option>'];
       for (const name of Object.keys(entries)) {
         options.push('<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>');
       }

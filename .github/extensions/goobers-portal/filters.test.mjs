@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Script } from "node:vm";
 
 import { filterRunSummaries, loadRuns } from "./client.mjs";
 import { renderGraphLegend, renderHtml, renderRunAssociations, renderTelemetryInsights } from "./render.mjs";
@@ -22,6 +23,13 @@ const runs = [
         startedAt: "2026-08-27T02:00:00Z",
     },
 ];
+
+test("rendered browser script is valid JavaScript", () => {
+    const html = renderHtml("test");
+    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+    assert.ok(scripts.length > 0);
+    assert.doesNotThrow(() => new Script(scripts.at(-1)[1]));
+});
 
 test("filterRunSummaries applies standalone-supported filters together", () => {
     assert.deepEqual(
