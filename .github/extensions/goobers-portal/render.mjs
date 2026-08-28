@@ -4,6 +4,7 @@
 import {
   decodeStreamEvent,
   decodeViewState,
+  encodeViewState,
   asString,
   deriveAttemptLineage,
   deriveFailureBreadcrumbs,
@@ -15,6 +16,7 @@ import {
   filterTranscriptEntries,
   isInvalidCursorError,
   mergeRunPage,
+  normalizeViewFilters,
   shouldApplyRestoredFilters,
 } from "./ux.mjs";
 
@@ -1806,6 +1808,15 @@ export function renderHtml(instanceId, themePreference = "system") {
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const BOOLEAN_FILTER_KEYS = new Set(["showNoWork"]);
+  const normalizeViewFilters = ${normalizeViewFilters.toString()};
+  const encodeViewState = ${encodeViewState.toString()};
+  const decodeViewState = ${decodeViewState.toString()};
+  const decodeStreamEvent = ${decodeStreamEvent.toString()};
+  const mergeRunPage = ${mergeRunPage.toString()};
+  const isInvalidCursorError = ${isInvalidCursorError.toString()};
+  const shouldApplyRestoredFilters = ${shouldApplyRestoredFilters.toString()};
+  const deriveFreshnessState = ${deriveFreshnessState.toString()};
   const asString = ${asString.toString()};
   const deriveAttemptLineage = ${deriveAttemptLineage.toString()};
   const deriveFailureBreadcrumbs = ${deriveFailureBreadcrumbs.toString()};

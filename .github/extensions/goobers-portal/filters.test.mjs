@@ -28,7 +28,19 @@ test("rendered browser script is valid JavaScript", () => {
     const html = renderHtml("test");
     const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
     assert.ok(scripts.length > 0);
-    assert.doesNotThrow(() => new Script(scripts.at(-1)[1]));
+    const browserScript = scripts.at(-1)[1];
+    assert.doesNotThrow(() => new Script(browserScript));
+    for (const helper of [
+        "decodeStreamEvent",
+        "decodeViewState",
+        "deriveFreshnessState",
+        "encodeViewState",
+        "isInvalidCursorError",
+        "mergeRunPage",
+        "shouldApplyRestoredFilters",
+    ]) {
+        assert.match(browserScript, new RegExp(`const ${helper} =`));
+    }
 });
 
 test("filterRunSummaries applies standalone-supported filters together", () => {
