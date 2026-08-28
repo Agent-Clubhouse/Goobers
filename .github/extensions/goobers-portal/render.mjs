@@ -1975,18 +1975,22 @@ export function renderHtml(instanceId, themePreference = "system") {
     return sourceId + "/" + runId;
   }
 
-  function runActionPanel(run, events, sourceId) {
-    const available = ["approve", "override", "rerun"].filter((action) => lastCapabilities.revealRun);
-    if (!available.length) return "";
-    const currentStage = run.currentStage || [...events].reverse().find((event) => event.stage)?.stage || "";
-    const journalSeq = run.journalSeq || [...events].reverse().find((event) => Number(event.seq) > 0)?.seq || "unavailable";
-    const pending = pendingRunActions.get(runActionKey(sourceId, run.id));
-    const confirmation = pending ? '<strong>Confirm:</strong> ' + escapeHtml(pending.effect) + '. ' +
+  function runActionConfirmationMarkup(pending) {
+    return '<strong>Confirm:</strong> ' + escapeHtml(pending.effect) + '. ' +
       'Actor: <code>' + escapeHtml(pending.actor) + '</code>. ' +
       (pending.rationale ? 'Rationale: <q>' + escapeHtml(pending.rationale) + '</q>. ' : '') +
       (pending.instructionAddendum ? 'Addendum: <q>' + escapeHtml(pending.instructionAddendum) + '</q>. ' : '') +
       '<button id="run-action-confirm" type="button"' + (pending.sending ? " disabled" : "") + ">" +
-      (pending.sending ? "Sending\u2026" : "Confirm and send") + "</button>" : "";
+      (pending.sending ? "Sending\u2026" : "Confirm and send") + "</button>";
+  }
+
+  function runActionPanel(run, events, sourceId) {
+    const available = lastCapabilities.revealRun ? ["approve", "override", "rerun"] : [];
+    if (!available.length) return "";
+    const currentStage = run.currentStage || [...events].reverse().find((event) => event.stage)?.stage || "";
+    const journalSeq = run.journalSeq || [...events].reverse().find((event) => Number(event.seq) > 0)?.seq || "unavailable";
+    const pending = pendingRunActions.get(runActionKey(sourceId, run.id));
+    const confirmation = pending ? runActionConfirmationMarkup(pending) : "";
     return '<section class="run-actions"><h2>Safe operator actions</h2>' +
       '<p>Run <code>' + escapeHtml(run.id) + '</code>, stage <code>' + escapeHtml(currentStage || "unknown") +
       '</code>, journal sequence <code>' + escapeHtml(journalSeq) + '</code>.</p>' +
@@ -2010,6 +2014,45 @@ export function renderHtml(instanceId, themePreference = "system") {
     const rationaleInput = runContentEl.querySelector("#run-action-rationale");
     const addendumInput = runContentEl.querySelector("#run-action-addendum");
     const actionKey = runActionKey(sourceId, run.id);
+    const attachConfirm = () => {
+      const confirm = runContentEl.querySelector("#run-action-confirm");
+      if (!confirm) return;
+      confirm.addEventListener("click", async () => {
+        const pending = pendingRunActions.get(actionKey);
+        if (!pending || pending.sending) return;
+        pending.sending = true;
+        confirm.disabled = true;
+        runStatusEl.textContent = "Sending " + pending.action + "\u2026";
+        try {
+          const response = await fetch("/api/run-action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source: sourceId, action: pending.action, runId: run.id,
+              stage: run.currentStage || [...events].reverse().find((event) => event.stage)?.stage,
+              input: {
+                actor: pending.actor,
+                ...(pending.action === "approve" ? { decision: "pass" } : {}),
+                ...(pending.action === "override" ? { rationale: pending.rationale } : {}),
+                ...(pending.action === "rerun" ? { instructionAddendum: pending.instructionAddendum } : {}),
+              },
+            }),
+          });
+          const data = await response.json();
+          if (!data.ok) throw new Error((data.code ? data.code + ": " : "") + (data.reason || "action failed"));
+          if (!Number(data.result?.journalSeq)) throw new Error("The server did not confirm a durable journal position.");
+          runStatusEl.textContent = pending.action + " accepted at journal sequence " + data.result.journalSeq + ".";
+          pendingRunActions.delete(actionKey);
+          await openRun(run.id);
+          runContentEl.querySelector("#run-action")?.focus();
+        } catch (err) {
+          runStatusEl.textContent = "Action failed: " + (err.message || err);
+          pending.sending = false;
+          runContentEl.querySelector("#run-action-confirm")?.removeAttribute("disabled");
+        }
+      });
+    };
+    attachConfirm();
     review.addEventListener("click", () => {
       const action = actionInput.value;
       const actor = actorInput.value.trim();
@@ -2024,41 +2067,8 @@ export function renderHtml(instanceId, themePreference = "system") {
         "rerun the stage using the entered instruction addendum";
       pendingRunActions.set(actionKey, { action, actor, rationale, instructionAddendum, effect, sending: false });
       confirmation.hidden = false;
-      confirmation.innerHTML = '<strong>Confirm:</strong> ' + escapeHtml(effect) + '. ' +
-        'Actor: <code>' + escapeHtml(actor) + '</code>. ' +
-        (rationale ? 'Rationale: <q>' + escapeHtml(rationale) + '</q>. ' : '') +
-        (instructionAddendum ? 'Addendum: <q>' + escapeHtml(instructionAddendum) + '</q>. ' : '') +
-        '<button id="run-action-confirm" type="button">Confirm and send</button>';
-      confirmation.querySelector("button").addEventListener("click", async () => {
-        const pending = pendingRunActions.get(actionKey);
-        if (!pending || pending.sending) return;
-        pending.sending = true;
-        confirmation.querySelector("button").disabled = true;
-        runStatusEl.textContent = "Sending " + action + "\u2026";
-        try {
-          const response = await fetch("/api/run-action", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              source: sourceId, action, runId: run.id, stage: run.currentStage || [...events].reverse().find((event) => event.stage)?.stage,
-              input: { actor, ...(action === "approve" ? { decision: "pass" } : {}),
-                ...(action === "override" ? { rationale } : {}),
-                ...(action === "rerun" ? { instructionAddendum } : {}) },
-            }),
-          });
-          const data = await response.json();
-          if (!data.ok) throw new Error((data.code ? data.code + ": " : "") + (data.reason || "action failed"));
-          if (!Number(data.result?.journalSeq)) throw new Error("The server did not confirm a durable journal position.");
-          runStatusEl.textContent = action + " accepted at journal sequence " + data.result.journalSeq + ".";
-          pendingRunActions.delete(actionKey);
-          await openRun(run.id);
-          runContentEl.querySelector("#run-action")?.focus();
-        } catch (err) {
-          runStatusEl.textContent = "Action failed: " + (err.message || err);
-          pending.sending = false;
-          confirmation.querySelector("button").disabled = false;
-        }
-      });
+      confirmation.innerHTML = runActionConfirmationMarkup(pendingRunActions.get(actionKey));
+      attachConfirm();
     });
   }
 
