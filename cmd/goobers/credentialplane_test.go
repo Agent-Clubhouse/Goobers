@@ -610,3 +610,78 @@ func TestCredentialPlaneHoldsNoValuesAcrossRequests(t *testing.T) {
 		t.Fatalf("source resolved %d times for 2 requests; the plane must not cache values across requests", mints)
 	}
 }
+
+// A stage that needs a repo workspace must be able to resolve the credential
+// that CLONES it, without declaring repository authority it does not otherwise
+// need (#3770/#3773).
+//
+// MEASURED: open-pr declares provider:pr:write and no repo capability —
+// correctly, it opens a pull request and does not push. The dispatcher named a
+// checkout capability for it and the pod requested it, and this gate refused:
+//
+//	capability "repo:push" is not declared by stage "open-pr-on-pod"
+//
+// so the run died one stage from done, having already implemented, validated
+// and pushed real work. The stamp was useless without the plane agreeing to
+// materialize it.
+//
+// This does not widen what the stage can DO: the pod consumes this credential
+// inside the checkout and never exports it to the stage's environment.
+func TestCredentialPlaneMaterializesTheCheckoutCapabilityForRepoWorkspaces(t *testing.T) {
+	spec := credentialPlaneSpec()
+	spec.Start = "open-pr"
+	spec.Tasks = []apiv1.Task{{
+		Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
+		// Exactly production open-pr: provider authority, a repo workspace, and
+		// deliberately NO repo-shaped capability.
+		Capabilities:  []string{"provider:pr:write"},
+		PolicyActions: []string{"open-or-update-pr"},
+		Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo},
+	}}
+	spec.Gates = nil
+	machine := compileCredentialPlaneMachine(t, spec)
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+
+	resolved, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "open-pr", Capabilities: []string{"repo:push"},
+	})
+	if err != nil {
+		t.Fatalf("the checkout capability was refused for a repo workspace: %v", err)
+	}
+	if len(resolved.Credentials) == 0 {
+		t.Fatal("no credential materialized for the checkout capability")
+	}
+
+	// The gate must still refuse anything the stage neither declared nor needs
+	// for a checkout — this is an implicit key, not an open door.
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "open-pr", Capabilities: []string{"provider:admin"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("refusal = %d %s, want 403 capability_undeclared for an unrelated capability", planeErr.Status, planeErr.Code)
+	}
+}
+
+// A SCRATCH workspace clones nothing, so the checkout capability must stay
+// refused there — the implicit grant is tied to needing a working tree.
+func TestCredentialPlaneRefusesTheCheckoutCapabilityForScratchWorkspaces(t *testing.T) {
+	spec := credentialPlaneSpec()
+	spec.Start = "probe"
+	spec.Tasks = []apiv1.Task{{
+		Name: "probe", Type: apiv1.TaskDeterministic, Goal: "probe",
+		Capabilities: []string{"github:issues:read"},
+		Run:          &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+	}}
+	spec.Gates = nil
+	machine := compileCredentialPlaneMachine(t, spec)
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+
+	_, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "probe", Capabilities: []string{"repo:push"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("refusal = %d %s, want 403 for a scratch stage that clones nothing", planeErr.Status, planeErr.Code)
+	}
+}
