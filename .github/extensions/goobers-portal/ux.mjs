@@ -142,7 +142,7 @@ export function deriveFreshnessState({ lastUpdatedAt, connected = true, mode = "
     return "Offline";
 }
 
-function asString(value) {
+export function asString(value) {
     if (value === null || value === undefined) return "";
     if (typeof value === "string") return value.trim();
     if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -185,8 +185,8 @@ export function deriveAttemptLineage(run = {}) {
 
     const byStageAttempt = new Map();
     for (const item of stageEvents) {
-        const key = `${item.stage}|${item.attempt}`;
-        const entry = byStageAttempt.get(key) || { stage: item.stage, attempt: item.attempt, events: [], states: [] };
+        const key = `${item.kind}|${item.stage}|${item.attempt}`;
+        const entry = byStageAttempt.get(key) || { stage: item.stage, kind: item.kind, attempt: item.attempt, events: [], states: [] };
         entry.events.push(item);
         entry.states.push(item.status);
         byStageAttempt.set(key, entry);
@@ -198,6 +198,7 @@ export function deriveAttemptLineage(run = {}) {
         const status = item.states[item.states.length - 1] || item.states[0] || "pending";
         return {
             stage: item.stage,
+            kind: item.kind,
             attempt: item.attempt,
             status,
             start,

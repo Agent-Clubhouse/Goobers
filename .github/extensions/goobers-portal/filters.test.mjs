@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { filterRunSummaries, loadRuns } from "./client.mjs";
-import { renderHtml, renderRunAssociations } from "./render.mjs";
+import { renderGraphLegend, renderHtml, renderRunAssociations } from "./render.mjs";
 
 const runs = [
     {
@@ -50,8 +50,21 @@ test("runs filters include the stage required by outcome and population", () => 
     assert.match(html, /Issue #" \+ operator\.issue\.number/);
     assert.match(html, /operator\.pullRequestTitle/);
     assert.match(html, /class="run-association-link"/);
-    assert.match(html, /graph-legend/);
-    assert.match(html, /legend-chip/);
+    const legend = renderGraphLegend();
+    assert.equal((legend.match(/<span class="legend-chip /g) || []).length, 6);
+    assert.match(html, /const renderGraphLegend = function renderGraphLegend/);
+    assert.match(html, /const filterTranscriptEntries = function filterTranscriptEntries/);
+    assert.match(html, /initTranscriptFilters\(events, sourceId, runId\)/);
+    assert.match(html, /data-transcript-filter="stage"/);
+});
+
+test("run detail waterfall uses all timestamps and renders execution metadata", () => {
+    const html = renderHtml("waterfall-test");
+    assert.match(html, /Math\.min\(\.\.\.timestamps\)/);
+    assert.match(html, /Math\.max\(\.\.\.timestamps\)/);
+    assert.match(html, /Idle gaps/);
+    assert.match(html, /timing unavailable/);
+    assert.match(html, /· retry/);
 });
 
 test("run associations render safe issue and PR title links", () => {

@@ -4,6 +4,7 @@
 import {
   decodeStreamEvent,
   decodeViewState,
+  asString,
   deriveAttemptLineage,
   deriveFailureBreadcrumbs,
   deriveFreshnessState,
@@ -84,19 +85,35 @@ export function renderExecutionWaterfall(run = {}) {
     if (!entries.length) {
         return '<p class="muted">No execution waterfall is available yet.</p>';
     }
-    const start = entries.map((entry) => new Date(entry.start || Date.now())).find((value) => Number.isFinite(value.getTime()));
-    const end = entries.map((entry) => new Date(entry.end || entry.start || Date.now())).find((value) => Number.isFinite(value.getTime()));
-    const startMs = start ? start.getTime() : 0;
-    const endMs = end ? end.getTime() : startMs;
+    const timestamps = entries.flatMap((entry) => [entry.start, entry.end])
+        .map((value) => value ? new Date(value).getTime() : NaN)
+        .filter((value) => Number.isFinite(value));
+    const startMs = timestamps.length ? Math.min(...timestamps) : 0;
+    const endMs = timestamps.length ? Math.max(...timestamps) : 0;
     const duration = Math.max(1, endMs - startMs);
+    const timelineAvailable = timestamps.length > 0;
     const rows = entries.map((entry) => {
-        const itemStart = entry.start ? new Date(entry.start).getTime() : startMs;
+        const itemStart = entry.start ? new Date(entry.start).getTime() : NaN;
         const itemEnd = entry.end ? new Date(entry.end).getTime() : itemStart;
-        const left = startMs ? ((itemStart - startMs) / duration) * 100 : 0;
-        const width = startMs && itemEnd >= itemStart ? Math.max(6, ((itemEnd - itemStart) / duration) * 100) : 0;
-        return '<div class="waterfall-row"><div class="waterfall-stage">' + escapeAssociationHtml(entry.stage) + ' · attempt ' + entry.attempt + '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' + escapeAssociationHtml(entry.status || 'pending') + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' + escapeAssociationHtml(entry.status || 'pending') + '</div></div>';
+        const knownTiming = Number.isFinite(itemStart) && Number.isFinite(itemEnd) && itemEnd >= itemStart;
+        const left = knownTiming && timelineAvailable ? ((itemStart - startMs) / duration) * 100 : 0;
+        const width = knownTiming && timelineAvailable ? Math.max(2, ((itemEnd - itemStart) / duration) * 100) : 0;
+        const kind = entry.kind || "stage";
+        const retry = entry.attempt > 1 ? " retry" : "";
+        const timing = knownTiming
+            ? Math.round((itemEnd - itemStart) / 1000) + "s"
+            : "timing unavailable";
+        return '<div class="waterfall-row ' + (knownTiming ? "" : "unknown-timing") + '"><div class="waterfall-stage"><strong>' + escapeAssociationHtml(entry.stage) + '</strong> · ' + escapeAssociationHtml(kind) + ' · attempt ' + entry.attempt + (retry ? ' · retry' : '') + '</div><div class="waterfall-bar-wrap"><span class="waterfall-bar ' + escapeAssociationHtml(entry.status || 'pending') + retry + '" style="left:' + left + '%; width:' + width + '%"></span></div><div class="waterfall-status">' + escapeAssociationHtml(entry.status || 'pending') + ' · ' + timing + '</div></div>';
     }).join("");
-    return '<div class="execution-waterfall">' + rows + '</div>';
+    const intervals = entries.map((entry) => [new Date(entry.start || "").getTime(), new Date(entry.end || "").getTime()])
+        .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start)
+        .sort((a, b) => a[0] - b[0]);
+    const idleGaps = intervals.slice(1).map((interval, index) => interval[0] - intervals[index][1])
+        .filter((gap) => gap > 0);
+    const gapHtml = idleGaps.length
+        ? '<p class="muted">Idle gaps: ' + idleGaps.map((gap) => Math.round(gap / 1000) + 's').join(", ") + '</p>'
+        : "";
+    return '<div class="execution-waterfall" aria-label="Execution waterfall">' + (timestamps.length ? '<p class="muted">Timeline: ' + new Date(startMs).toISOString() + ' – ' + new Date(endMs).toISOString() + '</p>' : '<p class="muted">No timestamps are available; bars show execution order only.</p>') + gapHtml + rows + '</div>';
 }
 
 export function renderHtml(instanceId, themePreference = "system") {
@@ -398,6 +415,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   .waterfall-bar.failed { background: var(--true-color-red-muted, #ffebe9); border: 1px solid var(--true-color-red, #cf222e); }
   .waterfall-bar.blocked { background: var(--true-color-yellow, #9a670033); border: 1px solid var(--true-color-yellow, #9a6700); }
   .waterfall-bar.skipped { background: var(--border-color-default, #d0d7de22); border: 1px solid var(--text-color-muted, #656d76); }
+  .waterfall-bar.retry { box-shadow: 0 0 0 2px var(--true-color-yellow, #9a6700) inset; }
+  .unknown-timing .waterfall-bar { opacity: 0.45; }
   .waterfall-status { font-size: 12px; color: var(--text-color-muted, #656d76); text-transform: capitalize; }
   .node-status { font-size: 8px; fill: var(--text-color-muted, #656d76); }
   .edge-traversed { stroke: var(--true-color-blue, #0969da); stroke-width: 2; fill: none; }
@@ -1719,6 +1738,15 @@ export function renderHtml(instanceId, themePreference = "system") {
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const asString = ${asString.toString()};
+  const deriveAttemptLineage = ${deriveAttemptLineage.toString()};
+  const deriveFailureBreadcrumbs = ${deriveFailureBreadcrumbs.toString()};
+  const filterTranscriptEntries = ${filterTranscriptEntries.toString()};
+  const renderGraphLegend = ${renderGraphLegend.toString()};
+  const renderCausalDiagnosis = ${renderCausalDiagnosis.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderExecutionWaterfall = ${renderExecutionWaterfall.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
 
   function externalRefsFrom(events) {
     const refs = [];
@@ -1786,20 +1814,8 @@ export function renderHtml(instanceId, themePreference = "system") {
     return html;
   }
 
-  function renderRunEvents(events, sourceId, runId) {
-    if (!events || !events.length) return '<p class="muted">No events recorded.</p>';
-    const transcriptEvents = events.filter((event) => {
-      const name = String(event?.name || "").toLowerCase();
-      return name.includes("transcript") || event?.role || event?.stage || event?.attempt !== undefined;
-    });
-    const transcriptFilterHtml = transcriptEvents.length ? '<div class="filters-bar" aria-label="Transcript filters">' +
-      '<input type="text" data-transcript-filter="stage" placeholder="Stage" />' +
-      '<input type="text" data-transcript-filter="role" placeholder="Role" />' +
-      '<input type="number" min="1" data-transcript-filter="attempt" placeholder="Attempt" />' +
-      '<input type="text" data-transcript-filter="text" placeholder="Text" />' +
-      '</div>' : '';
-    const displayedEvents = transcriptEvents.length ? filterTranscriptEntries(events, {}) : events;
-    return transcriptFilterHtml + '<div class="event-list">' + displayedEvents.map((event) => {
+  function renderRunEventItems(displayedEvents, sourceId, runId) {
+    return displayedEvents.map((event) => {
       const status = event.status || event.verdict || event.decision || "";
       const stage = event.stage ? " · " + escapeHtml(event.stage) : "";
       const summary =
@@ -1844,13 +1860,52 @@ export function renderHtml(instanceId, themePreference = "system") {
       const linksHtml = artifactLinks.length
         ? '<div class="artifact-links">' + artifactLinks.join(" · ") + "</div>"
         : "";
-      const body = '<div class="event-body">' + refHtml + detailsHtml + linksHtml + "</div>";
-      return "<details>" + summary + body + "</details>";
-    }).join("") + "</div>";
+      return "<details>" + summary + '<div class="event-body">' + refHtml + detailsHtml + linksHtml + "</div></details>";
+    }).join("");
+  }
+
+  function renderRunEvents(events, sourceId, runId) {
+    if (!events || !events.length) return '<p class="muted">No events recorded.</p>';
+    const transcriptEvents = events.filter((event) => {
+      const name = String(event?.name || "").toLowerCase();
+      return name.includes("transcript") || event?.role || event?.stage || event?.attempt !== undefined;
+    });
+    const transcriptFilterHtml = transcriptEvents.length ? '<div class="filters-bar" aria-label="Transcript filters">' +
+      '<input type="text" data-transcript-filter="stage" placeholder="Stage" />' +
+      '<input type="text" data-transcript-filter="role" placeholder="Role" />' +
+      '<input type="number" min="1" data-transcript-filter="attempt" placeholder="Attempt" />' +
+      '<input type="text" data-transcript-filter="text" placeholder="Text" />' +
+      '</div>' : '';
+    const displayedEvents = transcriptEvents.length ? transcriptEvents : events;
+    const eventList = renderRunEventItems(displayedEvents, sourceId, runId);
+    return transcriptFilterHtml + '<div class="event-list" id="transcript-events">' + eventList + '</div>';
+  }
+
+  function initTranscriptFilters(events, sourceId, runId) {
+    const transcriptEvents = events.filter((event) => {
+      const name = String(event?.name || "").toLowerCase();
+      return name.includes("transcript") || event?.role || event?.stage || event?.attempt !== undefined;
+    });
+    const controls = runContentEl.querySelectorAll("[data-transcript-filter]");
+    const list = runContentEl.querySelector("#transcript-events");
+    if (!controls.length || !list || !transcriptEvents.length) return;
+    const update = () => {
+      const filters = {};
+      controls.forEach((input) => { filters[input.dataset.transcriptFilter] = input.value; });
+      list.innerHTML = renderRunEventItems(filterTranscriptEntries(transcriptEvents, filters), sourceId, runId);
+    };
+    controls.forEach((input) => input.addEventListener("input", update));
   }
 
   async function openRun(runId) {
     const sourceId = sourceSelect.value;
+    const activeFilter = document.activeElement?.closest("[data-transcript-filter]");
+    const savedFilters = [...runContentEl.querySelectorAll("[data-transcript-filter]")].map((input) => ({
+      name: input.dataset.transcriptFilter,
+      value: input.value,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    }));
     syncViewUrl(runId);
     dashboardEl.style.display = "none";
     runViewEl.style.display = "block";
@@ -1905,6 +1960,30 @@ export function renderHtml(instanceId, themePreference = "system") {
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);
       html += "<h2>Events, logs, and messages</h2>" + renderRunEvents(events, sourceId, runId);
       runContentEl.innerHTML = html;
+      savedFilters.forEach((saved) => {
+        const input = runContentEl.querySelector('[data-transcript-filter="' + saved.name + '"]');
+        if (!input) return;
+        input.value = saved.value;
+        if (saved.selectionStart !== null && saved.selectionEnd !== null) {
+          input.setSelectionRange(saved.selectionStart, saved.selectionEnd);
+        }
+      });
+      initTranscriptFilters(events, sourceId, runId);
+      if (activeFilter?.dataset.transcriptFilter) {
+        runContentEl.querySelector('[data-transcript-filter="' + activeFilter.dataset.transcriptFilter + '"]')?.focus();
+      }
+      const restoredFilterValues = {};
+      savedFilters.forEach((saved) => { restoredFilterValues[saved.name] = saved.value; });
+      if (savedFilters.length) {
+        const list = runContentEl.querySelector("#transcript-events");
+        const transcriptEvents = events.filter((event) => {
+          const name = String(event?.name || "").toLowerCase();
+          return name.includes("transcript") || event?.role || event?.stage || event?.attempt !== undefined;
+        });
+        if (list && transcriptEvents.length) {
+          list.innerHTML = renderRunEventItems(filterTranscriptEntries(transcriptEvents, restoredFilterValues), sourceId, runId);
+        }
+      }
       initGraphInteractions(r.graph, r.transitions, events, r);
     } catch (err) {
       runErrorEl.textContent = String(err);
