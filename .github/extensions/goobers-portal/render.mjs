@@ -606,6 +606,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     font-weight: 600;
   }
   [role="tabpanel"] { min-width: 0; }
+  [role="tabpanel"][hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -806,44 +807,44 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (message === "Failed to fetch" || message.includes("NetworkError")) {
       return "Portal extension connection was lost. Close and reopen this canvas to reconnect.";
     }
-
-    function activateInternalTab(root, name, focus = false) {
-      const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
-      const selected = tabs.find((tab) => tab.dataset.tab === name) || tabs[0];
-      if (!selected) return;
-      for (const tab of tabs) {
-        const active = tab === selected;
-        tab.setAttribute("aria-selected", String(active));
-        tab.tabIndex = active ? 0 : -1;
-        const panel = root.querySelector("#" + tab.getAttribute("aria-controls"));
-        if (panel) panel.hidden = !active;
-      }
-      if (root === dashboardEl) activeDashboardTab = selected.dataset.tab;
-      else activeRunTab = selected.dataset.tab;
-      if (focus) selected.focus();
-    }
-
-    function initInternalTabs(root, initial) {
-      const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
-      tabs.forEach((tab, index) => {
-        tab.addEventListener("click", () => activateInternalTab(root, tab.dataset.tab));
-        tab.addEventListener("keydown", (event) => {
-          let next = index;
-          if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
-          else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
-          else if (event.key === "Home") next = 0;
-          else if (event.key === "End") next = tabs.length - 1;
-          else return;
-          event.preventDefault();
-          activateInternalTab(root, tabs[next].dataset.tab, true);
-        });
-      });
-      activateInternalTab(root, initial);
-    }
-
-    initInternalTabs(dashboardEl, activeDashboardTab);
     return message;
   }
+
+  function activateInternalTab(root, name, focus = false) {
+    const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+    const selected = tabs.find((tab) => tab.dataset.tab === name) || tabs[0];
+    if (!selected) return;
+    for (const tab of tabs) {
+      const active = tab === selected;
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      const panel = root.querySelector("#" + tab.getAttribute("aria-controls"));
+      if (panel) panel.hidden = !active;
+    }
+    if (root === dashboardEl) activeDashboardTab = selected.dataset.tab;
+    else activeRunTab = selected.dataset.tab;
+    if (focus) selected.focus();
+  }
+
+  function initInternalTabs(root, initial) {
+    const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => activateInternalTab(root, tab.dataset.tab));
+      tab.addEventListener("keydown", (event) => {
+        let next = index;
+        if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+        else if (event.key === "Home") next = 0;
+        else if (event.key === "End") next = tabs.length - 1;
+        else return;
+        event.preventDefault();
+        activateInternalTab(root, tabs[next].dataset.tab, true);
+      });
+    });
+    activateInternalTab(root, initial);
+  }
+
+  initInternalTabs(dashboardEl, activeDashboardTab);
 
   function applyThemePreference(preference) {
     const normalized = ["system", "light", "dark"].includes(preference) ? preference : "system";

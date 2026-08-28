@@ -46,6 +46,11 @@ test("rendered browser script is valid JavaScript", () => {
     assert.match(html, /aria-label="Dashboard sections"/);
     assert.match(browserScript, /aria-label="Run detail sections"/);
     assert.match(browserScript, /function initInternalTabs/);
+    assert.match(html, /\[role="tabpanel"\]\[hidden\] \{ display: none !important; \}/);
+    assert.doesNotMatch(
+        browserScript,
+        /function portalRequestError[\s\S]*?function activateInternalTab[\s\S]*?return message;/,
+    );
 });
 
 test("filterRunSummaries applies standalone-supported filters together", () => {
