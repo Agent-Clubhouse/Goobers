@@ -96,4 +96,28 @@ describe("causal diagnosis helpers", () => {
     );
     expect(screen.getByText("No stage transitions are available for this run.")).toBeInTheDocument();
   });
+
+  it("renders lineage and waterfall details for populated transitions", () => {
+    const events = [
+      event({ seq: 1, stage: "build", attempt: 1, time: "2026-01-01T00:00:00.000Z" }),
+      event({
+        seq: 2,
+        type: "stage.finished",
+        stage: "build",
+        attempt: 1,
+        status: "success",
+        time: "2026-01-01T00:00:02.000Z",
+      }),
+    ];
+    render(
+      createElement(CausalDiagnosis, {
+        events,
+        run: { id: "run-1", phase: "completed" } as RunDetail,
+      }),
+    );
+
+    expect(screen.getAllByText("build")).toHaveLength(2);
+    expect(screen.getByText("Attempt 1 · success")).toBeInTheDocument();
+    expect(screen.getByText(/2s · success/)).toBeInTheDocument();
+  });
 });
