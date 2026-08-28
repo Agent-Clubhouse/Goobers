@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { attentionKey, decodeViewState, deriveAttention, deriveFreshnessState, encodeViewState } from "./ux.mjs";
+import {
+    attentionKey,
+    decodeStreamEvent,
+    decodeViewState,
+    deriveAttention,
+    deriveFreshnessState,
+    encodeViewState,
+    isInvalidCursorError,
+    mergeRunPage,
+    shouldApplyRestoredFilters,
+} from "./ux.mjs";
 
 test("deriveAttention returns bounded actionable states with causal details", () => {
     const runs = [
@@ -65,21 +75,16 @@ test("freshness defaults to Stale for polling mode when never updated", () => {
     assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: null, mode: "polling", now }), "Stale");
 });
 
-test("stream routing: deriveFreshnessState works with various timestamps", () => {
-    const now = Date.parse("2026-08-28T11:00:00Z");
-    // Just connected: lastUpdatedAt is now
-    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now, mode: "daemon", now }), "Live");
-    // 15s old: still within stale threshold (30s)
-    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now - 15000, mode: "daemon", now }), "Live");
-    // 45s old: exceeds stale threshold but within offline threshold (120s)
-    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now - 45000, mode: "daemon", now }), "Stale");
-    // 150s old: exceeds offline threshold
-    assert.equal(deriveFreshnessState({ connected: true, lastUpdatedAt: now - 150000, mode: "daemon", now }), "Offline");
-    // Disconnected: always offline
-    assert.equal(deriveFreshnessState({ connected: false, lastUpdatedAt: now, mode: "daemon", now }), "Offline");
+test("stream routing decodes JSON events and ignores malformed payloads", () => {
+    assert.deepEqual(decodeStreamEvent('{"type":"run.updated","runId":"run-7"}'), {
+        type: "run.updated",
+        runId: "run-7",
+    });
+    assert.equal(decodeStreamEvent("not-json"), null);
+    assert.equal(decodeStreamEvent(""), null);
 });
 
-test("restored-filter execution: decodeViewState extracts all filter types", () => {
+test("restored-filter state extracts all filter types", () => {
     const search = "?gaggle=test&workflow=build&phase=running&trigger=item&stage=deploy&outcome=success&population=attempts&showNoWork=&run=abc123";
     const { filters, selectedRun } = decodeViewState(search);
     assert.deepEqual(filters, {
@@ -95,7 +100,7 @@ test("restored-filter execution: decodeViewState extracts all filter types", () 
     assert.equal(selectedRun, "abc123");
 });
 
-test("restored-filter execution: partial query strings decode correctly", () => {
+test("partial restored-filter state decodes correctly", () => {
     // Partial query with some filters: empty string values are preserved in URLSearchParams
     const search = "?phase=failed&showNoWork&run=run/7";
     const { filters, selectedRun } = decodeViewState(search);
@@ -106,26 +111,30 @@ test("restored-filter execution: partial query strings decode correctly", () => 
     assert.equal(selectedRun, "run/7");
 });
 
-test("cursor recovery: encodeViewState round-trips with cursor pagination state", () => {
-    const filters = { gaggle: "prod", workflow: "test", showNoWork: true };
-    const encoded = encodeViewState(filters, "");
-    const decoded = decodeViewState(encoded);
-    assert.deepEqual(decoded.filters, filters);
-    assert.equal(decoded.selectedRun, "");
+test("restored-filter execution requests a filtered run load", () => {
+    assert.equal(shouldApplyRestoredFilters({ phase: "failed" }), true);
+    assert.equal(shouldApplyRestoredFilters({}), false);
 });
 
-test("pagination: encodeViewState preserves runId across cursor-based load-more", () => {
-    const filters1 = { phase: "running" };
-    const encoded1 = encodeViewState(filters1, "run/1");
-    const decoded1 = decodeViewState(encoded1);
-    assert.equal(decoded1.selectedRun, "run/1");
+test("cursor recovery identifies cursor failures and resets the page", () => {
+    assert.equal(isInvalidCursorError("invalid cursor for runs"), true);
+    assert.equal(isInvalidCursorError("daemon unavailable"), false);
+    assert.deepEqual(mergeRunPage([{ id: "old" }], { runs: [{ id: "fresh" }], cursor: "next" }), {
+        runs: [{ id: "fresh" }],
+        cursor: "next",
+        hasMore: true,
+    });
+});
 
-    // Simulate load-more: same filters, no selected run in URL
-    const filters2 = { phase: "running" };
-    const encoded2 = encodeViewState(filters2, "");
-    const decoded2 = decodeViewState(encoded2);
-    assert.equal(decoded2.selectedRun, "");
-    assert.deepEqual(decoded2.filters, filters1);
+test("pagination appends runs and exposes the next cursor", () => {
+    assert.deepEqual(mergeRunPage([{ id: "run-1" }], {
+        runs: [{ id: "run-2" }],
+        cursor: "cursor-2",
+    }, true), {
+        runs: [{ id: "run-1" }, { id: "run-2" }],
+        cursor: "cursor-2",
+        hasMore: true,
+    });
 });
 
 test("freshness transitions: deriveFreshnessState boundary at staleAfterMs", () => {

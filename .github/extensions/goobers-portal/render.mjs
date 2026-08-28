@@ -1,7 +1,14 @@
 // Renders the goobers-portal HTML shell. Kept out of extension.mjs so the
 // wiring file stays focused on SDK plumbing.
 
-import { decodeViewState, encodeViewState, deriveFreshnessState } from "./ux.mjs";
+import {
+  decodeStreamEvent,
+  decodeViewState,
+  deriveFreshnessState,
+  isInvalidCursorError,
+  mergeRunPage,
+  shouldApplyRestoredFilters,
+} from "./ux.mjs";
 
 function escapeAssociationHtml(value) {
     return String(value).replace(/[&<>"']/g, (character) => ({
@@ -582,6 +589,10 @@ export function renderHtml(instanceId, themePreference = "system") {
   let lastCapabilities = {};
   let lastUpdatedAt = null;
   let eventSource = null;
+  let reconnectAttemptCount = 0;
+  let reconnectTimer = null;
+  let freshnessTimer = null;
+  let liveConnectionEstablished = false;
   const dismissedAttention = new Map();
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
@@ -954,8 +965,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
-    // Only refresh saved filters if this is a new connection (not a background poll).
-    // Store the current selection so we can restore it.
+    // Rebuild the preset list while preserving the operator's selection and focus.
     const prevPresetSelection = savedFilterPresets.value;
     const prevPresetFocused = document.activeElement === savedFilterPresets;
     loadSavedFilters();
@@ -1055,7 +1065,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       }
     }
     if (filters.showNoWork === true) filterNoWork.checked = true;
-    return Object.keys(filters).length > 0;
+    return shouldApplyRestoredFilters(filters);
   }
 
   function setAdvancedFilterSupport(supported) {
@@ -1201,13 +1211,15 @@ export function renderHtml(instanceId, themePreference = "system") {
         return;
       }
       if (data.error) {
-        const invalidCursor = /cursor/i.test(data.error || "");
+        const invalidCursor = isInvalidCursorError(data.error);
         if (invalidCursor && !invalidCursorRecoveryInProgress) {
           invalidCursorRecoveryInProgress = true;
           lastCursor = "";
-          const result = applyFilters({ append: false });
-          invalidCursorRecoveryInProgress = false;
-          return result;
+          try {
+            return await applyFilters({ append: false });
+          } finally {
+            invalidCursorRecoveryInProgress = false;
+          }
         }
         errorEl.textContent = data.error;
         lastRuns = [];
@@ -1218,10 +1230,10 @@ export function renderHtml(instanceId, themePreference = "system") {
         return;
       }
       errorEl.textContent = "";
-      const nextRuns = data.runs || [];
-      lastRuns = append ? [...lastRuns, ...nextRuns] : nextRuns;
-      lastCursor = data.cursor || "";
-      hasMoreRuns = Boolean(lastCursor);
+      const page = mergeRunPage(lastRuns, data, append);
+      lastRuns = page.runs;
+      lastCursor = page.cursor;
+      hasMoreRuns = page.hasMore;
       loadMoreButton.style.display = hasMoreRuns ? "inline-flex" : "none";
       syncViewUrl();
       renderRuns(lastRuns);
@@ -1848,26 +1860,31 @@ export function renderHtml(instanceId, themePreference = "system") {
   }
 
   function connectLiveEvents() {
-    if (eventSource) eventSource.close();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (freshnessTimer) {
+      clearInterval(freshnessTimer);
+      freshnessTimer = null;
+    }
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
     const sourceId = sourceSelect.value;
     const mode = sourceSelect.selectedOptions[0]?.dataset.kind;
     if (!sourceId || mode !== "local" && mode !== "remote") return;
 
-    let attemptCount = 0;
-    let freshnessTimer = null;
-
     function scheduleReconnect() {
-      const delay = Math.min(10000, 1000 * Math.pow(2, attemptCount));
-      attemptCount++;
+      if (reconnectTimer) return;
+      const delay = Math.min(10000, 1000 * Math.pow(2, reconnectAttemptCount));
+      reconnectAttemptCount++;
       setFreshnessState("Reconnecting");
-      window.setTimeout(() => {
-        if (eventSource) {
-          const selected = sourceSelect.value;
-          if (selected) {
-            eventSource.close();
-            eventSource = null;
-            connectLiveEvents();
-          }
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        if (sourceSelect.value === sourceId && !eventSource) {
+          connectLiveEvents();
         }
       }, delay);
     }
@@ -1894,7 +1911,9 @@ export function renderHtml(instanceId, themePreference = "system") {
 
     eventSource = new EventSource("/api/events?source=" + encodeURIComponent(sourceId));
     eventSource.onopen = () => {
-      attemptCount = 0;
+      const wasReconnect = liveConnectionEstablished;
+      reconnectAttemptCount = 0;
+      liveConnectionEstablished = true;
       lastUpdatedAt = Date.now();
       const freshness = deriveFreshnessState({
         lastUpdatedAt,
@@ -1904,8 +1923,10 @@ export function renderHtml(instanceId, themePreference = "system") {
       });
       setFreshnessState(freshness, lastUpdatedAt);
       startFreshnessTimer();
+      if (wasReconnect) void loadSnapshot();
     };
-    eventSource.onmessage = () => {
+    eventSource.onmessage = (event) => {
+      if (!decodeStreamEvent(event.data)) return;
       lastUpdatedAt = Date.now();
       const freshness = deriveFreshnessState({
         lastUpdatedAt,
@@ -1917,6 +1938,10 @@ export function renderHtml(instanceId, themePreference = "system") {
       void loadSnapshot();
     };
     eventSource.onerror = () => {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
       stopFreshnessTimer();
       scheduleReconnect();
     };
@@ -1924,6 +1949,8 @@ export function renderHtml(instanceId, themePreference = "system") {
 
   document.getElementById("refresh").addEventListener("click", refreshAll);
   sourceSelect.addEventListener("change", () => {
+    liveConnectionEstablished = false;
+    reconnectAttemptCount = 0;
     if (eventSource) eventSource.close();
     void loadSnapshot().then(connectLiveEvents);
   });

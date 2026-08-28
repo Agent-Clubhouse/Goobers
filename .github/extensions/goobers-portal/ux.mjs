@@ -104,6 +104,34 @@ export function decodeViewState(search = "") {
     return { filters, selectedRun };
 }
 
+export function decodeStreamEvent(data) {
+    if (data && typeof data === "object") return data;
+    if (typeof data !== "string" || !data.trim()) return null;
+    try {
+        const event = JSON.parse(data);
+        return event && typeof event === "object" ? event : null;
+    } catch {
+        return null;
+    }
+}
+
+export function mergeRunPage(existingRuns = [], page = {}, append = false) {
+    const runs = page.runs || [];
+    return {
+        runs: append ? [...existingRuns, ...runs] : runs,
+        cursor: page.cursor || "",
+        hasMore: Boolean(page.cursor),
+    };
+}
+
+export function isInvalidCursorError(error = "") {
+    return /cursor/i.test(String(error));
+}
+
+export function shouldApplyRestoredFilters(filters = {}) {
+    return Object.keys(filters).length > 0;
+}
+
 export function deriveFreshnessState({ lastUpdatedAt, connected = true, mode = "daemon", now = Date.now(), staleAfterMs = 30000, offlineAfterMs = 120000 } = {}) {
     if (!connected) return "Offline";
     if (!lastUpdatedAt) return mode === "daemon" ? "Offline" : "Stale";
