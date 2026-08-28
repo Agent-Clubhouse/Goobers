@@ -19,6 +19,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -36,6 +37,7 @@ const execFileAsync = promisify(execFile);
 const GOOBERS_BIN = process.platform === "win32" ? "goobers.exe" : "goobers";
 
 const FETCH_TIMEOUT_MS = 4000;
+const actionKeys = new Map();
 
 function withScheme(address) {
     return /^https?:\/\//i.test(address) ? address : `http://${address}`;
@@ -98,11 +100,11 @@ async function fetchJSON(url, { token, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
  * reused. Since the request never reached a handler in that case, retrying is
  * safe and turns a spurious failure into a successful call.
  */
-async function sendJSON(method, url, payload, { token, timeoutMs = FETCH_TIMEOUT_MS, retries = 2 } = {}) {
+async function sendJSON(method, url, payload, { token, timeoutMs = FETCH_TIMEOUT_MS, retries = 2, headers: extraHeaders } = {}) {
     let lastErr;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            return await sendJSONOnce(method, url, payload, { token, timeoutMs });
+            return await sendJSONOnce(method, url, payload, { token, timeoutMs, headers: extraHeaders });
         } catch (err) {
             lastErr = err;
             const transient = /UND_ERR_SOCKET|ECONNRESET|ECONNREFUSED|EPIPE|other side closed/i.test(err.message || "");
@@ -113,11 +115,11 @@ async function sendJSON(method, url, payload, { token, timeoutMs = FETCH_TIMEOUT
     throw lastErr;
 }
 
-async function sendJSONOnce(method, url, payload, { token, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+async function sendJSONOnce(method, url, payload, { token, timeoutMs = FETCH_TIMEOUT_MS, headers: extraHeaders } = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const headers = { "Content-Type": "application/json", Connection: "close" };
+        const headers = { "Content-Type": "application/json", Connection: "close", ...extraHeaders };
         if (token) headers.Authorization = "Bearer " + token;
         const res = await fetch(url, {
             method,
@@ -133,8 +135,11 @@ async function sendJSONOnce(method, url, payload, { token, timeoutMs = FETCH_TIM
             body = text;
         }
         if (!res.ok) {
-            const err = new Error(`HTTP ${res.status}${body?.error ? `: ${body.error}` : ""}`);
+            const apiError = body?.error && typeof body.error === "object" ? body.error : body;
+            const message = apiError?.message || body?.error || body?.reason;
+            const err = new Error(`HTTP ${res.status}${message ? `: ${message}` : ""}`);
             err.status = res.status;
+            err.code = apiError?.code || body?.code;
             err.body = body;
             throw err;
         }
@@ -444,6 +449,45 @@ export async function setWorkflowEnabled(resolved, gaggle, workflow, enabled) {
     // synchronously re-materializes + reloads the whole config set before
     // answering, which routinely takes longer than the default read timeout.
     return await sendJSON("PUT", `${baseUrl}${path}`, { enabled }, { token, timeoutMs: 60000 });
+}
+
+const interventionCapabilities = { approve: "approve", override: "override", rerun: "rerun" };
+
+export function validateIntervention(action, input = {}) {
+    if (!interventionCapabilities[action]) throw new Error(`Unsupported run action: ${action}`);
+    if (!String(input.actor || "").trim()) throw new Error("actor is required");
+    if (action === "approve" && String(input.decision || "") !== "pass") throw new Error("approve requires decision=pass");
+    if (action === "override" && !String(input.rationale || "").trim()) throw new Error("override requires a rationale");
+    if (action === "rerun" && !String(input.instructionAddendum || "").trim()) throw new Error("rerun requires an instruction addendum");
+}
+
+export function interventionCapability(capabilities, action) {
+    const capability = interventionCapabilities[action];
+    return Boolean(capability && (capabilities || {})[capability]);
+}
+
+export function requireDurableInterventionResult(result) {
+    if (!Number.isInteger(result?.journalSeq) || result.journalSeq <= 0) {
+        throw new Error("The server did not confirm a durable journal position.");
+    }
+    return result;
+}
+
+export function interventionIdempotencyKey(runId, stage, action) {
+    const key = `${runId}/${stage}/${action}`;
+    if (!actionKeys.has(key)) actionKeys.set(key, crypto.randomUUID());
+    return actionKeys.get(key);
+}
+
+export async function runStageIntervention(resolved, action, runId, stage, input) {
+    validateIntervention(action, input);
+    if (resolved.mode !== "daemon") throw new Error("Run actions require a running Goobers daemon.");
+    const key = interventionIdempotencyKey(runId, stage, action);
+    const path = `/api/v1/runs/${encodeURIComponent(runId)}/stages/${encodeURIComponent(stage)}/${action}`;
+    const result = await sendJSON("POST", `${resolved.baseUrl}${path}`, input, {
+        token: resolved.token, headers: { "Idempotency-Key": key },
+    });
+    return { ...requireDurableInterventionResult(result), idempotencyKey: key };
 }
 
 /**

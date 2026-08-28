@@ -26,6 +26,7 @@ import {
     loadRuns,
     openEventStream,
     setWorkflowEnabled,
+    runStageIntervention,
     startDaemon,
 } from "./client.mjs";
 
@@ -201,6 +202,15 @@ async function setWorkflowEnabledFor(sourceId, gaggle, workflow, enabled) {
     const resolved = await resolveSource(source);
     if (!resolved.ok) {
         throw new CanvasError("not_connected", resolved.reason || "source is not connected");
+    }
+
+    async function runStageInterventionFor(sourceId, action, runId, stage, input) {
+        const known = await listKnownSources();
+        const source = known.find((s) => s.id === sourceId);
+        if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+        const resolved = await resolveSource(source);
+        if (!resolved.ok) throw new CanvasError("not_connected", resolved.reason || "source is not connected");
+        return await runStageIntervention(resolved, action, runId, stage, input);
     }
     return await setWorkflowEnabled(resolved, gaggle, workflow, enabled);
 }
@@ -399,6 +409,26 @@ async function startServer(instanceId) {
                 } catch (err) {
                     res.setHeader("Content-Type", "application/json; charset=utf-8");
                     res.end(JSON.stringify({ ok: false, reason: err.message || String(err) }));
+                }
+                return;
+            }
+            if (url.pathname === "/api/run-action" && req.method === "POST") {
+                const chunks = [];
+                for await (const chunk of req) chunks.push(chunk);
+                const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+                try {
+                    const result = await runStageInterventionFor(
+                        body.source, body.action, body.runId, body.stage, body.input || {},
+                    );
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({ ok: true, result }));
+                } catch (err) {
+                    res.setHeader("Content-Type", "application/json; charset=utf-8");
+                    res.end(JSON.stringify({
+                        ok: false,
+                        code: err.code || err.body?.code,
+                        reason: err.message || String(err),
+                    }));
                 }
                 return;
             }

@@ -557,6 +557,10 @@ export function renderHtml(instanceId, themePreference = "system") {
   .workflow-toggle[disabled] {
     opacity: 0.55;
   }
+  .run-actions { border: 1px solid var(--border-color-default, #d0d7de); padding: 12px; border-radius: 6px; }
+  .run-actions-grid { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+  .run-actions label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+  .run-action-confirmation { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -702,6 +706,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   <div id="run-view">
     <button class="back" id="run-back">&larr; Back to runs</button>
     <div id="run-error" style="color: var(--true-color-red, #cf222e);"></div>
+    <div id="run-status" aria-live="polite"></div>
     <div id="run-content"></div>
   </div>
 </main>
@@ -738,6 +743,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
   // background-poll re-renders.
   const pendingToggles = new Map();
+  const workflowUndo = new Map();
 
   function portalRequestError(err) {
     const message = String(err && err.message ? err.message : err);
@@ -820,6 +826,8 @@ export function renderHtml(instanceId, themePreference = "system") {
         if (!confirmed) {
           failure =
             "Saved " + name + ", but the daemon still reports the old state after 30s \u2014 it may not have reloaded.";
+        } else {
+          workflowUndo.set(key, { enabled: !desired });
         }
       }
     } catch (err) {
@@ -1092,9 +1100,24 @@ export function renderHtml(instanceId, themePreference = "system") {
         btn.addEventListener("click", (ev) => {
           ev.stopPropagation();
           if (pendingToggles.has(pendKey)) return;
+          if (!window.confirm(actionLabel + "? The change will be confirmed by the daemon before it is shown as applied.")) return;
           toggleWorkflow(gaggle, name, !anyEnabled);
         });
         wrap.appendChild(btn);
+        const undo = workflowUndo.get(pendKey);
+        if (undo && !isPending) {
+          const undoBtn = document.createElement("button");
+          undoBtn.type = "button";
+          undoBtn.textContent = "Undo";
+          undoBtn.title = "Restore the previous workflow state";
+          undoBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (!window.confirm("Restore the previous workflow state?")) return;
+            workflowUndo.delete(pendKey);
+            toggleWorkflow(gaggle, name, undo.enabled);
+          });
+          wrap.appendChild(undoBtn);
+        }
 
         enabledCell.appendChild(wrap);
       }
@@ -1441,6 +1464,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   // ---- Run detail view ----
   const runViewEl = document.getElementById("run-view");
   const runErrorEl = document.getElementById("run-error");
+  const runStatusEl = document.getElementById("run-status");
   const runContentEl = document.getElementById("run-content");
   let graphOrientation = "horizontal";
 
@@ -1946,6 +1970,76 @@ export function renderHtml(instanceId, themePreference = "system") {
     controls.forEach((input) => input.addEventListener("input", update));
   }
 
+  function runActionPanel(run, events) {
+    const available = ["approve", "override", "rerun"].filter((action) => lastCapabilities[action]);
+    if (!available.length) return "";
+    const currentStage = run.currentStage || [...events].reverse().find((event) => event.stage)?.stage || "";
+    const journalSeq = run.journalSeq || [...events].reverse().find((event) => Number(event.seq) > 0)?.seq || "unavailable";
+    return '<section class="run-actions"><h2>Safe operator actions</h2>' +
+      '<p>Run <code>' + escapeHtml(run.id) + '</code>, stage <code>' + escapeHtml(currentStage || "unknown") +
+      '</code>, journal sequence <code>' + escapeHtml(journalSeq) + '</code>.</p>' +
+      '<div class="run-actions-grid">' +
+      '<label>Action<select id="run-action">' + available.map((action) => '<option value="' + action + '">' + action + '</option>').join("") + '</select></label>' +
+      '<label>Actor<input id="run-action-actor" type="text" autocomplete="username" /></label>' +
+      '<label>Rationale (override)<input id="run-action-rationale" type="text" /></label>' +
+      '<label>Instruction addendum (rerun)<input id="run-action-addendum" type="text" /></label>' +
+      '<button id="run-action-review" type="button">Review action</button></div>' +
+      '<div id="run-action-confirmation" class="run-action-confirmation" hidden></div></section>';
+  }
+
+  function initRunActions(run, events, sourceId) {
+    const review = runContentEl.querySelector("#run-action-review");
+    if (!review) return;
+    const confirmation = runContentEl.querySelector("#run-action-confirmation");
+    const actionInput = runContentEl.querySelector("#run-action");
+    const actorInput = runContentEl.querySelector("#run-action-actor");
+    const rationaleInput = runContentEl.querySelector("#run-action-rationale");
+    const addendumInput = runContentEl.querySelector("#run-action-addendum");
+    review.addEventListener("click", () => {
+      const action = actionInput.value;
+      const actor = actorInput.value.trim();
+      const rationale = rationaleInput.value.trim();
+      const instructionAddendum = addendumInput.value.trim();
+      if (!actor || (action === "override" && !rationale) || (action === "rerun" && !instructionAddendum)) {
+        runStatusEl.textContent = "Enter an actor and the required rationale or addendum.";
+        return;
+      }
+      const effect = action === "approve" ? "approve the stage with decision=pass" :
+        action === "override" ? "override the stage using the entered rationale" :
+        "rerun the stage using the entered instruction addendum";
+      confirmation.hidden = false;
+      confirmation.innerHTML = '<strong>Confirm:</strong> ' + escapeHtml(effect) + '. ' +
+        'Actor: <code>' + escapeHtml(actor) + '</code>. ' +
+        (rationale ? 'Rationale: <q>' + escapeHtml(rationale) + '</q>. ' : '') +
+        (instructionAddendum ? 'Addendum: <q>' + escapeHtml(instructionAddendum) + '</q>. ' : '') +
+        '<button id="run-action-confirm" type="button">Confirm and send</button>';
+      confirmation.querySelector("button").addEventListener("click", async () => {
+        confirmation.querySelector("button").disabled = true;
+        runStatusEl.textContent = "Sending " + action + "\u2026";
+        try {
+          const response = await fetch("/api/run-action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              source: sourceId, action, runId: run.id, stage: run.currentStage || [...events].reverse().find((event) => event.stage)?.stage,
+              input: { actor, ...(action === "approve" ? { decision: "pass" } : {}),
+                ...(action === "override" ? { rationale } : {}),
+                ...(action === "rerun" ? { instructionAddendum } : {}) },
+            }),
+          });
+          const data = await response.json();
+          if (!data.ok) throw new Error((data.code ? data.code + ": " : "") + (data.reason || "action failed"));
+          if (!Number(data.result?.journalSeq)) throw new Error("The server did not confirm a durable journal position.");
+          runStatusEl.textContent = action + " accepted at journal sequence " + data.result.journalSeq + ".";
+          await openRun(run.id);
+        } catch (err) {
+          runStatusEl.textContent = "Action failed: " + (err.message || err);
+          confirmation.querySelector("button").disabled = false;
+        }
+      });
+    });
+  }
+
   async function openRun(runId) {
     const sourceId = sourceSelect.value;
     const activeFilter = document.activeElement?.closest("[data-transcript-filter]");
@@ -2002,6 +2096,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       if (refs.length) {
         html += "<h2>Associated work</h2>" + renderExternalRefs(refs);
       }
+      html += runActionPanel(r, events);
       html += '<h2>Workflow graph</h2><div id="graph-container">' +
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
@@ -2019,6 +2114,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         }
       });
       initTranscriptFilters(events, sourceId, runId);
+      initRunActions(r, events, sourceId);
       if (activeFilter?.dataset.transcriptFilter) {
         runContentEl.querySelector('[data-transcript-filter="' + activeFilter.dataset.transcriptFilter + '"]')?.focus();
       }
