@@ -328,7 +328,7 @@ async function startServer(instanceId) {
                     return;
                 }
                 const filters = {};
-                for (const key of ["gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger", "since", "until", "limit", "cursor"]) {
+                for (const key of ["gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger", "since", "until", "showNoWork", "limit", "cursor"]) {
                     const v = url.searchParams.get(key);
                     if (v) filters[key] = v;
                 }

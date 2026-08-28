@@ -351,7 +351,7 @@ export async function loadRuns(resolved, filters = {}) {
     const { baseUrl, token } = resolved;
     try {
         const runs = await fetchJSON(`${baseUrl}/api/v1/runs?${buildRunsQuery(filters)}`, { token });
-        return { runs: runs.runs || [], cursor: runs.cursor };
+        return { runs: runs.runs || [], cursor: runs.nextCursor || "" };
     } catch (err) {
         return { runs: [], error: err.message || String(err) };
     }
