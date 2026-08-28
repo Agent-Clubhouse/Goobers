@@ -473,7 +473,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     <div class="cards" id="cards"></div>
     <section id="needs-you" aria-labelledby="needs-you-heading">
       <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
-      <div id="attention-list" aria-live="polite"></div>
+      <div id="attention-list"></div>
     </section>
     <section>
       <h2>Workflows</h2>
@@ -743,7 +743,13 @@ export function renderHtml(instanceId, themePreference = "system") {
       return;
     }
     const visible = attention.filter((item) => dismissedAttention.get(item.id) !== item.key);
-    attentionListEl.innerHTML = '<div class="attention-list">' + visible.map((item) => {
+    if (!visible.length) {
+      attentionListEl.replaceChildren(Object.assign(document.createElement("p"), {
+        className: "muted", textContent: "Nothing currently needs attention.",
+      }));
+      return;
+    }
+    const markup = '<div class="attention-list">' + visible.map((item) => {
       const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
       const runLabel = escapeHtml(item.id || "unknown run");
       const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
@@ -758,6 +764,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         ' <button type="button" data-dismiss-attention="' + escapeHtml(item.id) +
         '" aria-label="Dismiss attention for ' + runLabel + '">Dismiss</button></span></div>';
     }).join("") + "</div>";
+    if (attentionListEl.innerHTML !== markup) attentionListEl.innerHTML = markup;
     attentionListEl.querySelectorAll("[data-attention-run]").forEach((link) =>
       link.addEventListener("click", (event) => {
         event.preventDefault();
@@ -1006,7 +1013,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
     ]) {
       const value = filters[key];
-      if (value !== null) {
+      if (typeof value === "string") {
         element.value = element.type === "datetime-local"
           ? value.slice(0, 16)
           : value;

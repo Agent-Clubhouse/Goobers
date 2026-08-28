@@ -296,21 +296,21 @@ async function startServer(instanceId) {
                 res.end(JSON.stringify(directories));
                 return;
             }
+            if (url.pathname === "/api/events") {
+                const sourceId = url.searchParams.get("source");
+                if (!sourceId) {
+                    res.statusCode = 400;
+                    res.end("source is required");
+                    return;
+                }
+                await eventStreamFor(sourceId, req.headers["last-event-id"] || "", req, res);
+                return;
+            }
             if (url.pathname === "/api/snapshot") {
                 const sourceId = url.searchParams.get("source");
                 if (!sourceId) {
                     res.setHeader("Content-Type", "application/json; charset=utf-8");
                     res.end(JSON.stringify({ connected: false, reason: "no source selected" }));
-                    return;
-                }
-                if (url.pathname === "/api/events") {
-                    const sourceId = url.searchParams.get("source");
-                    if (!sourceId) {
-                        res.statusCode = 400;
-                        res.end("source is required");
-                        return;
-                    }
-                    await eventStreamFor(sourceId, req.headers["last-event-id"] || "", req, res);
                     return;
                 }
                 const entry = servers.get(instanceId);
