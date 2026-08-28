@@ -585,6 +585,27 @@ export function renderHtml(instanceId, themePreference = "system") {
   .run-actions-grid { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
   .run-actions label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
   .run-action-confirmation { margin-top: 10px; }
+  .internal-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 12px 0;
+    border-bottom: 1px solid var(--border-color-default, #d0d7de);
+    overflow-x: auto;
+  }
+  .internal-tabs [role="tab"] {
+    flex: 0 0 auto;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
+    padding: 8px 12px;
+  }
+  .internal-tabs [role="tab"][aria-selected="true"] {
+    border-bottom-color: var(--true-color-blue, #0969da);
+    color: var(--true-color-blue, #0969da);
+    font-weight: 600;
+  }
+  [role="tabpanel"] { min-width: 0; }
 </style>
 </head>
 <body>
@@ -646,12 +667,19 @@ export function renderHtml(instanceId, themePreference = "system") {
     </ol>
   </div>
   <div id="dashboard" style="display:none">
-    <div class="cards" id="cards"></div>
-    <section id="needs-you" aria-labelledby="needs-you-heading">
-      <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
-      <div id="attention-list"></div>
+    <div class="internal-tabs" role="tablist" aria-label="Dashboard sections">
+      <button id="dashboard-tab-attention" role="tab" data-tab="attention" aria-controls="dashboard-panel-attention">Attention</button>
+      <button id="dashboard-tab-workflows" role="tab" data-tab="workflows" aria-controls="dashboard-panel-workflows">Workflows</button>
+      <button id="dashboard-tab-runs" role="tab" data-tab="runs" aria-controls="dashboard-panel-runs">Runs</button>
+    </div>
+    <section id="dashboard-panel-attention" role="tabpanel" aria-labelledby="dashboard-tab-attention">
+      <div class="cards" id="cards"></div>
+      <div id="needs-you" aria-labelledby="needs-you-heading">
+        <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
+        <div id="attention-list"></div>
+      </div>
     </section>
-    <section>
+    <section id="dashboard-panel-workflows" role="tabpanel" aria-labelledby="dashboard-tab-workflows" hidden>
       <h2>Workflows</h2>
       <table id="workflows-table">
         <thead>
@@ -660,7 +688,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         <tbody></tbody>
       </table>
     </section>
-    <section>
+    <section id="dashboard-panel-runs" role="tabpanel" aria-labelledby="dashboard-tab-runs" hidden>
       <h2>Runs</h2>
       <div class="filters-bar" id="runs-filters">
         <select id="filter-gaggle"><option value="">All gaggles</option></select>
@@ -763,6 +791,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   let liveConnectionEstablished = false;
   const dismissedAttention = new Map();
   const expandedAttention = new Set();
+  let activeDashboardTab = "attention";
+  let activeRunTab = "summary";
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
@@ -776,6 +806,42 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (message === "Failed to fetch" || message.includes("NetworkError")) {
       return "Portal extension connection was lost. Close and reopen this canvas to reconnect.";
     }
+
+    function activateInternalTab(root, name, focus = false) {
+      const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+      const selected = tabs.find((tab) => tab.dataset.tab === name) || tabs[0];
+      if (!selected) return;
+      for (const tab of tabs) {
+        const active = tab === selected;
+        tab.setAttribute("aria-selected", String(active));
+        tab.tabIndex = active ? 0 : -1;
+        const panel = root.querySelector("#" + tab.getAttribute("aria-controls"));
+        if (panel) panel.hidden = !active;
+      }
+      if (root === dashboardEl) activeDashboardTab = selected.dataset.tab;
+      else activeRunTab = selected.dataset.tab;
+      if (focus) selected.focus();
+    }
+
+    function initInternalTabs(root, initial) {
+      const tabs = [...root.querySelectorAll('.internal-tabs [role="tab"][data-tab]')];
+      tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => activateInternalTab(root, tab.dataset.tab));
+        tab.addEventListener("keydown", (event) => {
+          let next = index;
+          if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+          else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+          else if (event.key === "Home") next = 0;
+          else if (event.key === "End") next = tabs.length - 1;
+          else return;
+          event.preventDefault();
+          activateInternalTab(root, tabs[next].dataset.tab, true);
+        });
+      });
+      activateInternalTab(root, initial);
+    }
+
+    initInternalTabs(dashboardEl, activeDashboardTab);
     return message;
   }
 
@@ -1488,6 +1554,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (name && [...filterWorkflow.options].some((o) => o.value === name)) {
       filterWorkflow.value = name;
     }
+    activateInternalTab(dashboardEl, "runs");
     applyFilters();
     document.getElementById("runs-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -2171,7 +2238,13 @@ export function renderHtml(instanceId, themePreference = "system") {
           '" target="_blank" rel="noopener noreferrer">View GitHub Action &#8599;</a>'
         : "";
       let html = '<div class="run-header"><h2>' + escapeHtml(r.workflow) + "</h2><code>" +
-        escapeHtml(r.id) + "</code>" + actionsLink + "</div>";
+        escapeHtml(r.id) + "</code>" + actionsLink + "</div>" +
+        '<div class="internal-tabs" role="tablist" aria-label="Run detail sections">' +
+        '<button id="run-tab-summary" role="tab" data-tab="summary" aria-controls="run-panel-summary">Summary</button>' +
+        '<button id="run-tab-execution" role="tab" data-tab="execution" aria-controls="run-panel-execution">Execution</button>' +
+        '<button id="run-tab-diagnostics" role="tab" data-tab="diagnostics" aria-controls="run-panel-diagnostics">Diagnostics</button>' +
+        '<button id="run-tab-actions" role="tab" data-tab="actions" aria-controls="run-panel-actions">Actions</button>' +
+        '</div><section id="run-panel-summary" role="tabpanel" aria-labelledby="run-tab-summary">';
       html += '<div class="kv-grid">' + kv.map(([label, value]) => '<div class="kv"><div class="label">' + label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
       if (r.operator) {
         html += "<h2>Operator</h2>" + renderOperatorPanel(r.operator, refs);
@@ -2179,15 +2252,20 @@ export function renderHtml(instanceId, themePreference = "system") {
       if (refs.length) {
         html += "<h2>Associated work</h2>" + renderExternalRefs(refs);
       }
-      html += runActionPanel(r, events, sourceId);
+      html += "<h2>Telemetry insights</h2>" + renderTelemetryInsights(r);
+      html += '</section><section id="run-panel-execution" role="tabpanel" aria-labelledby="run-tab-execution" hidden>';
       html += '<h2>Workflow graph</h2><div id="graph-container">' +
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
       html += "<h2>Execution waterfall</h2>" + renderExecutionWaterfall(r);
-      html += "<h2>Telemetry insights</h2>" + renderTelemetryInsights(r);
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);
+      html += '</section><section id="run-panel-diagnostics" role="tabpanel" aria-labelledby="run-tab-diagnostics" hidden>';
       html += "<h2>Events, logs, and messages</h2>" + renderRunEvents(events, sourceId, runId);
+      html += '</section><section id="run-panel-actions" role="tabpanel" aria-labelledby="run-tab-actions" hidden>' +
+        (runActionPanel(r, events, sourceId) || '<p class="muted">No operator actions are available for this source.</p>') +
+        "</section>";
       runContentEl.innerHTML = html;
+      initInternalTabs(runContentEl, activeRunTab);
       savedFilters.forEach((saved) => {
         const input = runContentEl.querySelector('[data-transcript-filter="' + saved.name + '"]');
         if (!input) return;

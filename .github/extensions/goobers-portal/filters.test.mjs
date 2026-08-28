@@ -43,6 +43,9 @@ test("rendered browser script is valid JavaScript", () => {
     }
     assert.match(browserScript, /data-expand-attention/);
     assert.match(html, /\.attention-item \{[\s\S]*height: 84px/);
+    assert.match(html, /aria-label="Dashboard sections"/);
+    assert.match(browserScript, /aria-label="Run detail sections"/);
+    assert.match(browserScript, /function initInternalTabs/);
 });
 
 test("filterRunSummaries applies standalone-supported filters together", () => {
