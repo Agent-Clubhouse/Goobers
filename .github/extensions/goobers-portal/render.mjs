@@ -167,6 +167,27 @@ export function renderHtml(instanceId, themePreference = "system") {
   #error { color: var(--true-color-red, #cf222e); margin-bottom: 12px; white-space: pre-wrap; }
   #empty-state { padding: 32px 0; }
   #empty-state ol { padding-left: 20px; }
+  #needs-you { margin-bottom: 20px; }
+  .attention-list { display: grid; gap: 8px; }
+  .attention-item {
+    display: grid;
+    grid-template-columns: minmax(110px, auto) 1fr auto;
+    gap: 8px 12px;
+    align-items: baseline;
+    border: 1px solid var(--true-color-red-muted, #cf222e66);
+    border-left: 4px solid var(--true-color-red, #cf222e);
+    border-radius: 6px;
+    padding: 9px 12px;
+  }
+  .attention-item a { color: inherit; }
+  .attention-reason { min-width: 0; overflow-wrap: anywhere; }
+  .attention-action { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  .freshness { color: var(--text-color-muted, #656d76); font-size: 12px; }
+  @media (max-width: 640px) {
+    .attention-item { grid-template-columns: 1fr; gap: 3px; }
+    main { padding: 10px; }
+    table { display: block; overflow-x: auto; white-space: nowrap; }
+  }
   #start-daemon-bar {
     display: flex;
     gap: 8px;
@@ -448,6 +469,10 @@ export function renderHtml(instanceId, themePreference = "system") {
   </div>
   <div id="dashboard" style="display:none">
     <div class="cards" id="cards"></div>
+    <section id="needs-you" aria-labelledby="needs-you-heading">
+      <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
+      <div id="attention-list"></div>
+    </section>
     <section>
       <h2>Workflows</h2>
       <table id="workflows-table">
@@ -528,6 +553,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   const emptyEl = document.getElementById("empty-state");
   const dashboardEl = document.getElementById("dashboard");
   const cardsEl = document.getElementById("cards");
+  const attentionListEl = document.getElementById("attention-list");
+  const freshnessEl = document.getElementById("freshness");
   const workflowsBody = document.querySelector("#workflows-table tbody");
   const runsBody = document.querySelector("#runs-table tbody");
   const sourceSelect = document.getElementById("source-select");
@@ -539,6 +566,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   const directoryParent = document.getElementById("directory-parent");
   const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
   let lastCapabilities = {};
+  let lastUpdatedAt = null;
+  let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
   // background-poll re-renders.
@@ -701,6 +730,32 @@ export function renderHtml(instanceId, themePreference = "system") {
     try { return new Date(v).toLocaleString(); } catch { return v; }
   }
 
+  function renderAttention(items, runs) {
+    const attention = items || [];
+    if (!attention.length) {
+      attentionListEl.innerHTML = '<p class="muted">Nothing currently needs attention.</p>';
+      return;
+    }
+    attentionListEl.innerHTML = '<div class="attention-list">' + attention.map((item) => {
+      const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
+      const runLabel = escapeHtml(item.id || "unknown run");
+      const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
+      const elapsed = item.elapsedMillis == null ? "" : " · " + Math.round(item.elapsedMillis / 60000) + "m";
+      return '<div class="attention-item" role="status">' +
+        '<strong>' + escapeHtml(item.phase) + '</strong>' +
+        '<span class="attention-reason">' +
+        (run ? '<a href="#run=' + encodeURIComponent(item.id) + '" data-attention-run="' + escapeHtml(item.id) + '">' : "") +
+        '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + elapsed +
+        (run ? "</a>" : "") + '<br />' + escapeHtml(item.reason) + '</span>' +
+        '<span class="attention-action">' + escapeHtml(item.nextAction) + '</span></div>';
+    }).join("") + "</div>";
+    attentionListEl.querySelectorAll("[data-attention-run]").forEach((link) =>
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        openRun(link.dataset.attentionRun);
+      }));
+  }
+
   async function loadSources() {
     const [res, selectedRes] = await Promise.all([
       fetch("/api/sources"),
@@ -754,6 +809,9 @@ export function renderHtml(instanceId, themePreference = "system") {
     lastCapabilities = data.capabilities || {};
     const workflows = data.workflows || [];
     const runs = data.runs || [];
+    lastUpdatedAt = Date.now();
+    freshnessEl.textContent = "Updated " + fmtTime(lastUpdatedAt);
+    renderAttention(data.attention, runs);
     const inFlight = workflows.reduce((n, w) => n + (w.concurrency?.activeRuns || 0), 0);
 
     cardsEl.innerHTML = "";
@@ -855,6 +913,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
+    restoreFiltersFromUrl();
     setAdvancedFilterSupport((data.mode || "daemon") === "daemon");
     // Background polling refreshes the whole snapshot every few seconds; if
     // the operator has an active filter, re-fetch through the filtered path
@@ -864,6 +923,11 @@ export function renderHtml(instanceId, themePreference = "system") {
     } else {
       lastRuns = runs;
       renderRuns(runs);
+    }
+    if (restoredRunId && runs.some((run) => (run.runId || run.id) === restoredRunId)) {
+      const runId = restoredRunId;
+      restoredRunId = "";
+      void openRun(runId);
     }
   }
 
@@ -882,6 +946,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   let sortDir = "desc";
   let advancedFiltersSupported = false;
   let filterRequestSequence = 0;
+  let restoredFilters = false;
 
   function populateFilterOptions(gaggles, workflows) {
     const prevGaggle = filterGaggle.value;
@@ -907,6 +972,31 @@ export function renderHtml(instanceId, themePreference = "system") {
     if (filterSince.value) f.since = new Date(filterSince.value).toISOString();
     if (filterUntil.value) f.until = new Date(filterUntil.value).toISOString();
     return f;
+  }
+
+  function syncViewUrl(runId = "") {
+    const query = new URLSearchParams(currentFilters());
+    if (runId) query.set("run", runId);
+    const next = query.toString();
+    window.history.replaceState(null, "", next ? "?" + next : window.location.pathname);
+  }
+
+  function restoreFiltersFromUrl() {
+    if (restoredFilters) return;
+    restoredFilters = true;
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, element] of [
+      ["gaggle", filterGaggle], ["workflow", filterWorkflow], ["phase", filterPhase],
+      ["trigger", filterTrigger], ["stage", filterStage], ["outcome", filterOutcome],
+      ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
+    ]) {
+      const value = params.get(key);
+      if (value !== null) {
+        element.value = element.type === "datetime-local"
+          ? value.slice(0, 16)
+          : value;
+      }
+    }
   }
 
   function setAdvancedFilterSupport(supported) {
@@ -1008,6 +1098,7 @@ export function renderHtml(instanceId, themePreference = "system") {
       }
       errorEl.textContent = "";
       lastRuns = data.runs || [];
+      syncViewUrl();
       renderRuns(lastRuns);
     } catch (err) {
       if (requestSequence !== filterRequestSequence) return;
@@ -1515,6 +1606,7 @@ export function renderHtml(instanceId, themePreference = "system") {
 
   async function openRun(runId) {
     const sourceId = sourceSelect.value;
+    syncViewUrl(runId);
     dashboardEl.style.display = "none";
     runViewEl.style.display = "block";
     runErrorEl.textContent = "";
@@ -1576,6 +1668,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   document.getElementById("run-back").addEventListener("click", () => {
     runViewEl.style.display = "none";
     dashboardEl.style.display = "block";
+    syncViewUrl();
   });
 
   async function loadSnapshot() {

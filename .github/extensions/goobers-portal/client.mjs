@@ -30,6 +30,7 @@ import {
     parseWorkflowURL,
     probeActionsSource,
 } from "./actions-source.mjs";
+import { deriveAttention } from "./ux.mjs";
 
 const execFileAsync = promisify(execFile);
 const GOOBERS_BIN = process.platform === "win32" ? "goobers.exe" : "goobers";
@@ -354,9 +355,13 @@ export async function loadRuns(resolved, filters = {}) {
 
 /** Fetch the full portal snapshot for a resolved connection. */
 export async function loadSnapshot(resolved, runFilters = {}) {
-    if (resolved.mode === "actions") return await loadActionsSnapshot(resolved, runFilters);
+    if (resolved.mode === "actions") {
+        const snapshot = await loadActionsSnapshot(resolved, runFilters);
+        return { ...snapshot, attention: deriveAttention(snapshot.runs || []) };
+    }
     if (resolved.mode === "standalone") {
-        return await loadStandaloneSnapshot(resolved.root);
+        const snapshot = await loadStandaloneSnapshot(resolved.root);
+        return { ...snapshot, attention: deriveAttention(snapshot.runs || []) };
     }
     const { baseUrl, token } = resolved;
     const [health, instance, gaggles, portalConfig] = await Promise.all([
@@ -384,7 +389,17 @@ export async function loadSnapshot(resolved, runFilters = {}) {
         runs = { runs: [], error: err.message || String(err) };
     }
 
-    return { baseUrl, health, instance, gaggles: gaggles.items || [], workflows, runs: runs.runs || [], capabilities: portalConfig?.capabilities || {} };
+    const runItems = runs.runs || [];
+    return {
+        baseUrl,
+        health,
+        instance,
+        gaggles: gaggles.items || [],
+        workflows,
+        runs: runItems,
+        attention: deriveAttention(runItems),
+        capabilities: portalConfig?.capabilities || {},
+    };
 }
 
 /**
