@@ -148,6 +148,25 @@ export async function loadWorkflowDetail(
     client.listRuns({ gaggle, workflow: workflowName, limit: RECENT_RUN_LIMIT }, options),
   ]);
 
+  validateWorkflowDetail(workflow, gaggle, workflowName);
+
+  const runs = runList.runs
+    .filter((run) => run.gaggle === gaggle && run.workflow === workflowName)
+    .sort(
+      (left, right) =>
+        Date.parse(right.finishedAt ?? right.startedAt) -
+          Date.parse(left.finishedAt ?? left.startedAt) ||
+        right.id.localeCompare(left.id),
+    )
+    .slice(0, RECENT_RUN_LIMIT);
+  return { workflow, runs };
+}
+
+export function validateWorkflowDetail(
+  workflow: WorkflowDetail,
+  gaggle: string,
+  workflowName: string,
+): void {
   if (
     workflow.identity.gaggle !== gaggle ||
     workflow.identity.name !== workflowName ||
@@ -170,15 +189,4 @@ export async function loadWorkflowDetail(
   ) {
     throw new MalformedResponseError("The daemon returned inconsistent workflow stages.");
   }
-
-  const runs = runList.runs
-    .filter((run) => run.gaggle === gaggle && run.workflow === workflowName)
-    .sort(
-      (left, right) =>
-        Date.parse(right.finishedAt ?? right.startedAt) -
-          Date.parse(left.finishedAt ?? left.startedAt) ||
-        right.id.localeCompare(left.id),
-    )
-    .slice(0, RECENT_RUN_LIMIT);
-  return { workflow, runs };
 }

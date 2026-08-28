@@ -366,7 +366,7 @@ describe("workflow and gaggle inventory", () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
-    const topology = screen.getByRole("list", { name: "Core product workflows" });
+    const topology = screen.getByRole("tablist", { name: "Core product workflows" });
     const workflowLink = within(topology).getByRole("link", {
       name: "Open workflow Implementation for gaggle Core product",
     });
@@ -406,7 +406,7 @@ describe("workflow and gaggle inventory", () => {
       "#/runs?gaggle=core",
     );
 
-    const topology = screen.getByRole("list", { name: "Core product workflows" });
+    const topology = screen.getByRole("tablist", { name: "Core product workflows" });
     const openWorkflowLink = within(topology).getByRole("link", {
       name: "Open workflow Implementation for gaggle Core product",
     });
@@ -440,7 +440,9 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByText("No workflows are provisioned for this gaggle."),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Core product workflows" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tablist", { name: "Core product workflows" }),
+    ).not.toBeInTheDocument();
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
