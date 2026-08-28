@@ -1,6 +1,8 @@
 // Renders the goobers-portal HTML shell. Kept out of extension.mjs so the
 // wiring file stays focused on SDK plumbing.
 
+import { decodeViewState, encodeViewState } from "./ux.mjs";
+
 function escapeAssociationHtml(value) {
     return String(value).replace(/[&<>"']/g, (character) => ({
         "&": "&amp;",
@@ -471,7 +473,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     <div class="cards" id="cards"></div>
     <section id="needs-you" aria-labelledby="needs-you-heading">
       <h2 id="needs-you-heading">Needs you <span class="freshness" id="freshness" aria-live="polite"></span></h2>
-      <div id="attention-list"></div>
+      <div id="attention-list" aria-live="polite"></div>
     </section>
     <section>
       <h2>Workflows</h2>
@@ -567,6 +569,8 @@ export function renderHtml(instanceId, themePreference = "system") {
   const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
   let lastCapabilities = {};
   let lastUpdatedAt = null;
+  let eventSource = null;
+  const dismissedAttention = new Map();
   let restoredRunId = new URLSearchParams(window.location.search).get("run") || "";
   // gaggle/workflow -> desired enabled state, for toggles the daemon hasn't
   // confirmed yet. Kept outside the render pass so the "Saving…" label survives
@@ -733,26 +737,37 @@ export function renderHtml(instanceId, themePreference = "system") {
   function renderAttention(items, runs) {
     const attention = items || [];
     if (!attention.length) {
-      attentionListEl.innerHTML = '<p class="muted">Nothing currently needs attention.</p>';
+      attentionListEl.replaceChildren(Object.assign(document.createElement("p"), {
+        className: "muted", textContent: "Nothing currently needs attention.",
+      }));
       return;
     }
-    attentionListEl.innerHTML = '<div class="attention-list">' + attention.map((item) => {
+    const visible = attention.filter((item) => dismissedAttention.get(item.id) !== item.key);
+    attentionListEl.innerHTML = '<div class="attention-list">' + visible.map((item) => {
       const run = (runs || []).find((candidate) => (candidate.runId || candidate.id) === item.id);
       const runLabel = escapeHtml(item.id || "unknown run");
       const stage = item.stage ? " · stage " + escapeHtml(item.stage) : "";
       const elapsed = item.elapsedMillis == null ? "" : " · " + Math.round(item.elapsedMillis / 60000) + "m";
-      return '<div class="attention-item" role="status">' +
+      return '<div class="attention-item">' +
         '<strong>' + escapeHtml(item.phase) + '</strong>' +
         '<span class="attention-reason">' +
         (run ? '<a href="#run=' + encodeURIComponent(item.id) + '" data-attention-run="' + escapeHtml(item.id) + '">' : "") +
         '<code>' + runLabel + '</code> ' + escapeHtml(item.workflow) + stage + elapsed +
         (run ? "</a>" : "") + '<br />' + escapeHtml(item.reason) + '</span>' +
-        '<span class="attention-action">' + escapeHtml(item.nextAction) + '</span></div>';
+        '<span class="attention-action">' + escapeHtml(item.nextAction) +
+        ' <button type="button" data-dismiss-attention="' + escapeHtml(item.id) +
+        '" aria-label="Dismiss attention for ' + runLabel + '">Dismiss</button></span></div>';
     }).join("") + "</div>";
     attentionListEl.querySelectorAll("[data-attention-run]").forEach((link) =>
       link.addEventListener("click", (event) => {
         event.preventDefault();
         openRun(link.dataset.attentionRun);
+      }));
+    attentionListEl.querySelectorAll("[data-dismiss-attention]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const item = attention.find((candidate) => candidate.id === button.dataset.dismissAttention);
+        if (item) dismissedAttention.set(item.id, item.key);
+        renderAttention(attention, runs);
       }));
   }
 
@@ -810,7 +825,7 @@ export function renderHtml(instanceId, themePreference = "system") {
     const workflows = data.workflows || [];
     const runs = data.runs || [];
     lastUpdatedAt = Date.now();
-    freshnessEl.textContent = "Updated " + fmtTime(lastUpdatedAt);
+    freshnessEl.textContent = (data.mode === "daemon" ? "Live" : "Polling") + " · Updated " + fmtTime(lastUpdatedAt);
     renderAttention(data.attention, runs);
     const inFlight = workflows.reduce((n, w) => n + (w.concurrency?.activeRuns || 0), 0);
 
@@ -913,12 +928,12 @@ export function renderHtml(instanceId, themePreference = "system") {
     }
 
     populateFilterOptions(data.gaggles || [], workflows);
-    restoreFiltersFromUrl();
+    const restored = restoreFiltersFromUrl();
     setAdvancedFilterSupport((data.mode || "daemon") === "daemon");
     // Background polling refreshes the whole snapshot every few seconds; if
     // the operator has an active filter, re-fetch through the filtered path
     // instead of clobbering the table with the unfiltered snapshot runs.
-    if (hasActiveFilters()) {
+    if (restored || hasActiveFilters()) {
       void applyFilters();
     } else {
       lastRuns = runs;
@@ -975,8 +990,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   }
 
   function syncViewUrl(runId = "") {
-    const query = new URLSearchParams(currentFilters());
-    if (runId) query.set("run", runId);
+    const query = new URLSearchParams(encodeViewState(currentFilters(), runId));
     const next = query.toString();
     window.history.replaceState(null, "", next ? "?" + next : window.location.pathname);
   }
@@ -984,19 +998,21 @@ export function renderHtml(instanceId, themePreference = "system") {
   function restoreFiltersFromUrl() {
     if (restoredFilters) return;
     restoredFilters = true;
-    const params = new URLSearchParams(window.location.search);
+    const { filters, selectedRun } = decodeViewState(window.location.search);
+    restoredRunId = selectedRun;
     for (const [key, element] of [
       ["gaggle", filterGaggle], ["workflow", filterWorkflow], ["phase", filterPhase],
       ["trigger", filterTrigger], ["stage", filterStage], ["outcome", filterOutcome],
       ["population", filterPopulation], ["since", filterSince], ["until", filterUntil],
     ]) {
-      const value = params.get(key);
+      const value = filters[key];
       if (value !== null) {
         element.value = element.type === "datetime-local"
           ? value.slice(0, 16)
           : value;
       }
     }
+    return Object.keys(filters).length > 0;
   }
 
   function setAdvancedFilterSupport(supported) {
@@ -1701,8 +1717,30 @@ export function renderHtml(instanceId, themePreference = "system") {
     await loadSnapshot();
   }
 
+  function connectLiveEvents() {
+    if (eventSource) eventSource.close();
+    const sourceId = sourceSelect.value;
+    const mode = sourceSelect.selectedOptions[0]?.dataset.kind;
+    if (!sourceId || mode !== "local" && mode !== "remote") return;
+    eventSource = new EventSource("/api/events?source=" + encodeURIComponent(sourceId));
+    eventSource.onopen = () => {
+      freshnessEl.textContent = "Live · Updated " + fmtTime(lastUpdatedAt);
+    };
+    eventSource.onmessage = () => {
+      lastUpdatedAt = Date.now();
+      freshnessEl.textContent = "Live · Updated " + fmtTime(lastUpdatedAt);
+      void loadSnapshot();
+    };
+    eventSource.onerror = () => {
+      freshnessEl.textContent = "Reconnecting · Updated " + fmtTime(lastUpdatedAt);
+    };
+  }
+
   document.getElementById("refresh").addEventListener("click", refreshAll);
-  sourceSelect.addEventListener("change", loadSnapshot);
+  sourceSelect.addEventListener("change", () => {
+    if (eventSource) eventSource.close();
+    void loadSnapshot().then(connectLiveEvents);
+  });
 
   async function connectSource(payload) {
     errorEl.textContent = "";
@@ -1811,6 +1849,7 @@ export function renderHtml(instanceId, themePreference = "system") {
   async function poll() {
     try {
       await refreshAll();
+      if (!eventSource) connectLiveEvents();
     } catch (err) {
       errorEl.textContent = portalRequestError(err);
     } finally {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { attentionKey, decodeViewState, deriveAttention, encodeViewState, mutationPayload } from "./ux.mjs";
+import { attentionKey, decodeViewState, deriveAttention, encodeViewState } from "./ux.mjs";
 
 test("deriveAttention returns bounded actionable states with causal details", () => {
     const runs = [
@@ -25,20 +25,12 @@ test("view state round trips filters and selected run", () => {
     });
 });
 
-test("mutationPayload preserves audited fields and omits absent values", () => {
-    assert.deepEqual(mutationPayload({
-        actor: "operator",
-        idempotencyKey: "key",
-        sequence: 4,
-        visit: 2,
-        branch: "approve",
-        rationale: "safe",
-    }), {
-        actor: "operator",
-        idempotencyKey: "key",
-        sequence: 4,
-        visit: 2,
-        branch: "approve",
-        rationale: "safe",
-    });
+test("elapsed time preserves finished runs at the Unix epoch", () => {
+    const result = deriveAttention([{
+        id: "epoch",
+        phase: "failed",
+        startedAt: "1970-01-01T00:00:00Z",
+        finishedAt: "1970-01-01T00:00:01Z",
+    }], { now: Date.parse("2026-08-28T11:00:00Z") });
+    assert.equal(result[0].elapsedMillis, 1000);
 });

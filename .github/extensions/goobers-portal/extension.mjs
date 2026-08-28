@@ -24,6 +24,7 @@ import {
     loadRunArtifact,
     loadRunTranscript,
     loadRuns,
+    openEventStream,
     setWorkflowEnabled,
     startDaemon,
 } from "./client.mjs";
@@ -118,6 +119,7 @@ async function runsFor(sourceId, filters) {
         });
         return { connected: false, reason: resolved.reason };
     }
+
     try {
         const data = await loadRuns(resolved, filters);
         return { connected: true, ...data };
@@ -130,6 +132,26 @@ async function runsFor(sourceId, filters) {
         });
         return { connected: false, reason: err.message || String(err) };
     }
+}
+
+async function eventStreamFor(sourceId, lastEventId, request, response) {
+    const known = await listKnownSources();
+    const source = known.find((entry) => entry.id === sourceId);
+    if (!source) throw new CanvasError("not_found", `unknown source ${sourceId}`);
+    const resolved = await resolveSource(source);
+    if (!resolved.ok) throw new CanvasError("not_connected", resolved.reason);
+    const controller = new AbortController();
+    request.on("close", () => controller.abort());
+    const upstream = await openEventStream(resolved, lastEventId, controller.signal);
+    response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    });
+    if (upstream.body) {
+        for await (const chunk of upstream.body) response.write(chunk);
+    }
+    response.end();
 }
 
 async function runDetailFor(sourceId, runId) {
@@ -279,6 +301,16 @@ async function startServer(instanceId) {
                 if (!sourceId) {
                     res.setHeader("Content-Type", "application/json; charset=utf-8");
                     res.end(JSON.stringify({ connected: false, reason: "no source selected" }));
+                    return;
+                }
+                if (url.pathname === "/api/events") {
+                    const sourceId = url.searchParams.get("source");
+                    if (!sourceId) {
+                        res.statusCode = 400;
+                        res.end("source is required");
+                        return;
+                    }
+                    await eventStreamFor(sourceId, req.headers["last-event-id"] || "", req, res);
                     return;
                 }
                 const entry = servers.get(instanceId);

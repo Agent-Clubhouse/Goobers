@@ -332,6 +332,7 @@ export async function loadRuns(resolved, filters = {}) {
                 error: "Stage, outcome, and population filters are not available for GitHub Actions sources.",
             };
         }
+
         return await loadActionsRuns(resolved, filters);
     }
     if (resolved.mode === "standalone") {
@@ -351,6 +352,28 @@ export async function loadRuns(resolved, filters = {}) {
     } catch (err) {
         return { runs: [], error: err.message || String(err) };
     }
+}
+
+/** Open the daemon's resumable event feed; callers own the response body. */
+export async function openEventStream(resolved, lastEventId = "", signal) {
+    if (resolved.mode !== "daemon") {
+        throw new Error("Live events are only available from a running daemon.");
+    }
+    const headers = { Accept: "text/event-stream" };
+    if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+    const response = await fetch(`${resolved.baseUrl}/api/v1/events`, {
+        signal,
+        headers: resolved.token
+            ? { ...headers, Authorization: "Bearer " + resolved.token }
+            : headers,
+    });
+    if (!response.ok) {
+        const body = await response.text();
+        const error = new Error(body || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+    }
+    return response;
 }
 
 /** Fetch the full portal snapshot for a resolved connection. */

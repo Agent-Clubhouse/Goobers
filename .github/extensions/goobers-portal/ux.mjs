@@ -19,7 +19,8 @@ function reasonFor(run, phase) {
 function elapsedMillis(run, now) {
     const start = Date.parse(run?.startedAt || "");
     if (!Number.isFinite(start)) return null;
-    const end = Date.parse(run?.finishedAt || "") || now;
+    const parsedEnd = Date.parse(run?.finishedAt || "");
+    const end = Number.isFinite(parsedEnd) ? parsedEnd : now;
     return Math.max(0, end - start);
 }
 
@@ -72,14 +73,4 @@ export function decodeViewState(search = "") {
     const selectedRun = params.get("run") || "";
     params.delete("run");
     return { filters: Object.fromEntries(params.entries()), selectedRun };
-}
-
-export function mutationPayload({ actor, idempotencyKey, sequence, visit, branch, rationale, addendum } = {}) {
-    const payload = {};
-    for (const [key, value] of Object.entries({
-        actor, idempotencyKey, sequence, visit, branch, rationale, addendum,
-    })) {
-        if (value !== undefined && value !== null && value !== "") payload[key] = value;
-    }
-    return payload;
 }
