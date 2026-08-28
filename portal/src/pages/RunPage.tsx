@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
-import { CausalDiagnosis } from "../components/CausalDiagnosis";
 import { FailurePanel } from "../components/FailurePanel";
 import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -365,8 +364,6 @@ function RunDetailWorkspace({
           }
         />
       )}
-
-      <CausalDiagnosis events={events} run={run} />
 
       <section
         className="run-detail-workspace"
