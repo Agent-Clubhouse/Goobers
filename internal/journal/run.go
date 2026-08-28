@@ -630,9 +630,33 @@ func (r *Run) append(ev Event) error {
 // IfLastActivityBefore runs claim while holding the writer mutex only when no
 // event has been appended at or after cutoff. It lets a live owner atomically
 // claim a stale journal without racing a concurrent heartbeat append.
+//
+// A ZERO lastActivity means "not observed here", NOT "idle since the beginning
+// of time", and the difference is the whole correctness of this check. The
+// field advances on Append through THIS handle and via ObserveActivity, which
+// only the local runner path calls — a mode-3 stage runs in a pod and writes
+// its events through the journal PLANE, so nothing ever advances the handle the
+// watchdog holds. Treating that as staleness makes now.Sub(zero) equal the
+// maximum Duration, which is greater than EVERY configurable timeout, so the
+// run is escalated on the first sweep and no setting can prevent it.
+//
+// MEASURED (#3774): run 1214fd79 was escalated 11 minutes into a 60-minute
+// agentic stage, reporting "no journal progress for 2562047h47m16s (last
+// activity 0001-01-01T00:00:00Z; timeout 45m0s)" — while the trace showed five
+// recorded events. Raising the timeout to 90m changed nothing, which is the
+// tell: no finite threshold beats an unbounded baseline. Short pod stages
+// survived only by finishing before a sweep evaluated them.
+//
+// So this fails SAFE. An inactivity that cannot be determined is not evidence
+// of inactivity, and the cost of the two mistakes is not symmetric: declining
+// to escalate delays detection of a genuinely hung run, while escalating on an
+// unknown kills healthy work and cannot be configured away.
 func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.lastActivity.IsZero() {
+		return false
+	}
 	if !r.lastActivity.Before(cutoff) {
 		return false
 	}
