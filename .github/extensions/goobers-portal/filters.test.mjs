@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { filterRunSummaries, loadRuns } from "./client.mjs";
-import { renderGraphLegend, renderHtml, renderRunAssociations } from "./render.mjs";
+import { renderGraphLegend, renderHtml, renderRunAssociations, renderTelemetryInsights } from "./render.mjs";
 
 const runs = [
     {
@@ -65,6 +65,13 @@ test("run detail waterfall uses all timestamps and renders execution metadata", 
     assert.match(html, /Idle gaps/);
     assert.match(html, /timing unavailable/);
     assert.match(html, /· retry/);
+});
+
+test("telemetry insights render unavailable values and measured zeroes", () => {
+    const html = renderTelemetryInsights({ metrics: { costUSD: { value: 0, unit: "USD" } } });
+    assert.match(html, /Unknown/);
+    assert.match(html, /0 USD/);
+    assert.match(renderHtml("insights-test"), /Telemetry insights/);
 });
 
 test("run associations render safe issue and PR title links", () => {

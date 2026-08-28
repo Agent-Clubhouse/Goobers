@@ -8,6 +8,10 @@ import {
   deriveAttemptLineage,
   deriveFailureBreadcrumbs,
   deriveFreshnessState,
+  deriveTelemetryInsights,
+  numericValue,
+  explicitMeasure,
+  measureFromPayload,
   filterTranscriptEntries,
   isInvalidCursorError,
   mergeRunPage,
@@ -114,6 +118,38 @@ export function renderExecutionWaterfall(run = {}) {
         ? '<p class="muted">Idle gaps: ' + idleGaps.map((gap) => Math.round(gap / 1000) + 's').join(", ") + '</p>'
         : "";
     return '<div class="execution-waterfall" aria-label="Execution waterfall">' + (timestamps.length ? '<p class="muted">Timeline: ' + new Date(startMs).toISOString() + ' – ' + new Date(endMs).toISOString() + '</p>' : '<p class="muted">No timestamps are available; bars show execution order only.</p>') + gapHtml + rows + '</div>';
+}
+
+export function renderTelemetryInsights(run = {}) {
+    const insights = deriveTelemetryInsights(run);
+    const formatDuration = (value) => value === null ? "Unknown" : Math.round(value / 1000) + "s";
+    const formatMeasure = (measure) => measure.value === 0 ? "0 " + measure.unit : measure.value.toLocaleString() + " " + measure.unit;
+    const durationRows = [
+        ["Run duration", formatDuration(insights.duration.totalMillis)],
+        ["Queue wait", formatDuration(insights.duration.queueMillis)],
+        ["Execution time", formatDuration(insights.duration.executionMillis)],
+    ];
+    const countRows = [
+        ["Failures", insights.counts.failures === null ? "Unknown" : String(insights.counts.failures)],
+        ["Repasses", insights.counts.repasses === null ? "Unknown" : String(insights.counts.repasses)],
+    ];
+    const rows = (items) => items.map(([label, value]) =>
+        '<div class="kv"><div class="label">' + escapeAssociationHtml(label) + '</div><div class="value">' + escapeAssociationHtml(value) + "</div></div>",
+    ).join("");
+    const hotspotRows = insights.hotspots.length
+        ? insights.hotspots.slice(0, 5).map((item) => "<li><strong>" + escapeAssociationHtml(item.stage) +
+            "</strong>: " + item.failures + " failures, " + item.retries + " retries</li>").join("")
+        : '<li class="muted">Unknown: no stage attempt telemetry.</li>';
+    const usage = insights.usage.length
+        ? insights.usage.map((item) => [item.label, formatMeasure(item)])
+        : [["Model usage", "Unknown (no model or usage units)"]];
+    if (insights.model) usage.unshift(["Model", insights.model]);
+    const budgets = insights.budgets.length
+        ? insights.budgets.map((item) => [item.label, formatMeasure(item)])
+        : [["Budgets", "Unknown (no explicit budget units)"]];
+    return '<div class="telemetry-insights" aria-label="Telemetry insights">' +
+        '<div class="kv-grid">' + rows(durationRows) + rows(countRows) + rows(usage) + rows(budgets) + "</div>" +
+        "<h3>Stage and retry hotspots</h3><ul class=\"causal-list\">" + hotspotRows + "</ul></div>";
 }
 
 export function renderHtml(instanceId, themePreference = "system") {
@@ -1741,11 +1777,17 @@ export function renderHtml(instanceId, themePreference = "system") {
   const asString = ${asString.toString()};
   const deriveAttemptLineage = ${deriveAttemptLineage.toString()};
   const deriveFailureBreadcrumbs = ${deriveFailureBreadcrumbs.toString()};
+  const numericValue = ${numericValue.toString()};
+  const explicitMeasure = ${explicitMeasure.toString()};
+  const measureFromPayload = ${measureFromPayload.toString()};
+  const deriveTelemetryInsights = ${deriveTelemetryInsights.toString()};
   const filterTranscriptEntries = ${filterTranscriptEntries.toString()};
   const renderGraphLegend = ${renderGraphLegend.toString()};
   const renderCausalDiagnosis = ${renderCausalDiagnosis.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderExecutionWaterfall = ${renderExecutionWaterfall.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderTelemetryInsights = ${renderTelemetryInsights.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
 
   function externalRefsFrom(events) {
@@ -1957,6 +1999,7 @@ export function renderHtml(instanceId, themePreference = "system") {
         renderGraphSvg(r.graph, r.transitions, events, r, graphOrientation) + "</div>";
       html += "<h2>Causal diagnosis</h2>" + renderCausalDiagnosis(r);
       html += "<h2>Execution waterfall</h2>" + renderExecutionWaterfall(r);
+      html += "<h2>Telemetry insights</h2>" + renderTelemetryInsights(r);
       html += "<h2>Transitions</h2>" + renderTransitions(r.transitions);
       html += "<h2>Events, logs, and messages</h2>" + renderRunEvents(events, sourceId, runId);
       runContentEl.innerHTML = html;

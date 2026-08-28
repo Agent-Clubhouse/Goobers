@@ -9,6 +9,7 @@ import {
     deriveAttention,
     deriveFailureBreadcrumbs,
     deriveFreshnessState,
+    deriveTelemetryInsights,
     encodeViewState,
     filterTranscriptEntries,
     isInvalidCursorError,
@@ -211,4 +212,41 @@ test("freshness transitions: deriveFreshnessState boundary at offlineAfterMs", (
         }),
         "Offline"
     );
+});
+
+test("telemetry insights distinguish partial data and preserve explicit zero units", () => {
+    const result = deriveTelemetryInsights({
+        startedAt: "2026-08-28T10:00:00Z",
+        finishedAt: "2026-08-28T10:00:10Z",
+        failureCount: 0,
+        repassCount: 0,
+        model: "copilot-model",
+        metrics: { inputTokens: { value: 0, unit: "tokens" }, costUSD: { value: 0, unit: "USD" } },
+        events: [
+            { type: "stage.started", stage: "queue", attempt: 1, time: "2026-08-28T10:00:02Z" },
+            { type: "stage.finished", stage: "queue", attempt: 1, status: "succeeded", time: "2026-08-28T10:00:10Z" },
+        ],
+    });
+    assert.deepEqual(result.counts, { failures: 0, repasses: 0 });
+    assert.equal(result.duration.totalMillis, 10000);
+    assert.equal(result.duration.queueMillis, 2000);
+    assert.deepEqual(result.usage, [
+        { label: "Input tokens", value: 0, unit: "tokens" },
+        { label: "Cost", value: 0, unit: "USD" },
+    ]);
+    assert.equal(result.budgets.length, 0);
+});
+
+test("telemetry insights aggregate retry and failure hotspots", () => {
+    const result = deriveTelemetryInsights({
+        events: [
+            { type: "stage.finished", stage: "build", attempt: 1, status: "failed", time: "2026-08-28T10:00:00Z" },
+            { type: "stage.finished", stage: "build", attempt: 2, status: "succeeded", time: "2026-08-28T10:00:01Z" },
+            { type: "stage.finished", stage: "test", attempt: 1, status: "failed", time: "2026-08-28T10:00:02Z" },
+        ],
+    });
+    assert.deepEqual(result.hotspots.slice(0, 2), [
+        { stage: "build", attempts: 2, failures: 1, retries: 1, score: 2 },
+        { stage: "test", attempts: 1, failures: 1, retries: 0, score: 1 },
+    ]);
 });

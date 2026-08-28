@@ -235,6 +235,99 @@ export function deriveFailureBreadcrumbs(run = {}) {
     return deriveAttemptLineage(run).breadcrumbs;
 }
 
+export function numericValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) return Number(value);
+    if (value && typeof value === "object" && Number.isFinite(Number(value.value))) return Number(value.value);
+    return null;
+}
+
+export function explicitMeasure(source, keys) {
+    for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(source || {}, key)) continue;
+        const value = numericValue(source[key]);
+        if (value !== null) return { value, unit: source[key]?.unit || key };
+    }
+    return null;
+}
+
+export function measureFromPayload(payload, keys) {
+    for (const source of [payload, payload?.telemetry, payload?.usage, payload?.metrics]) {
+        const result = explicitMeasure(source, keys);
+        if (result) return result;
+    }
+    return null;
+}
+
+export function deriveTelemetryInsights(run = {}) {
+    const diagnosis = deriveAttemptLineage(run);
+    const attempts = diagnosis.attempts || [];
+    const durations = attempts
+        .map((entry) => [Date.parse(entry.start), Date.parse(entry.end)])
+        .filter(([start, end]) => Number.isFinite(start) && Number.isFinite(end) && end >= start);
+    const execution = measureFromPayload(run, ["executionMillis", "executionDurationMillis"]);
+    const runDuration = measureFromPayload(run, ["durationMillis", "runDurationMillis"]) ||
+        (Number.isFinite(Date.parse(run.startedAt)) && Number.isFinite(Date.parse(run.finishedAt))
+            ? { value: Date.parse(run.finishedAt) - Date.parse(run.startedAt), unit: "durationMillis" }
+            : null);
+    const executionMillis = execution?.value ?? durations.reduce((sum, [, end], index) => sum + end - durations[index][0], 0);
+    const executionKnown = execution?.value !== undefined || durations.length > 0;
+    const queueWait = measureFromPayload(run, ["queueWaitMillis", "queueWaitDurationMillis", "queueDurationMillis"]);
+    const totalMillis = runDuration?.value ?? null;
+    const queueMillis = queueWait?.value ?? (totalMillis !== null && executionKnown ? Math.max(0, totalMillis - executionMillis) : null);
+
+    const stageMap = new Map();
+    for (const attempt of attempts) {
+        const item = stageMap.get(attempt.stage) || { stage: attempt.stage, attempts: 0, failures: 0, retries: 0 };
+        item.attempts += 1;
+        if (["failed", "failure", "error", "blocked"].includes(attempt.status)) item.failures += 1;
+        if (attempt.attempt > 1) item.retries += 1;
+        stageMap.set(attempt.stage, item);
+    }
+    const hotspots = [...stageMap.values()]
+        .map((item) => ({ ...item, score: item.failures + item.retries }))
+        .sort((a, b) => b.score - a.score || b.failures - a.failures || a.stage.localeCompare(b.stage));
+    const eventFailures = (run.events || []).filter((event) =>
+        ["failed", "failure", "error", "blocked"].includes(String(event?.status || event?.verdict || "").toLowerCase()),
+    ).length;
+    const failures = Object.prototype.hasOwnProperty.call(run, "failureCount")
+        ? numericValue(run.failureCount)
+        : (eventFailures || (hotspots.length ? hotspots.reduce((sum, item) => sum + item.failures, 0) : null));
+    const repasses = Object.prototype.hasOwnProperty.call(run, "repassCount")
+        ? numericValue(run.repassCount)
+        : ((run.transitions || []).filter((transition) => transition?.repass).length || null);
+
+    const model = run.model || run.telemetry?.model || null;
+    const usage = [];
+    const usageKeys = [
+        ["Input tokens", ["inputTokens", "input_tokens", "gen_ai.usage.input_tokens"], "tokens"],
+        ["Output tokens", ["outputTokens", "output_tokens", "gen_ai.usage.output_tokens"], "tokens"],
+        ["Tokens", ["tokens", "totalTokens", "total_tokens"], "tokens"],
+        ["Premium requests", ["copilotPremiumRequests", "premiumRequests", "goobers.usage.copilot_premium_requests"], "requests"],
+        ["Cost", ["costUSD", "cost_usd", "goobers.usage.cost_usd"], "USD"],
+    ];
+    for (const [label, keys, unit] of usageKeys) {
+        const measure = measureFromPayload(run, keys);
+        if (measure) usage.push({ label, value: measure.value, unit });
+    }
+    const budgets = [];
+    for (const [label, keys, unit] of [
+        ["Token budget", ["maxTokens", "max_tokens"], "tokens"],
+        ["Cost budget", ["maxCostUSD", "max_cost_usd"], "USD"],
+    ]) {
+        const measure = measureFromPayload(run, keys);
+        if (measure) budgets.push({ label, value: measure.value, unit });
+    }
+    return {
+        duration: { totalMillis, queueMillis, executionMillis: executionKnown ? executionMillis : null },
+        counts: { failures, repasses },
+        hotspots,
+        model,
+        usage,
+        budgets,
+    };
+}
+
 export function filterTranscriptEntries(entries = [], filters = {}) {
     const stageFilter = String(filters.stage || "").trim().toLowerCase();
     const roleFilter = String(filters.role || "").trim().toLowerCase();
