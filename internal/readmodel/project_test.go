@@ -134,6 +134,18 @@ func TestProjectionIsIncrementalAndWholeAtOnce(t *testing.T) {
 //
 // Map iteration is the usual way this breaks, which is why stages and stage rows
 // are sorted rather than emitted in map order.
+func TestProjectionIsDeterministic(t *testing.T) {
+	identity := testIdentity()
+	events := completedRunEvents()
+	first := ProjectRun(identity, Projection{}, events)
+	for i := 0; i < 20; i++ {
+		again := ProjectRun(identity, Projection{}, events)
+		if !reflect.DeepEqual(again, first) {
+			t.Fatalf("projection %d differed from the first:\n got  = %+v\n want = %+v", i, again, first)
+		}
+	}
+}
+
 // TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity is #3774's
 // readmodel-side surface fix: a pod-side writer defect (fixed separately, at
 // its call sites) could durably persist an event with a zero Time — the
@@ -173,18 +185,6 @@ func TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity(t *testing.T) {
 	}
 	if got := ProjectRun(identity, Projection{}, unstampedOnly).Run.LastActivity; !got.IsZero() {
 		t.Fatalf("LastActivity = %s for a wholly unstamped run, want the zero time", got)
-	}
-}
-
-func TestProjectionIsDeterministic(t *testing.T) {
-	identity := testIdentity()
-	events := completedRunEvents()
-	first := ProjectRun(identity, Projection{}, events)
-	for i := 0; i < 20; i++ {
-		again := ProjectRun(identity, Projection{}, events)
-		if !reflect.DeepEqual(again, first) {
-			t.Fatalf("projection %d differed from the first:\n got  = %+v\n want = %+v", i, again, first)
-		}
 	}
 }
 

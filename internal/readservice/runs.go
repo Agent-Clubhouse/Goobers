@@ -1601,7 +1601,19 @@ func summarizeRunForStage(
 		event := record.Event
 		if event.Seq > lastSeq {
 			lastSeq = event.Seq
-			lastActivityAt = event.Time
+			// Seq is structural (journal.MonotonicSeq) and always advances on
+			// the newest event regardless of its Time, but lastActivityAt only
+			// advances when that event actually carries one: an unstamped
+			// event (#3774 — a pod-side writer defect, now fixed at the
+			// source but still possible from an older journal) must not
+			// clobber a real, previously-observed lastActivityAt with the
+			// zero time, which is exactly the value runIsStale treats as
+			// undeterminable rather than as fresh activity. Mirrors
+			// readmodel.ProjectRun's identical guard so GetRun and ListRuns
+			// agree on this field for the same run.
+			if !event.Time.IsZero() {
+				lastActivityAt = event.Time
+			}
 		}
 		if !event.KnownSchema() {
 			continue

@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -323,6 +324,114 @@ func TestRunIsStaleTreatsZeroLastActivityAsUndeterminable(t *testing.T) {
 	run.LastActivityAt = observedAt.Add(-5 * time.Minute)
 	if !runIsStale(run, observedAt, lastTickAt, timeout) {
 		t.Fatal("a real, old LastActivityAt under an unhealthy heartbeat must still be judged stale")
+	}
+}
+
+// TestGetRunAndListRunsAgreeOnLastActivityWhenNewestEventIsUnstamped is
+// #3774's cross-surface regression, at the seam the bug actually crossed:
+// GetRun always scans the journal via summarizeRun regardless of read-model
+// wiring, while ListRuns in the production topology (a ReadModel wired in,
+// which readModelReads defaults to true for) is served from the read model's
+// own, separately-computed LastActivity. Before this fix, an unstamped
+// newest event left summarizeRun's lastActivityAt at the zero time while the
+// read-model path (already fixed) reported the real one — the two reader
+// surfaces disagreeing on the same wire field for the same run, and the
+// run-detail page (summarizeRun's own surface) reporting the more wrong of
+// the two.
+func TestGetRunAndListRunsAgreeOnLastActivityWhenNewestEventIsUnstamped(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	machine := fixtureMachine(t)
+	startedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t, layout, machine, "run-cross-surface", machine.Def.Name, machine.Def.Spec.Gaggle,
+		startedAt, journal.Trigger{Kind: journal.TriggerManual}, true,
+	)
+	appendFixtureStageAttempt(t, run, clock, "")
+	stamped := clock.now
+
+	// The newest event carries a zero Time — the shape #3774's pod-side
+	// writer defect produced when a long-silent agentic stage's emit reached
+	// the daemon with no Op.Time set (the defect itself struck
+	// agent.lifecycle/agent.message specifically, but the writer's clock
+	// adopts whatever Time arrives regardless of event type).
+	clock.now = time.Time{}
+	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "run-cross-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.UpsertRun(ctx, projection); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !service.readModelReads {
+		t.Fatal("readModelReads is false with a ReadModel wired in — ListRuns would not exercise the production topology this test targets")
+	}
+	// Heartbeat and run activity are deliberately decoupled: the heartbeat is
+	// unhealthy (far older than observedAt, beyond timeout) while the run's
+	// own last STAMPED activity is recent (well within timeout of
+	// observedAt) — isolating the LastActivityAt-vs-zero question from the
+	// heartbeat-health question runIsStale also gates on.
+	const timeout = time.Minute
+	service.sources.LivenessTimeout = timeout
+	service.sources.SchedulerHeartbeat = func() (time.Time, error) { return startedAt.Add(-10 * time.Minute), nil }
+	service.now = func() time.Time { return stamped.Add(10 * time.Second) }
+
+	list, err := service.ListRuns(ctx, RunListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Runs) != 1 || list.Runs[0].ID != "run-cross-surface" {
+		t.Fatalf("ListRuns = %+v, want run-cross-surface", list.Runs)
+	}
+	detail, err := service.GetRun(ctx, "run-cross-surface")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+
+	if list.Runs[0].LastActivityAt.IsZero() || !list.Runs[0].LastActivityAt.Equal(stamped) {
+		t.Fatalf("ListRuns lastActivityAt = %s, want the newest STAMPED event's time %s", list.Runs[0].LastActivityAt, stamped)
+	}
+	if detail.LastActivityAt.IsZero() || !detail.LastActivityAt.Equal(stamped) {
+		t.Fatalf("GetRun lastActivityAt = %s, want the newest STAMPED event's time %s (#3774: summarizeRun must not clobber it with the unstamped newest event's zero)", detail.LastActivityAt, stamped)
+	}
+	if !list.Runs[0].LastActivityAt.Equal(detail.LastActivityAt) {
+		t.Fatalf("surface disagreement: ListRuns lastActivityAt=%s GetRun lastActivityAt=%s", list.Runs[0].LastActivityAt, detail.LastActivityAt)
+	}
+	if detail.Stale {
+		t.Fatal("GetRun reported Stale=true on a run whose newest event is merely unstamped, want undeterminable (not stale)")
 	}
 }
 
