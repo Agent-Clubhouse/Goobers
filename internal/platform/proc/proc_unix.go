@@ -109,6 +109,12 @@ func (t *Tree) requestDump() (bool, error) {
 // subprocesses, but the safe answer regardless) — reported alive, because the
 // caller is the worktree reaper and a false "dead" reaps a live run's worktree.
 // Only an unambiguous "no such process" (ESRCH) counts as dead.
+//
+// The one exception is a zombie, which the probe cannot distinguish from a live
+// process: its pid stays allocated until someone wait()s for it, so a signal-0
+// succeeds indefinitely. That false-alive is PERMANENT rather than transient
+// (#3399) — see zombie's doc — so where the platform can positively identify
+// one, a zombie counts as dead.
 func alive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -117,14 +123,10 @@ func alive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	switch err := process.Signal(syscall.Signal(0)); {
-	case err == nil:
-		return true
-	case errors.Is(err, syscall.EPERM):
-		return true
-	default:
+	if err := process.Signal(syscall.Signal(0)); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
+	return !zombie(pid)
 }
 
 func killWorkspaceProcesses(string) error {

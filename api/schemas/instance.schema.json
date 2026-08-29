@@ -9,6 +9,11 @@
   "properties": {
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
     "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
+    "schemaVersion": {
+      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on both halves of the contract, so a config that declares 2 and uses runners: hard-fails on an older binary by design instead of being silently misread.",
+      "type": "integer",
+      "enum": [1, 2]
+    },
     "repos": {
       "description": "Repositories this instance connects to. Every gaggle's project and backlog must resolve to an entry here — a gaggle whose provider/owner/name matches no entry has no credential and can never run — so this list, not the gaggle, is where a repository's identity and auth live.",
       "type": "array",
@@ -45,6 +50,15 @@
     "runner": {
       "description": "This runner's static claims and execution defaults: the toolchains it advertises, the extra ambient environment variables stages may see, and the baseline stage deadline.",
       "$ref": "#/$defs/runner"
+    },
+    "runners": {
+      "description": "The runner inventory (plural; supersedes the singular runner block's capability claims). Each entry is one runner class the scheduler may place stages on: the daemon host itself (host: self), a container image the dispatcher instantiates one fresh, never-reused pod per stage attempt from, or a consumer-authored Deployment named as a pod template by reference. Absent, the singular runner block maps to the implicit self entry — the zero-change upgrade every existing install rides. Declared, runner.capabilities must be empty: the inventory owns capability claims (the runner block's execution settings keep their current homes). Inventory edits are restart-only in v1; in-flight runs finish against their pinned snapshot (accept-and-pin).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/runnerEntry" }
+    },
+    "egress": {
+      "description": "Operator-supplied network destination set the per-runner-class NetworkPolicy renderer (`goobers netpol-render`, issue #3568) fills into the rendered reference manifests. Omitted renders nothing and changes nothing about local execution — the daemon never applies cluster networking; it renders, and the cluster operator applies.",
+      "$ref": "#/$defs/egress"
     },
     "engine": {
       "description": "Tier-3 Temporal engine connection shared by the runtime, scheduler, workers, dispatchers, and daemon projection loop. GOOBERS_TEMPORAL_HOSTPORT, GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE override these values at process startup.",
@@ -133,7 +147,7 @@
   },
   "$defs": {
     "tokenRef": {
-      "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, or a secret in a declared secretStores entry. An inline secret value is rejected at load.",
+      "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
@@ -152,6 +166,26 @@
           "minLength": 1,
           "description": "Secret in a declared secret store, written as `<storeName>/<secretName>`. The store name must match a secretStores entry; the secret name is interpreted by that store's resolver.",
           "examples": ["prod-kv/github-token"]
+        },
+        "githubCLI": {
+          "description": "One explicitly selected GitHub CLI account. The daemon resolves and verifies this account at startup, caches only the token in memory, and never follows later ambient account switches.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostname", "user"],
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub hostname whose CLI credential store is queried explicitly, independent of the ambient `gh auth switch` selection.",
+              "examples": ["github.com"]
+            },
+            "user": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub login selected with `gh auth token --hostname ... --user ...` and verified against the provider identity before work is admitted.",
+              "examples": ["octocat"]
+            }
+          }
         }
       }
     },
@@ -347,7 +381,21 @@
           "$ref": "#/$defs/tokenRef"
         },
         "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier for kind `github-app` (see repos[].auth.appId)." },
-        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId)." },
+        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId). Covers ONE owner, so it is valid only when every GitHub repo in this instance shares a single owner; use `installations` otherwise. Mutually exclusive with `installations`." },
+        "installations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-owner installation bindings for kind `github-app`: one App, one key, one slug, one installation per owner. Required when the instance's repos span more than one GitHub owner — an App installation belongs to exactly one owner, so a single `installationId` mints tokens that fail with a 422 on the first repo in any other owner. Every owner appearing in `repos[]` must be bound. Mutually exclusive with `installationId`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "installationId"],
+            "properties": {
+              "owner": { "type": "string", "minLength": 1, "description": "GitHub owner this installation covers; matches a repos[].owner value." },
+              "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID of the App on that owner." }
+            }
+          }
+        },
         "privateKey": {
           "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`.",
           "$ref": "#/$defs/tokenRef"
@@ -365,7 +413,13 @@
         },
         {
           "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
-          "then": { "required": ["appId", "installationId", "privateKey"] }
+          "then": {
+            "required": ["appId", "privateKey"],
+            "oneOf": [
+              { "required": ["installationId"] },
+              { "required": ["installations"] }
+            ]
+          }
         }
       ]
     },
@@ -513,6 +567,149 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$",
       "examples": ["dotnet@8"]
     },
+    "egress": {
+      "description": "The egress destination configuration: named CIDR allowlist groups rendered into every network-granting runner class's NetworkPolicy (goobernetes-restrictions.md §2.2: the allowlist CIDR set is instance-operator-supplied configuration rendered into the manifests).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowlist": {
+          "description": "Named destination groups. Every runner class without network:none is rendered with all of them; a class with network:none gets only DNS and the blob-endpoint data path.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/egressAllowlistGroup" }
+        }
+      }
+    },
+    "egressAllowlistGroup": {
+      "description": "One named CIDR destination group: the git/backlog provider ranges, the model endpoint ranges, or a gaggle's sandbox targets. The render refuses CHANGE-ME documentation placeholders (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) — fill in real ranges before rendering.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "cidrs"],
+      "properties": {
+        "name": {
+          "description": "The group's handle in rendered provenance markers and errors. A lowercase DNS label, unique within the allowlist.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["github-provider"]
+        },
+        "kind": {
+          "description": "The destination family: provider (git/backlog provider), model (model/agent endpoint — the coverage ratchet's reference set), or sandbox (the gaggle's declared sandbox/provisioner targets).",
+          "type": "string",
+          "enum": ["provider", "model", "sandbox"]
+        },
+        "source": {
+          "description": "The upstream document the CIDRs were transcribed from (e.g. https://api.github.com/meta). Optional: omitted declares an operator-local set with no upstream to drift from. When set, sourceSHA256 is required and `goobers netpol-render --check` fails when the live document's hash no longer matches — a stale CIDR set otherwise fails mid-run as a connect timeout indistinguishable from a correct denial.",
+          "type": "string",
+          "examples": ["https://api.github.com/meta"]
+        },
+        "sourceSHA256": {
+          "description": "The hex sha256 of the source document at transcription time — the provenance marker the drift check validates. Required when source is set.",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "cidrs": {
+          "description": "The granted destination blocks, spelled as exact network addresses (no host bits — a normalized-away host part is how a grant silently widens).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One CIDR destination block.",
+            "type": "string",
+            "examples": ["140.82.112.0/20"]
+          }
+        },
+        "ports": {
+          "description": "The allowed TCP ports; omitted defaults to 443.",
+          "type": "array",
+          "items": {
+            "description": "One allowed TCP port.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "runnerEntry": {
+      "description": "One declared runner: a name, where stages placed on it execute (host), what it claims to provide, and the restriction effects it enforces. Claims are trusted in v1 — a false claim degrades to a runtime error with a named diagnostic, never a silent misroute.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host"],
+      "properties": {
+        "name": {
+          "description": "This runner's handle in diagnostics, placement provenance, and (later) queue keying. A lowercase DNS label, unique within the inventory.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["ci-linux"]
+        },
+        "host": {
+          "description": "Where a stage placed on this runner executes: the literal \"self\" (the daemon host — the only kind that executes locally), a container image reference (registry[:port]/repository[:tag][@digest] — the dispatcher instantiates one fresh pod per stage attempt from it), or the bare name of a consumer-authored Deployment whose pod template is instantiated per stage attempt, by reference — never resident execution. A value carrying \"/\", \":\", or \"@\" is read as an image reference; any other bare name is read as a Deployment name, so a plain image shorthand like \"ubuntu\" must spell a registry, tag, or digest. A host that is not \"self\" requires the instance to declare an engine: block, or the config is refused at load.",
+          "type": "string",
+          "minLength": 1,
+          "examples": ["self", "ghcr.io/example/goobers-ci:v0.7.0"]
+        },
+        "provides": {
+          "description": "This runner's claim set: OS, resource ceilings, and preinstalled toolchain/platform capabilities.",
+          "$ref": "#/$defs/runnerProvides"
+        },
+        "restrictions": {
+          "description": "The isolation effects this runner ENFORCES — effects, never mechanisms. A stage requiring a restriction matches only runners that enforce it. Drawn from the closed v1 effect list; an unknown token is refused at load.",
+          "type": "array",
+          "items": {
+            "description": "One enforced restriction effect from the closed v1 list.",
+            "type": "string",
+            "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+          }
+        }
+      }
+    },
+    "runnerProvides": {
+      "description": "What a runner claims to provide. Quantities are ceilings — they become pod resource limits, while a stage's declared minimums become requests — written as Kubernetes quantity strings verbatim.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "description": "The runner's operating system. Empty claims no OS.",
+          "type": "string",
+          "enum": ["linux", "windows", "macOS"]
+        },
+        "cpu": {
+          "description": "CPU ceiling as a Kubernetes quantity string, e.g. 8000m.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["8000m"]
+        },
+        "memory": {
+          "description": "Memory ceiling as a Kubernetes quantity string, e.g. 16Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["16Gi"]
+        },
+        "disk": {
+          "description": "Disk ceiling as a Kubernetes quantity string, e.g. 100Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["100Gi"]
+        },
+        "capabilities": {
+          "description": "Toolchain and platform capabilities this runner claims are ALREADY INSTALLED — the same open vocabulary as runner.capabilities, matched exactly at schedule time.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "shell": {
+          "description": "Declares that this runner's image provides a POSIX-compatible shell, satisfying a shell stage's derived run:shell requirement. Only meaningful for a non-self runner (a self runner already satisfies this implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "boolean"
+        },
+        "harnesses": {
+          "description": "The agent-harness names (e.g. \"copilot\", \"claude\") this runner's image provides on PATH, each satisfying an agentic stage's derived harness:<name> requirement for that name. Only meaningful for a non-self runner (a self runner already satisfies every configured harness implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          }
+        }
+      }
+    },
+    "quantity": {
+      "description": "A positive Kubernetes quantity string, verbatim (2000m, 4Gi): a decimal number with an optional binary (Ki/Mi/Gi/Ti/Pi/Ei), decimal (n/u/m/k/M/G/T/P/E), or scientific-notation suffix. Parsed with Kubernetes semantics at load, where zero and negative values are refused.",
+      "type": "string",
+      "pattern": "^(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$"
+    },
     "harnessName": {
       "description": "An agent harness whose launcher may be overridden.",
       "type": "string",
@@ -536,7 +733,7 @@
         "maxParallelRuns": {
           "type": "integer",
           "minimum": 0,
-          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted leaves concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1."
+          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted MEANS UNLIMITED — concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1. Note this is the opposite of a workflow's own readiness.maxRunsPerHour, where zero/omitted falls back to a default of 10 rather than unlimited."
         },
         "workflowBudgets": {
           "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
@@ -591,7 +788,7 @@
               "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
               "examples": ["http://127.0.0.1:4317"]
             },
-            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Acceptable for a loopback collector; GOOBERS_OTLP_INSECURE overrides it." },
+            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
             "headers": {
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",
@@ -702,7 +899,8 @@
         "projectionFullFidelityDays": {
           "type": "integer",
           "minimum": 0,
-          "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence. Zero, unset, or negative means UNBOUNDED — never a zero-day window."
+          "default": 90,
+          "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Defaults to 90 days (product policy decision per issue #3056 for unattended operation: opt-out with safe first-enable semantics). Set to 0 or negative to disable retention (UNBOUNDED — never a zero-day window). Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence."
         }
       }
     },
@@ -747,6 +945,12 @@
           "minLength": 1,
           "description": "host:port for the API listener. Empty defaults to 127.0.0.1:8080. A NON-loopback host is refused at load unless BOTH tls and auth are configured — fail closed, with no insecure override.",
           "examples": ["127.0.0.1:8080"]
+        },
+        "podTokenKeyFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to shared key material for STATELESS pod tokens. Set it when the mode-3 dispatcher runs in a different process from the daemon (the split `goobers up` / `goobers worker --dispatch-namespace` deployment): the in-memory token registry is daemon-local, so a token minted in the worker cannot otherwise be verified by the daemon receiving the surrender. A path only — key material never appears in this file. Unset keeps the in-memory registry, which is correct whenever daemon and dispatcher share a process.",
+          "examples": ["/mnt/secrets/pod-token.key"]
         },
         "tls": {
           "description": "Serves the API over HTTPS from an on-disk certificate and key. Required for a non-loopback listen address.",

@@ -97,6 +97,25 @@ type RunInput struct {
 	// RunControls pins inherited workflow policy. MaxRepasses above remains a
 	// compatibility field for persisted inputs created before this block.
 	RunControls apiv1.RunControls `json:"runControls,omitempty"`
+	// LiveJournal pins whether this run's journal is authored live through
+	// the daemon's journal plane (DS4): activities emit journal events as
+	// they happen, and the deterministic accumulation behind JournalQuery
+	// becomes the repair/cross-check source rather than the authority (DS5).
+	// Pinned input rather than worker config so replay is deterministic and
+	// runs started before the live journal service existed keep projecting
+	// exactly as before. False (the zero value) preserves today's behavior
+	// byte for byte.
+	LiveJournal bool `json:"liveJournal,omitempty"`
+	// Placements pins each task's resolved execution placement (#3588): the
+	// run-start constraint solve's outcome, snapshotted like the definition
+	// itself (WF-016), because a Temporal workflow can never read
+	// instance.Config or call the solver mid-run (architecture D8 — a
+	// mid-run solve is a silent replay-nondeterminism bug). Built by
+	// bootstrap.PinStagePlacements; consumed by runTask as data. Empty —
+	// every zero-declaration and local-mode instance, and every input
+	// persisted before this field existed — leaves every stage on the legacy
+	// self path, byte for byte.
+	Placements []PinnedPlacement `json:"placements,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -165,8 +184,13 @@ func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
 	return result, err
 }
 
+// scheduledRunWorkflowIDSuffix distinguishes a scheduled run's child workflow
+// id from its Schedule action claim id. The claim liveness probe
+// (liveness.go) inverts this mapping, so both sides share the constant.
+const scheduledRunWorkflowIDSuffix = "-run"
+
 func scheduledRunWorkflowID(claimID string) string {
-	return claimID + "-run"
+	return claimID + scheduledRunWorkflowIDSuffix
 }
 
 // RunScheduled binds a timestamped schedule claim to the run and records the
@@ -226,7 +250,16 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	}
 	rec.recordRunBranchUpfront(ctx, in)
 
-	res, err := walk(ctx, in, m, rec)
+	var res RunResult
+	// The opening emission creates the run journal at the daemon (first-emit
+	// creation, §8) — from here the run is live: stall detection, SSE, and
+	// the portal see it mid-flight. Failure to open the live journal fails
+	// the run, the same stance the local runner takes when journal.Create
+	// fails: a run whose product output cannot be authored does not execute.
+	err = rec.emitPending(ctx)
+	if err == nil {
+		res, err = walk(ctx, in, m, rec)
+	}
 	if err != nil {
 		// A walk-level error is the engine's failTerminal (#305): record the
 		// cause and the failed terminal in the projection, then fail the
@@ -234,6 +267,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error())
 			rec.runFinished(ctx, journal.PhaseFailed)
+			rec.emitTerminal(ctx)
 		}
 		return RunResult{}, err
 	}
@@ -247,6 +281,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runFinished(ctx, phase)
+	rec.emitTerminal(ctx)
 	return res, nil
 }
 
@@ -264,6 +299,11 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
+	// The mode-3 counterpart of workspaceBranch. A pod is disposed after
+	// surrender, so what one stage committed reaches the next only as a bundle
+	// digest threaded here (#3763); on the worker the shared branch ref does
+	// this and this stays empty.
+	var workspaceDelta string
 	state := in.Spec.Start
 	steps := 0
 
@@ -283,7 +323,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, workspaceDelta, &workspaceDelta, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -334,6 +374,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr
+			}
+			// Gate boundary emission: the verdict (and its artifact) become
+			// live before the walk moves on. Exhausting the emit budget here
+			// fails the run — a gate decision that cannot be journaled must
+			// not silently route the run (§8's fail-closed stance); the
+			// terminal is then backfilled by the repair projection.
+			if err := rec.emitPending(ctx); err != nil {
+				return RunResult{}, err
 			}
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
@@ -430,7 +478,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, workspaceDelta string, deltaOut *string, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -442,6 +490,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	}
 	env := buildInvocation(in, t.Name, t.Goal, inputs, t.Capabilities, limits, upstream, t.Goober)
 	env.MinimumIntegrity = t.MinimumIntegrity
+	env.Attempt = 1
+	env.OwnershipBoundary = "task:" + t.Name
+	env.PolicyActions = append([]string(nil), t.PolicyActions...)
+	env.NestedAgentPolicy = t.NestedAgentPolicy
+	if t.NestedAgentPolicy != nil {
+		parent := apiv1.StagePlatformAuthority(env, "result")
+		env.ParentPlatformPolicy = &parent
+	}
 	// Both admission checks run before dispatch, matching the local runner.
 	// The engine resolves inputsFrom only against the immediately preceding
 	// task, so every such value is graded by that task's produced provenance;
@@ -472,18 +528,34 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		}
 		env.Inputs[inputKey] = v
 	}
+	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
+	// non-self runner dispatches through ActDispatchStage on its pinned
+	// per-(gaggle × runner-type) queue (architecture D9, subsuming the
+	// os-suffix scheme below for placed stages). Everything is read from
+	// RunInput — no solve, no config, no I/O — so the routing is a pure
+	// function of pinned data and replay-deterministic. A stage with no
+	// pinned placement, or one pinned to self, takes the arms below exactly
+	// as before this branch existed (zero-declaration invariance,
+	// architecture §11 item 1).
+	if placement, remote := remotePlacementFor(in, t.Name); remote {
+		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+		produced := engineProducedIntegrity(t, env, upstreamResult)
+		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceDelta, deltaOut)
+	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)
 	if t.Type == apiv1.TaskAgentic {
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
 		// the journal ungraded and diverge from the local runner.
-		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 			var result stageActivityResult
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, env, workspaceBranch).Get(ctx, &result)
+			attemptEnv := env
+			attemptEnv.Attempt = int32(attempt)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
-		})
+		}, nil)
 	}
 	// Fail closed on an absent or zero-value run (#626/#156): a
 	// DeterministicRun{} previously masked nil and dispatched an empty run. The
@@ -496,12 +568,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 	}
 	run := *t.Run
-	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, env, run, workspaceBranch).Get(ctx, &result)
+		attemptEnv := env
+		attemptEnv.Attempt = int32(attempt)
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
-	})
+	}, nil)
 }
 
 // evaluateGate dispatches one gate evaluation and returns the evaluator
@@ -533,6 +607,12 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
+		// Pre-evaluation emission: gate.paused + gate.started go live before
+		// the evaluator dispatches, so a run waiting at a gate is visible
+		// waiting at that gate.
+		if err := rec.emitPending(ctx); err != nil {
+			return "", nil, err
+		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
@@ -555,6 +635,10 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
 		ctx := stageActivityContext(ctx, env.Limits)
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
+		// Pre-evaluation emission, as on the automated arm above.
+		if err := rec.emitPending(ctx); err != nil {
+			return "", nil, err
+		}
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch).Get(ctx, &verdict)

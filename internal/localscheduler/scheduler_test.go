@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -448,6 +449,83 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestTriggerSignalExactPreservesTargetedReference(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}})
+
+	runID, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err != nil {
+		t.Fatalf("TriggerSignalExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerSignalExact returned an empty run ID")
+	}
+	waitForCount(t, starter.count, 1)
+	starter.mu.Lock()
+	trigger := starter.starts[0].Trigger
+	starter.mu.Unlock()
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want targeted pull-request signal", trigger)
+	}
+	sched.Wait()
+}
+
+func TestTriggerSignalExactValidatesTargetedPullRequestBeforeDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, number int) error {
+		return fmt.Errorf("pull request #%d is closed", number)
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "pull request #3261 is closed") {
+		t.Fatalf("targeted validation error = %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
+}
+
+func TestTriggerSignalExactRejectsUnsupportedSignalBeforeTargetValidation(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	validationCalls := 0
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "implementation",
+		Signals:  []string{"github-webhook:issues"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, _ int) error {
+		validationCalls++
+		return nil
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "implementation"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not subscribed") {
+		t.Fatalf("unsupported signal error = %v", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("targeted validation calls = %d, want none for an unsupported signal", validationCalls)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
+}
+
 func TestReconcileKeepsDuplicateWorkflowTriggerHistoryDistinct(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
 	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
@@ -553,6 +631,7 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 		{name: "signal", kind: journal.TriggerSignal},
 		{name: "backlog item", kind: journal.TriggerItem},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reason := fireReason(tt.tick, tt.kind)
@@ -560,6 +639,19 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 				t.Fatalf("scheduledTriggerFired(%q) = %t, want %t", reason, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefillBlockedReason(t *testing.T) {
+	if !IsRefillTriggerReason("refill occupancy") || IsRefillTriggerReason("scheduled") {
+		t.Fatal("refill trigger reason classification mismatch")
+	}
+	blocking, ok := RefillBlockedReason("refill blocked: " + ReasonBudget)
+	if !ok || blocking != ReasonBudget {
+		t.Fatalf("RefillBlockedReason returned (%q, %t), want (%q, true)", blocking, ok, ReasonBudget)
+	}
+	if _, ok := RefillBlockedReason("scheduled"); ok {
+		t.Fatal("non-refill reason parsed as refill block")
 	}
 }
 
@@ -1492,7 +1584,8 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 // when WithTelemetry is configured, a dispatched tick opens exactly one
 // scheduler decision span, attributed to the firing workflow. Before this
 // fix, Scheduler had no telemetry seam at all — dispatch() never called
-// StartSchedulerSpan, the direct parity gap vs internal/scheduler.Scheduler.
+// StartSchedulerSpan, the direct parity gap vs the since-deleted tier-3
+// scheduler fork.
 func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	spans := &fakeSpanStarter{}

@@ -166,7 +166,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

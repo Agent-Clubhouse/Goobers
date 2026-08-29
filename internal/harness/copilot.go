@@ -580,7 +580,10 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // session events over the subprocess transcript when available, and captures
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
-func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -632,7 +635,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err := os.MkdirAll(filepath.Dir(debugPath), 0o755); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: prepare prompt dir: %w", err)
 	}
-	if err := os.WriteFile(debugPath, []byte(prompt), 0o644); err != nil {
+	if err := os.WriteFile(debugPath, []byte(prompt), 0o600); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: write prompt: %w", err)
 	}
 
@@ -753,6 +756,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "copilot", req.Model, resolution.Model,
+		requestedHarnessOption(req, "reasoningEffort"), harnessOptions["reasoningEffort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -761,7 +773,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		stdoutCapture = responseCapture
 	}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -769,9 +781,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
 	})
+	runErr = processErr
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
@@ -813,7 +826,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			}
 		}
 	}
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
@@ -823,6 +836,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
 	out.InputInspectionReceiptsCollected = receiptsCollected
+	// #3456: name a registered-but-unusable MCP server instead of letting its
+	// tools go silently missing. The claude adapter reads this from a
+	// structured system/init event; Copilot has no transcript equivalent, so
+	// this reads the CLI's own run log — available because the confinement
+	// already pins --log-dir into the workspace. Unconfined runs have no
+	// run-scoped log directory, so the diagnostic stays nil rather than
+	// guessing from a shared one.
+	if confinement != nil {
+		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
+	}
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
@@ -830,6 +853,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
+			}
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema

@@ -15,7 +15,12 @@ import (
 const triggerEvaluationsFileName = "trigger-evaluations.json"
 
 type triggerEvaluationsFile struct {
-	Workflows []triggerEvaluation `json:"workflows"`
+	// Owner/Generation are the M5 ownership stamp (stateguard.go). Readers
+	// ignore them; the writing scheduler's stateOwner checks them so a second
+	// daemon trips ErrStateSeized instead of silently interleaving writes.
+	Owner      string              `json:"owner,omitempty"`
+	Generation int64               `json:"generation,omitempty"`
+	Workflows  []triggerEvaluation `json:"workflows"`
 }
 
 type triggerEvaluation struct {
@@ -55,9 +60,15 @@ func ReadTriggerEvaluations(schedulerDir string) (map[WorkflowIdentity]time.Time
 	return evaluations, nil
 }
 
-func writeTriggerEvaluations(schedulerDir string, evaluations map[WorkflowIdentity]time.Time) error {
+func writeTriggerEvaluations(schedulerDir string, owner *stateOwner, evaluations map[WorkflowIdentity]time.Time) error {
+	stamp, err := owner.stamp(schedulerDir, triggerEvaluationsFileName)
+	if err != nil {
+		return err
+	}
 	state := triggerEvaluationsFile{
-		Workflows: make([]triggerEvaluation, 0, len(evaluations)),
+		Owner:      stamp.Owner,
+		Generation: stamp.Generation,
+		Workflows:  make([]triggerEvaluation, 0, len(evaluations)),
 	}
 	for identity, lastEval := range evaluations {
 		state.Workflows = append(state.Workflows, triggerEvaluation{
@@ -83,5 +94,8 @@ func writeTriggerEvaluations(schedulerDir string, evaluations map[WorkflowIdenti
 	if err := journal.WriteFileAtomic(filepath.Join(schedulerDir, triggerEvaluationsFileName), data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist trigger evaluations: %w", err)
 	}
+	// Only a landed write commits the claimed generation: a failed write must
+	// stay retryable rather than poisoning later writes with ErrStateSeized.
+	owner.commit(triggerEvaluationsFileName, stamp)
 	return nil
 }

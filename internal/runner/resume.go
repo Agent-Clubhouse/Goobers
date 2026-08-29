@@ -347,7 +347,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
 	}
 	if in.Machine == nil {
-		in.Machine, err = pinnedWorkflowMachine(rd, id)
+		in.Machine, err = PinnedWorkflowMachine(rd, id)
 		if err != nil {
 			return r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
 				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
@@ -430,12 +430,23 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := newWalkState(jr, StartInput{
-		RunID:   in.RunID,
-		Machine: in.Machine,
-		RepoRef: in.RepoRef,
-	}, registrar, "")
-	ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	resumeInput := StartInput{
+		RunID:              in.RunID,
+		Machine:            in.Machine,
+		GooberDigest:       in.GooberDigest,
+		Gaggle:             id.Gaggle,
+		Trigger:            id.Trigger,
+		RepoRef:            in.RepoRef,
+		WorkspaceBranch:    id.WorkspaceBranch,
+		WorkspaceBranchSHA: id.WorkspaceBranchSHA,
+		ContextPointers:    append([]apiv1.ContextPointer(nil), id.ContextPointers...),
+	}
+	ws := newWalkState(jr, resumeInput, registrar, "")
+	if id.ContinuedFromRunID != "" {
+		ws.pointers = append(ws.pointers, id.ContextPointers...)
+	} else {
+		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	}
 	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
 	ws.visitedStages = stageVisitSeed(seedEvents)
 	ws.parallel = activeParallel
@@ -453,7 +464,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
 	ws.lastStage, ws.lastResult = lastStage, lastResult
 	ws.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, ws.lastResult)
-	ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	ws.workspaceBranch = id.WorkspaceBranch
+	if ws.workspaceBranch == "" {
+		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	}
 	ws.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
 	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)
@@ -727,6 +741,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
 	ws.infraGateAttempts = gateInfrastructureSeed(segment)
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(segment)
+	ws.evidenceRejections = remediationEvidenceRejectionSeed(segment)
 	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
@@ -931,9 +946,17 @@ func gateRepassAttempt(e journal.Event) int {
 	return int(n)
 }
 
-// pinnedWorkflowMachine reconstructs the historical machine from the trusted,
-// content-addressed Definition snapshot and verifies every identity boundary.
-func pinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+// PinnedWorkflowMachine reconstructs the historical machine from the trusted,
+// content-addressed Definition snapshot journaled at Start and verifies every
+// identity boundary: the input's trusted integrity, the definition's
+// name/version, and — twice, once over the raw snapshot and once over the
+// compiled machine — the run's pinned WorkflowDigest (WF-016). A caller that
+// resumes or intervenes on a run whose pin no longer matches the current
+// config should prefer this machine over the current one (#3376): the run
+// keeps walking the definition it started under, while any snapshot that is
+// missing, untrusted, corrupt, or mismatched still fails closed here and the
+// WF-016 refusal stands.
+func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
 	var definitionRef *journal.InputRef
 	for i := range id.Inputs {
 		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
@@ -983,6 +1006,46 @@ func pinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflo
 		)
 	}
 	return machine, nil
+}
+
+// PinnedGateGooberCapabilities reads the run's pinned reviewer-goober
+// capability state: the GateGooberCapabilities map the starter pinned into
+// the run at start (#294) and Start journaled as the trusted
+// journal.PinnedGateGooberCapabilitiesInputName input. It is the gate-path
+// counterpart of PinnedWorkflowMachine — an agentic reviewer gate's grants
+// are instance policy, not part of the pinned workflow definition, so a
+// post-start consumer (the daemon credential plane, PR #3528) must resolve
+// them from this pin rather than the currently-served config, or a config
+// edit after run start would change a live run's reviewer grants.
+//
+// found=false reports a journal that carries no such pin (created before the
+// pin existed, or by an author that never pins one); the caller decides — the
+// credential plane fails closed. A snapshot that is present but untrusted or
+// unparseable is an error.
+func PinnedGateGooberCapabilities(rd *journal.Reader, id journal.RunIdentity) (map[string][]string, bool, error) {
+	var ref *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedGateGooberCapabilitiesInputName {
+			ref = &id.Inputs[i]
+			break
+		}
+	}
+	if ref == nil {
+		return nil, false, nil
+	}
+	if ref.Integrity != apiv1.IntegrityTrusted {
+		return nil, false, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedGateGooberCapabilitiesInputName, ref.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(ref.Ref)
+	if err != nil {
+		return nil, false, fmt.Errorf("read immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	var capabilities map[string][]string
+	if err := json.Unmarshal(data, &capabilities); err != nil {
+		return nil, false, fmt.Errorf("parse immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	return capabilities, true, nil
 }
 
 // refuseResume ends a run whose WF-016 resume verification failed at the
@@ -1129,6 +1192,19 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 					MediaType: "application/json", Integrity: e.Ref.Integrity,
 				},
 			}})
+		case journal.EventRunnerAnnotation:
+			kind, _ := e.Runner["kind"].(string)
+			if kind != "learning.episode.injected" || e.Ref == nil {
+				continue
+			}
+			record(e.Branch, []apiv1.ContextPointer{{
+				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+				Integrity: e.Ref.Integrity,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+					MediaType: "application/json", Integrity: e.Ref.Integrity,
+				},
+			}})
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1149,6 +1225,26 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+func runnerUint64(value any) uint64 {
+	switch n := value.(type) {
+	case uint64:
+		return n
+	case int:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case json.Number:
+		if parsed, err := n.Int64(); err == nil && parsed >= 0 {
+			return uint64(parsed)
+		}
+	}
+	return 0
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest
@@ -1434,8 +1530,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		return transition
 	}
 
+	branchEvents := newParallelBranchEventIndex(events[:finished], event.Parallel)
 	for branch := 1; branch <= len(spec.Branches); branch++ {
-		history := parallelBranchEvents(events[:finished], event.Parallel, branch)
+		history := branchEvents.events(branch)
 		target, task, gate := parallelBranchTerminal(history, machine)
 		if target == event.Target {
 			transition.task = task
@@ -1685,6 +1782,40 @@ func gateDiffSeed(events []journal.Event) map[string]string {
 			seed = make(map[string]string)
 		}
 		seed[e.Gate] = digest
+	}
+	return seed
+}
+
+// remediationEvidenceRejectionSeed rebuilds each gate's consecutive
+// remediation-evidence rejection count from the journaled rejection
+// annotations (#3375), so a run that crashes mid-loop resumes with the budget
+// it had already spent rather than a fresh one — the same continuity contract
+// gateDiffSeed keeps for #316's non-convergence detection.
+//
+// A gate.evaluated event ends the streak: reaching a resolved outcome means
+// that gate got past the pre-evaluation rejection entirely, so any rejections
+// before it belong to a finished episode. Within a streak the count is pinned
+// to the annotation's diffDigest, matching the live budget's reset rule.
+func remediationEvidenceRejectionSeed(events []journal.Event) map[string]evidenceRejectionBudget {
+	var seed map[string]evidenceRejectionBudget
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			delete(seed, e.Gate)
+			continue
+		}
+		if e.Type != journal.EventRunnerAnnotation || e.Runner["kind"] != "remediation-evidence-validation" {
+			continue
+		}
+		digest, _ := e.Runner["diffDigest"].(string)
+		if seed == nil {
+			seed = make(map[string]evidenceRejectionBudget)
+		}
+		budget := seed[e.Gate]
+		if budget.digest != digest {
+			budget = evidenceRejectionBudget{digest: digest}
+		}
+		budget.count++
+		seed[e.Gate] = budget
 	}
 	return seed
 }

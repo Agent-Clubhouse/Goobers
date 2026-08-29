@@ -3,16 +3,21 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
@@ -32,6 +37,10 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
 	"credentials, and never persisted to .git/config.\n" +
+	"A push rejected as a ref race (non-fast-forward, \"failed to push some\n" +
+	"refs\") fetches the remote tip, rebases the local branch onto it, and\n" +
+	"retries up to 2 more times before failing, so a fully-validated diff is\n" +
+	"not discarded because a concurrent writer advanced the branch (#3366).\n" +
 	"[path] defaults to the current directory (the stage's worktree).\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
@@ -61,13 +70,149 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if err := gitPushBranch(dir, branch, env); err != nil {
+	// NOTHING TO PUSH is not the same as a successful push, and the difference
+	// is load-bearing. A branch with no commits beyond its base pushes cleanly:
+	// git exits 0, origin gains a ref identical to base, and the stage reports
+	// success having shipped nothing.
+	//
+	// The fact recorded below is what makes that dangerous rather than merely
+	// useless. #3366's re-claim discovery reads a journaled branch push as
+	// "this run did not strand its diff" — so an empty push actively asserts
+	// that no work was lost, which is exactly wrong in the case where work WAS
+	// lost. That is how a stranded diff becomes unrecoverable instead of
+	// recoverable. MEASURED as reachable in mode 3 (#3763): a commit made by
+	// one stage does not survive into the next, so the pushing stage genuinely
+	// arrives with nothing.
+	//
+	// DELIBERATELY NOT A FAILURE. This cannot distinguish "the agent correctly
+	// made no changes" from "the diff was stranded" — both arrive here with an
+	// empty branch — and failing the stage would regress the first case on
+	// substrates where it is legitimate. So the stage still succeeds; what it
+	// stops doing is claiming a push that did not happen.
+	empty, emptyErr := branchHasNoCommitsBeyondBase(dir, branch)
+	if emptyErr != nil {
+		// Cannot tell: preserve today's behaviour exactly rather than guess.
+		pf(stderr, "warning: could not determine whether %q has commits to push (%v); pushing anyway\n", branch, emptyErr)
+	} else if empty {
+		pf(stderr, "warning: branch %q has no commits beyond its base — nothing to push\n", branch)
+		pf(stdout, "no commits to push on %s; skipped (no branch-push fact recorded)\n", branch)
+		return 0
+	}
+
+	if err := pushBranchWithRetry(dir, branch, env, stderr); err != nil {
 		pf(stderr, "error: push branch %q: %v\n", branch, err)
 		return 1
 	}
+	// Record the successful publication in the stage's mutation sidecar so the
+	// runner journals it as a ref.touched event (#228's machinery). #3366's
+	// re-claim discovery reads it back: a prior run whose journal shows a
+	// pushed branch did not strand its diff, so gather-implement-context must
+	// not offer that run's work as recoverable.
+	appendBranchPushFact(dir, branch)
 
 	pf(stdout, "pushed %s to origin\n", branch)
 	return 0
+}
+
+// pushRaceAttempts bounds the push → fetch-and-rebase → retry loop: the total
+// number of pushes attempted before a persistently rejected push fails the
+// stage.
+const pushRaceAttempts = 3
+
+// pushBranchWithRetry pushes branch, and when the push is rejected as a ref
+// race (#3366's trigger class 3: a concurrent writer advanced the remote
+// branch between this worktree's fork point and its push — "failed to push
+// some refs" after minutes of validated implement work), fetches the remote
+// tip, rebases the local branch onto it, and retries. A rebase that does not
+// apply cleanly aborts and surfaces the original push rejection: conflict
+// resolution is agentic work, not a push-layer concern. Any non-race failure
+// (auth, missing remote) fails immediately, exactly as before.
+func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = gitPushBranch(dir, branch, env)
+		if err == nil {
+			return nil
+		}
+		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
+			return err
+		}
+		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
+		if rebaseErr := rebaseOntoRemoteBranch(dir, branch, env); rebaseErr != nil {
+			pf(stderr, "warning: rebase onto remote %q failed (%v); surfacing the original push rejection\n", branch, rebaseErr)
+			return err
+		}
+	}
+}
+
+// isPushRaceError classifies a push failure as a ref race worth a
+// fetch-rebase-retry, from git's own stable rejection phrasing. Everything
+// else (auth failures, unreachable remotes, missing refs) is not retryable
+// at this layer.
+func isPushRaceError(err error) bool {
+	msg := err.Error()
+	for _, marker := range []string{
+		"failed to push some refs",
+		"fetch first",
+		"non-fast-forward",
+		"cannot lock ref",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// rebaseOntoRemoteBranch fetches branch's current remote tip and rebases the
+// local branch onto it, authenticated via the same env-injected credential as
+// the push. On a rebase failure the rebase is aborted so the worktree is left
+// exactly as it was before the attempt.
+func rebaseOntoRemoteBranch(dir, branch string, env []string) error {
+	url, err := originURL(dir)
+	if err != nil {
+		return err
+	}
+	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
+	fetch.Dir = dir
+	fetch.Env = composeGitEnv(dir, env)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		return fmt.Errorf("fetch remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
+	rebase.Dir = dir
+	rebase.Env = composeGitEnv(dir, env)
+	if out, err := rebase.CombinedOutput(); err != nil {
+		abort := exec.Command("git", "rebase", "--abort")
+		abort.Dir = dir
+		abort.Env = composeGitEnv(dir, env)
+		_ = abort.Run()
+		return fmt.Errorf("rebase onto remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// appendBranchPushFact appends a branch-publication mutation fact to the
+// stage worktree's mutation sidecar (mutations.jsonl), best-effort like
+// sidecarMutationRecorder: the push already happened for real, so a failed
+// sidecar write must never fail the stage — it only costs the ref.touched
+// journal projection.
+func appendBranchPushFact(dir, branch string) {
+	fact := mutationFact{Provider: "git", Kind: "branch", ID: branch, Operation: "push"}
+	data, err := json.Marshal(fact)
+	if err != nil {
+		log.Printf("mutation sidecar: marshal branch push fact: %v", err)
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, mutationsSidecarFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	}
 }
 
 // currentBranch returns the branch checked out at dir — the run branch
@@ -75,9 +220,24 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 // process started. push-branch pushes exactly that branch rather than
 // reconstructing a name from GOOBERS_RUN_ID/GOOBERS_WORKFLOW, so it can never
 // drift from what the worktree actually has checked out.
-func currentBranch(dir string) (string, error) {
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
+// workspaceGitCommand builds a git command carrying the workspace's
+// safe.directory exemption.
+//
+// A stage pod's /workspace is not owned by the container user, so bare git
+// refuses it with "detected dubious ownership" and exit 128. The stage's own
+// command inherits the exemption (safeDirectory.Env); code running in the
+// dispatch-exec process does NOT, so a raw exec.Command("git", ...) fails there
+// and nowhere else. MEASURED: every git call in the workspace-delta path failed
+// this way in-pod while passing on the worker and in tests.
+func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, nil)
+	return cmd
+}
+
+func currentBranch(dir string) (string, error) {
+	cmd := workspaceGitCommand(dir, "symbolic-ref", "--short", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("determine checked-out branch (detached HEAD?): %w", err)
@@ -87,6 +247,67 @@ func currentBranch(dir string) (string, error) {
 		return "", fmt.Errorf("worktree at %s has no checked-out branch (detached HEAD)", dir)
 	}
 	return branch, nil
+}
+
+// resolveBaseRef finds the local ref naming the run's base commit.
+//
+// The two substrates store it differently and BOTH must resolve, or whatever
+// depends on it silently degrades to "cannot tell" on one of them: a pod's
+// `git clone --branch <base>` yields a remote-tracking origin/<base>, while the
+// worker's worktrees come off a `git clone --mirror`, which has no
+// refs/remotes/* at all and carries the base at refs/heads/<base>.
+func resolveBaseRef(dir, base string) (string, error) {
+	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
+		verify := workspaceGitCommand(dir, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
+		if err := verify.Run(); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("base %q not present locally as origin/%s, refs/heads/%s, or %s", base, base, base, base)
+}
+
+// stageBaseBranch is the base branch name the run context names, defaulting to
+// "main" exactly as the in-pod checkout does so both agree on what base means.
+func stageBaseBranch() string {
+	if base := strings.TrimSpace(os.Getenv(executor.BaseBranchEnvVar)); base != "" {
+		return base
+	}
+	return "main"
+}
+
+// branchHasNoCommitsBeyondBase reports whether branch carries nothing origin's
+// base branch does not already have.
+//
+// The base is read from the run context the executor injects, defaulting to
+// "main" exactly as the in-pod checkout does, so both substrates agree on what
+// "base" means. When the base ref is not present locally — a worktree that
+// never fetched it, an unusual remote layout — this returns an error rather
+// than a verdict: the caller then preserves the pre-existing behaviour instead
+// of skipping a push it cannot prove is empty. Refusing to guess is the point;
+// a wrong "empty" verdict would silently drop a real diff, which is worse than
+// the problem being fixed.
+func branchHasNoCommitsBeyondBase(dir, branch string) (bool, error) {
+	base := stageBaseBranch()
+	// Two substrates store the base under different refs and BOTH must resolve,
+	// or the check silently degrades to "cannot tell" on one of them. A pod's
+	// `git clone --branch <base>` yields a remote-tracking origin/<base>; the
+	// worker's worktrees come off a `git clone --mirror`, which has no
+	// refs/remotes/* at all and carries the base at refs/heads/<base>.
+	// MEASURED: origin/<base> alone made this permanently undecidable on the
+	// worker, which is the substrate where the check matters most today.
+	baseRef, err := resolveBaseRef(dir, base)
+	if err != nil {
+		return false, err
+	}
+	out, err := workspaceGitCommand(dir, "rev-list", "--count", baseRef+".."+branch).Output()
+	if err != nil {
+		return false, fmt.Errorf("count commits on %s beyond %s: %w", branch, baseRef, err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return false, fmt.Errorf("parse commit count %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return n == 0, nil
 }
 
 // gitPushBranch pushes branch to origin, authenticated via gitAuthEnv (#237's
@@ -105,7 +326,14 @@ func gitPushBranch(dir, branch string, env []string) error {
 	}
 	cmd := exec.Command("git", "push", url, branch+":"+branch)
 	cmd.Dir = dir
-	cmd.Env = env
+	// composeGitEnv, not env: credentials.GitAuthEnvironment returns a COMPLETE
+	// environment and strips foreign GIT_CONFIG_* before installing its own, so
+	// assigning it directly ERASED the workspace's safe.directory exemption.
+	// MEASURED in-pod — "fatal: detected dubious ownership in repository at
+	// '/workspace'" — which made `goobers push-branch` unable to run in mode 3
+	// at all. composeGitEnv extends the count instead of restating it, exactly
+	// as its own comment prescribes.
+	cmd.Env = composeGitEnv(dir, env)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
@@ -198,8 +426,7 @@ func gitAuthEnv(token string) []string {
 
 // originURL resolves the worktree's "origin" remote to its configured URL.
 func originURL(dir string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve origin URL: %w", err)

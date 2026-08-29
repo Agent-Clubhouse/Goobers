@@ -546,3 +546,43 @@ func TestTokenRoundTripsExpiryEncoding(t *testing.T) {
 		t.Fatalf("expires_at = %v", payload.ExpiresAt)
 	}
 }
+
+// TestTokenWithExpiryReportsTheMintedPairAtomically pins the DS10 primitive
+// the credential plane rides: the expiry returned belongs to the exact value
+// returned — served together from cache, and refreshed together on a
+// near-expiry re-mint — so a mint response can state precisely how long the
+// snapshot it hands a stage pod lives (#3489).
+func TestTokenWithExpiryReportsTheMintedPairAtomically(t *testing.T) {
+	base := time.Now()
+	now := base
+	api := &fakeAppAPI{t: t, key: appTestKey(t), appID: "123456", installationID: "42",
+		expiresAt: func() time.Time { return now.Add(time.Hour) }}
+	srv := httptest.NewServer(api.handler())
+	defer srv.Close()
+	source := newTokenSource(t, api, srv, func(c *Config) {
+		c.Now = func() time.Time { return now }
+	})
+
+	first, expiresAt, err := source.TokenWithExpiry(context.Background())
+	if err != nil {
+		t.Fatalf("TokenWithExpiry: %v", err)
+	}
+	if first == "" || expiresAt.IsZero() || !expiresAt.After(base) {
+		t.Fatalf("first mint = %q expiry %v, want a stated future expiry", first, expiresAt)
+	}
+	// Cache hit: same value, same expiry.
+	now = base.Add(30 * time.Minute)
+	cached, cachedExpiry, err := source.TokenWithExpiry(context.Background())
+	if err != nil || cached != first || !cachedExpiry.Equal(expiresAt) {
+		t.Fatalf("cached = %q/%v err=%v, want %q/%v", cached, cachedExpiry, err, first, expiresAt)
+	}
+	// Near-expiry re-mint: fresh value, fresh later expiry, atomically.
+	now = base.Add(56 * time.Minute)
+	refreshed, refreshedExpiry, err := source.TokenWithExpiry(context.Background())
+	if err != nil {
+		t.Fatalf("TokenWithExpiry (refresh): %v", err)
+	}
+	if refreshed == first || !refreshedExpiry.After(cachedExpiry) {
+		t.Fatalf("refresh = %q expiry %v, want a fresh token with a later expiry than %v", refreshed, refreshedExpiry, cachedExpiry)
+	}
+}

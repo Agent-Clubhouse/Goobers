@@ -16,10 +16,20 @@ import (
 
 // probeAlive is the test's own liveness check, independent of the package's
 // Alive, so a bug in Alive can't hide a surviving process. It reports true for
-// EPERM (exists, not ours) as well as a clean signal-0.
+// EPERM (exists, not ours) as well as a clean signal-0 — except a zombie:
+// kill(pid, 0) succeeds for a zombie (it still occupies its process-table
+// slot until its parent wait()s), so on linux probeAlive additionally checks
+// /proc/<pid>/stat's state field and treats "Z" as gone (#3395); a container
+// whose pid 1 does not reap orphans otherwise makes a zombie read as alive
+// forever, an assertion failure that indicts the probe, not KillTree. isZombie
+// is a no-op (always false) on non-linux unix, leaving prior behavior intact
+// there.
 func probeAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+	if err != nil && err != syscall.EPERM {
+		return false
+	}
+	return !isZombie(pid)
 }
 
 func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) bool {
@@ -93,7 +103,9 @@ wait`
 		t.Fatalf("Kill: %v", err)
 	}
 	// Reap the direct child so it doesn't linger as a zombie in this test
-	// process; the re-parented child/grandchild are reaped by init.
+	// process. The re-parented child/grandchild are usually reaped by init,
+	// but need not be: probeAlive below is zombie-aware on linux (#3395), so
+	// this assertion holds even in a container whose pid 1 does not reap.
 	_ = cmd.Wait()
 
 	for _, p := range []struct {

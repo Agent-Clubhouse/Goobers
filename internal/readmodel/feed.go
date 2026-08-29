@@ -46,10 +46,14 @@ type Feed struct {
 
 	mu      sync.Mutex
 	waiters []chan struct{}
+
+	readChanges func(context.Context, uint64, int) ([]Change, error)
 }
 
 // NewFeed constructs a feed over a store.
-func NewFeed(store *Store) *Feed { return &Feed{store: store} }
+func NewFeed(store *Store) *Feed {
+	return &Feed{store: store, readChanges: store.Changes}
+}
 
 // Notify wakes anything waiting for new changes.
 //
@@ -103,7 +107,7 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 		// sit on a stale view indefinitely.
 		waiter := f.wait()
 
-		changes, err := f.store.Changes(ctx, cursor.Seq, limit)
+		changes, err := f.readChanges(ctx, cursor.Seq, limit)
 		if err != nil {
 			return FeedPosition{}, err
 		}

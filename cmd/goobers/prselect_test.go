@@ -8,8 +8,137 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestMergeReviewEligibilityPolicy(t *testing.T) {
+	pr := providers.PullRequestSummary{
+		Labels:             []string{"goobers:team-a"},
+		Assignees:          []string{"alice"},
+		RequestedReviewers: []string{"review-bot"},
+	}
+
+	tests := []struct {
+		name            string
+		label           string
+		respectAssignee bool
+		selfIdentity    string
+		wantEligible    bool
+		wantDescription string
+	}{
+		{"legacy", "", false, "", true, "legacy"},
+		{"opted in", "goobers:team-a", false, "", true, "label:goobers:team-a"},
+		{"missing opt in", "goobers:team-b", false, "", false, ""},
+		{"assigned", "", true, "ALICE", true, "assignee-or-reviewer:ALICE"},
+		{"requested reviewer", "", true, "REVIEW-BOT", true, "assignee-or-reviewer:REVIEW-BOT"},
+		{"unrelated identity", "", true, "mallory", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := eligibleByMergeReviewPolicy(pr, tt.label, tt.respectAssignee, tt.selfIdentity); got != tt.wantEligible {
+				t.Fatalf("eligibleByMergeReviewPolicy() = %t, want %t", got, tt.wantEligible)
+			}
+			if tt.wantDescription != "" && mergeReviewEligibilityDescription(tt.label, tt.respectAssignee, tt.selfIdentity) != tt.wantDescription {
+				t.Fatalf("eligibility description = %q, want %q", mergeReviewEligibilityDescription(tt.label, tt.respectAssignee, tt.selfIdentity), tt.wantDescription)
+			}
+		})
+	}
+}
+
+func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.authenticatedLogin = "shared-review-bot"
+	server.addIssue(50, "Instance A PR")
+	server.addIssue(51, "Instance B PR")
+	server.addOpenPR(50, "feature/instance-a", "main", "sha50head", "shamainbase",
+		false, []string{"goobers:instance-a"}, nil)
+	server.addOpenPR(51, "feature/instance-b", "main", "sha51head", "shamainbase",
+		false, []string{"goobers:instance-b"}, nil)
+	server.setPRIdentities(50, "contributor-a", []string{"instance-a"}, nil)
+	server.setPRIdentities(51, "contributor-b", []string{"instance-b"}, nil)
+
+	rootA := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "instance-a-run")
+	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-a")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-a")
+	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", "any")
+	dirA := t.TempDir()
+	t.Chdir(dirA)
+	if code, stdout, stderr := runArgs(t, "pr-select", rootA); code != 0 {
+		t.Fatalf("instance A pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	} else if !strings.Contains(stdout, "selected PR #50") {
+		t.Fatalf("instance A stdout = %q, want PR #50", stdout)
+	}
+
+	rootB := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "instance-b-run")
+	t.Setenv("GOOBERS_INPUT_REQUIREOPTINLABEL", "goobers:instance-b")
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Setenv("GOOBERS_INPUT_SELFIDENTITY", "instance-b")
+	t.Setenv("GOOBERS_INPUT_AUTHORSCOPE", "any")
+	dirB := t.TempDir()
+	t.Chdir(dirB)
+	if code, stdout, stderr := runArgs(t, "pr-select", rootB); code != 0 {
+		t.Fatalf("instance B pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	} else if !strings.Contains(stdout, "selected PR #51") {
+		t.Fatalf("instance B stdout = %q, want PR #51", stdout)
+	}
+
+	for _, check := range []struct {
+		dir       string
+		number    string
+		numberInt int
+		head      string
+		base      string
+		runID     string
+	}{
+		{dirA, "50", 50, "sha50head", "shamainbase", "instance-a-run"},
+		{dirB, "51", 51, "sha51head", "shamainbase", "instance-b-run"},
+	} {
+		data, err := os.ReadFile(filepath.Join(check.dir, "selected-pr.json"))
+		if err != nil {
+			t.Fatalf("read %s selected-pr.json: %v", check.number, err)
+		}
+		var selected map[string]string
+		if err := json.Unmarshal(data, &selected); err != nil {
+			t.Fatalf("unmarshal %s selection: %v", check.number, err)
+		}
+		if selected["number"] != check.number {
+			t.Fatalf("selection for instance %s = %q, want %s", check.number, selected["number"], check.number)
+		}
+		if selected["advisoryMode"] != "true" {
+			t.Fatalf("selection for instance %s advisoryMode = %q, want true", check.number, selected["advisoryMode"])
+		}
+
+		providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", check.runID)
+		seedGateVerdictJournal(t, check.dir, check.runID, apiv1.Verdict{
+			Decision: apiv1.VerdictPass,
+			Summary:  "advisory result",
+			HeadSHA:  check.head,
+			BaseSHA:  check.base,
+		})
+		t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", selected["number"])
+		t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", selected["headSha"])
+		t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", selected["baseSha"])
+		t.Setenv("GOOBERS_INPUT_ADVISORYMODE", selected["advisoryMode"])
+		t.Setenv("GOOBERS_INPUT_PUBLISHADVISORY", "false")
+		t.Chdir(t.TempDir())
+		if code, stdout, stderr := runArgs(t, "apply-verdict", check.dir); code != 0 {
+			t.Fatalf("instance %s apply-verdict: code = %d, stdout = %q, stderr = %q", check.number, code, stdout, stderr)
+		} else if !strings.Contains(stdout, "public publication disabled by policy") {
+			t.Fatalf("instance %s apply-verdict stdout = %q, want read-only advisory diagnostic", check.number, stdout)
+		}
+		server.mu.Lock()
+		commentCount := len(server.issues[check.numberInt].comments)
+		server.mu.Unlock()
+		if commentCount != 0 {
+			t.Fatalf("instance %s advisory comments = %d, want no unsolicited public comments", check.number, commentCount)
+		}
+	}
+}
 
 // setDaemonIdentity rewrites root's instance.yaml to configure a pat-kind
 // DaemonIdentity — enough for daemonIdentityAuthorLogin to consult it, since
@@ -147,5 +276,33 @@ func TestGatherSiblingContextAdvisoryModeConsistentWithDaemonIdentity(t *testing
 	t.Chdir(t.TempDir())
 	if code, stdout, stderr := runArgs(t, "gather-sibling-context", "--no-verdict-cache", root); code != 0 {
 		t.Fatalf("gather-sibling-context: code = %d, stdout = %q, stderr = %q — want its own advisoryMode consistency check to agree with pr-select's daemon-identity-aware decision", code, stdout, stderr)
+	}
+}
+
+func TestPRSelectDispatchesADOAndSelectsPR(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	server := adoPRSelectServer(t, "approved")
+	adoPRSelectEnv(t, repo, server)
+	t.Setenv("GOOBERS_INPUT_HEADPREFIXES", "goobers/tb-ado-implementation/")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "selected PR #359") {
+		t.Fatalf("stdout = %q, want PR #359 selected from ADO provider", stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatalf("read selected-pr.json: %v", err)
+	}
+	var selected map[string]string
+	if err := json.Unmarshal(data, &selected); err != nil {
+		t.Fatalf("unmarshal selected-pr.json: %v", err)
+	}
+	if selected["number"] != "359" {
+		t.Fatalf("selected number = %q, want 359", selected["number"])
 	}
 }

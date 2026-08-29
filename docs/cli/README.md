@@ -22,7 +22,7 @@
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
 | [`goobers stats`](#goobers-stats) | show the instance lifetime summary card |
-| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, or report daemon health |
+| [`goobers status`](#goobers-status) | validate config, show warnings, list runs, report daemon health, or list live agentic stages |
 | [`goobers trace`](#goobers-trace) | show a run's journal events or review verdicts, follow a live run, or show transcripts |
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
@@ -57,6 +57,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
+| [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
+| [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
@@ -68,6 +71,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
+| [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
@@ -381,6 +385,11 @@ Usage: goobers backlog-health [--feedback] [path]
 
 Snapshot ready-pool depth and age from provider label-event timestamps, and
 persist the paginated ready-transition ledger for telemetry rollups.
+The ledger resumes from a durable per-repo/label event cursor; a full history
+scan runs only on the first cycle or an integrity mismatch, bounded by the
+transitionScanMaxPages input. Below the transitionScanQuotaFloor fraction of
+the provider rate-limit window the scan defers to the next cycle rather than
+spending the shared credential to zero.
 --feedback instead de-readies items whose consecutive failed/escalated
 implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
@@ -929,7 +938,7 @@ Goobers on it — the install-time enforcement of that document (#668).
 The --k8s check set, each row citing the shape-doc section it enforces:
 
   cluster-version    required  §1     cluster reachable, supported version
-  networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)
+  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
   storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
@@ -943,6 +952,12 @@ unconfigured they report a skipped warn. Every check is read-only: nothing is
 created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+networkpolicy-api warns even when the API is served: a served API is only a
+correlate of enforcement — a CNI can serve it and still ignore policies
+silently. This check is API-discovery only; enforcement can only be proven
+by a denied attempt from an in-cluster negative control, never by doctor
+--k8s alone.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -988,6 +1003,198 @@ clear message rather than hanging. Exit codes: 0 = shutdown requested,
 ~~~console
 $ goobers down
 $ goobers down ./instance
+~~~
+
+## `goobers e2e`
+
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+
+~~~text
+Usage: goobers e2e verify [flags]
+       goobers e2e kill-inject [flags]
+
+verify:      check the Goobernetes S1-S9 distributed e2e proof harness's
+             assertions (#3517) against one already-completed run's
+             recorded data.
+kill-inject: perform one live S6 kill-matrix cell (pod-kill) against a
+             real cluster (#3513).
+~~~
+
+## `goobers e2e kill-inject`
+
+perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+
+~~~text
+Usage: goobers e2e kill-inject --run <run-id> --stage <stage-name>
+       --stage-class builtin --namespace <k8s-namespace>
+       [--poll-timeout <duration>] [--out <record.json>]
+
+Perform ONE live S6 kill-matrix cell (#3513/#3517, goobernetes-smoke.md §4
+S6) against a real cluster: pod-kill only, one stage class per invocation.
+This is the minimal live CellDriver implementation — it does not run the
+full six-cell matrix (RunKillMatrix), and it does not implement node-kill.
+
+--stage names the REAL workflow stage (e.g. "probe-builtin") whose currently
+running pod should be killed; --stage-class records which of S6's three
+abstract classes (builtin, agentic, local-ci) that stage plays, for the
+emitted record only.
+
+Finds the target pod by label selector (goobers.dev/run=<run-id>,
+goobers.dev/stage=<stage>) — the same labels every dispatcher-created stage
+pod carries (internal/dispatcher.LabelRun/LabelStage) — NOT by asking the
+daemon: its read API defaults to loopback-only and cannot be reached from
+outside its own pod. No kubectl exec anywhere.
+
+Procedure:
+  1. Poll for a Running pod matching the label selector.
+  2. Delete it via the Kubernetes API (client-go — in-cluster config when
+     running as a pod, else standard kubeconfig loading), in --namespace.
+  3. Poll the same selector for a DIFFERENT pod (the dispatcher's retry) to
+     appear.
+  4. Emit one internal/e2e.CellInjectionRecord as JSON — to --out, or
+     stdout. InterruptedAttempt/SuccessorAttempt are built from pod data
+     only (name, labels, phase, node) — thinner than the journal-sourced
+     StageAttempt goobers e2e verify produces, and RunCompletedSuccessfully
+     is always false here: no pod carries the overall run's terminal phase,
+     only its own stage's outcome, so this command does not guess it.
+     Rendering S6's actual pass/fail verdict needs this record combined with
+     the run's journal-sourced data separately.
+
+--poll-timeout bounds BOTH polling phases independently (default 10m each) —
+this command fails loudly on timeout rather than hanging forever; a partial
+record (injection performed, no successor observed yet) is still emitted
+with RunCompletedSuccessfully=false, since D5 requires every injection be
+recorded even when the retry hasn't landed by the time this command gives up.
+
+Exit codes:
+  0 = injection performed and a successor pod was observed
+  1 = injection performed but no successor pod appeared within
+      --poll-timeout — the record is still emitted
+  2 = usage / IO / Kubernetes API error, or the target pod never appeared
+      within --poll-timeout (nothing was injected, no record produced)
+~~~
+
+**Examples**
+
+~~~console
+$ goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers
+~~~
+
+## `goobers e2e verify`
+
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+
+~~~text
+Usage: goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [path]
+       goobers e2e verify --print-runner-class <restriction[,restriction...]>
+
+Verify the Goobernetes S1-S9 distributed e2e proof harness's assertions
+(#3517, docs/design/goobernetes-smoke.md) against one already-completed
+run's recorded data — StageAttempt placement provenance and the run
+journal, fetched the same way `goobers trace` and `goobers runs list` do. This
+command drives no cluster, applies no workflow, and kills nothing. It
+verifies a run that already happened; a separate, infra-side orchestration
+(outside this repo, likely shell) produces the run and calls this command
+afterward.
+
+PURE FUNCTION, RE-RUNNABLE FROM ITSELF (goobernetes-smoke.md §5 rule 4):
+every verdict is computed from the run's on-disk journal (via the read
+side), --expected, and whatever captures --expected inlines — never a
+cluster, network, or other live dependency. The emitted bundle records
+--expected's own path (Collateral.S8CapturePath/S9ProbeOutputPath, when
+those items were checked) alongside the run's journal directory
+(Collateral.RunJournalPaths), so every verdict is re-derivable offline
+from the bundle plus those two paths alone.
+
+Always checked, from the run's recorded data alone:
+  S1        fresh pod per stage attempt, never reused
+  S2        at least one Linux and one Windows stage attempt, run completed
+
+Checked only when --expected supplies the needed data; skipped (not
+recorded as a failure) otherwise:
+  S8        a live portal/SSE observation of a stage transition, timestamped
+            before the run's terminal event (needs "liveVisibility"). A
+            JOURNAL timestamp cannot stand in for this: a closed-run
+            projection has the same early stage.started/stage.finished
+            times a genuine live capture would, so it is blind to exactly
+            the failure mode S8 exists to catch (terminal-only visibility)
+            — per goobernetes-smoke.md §5 rule 2, an observer that was not
+            actually exercised is never a pass. Supply the consumer's own
+            recorded portal/SSE capture, or S8 is skipped, never passed.
+  ARCH11-7  no ledger-touching stage attempt placed on Windows (needs
+            "ledgerTouchingStages")
+  ARCH11-8  a declared capability gap was caught (needs "capabilityGap")
+  S9        the network:allowlist negative-control triple (needs
+            "negativeControl")
+
+--expected DECLARES INTENDED TOPOLOGY — what the operator meant to deploy,
+or what the workflow's own DSL declares should happen — never a restatement
+of the run's actual recorded data (that would be circular: checking the
+run against a description of itself). A mismatch between --expected and
+the recorded run is a real FINDING (an item FAILS), never a usage error:
+
+  {
+    "liveVisibility": {
+      "source": "portal",
+      "observations": [
+        {"stage": "implement", "transition": "started", "observedAt": "2026-08-01T12:00:01Z"}
+      ]
+    },
+    "ledgerTouchingStages": ["implement"],
+    "capabilityGap": {
+      "wantUnsatStage": "windows-only-stage",
+      "unsatisfiableStages": [
+        {"stage": "windows-only-stage", "kind": "requirement", "diagnostic": "..."}
+      ]
+    },
+    "negativeControl": {
+      "denial":                            {"endpoint": "blocked.example.com:443", "exitCode": 28},
+      "positiveControl":                   {"endpoint": "allowed.example.com:443", "exitCode": 0},
+      "modelEndpoints":                    ["api.anthropic.com"],
+      "controlVantage":                    {"endpoint": "blocked.example.com:443", "exitCode": 0},
+      "restrictedRunnerRestrictions":      ["network:allowlist"],
+      "controlVantageRunnerRestrictions":  []
+    }
+  }
+
+negativeControl's two "...Restrictions" fields name the RESTRICTION EFFECTS
+(the same closed vocabulary a runners: inventory entry declares) of the
+Denial/PositiveControl leg's restricted runner and the ControlVantage leg's
+second runner, not a runner-class LABEL VALUE — this command GENERATES that
+value itself via internal/runnercap.RunnerClassValue (delivery decision
+015, the dispatcher's own stamping function), the same way
+--print-runner-class does, so a topology file never hand-transcribes a
+class string that could drift from what the dispatcher actually stamps.
+Use --print-runner-class <restriction[,restriction...]> to see the derived
+value before authoring a topology file; it needs no --run, no instance
+root, and touches no cluster.
+
+S3-S7 (declared-edge handoff, artifact materialization, repass, write-API
+trigger/escalation, and the S6 kill matrix) need a live topology-driving
+orchestration to produce their evidence and are not checked by this
+command — see internal/e2e's per-item doc comments.
+
+--out writes the evidence bundle (internal/e2e.Bundle, JSON) there; default
+is stdout. Exit codes distinguish "the design/system is broken" from "the
+observer machinery is broken" — opposite responses (D4/§5 rule 2's
+invalid-is-never-a-pass rule applied to the driver's own control flow):
+  0 = every checked item PASSED
+  1 = at least one item FAILED (act on the design — this wins even if an
+      INVALID item is also present; it still appears in the bundle)
+  2 = usage / IO / --expected parse error / run or gaggle did not resolve
+      (the command itself could not run at all — no bundle was produced)
+  3 = at least one item was INVALID and none FAILED (the observer
+      machinery broke, not necessarily the product — fix instrumentation
+      and re-run; includes an item --expected asked this invocation to
+      check but that came back unproven)
+~~~
+
+**Examples**
+
+~~~console
+$ goobers e2e verify --run <run-id>
+$ goobers e2e verify --run <run-id> --expected topology.json --out bundle.json
+$ goobers e2e verify --print-runner-class network:allowlist
 ~~~
 
 ## `goobers elect-lander`
@@ -1041,6 +1248,12 @@ Usage: goobers engine-start [flags] <workflow> [path]
 
 Dispatch one run onto the tier-3 engine (experimental). The run id is
 derived from gaggle, workflow, and --dedupe-key.
+
+--live-journal pins live journal authorship into the run: workers emit
+journal events through the daemon's journal plane as they happen, so the
+run is visible mid-flight; without it the journal is projected from
+history at close, as before. Requires the daemon's write API to be
+reachable from every worker serving the run (worker --daemon-api).
 
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 ~~~
@@ -1704,6 +1917,75 @@ provider failure), 2 = usage/IO error.
 $ goobers merge-queue-poll
 ~~~
 
+## `goobers netpol-render`
+
+render per-runner-class NetworkPolicy reference manifests from the runners: inventory
+
+~~~text
+Usage: goobers netpol-render [--out <dir>] [--check] [--baseline <path>]
+                             [--write-baseline] [--timeout <duration>]
+                             [--print-blob-endpoint] [instance-root]
+
+Render the per-runner-class NetworkPolicy reference manifests from the
+runners: inventory — the decision-016 single source of the network reference
+manifests (issue #3568, docs/design/goobernetes-restrictions.md §6/§7).
+
+One manifest set is emitted per DISTINCT restriction set (runner class). Every
+policy selects on goobers.dev/runner-class derived by the SAME shared function
+the dispatcher stamps stage pods with, so selector and stamp agree by
+construction. Each policy also carries the goobers.dev/runner-class-restrictions
+ANNOTATION — the human-readable restriction set behind the (possibly opaque)
+class value, so `kubectl get netpol -o yaml` answers "which class is this".
+
+Per class: a network:none class gets only DNS and the blob-endpoint data path;
+every other class additionally gets the instance-configured egress.allowlist
+CIDR groups (instance.yaml egress: — operator-supplied; the render REFUSES
+CHANGE-ME documentation placeholders rather than emitting a stub). Every class,
+restricted included, carries the blob-endpoint egress row: it is the class's
+own artifact data path, and each cross-namespace grant is composed as
+namespaceSelector AND podSelector in a single peer element.
+
+--out writes one file per class plus a kustomization.yaml; without it the
+manifests stream to stdout.
+
+--check validates instead of writing:
+  - provenance drift: every egress.allowlist group with a source URL is
+    re-fetched and EVERY sourceSHA256 marker compared (a stale CIDR set
+    otherwise fails mid-run as a connect timeout indistinguishable from a
+    correct denial);
+  - coverage ratchet: per-class model-endpoint coverage, measured in
+    ADDRESSES (never CIDR-block counts), compared against the committed
+    baseline — failing on a rise or an unfrozen class;
+  - output freshness: with --out, the on-disk manifests must match a fresh
+    render.
+
+--write-baseline freezes the current per-class coverage into the baseline
+file (--baseline; defaults to <out>/coverage-baseline.json).
+
+--print-blob-endpoint prints the blob endpoint (namespace, pod labels,
+container port) as JSON and exits, touching no cluster and needing no instance
+root. The goobers-system ingress half of the blob grant (#3585) lives in a
+separate repo and renders its ingress peer FROM this value rather than
+restating it, so the endpoint is derived once and cannot drift.
+
+The rendered manifests are REFERENCE manifests the cluster operator applies;
+this command never touches a cluster, and rendering says nothing about
+enforcement — `goobers doctor --k8s` owns enforcement honesty (D12).
+
+An instance with no pod-hosted runners (no runners: block, or self-only)
+renders nothing and exits 0.
+
+Exit codes: 0 = OK, 1 = refusal or check failure, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers netpol-render --out ./deploy/netpol
+$ goobers netpol-render --out ./deploy/netpol --write-baseline
+$ goobers netpol-render --out ./deploy/netpol --check
+~~~
+
 ## `goobers onboarding`
 
 run non-interactive onboarding actions
@@ -2004,6 +2286,10 @@ Usage: goobers push-branch [path]
 Push the worktree's checked-out branch to origin, authenticated via the
 configured repository credential — never the host's ambient git
 credentials, and never persisted to .git/config.
+A push rejected as a ref race (non-fast-forward, "failed to push some
+refs") fetches the remote tip, rebases the local branch onto it, and
+retries up to 2 more times before failing, so a fully-validated diff is
+not discarded because a concurrent writer advanced the branch (#3366).
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 ~~~
@@ -2301,9 +2587,10 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
+       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
@@ -2883,16 +3170,25 @@ $ goobers stats --since 24h --json
 
 ## `goobers status`
 
-validate config, show warnings, list runs, or report daemon health
+validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+It lists parked backlog items too — open issues carrying a park disposition without
+goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
+With --agents, list only the agentic stages in flight right now, by role and run id.
+The --agents answer comes from the runner's own journals, never from a process table,
+so it can never match the process asking (no `ps | grep` self-match), and it drops the
+invoking run when it is itself a stage. It needs no credentials and makes no provider
+calls, so it is safe to run from inside a container during a deploy window. Combine it
+with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit and
+--watch are refused because the probe reports only the live moment.
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -2902,6 +3198,8 @@ Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 $ goobers status
 $ goobers status --daemon
 $ goobers status --watch
+$ goobers status --agents
+$ goobers status --agents --json
 ~~~
 
 ## `goobers telemetry`
@@ -3061,12 +3359,13 @@ $ goobers telemetry stats --json
 emit versioned candidate findings (a connector stage)
 
 ~~~text
-Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
+Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]
 
 Query the instance telemetry rollup for threshold-crossing failure and gate
 patterns. The built-in connector stage writes a versioned candidate-findings
 artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.
-With no --aggregate, all supported aggregates are evaluated. Threshold rates
+With no --aggregate, all supported aggregates are evaluated. --learning-action
+filters learning-episode findings to governed action families. Threshold rates
 are fractions from 0 through 1; count thresholds are positive integers.
 
 --format effective-version-efficacy (requires --workflow) instead assesses
@@ -3204,8 +3503,13 @@ validate an instance or checked-in config source tree
 Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
-path "."). --source-tree validates a checked-in config source tree
-using instance.yaml.example and the path itself as config/. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+path "."). Placement findings (RNR001/RNR003) are errors when
+instance.yaml declares a runners: inventory that cannot satisfy some
+stage, and warnings otherwise. --source-tree validates a checked-in
+config source tree using instance.yaml.example and the path itself as
+config/; because the tree carries no real instance.yaml, its placement
+solve runs against the example inventory and is advisory-only
+(warnings, never errors). --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -3341,6 +3645,19 @@ Flags:
                              (default 30s)
   --work-root <dir>          root for stage workspaces (default: a
                              goobers-worker dir under the OS temp dir)
+  --daemon-api <url>         daemon write API base URL; wires live journal
+                             emission through the journal plane, with the
+                             per-run bearer from $GOOBERS_POD_TOKEN when
+                             set (default $GOOBERS_DAEMON_API)
+  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
+                             wires the dispatcher behind the stage-dispatch
+                             seam and serves the per-(gaggle x runner)
+                             dispatch queues derived from the instance's
+                             runners: inventory. Requires --instance and
+                             --blob-store (the surrender plane rides the
+                             same volume); cluster access uses in-cluster
+                             credentials or the standard kubeconfig rules
+                             (default $GOOBERS_DISPATCH_NAMESPACE)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

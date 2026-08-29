@@ -13,6 +13,7 @@ import (
 )
 
 var newRepairSweeper = repair.New
+var newRetentionLoop = readmodel.NewRetentionLoop
 
 // startProjector runs the read model's sole writer (#1923, §6.1).
 //
@@ -40,11 +41,17 @@ var newRepairSweeper = repair.New
 // journal-derived paths still answer every request, and the cutover flag gates
 // whether anything reads the store at all. Refusing to start the daemon over it
 // would turn a degraded optimisation into an outage.
-func startProjector(ctx context.Context, store *readmodel.Store, watermarks *intake.Store, l instance.Layout, cfg *instance.Config) func() {
+func startProjector(
+	ctx context.Context,
+	store *readmodel.Store,
+	watermarks *intake.Store,
+	l instance.Layout,
+	cfg *instance.Config,
+) (func(), func() readmodel.RetentionStats) {
 	runsDirs, err := l.RunDirs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve runs directories for projector: %v\n", err)
-		return func() {}
+		return func() {}, nil
 	}
 
 	// The change feed the SSE stream will tail (#1929). Wired here so the
@@ -61,17 +68,18 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	// a journal lock. It is what makes the read model COMPLETE rather than
 	// merely current: the projector applies what writers reported, and repair
 	// finds what nobody did, in both directions.
-	// Projection retention (#1932). Projection aging is unbounded by default,
-	// while the same loop still enforces the independent change-feed row bound.
-	//
-	// Read from config as a DAY COUNT, and RetentionDays is what turns 0 /
-	// negative / unset into unbounded rather than into a zero-day window that
-	// would age out every run on the first pass.
-	window := readmodel.UnboundedRetention()
-	if cfg != nil {
-		window = readmodel.RetentionDays(cfg.Retention.ProjectionFullFidelityDays)
-	}
-	retention := readmodel.NewRetentionLoop(store, p, window, readmodel.RetentionOptions{})
+	// Projection retention (#1932). The default is 90 days — product policy
+	// decision (issue #3056) to age out runs beyond full-fidelity listability
+	// in unattended-operation scenarios, with operators opting out by setting
+	// projectionFullFidelityDays to 0 or negative (unbounded). The default is
+	// deliberate: a zero-day window would age out every run on the first pass
+	// (the most destructive possible reading of an off value), so unbounded
+	// requires an explicit configuration decision. Projection aging is
+	// independent of journal retention: aging a run out of the projection
+	// removes no evidence — the journal is still there, and a rebuild would
+	// re-admit the run if the floor were lowered.
+	window := readmodel.RetentionDays(cfg.ProjectionFullFidelityRetentionDays())
+	retention := newRetentionLoop(store, p, window, readmodel.RetentionOptions{})
 
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	go retention.Run(sweepCtx)
@@ -90,5 +98,5 @@ func startProjector(ctx context.Context, store *readmodel.Store, watermarks *int
 	return func() {
 		stopSweep()
 		stop()
-	}
+	}, retention.Stats
 }

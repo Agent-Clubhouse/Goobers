@@ -149,6 +149,14 @@ whether your prior concerns were actually addressed before deciding again —
 don't re-raise a point that was fixed, and don't rubber-stamp a pass just
 because it's a repass.
 
+Read every attached `learning.episode[...]` artifact. For the same
+unresolved finding, copy its `id` and `learningSignature` exactly. Omit a
+resolved identity. Reopen a resolved identity only for genuinely new
+finding-specific evidence and set a different `evidenceDigest`; repeating
+old evidence is suppressed. Classify each finding as `instruction`, `skill`,
+`workflow`, `gate`, `validation`, or `code-defect` so durable learning can
+route to one governed action. Never invent a new ID to evade this contract.
+
 ## Scope & limits
 
 - You are read-only by construction (no capability grants). If you find
@@ -174,6 +182,9 @@ populate differs.
 - `rationale` — a string explaining the decision. Both modes.
 - `findings` — an array of specific issues. Each finding has **only** these
   keys:
+  - `id`, `learningSignature`, `learningClassification`, and
+    `evidenceDigest` (optional on first occurrence; follow the repass
+    identity contract above when an episode is attached).
   - `severity` — exactly one of `info`, `warning`, `error`, `critical`. Not
     `low`/`medium`/`high` — use this exact set (e.g. a blocking gap is
     `error`, a nitpick is `info` or `warning`). Both modes.

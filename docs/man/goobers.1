@@ -63,7 +63,7 @@ fire an external signal to subscribed workflows
 show the instance lifetime summary card
 .TP
 \fBgoobers status\fR
-validate config, show warnings, list runs, or report daemon health
+validate config, show warnings, list runs, report daemon health, or list live agentic stages
 .TP
 \fBgoobers trace\fR
 show a run's journal events or review verdicts, follow a live run, or show transcripts
@@ -147,6 +147,15 @@ render the effective instance config (secrets redacted)
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
 .TP
+\fBgoobers e2e\fR
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+.TP
+\fBgoobers e2e kill-inject\fR
+perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+.TP
+\fBgoobers e2e verify\fR
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+.TP
 \fBgoobers engine-project\fR
 write a completed engine run's journal into the instance (experimental)
 .TP
@@ -179,6 +188,9 @@ remove a leaked secret from a stored blob (SEC-041)
 .TP
 \fBgoobers lint\fR
 lint config via the single authoritative validation engine (alias for validate)
+.TP
+\fBgoobers netpol-render\fR
+render per-runner-class NetworkPolicy reference manifests from the runners: inventory
 .TP
 \fBgoobers onboarding\fR
 run non-interactive onboarding actions
@@ -448,6 +460,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
+\fBgoobers-e2e\fR(1),
+\fBgoobers-e2e-kill-inject\fR(1),
+\fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),
 \fBgoobers-engine-start\fR(1),
@@ -477,6 +492,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-mcp-io\fR(1),
 \fBgoobers-merge-pr\fR(1),
 \fBgoobers-merge-queue-poll\fR(1),
+\fBgoobers-netpol-render\fR(1),
 \fBgoobers-onboarding\fR(1),
 \fBgoobers-onboarding-stub-agent-instructions\fR(1),
 \fBgoobers-onboarding-stub-sample\fR(1),

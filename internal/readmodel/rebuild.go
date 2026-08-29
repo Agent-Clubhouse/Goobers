@@ -232,44 +232,89 @@ func (r *RebuildState) assertNoRegression(ctx context.Context) error {
 	}
 	defer func() { _ = rows.Close() }()
 
+	// Collect all live runs
+	type liveRun struct {
+		runID   string
+		liveSeq uint64
+	}
+	var liveRuns []liveRun
 	for rows.Next() {
-		var (
-			runID   string
-			liveSeq uint64
-		)
-		if err := rows.Scan(&runID, &liveSeq); err != nil {
+		var run liveRun
+		if err := rows.Scan(&run.runID, &run.liveSeq); err != nil {
 			return fmt.Errorf("readmodel: scan live position: %w", err)
 		}
+		liveRuns = append(liveRuns, run)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Bulk-fetch all rebuilt runs and tombstones in two queries
+	nextDB, releaseNext, err := r.next.readHandle()
+	if err != nil {
+		return err
+	}
+	defer releaseNext()
+
+	// Query 1: Get all runs in the rebuilt database
+	rebuiltRows, err := nextDB.QueryContext(ctx, `
+		SELECT run_id, last_seq FROM run ORDER BY run_id`)
+	if err != nil {
+		return fmt.Errorf("readmodel: read rebuilt positions: %w", err)
+	}
+	defer func() { _ = rebuiltRows.Close() }()
+
+	rebuiltMap := make(map[string]uint64)
+	for rebuiltRows.Next() {
+		var runID string
 		var rebuiltSeq uint64
-		nextDB, releaseNext, err := r.next.readHandle()
-		if err != nil {
-			return err
+		if err := rebuiltRows.Scan(&runID, &rebuiltSeq); err != nil {
+			return fmt.Errorf("readmodel: scan rebuilt position: %w", err)
 		}
-		err = nextDB.QueryRowContext(ctx,
-			`SELECT last_seq FROM run WHERE run_id = ?`, runID).Scan(&rebuiltSeq)
-		releaseNext()
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			// Absent from the rebuild. Legitimate only if it was deliberately
+		rebuiltMap[runID] = rebuiltSeq
+	}
+	if err := rebuiltRows.Err(); err != nil {
+		return err
+	}
+
+	// Query 2: Get all tombstoned runs
+	tombstoneRows, err := nextDB.QueryContext(ctx, `
+		SELECT run_id FROM tombstone`)
+	if err != nil {
+		return fmt.Errorf("readmodel: read tombstones: %w", err)
+	}
+	defer func() { _ = tombstoneRows.Close() }()
+
+	tombstonedSet := make(map[string]bool)
+	for tombstoneRows.Next() {
+		var runID string
+		if err := tombstoneRows.Scan(&runID); err != nil {
+			return fmt.Errorf("readmodel: scan tombstone: %w", err)
+		}
+		tombstonedSet[runID] = true
+	}
+	if err := tombstoneRows.Err(); err != nil {
+		return err
+	}
+
+	// Validate all live runs against the rebuilt state
+	for _, live := range liveRuns {
+		rebuiltSeq, exists := rebuiltMap[live.runID]
+		if !exists {
+			// Run is absent from the rebuild. Legitimate only if it was deliberately
 			// aged out; otherwise the rebuild would silently drop a run.
-			tombstoned, terr := r.next.Tombstoned(ctx, runID)
-			if terr != nil {
-				return terr
-			}
-			if !tombstoned {
+			if !tombstonedSet[live.runID] {
 				return fmt.Errorf("readmodel: rebuild is missing run %s, which the live "+
 					"epoch holds at source position %d and which is not tombstoned",
-					runID, liveSeq)
+					live.runID, live.liveSeq)
 			}
-		case err != nil:
-			return fmt.Errorf("readmodel: read rebuilt position for %s: %w", runID, err)
-		case rebuiltSeq < liveSeq:
+		} else if rebuiltSeq < live.liveSeq {
 			return fmt.Errorf("readmodel: rebuild would move run %s backwards, from source "+
 				"position %d to %d; publishing it would rewind that run for every client",
-				runID, liveSeq, rebuiltSeq)
+				live.runID, live.liveSeq, rebuiltSeq)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // Abort discards the in-progress build.

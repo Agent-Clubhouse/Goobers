@@ -340,6 +340,17 @@ func renderRemediationComment(state remediationState) string {
 // repeated escalations/cycles edit the sticky comment rather than growing a
 // new one every run).
 func postOrUpdateStickyComment(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, existingCommentID, body string) error {
+	// Azure Boards work-item comments do not expose the issue-comment update
+	// surface used by GitHub and Gitea. Re-post through the supported work-item
+	// operation rather than failing a refusal cycle on an existing sticky ID.
+	if _, ok := provider.(mergeReviewADOProvider); ok {
+		_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo,
+			ID:         strconv.Itoa(prNumber),
+			Comment:    body,
+		})
+		return err
+	}
 	if existingCommentID != "" {
 		return provider.UpdateComment(ctx, repo, existingCommentID, body)
 	}

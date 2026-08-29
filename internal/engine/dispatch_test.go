@@ -67,7 +67,7 @@ func TestRegisterRejectsSchemaInvalidShapes(t *testing.T) {
 			tc.mutate(&spec.Tasks[0])
 
 			r := NewRegistryWithPreviewFeatures(true)
-			_, err := r.Register("bad-shape", spec)
+			_, err := r.RegisterDefinition(wf.Definition{Name: "bad-shape", Spec: spec})
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Register error = %v, want it to name the violated invariant %q", err, tc.wantErr)
 			}
@@ -184,7 +184,7 @@ func TestRunDeterministicActivityRefusesEmptyCommand(t *testing.T) {
 // added for envelope parity thread through into the pinned RunInput.
 func TestRegistryStartInputCarriesPinnedPolicy(t *testing.T) {
 	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.Register("flow", linearSpec()); err != nil {
+	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: linearSpec()}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	in, err := r.StartInput("flow", StartSpec{

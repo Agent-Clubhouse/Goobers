@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -1888,9 +1889,13 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		default:
 			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
+		rationale := "scripted fake-harness verdict"
+		if decision == apiv1.VerdictFail {
+			rationale = "scripted fake-harness verdict. What human decision is required?"
+		}
 		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
-			Rationale: "scripted fake-harness verdict",
+			Rationale: rationale,
 		})
 	default:
 		return fmt.Errorf("unsupported harness mode %q", request.Mode)
@@ -2159,7 +2164,61 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// gitTransientAccessAttempts and gitTransientAccessBackoff bound the retry of a
+// git invocation that failed because it could not read a file this test itself
+// had just written (#3161-#3164).
+//
+// On Windows, real-time antivirus scanning and the filesystem's own handle
+// semantics leave a briefly-held handle on a newly created file. A test that
+// writes a workcopy and immediately runs git against it can lose that race, and
+// git reports it as `unable to access '<path>/repo.git/config': Permission
+// denied` followed by `fatal: unknown error occurred while reading the
+// configuration files`. The window is milliseconds, so a short bounded retry
+// closes it; five attempts with linear backoff spans ~375ms worst case.
+//
+// This deliberately does NOT retry every git failure. A genuine error -- a bad
+// ref, a conflict, a malformed command -- must still fail on the first attempt,
+// both to keep the suite fast and because retrying a real failure until it
+// gives the same answer is how a flake-suppression measure turns into a
+// bug-suppression measure.
+const (
+	gitTransientAccessAttempts = 5
+	gitTransientAccessBackoff  = 25 * time.Millisecond
+)
+
+// isTransientGitAccessError matches only the shape above: git could not access
+// a file, for a permission reason. Both halves are required. "Permission
+// denied" alone would also match a genuinely unreadable repository, which is
+// not transient and must not be retried.
+func isTransientGitAccessError(output string) bool {
+	lower := strings.ToLower(output)
+	deniedAccess := strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "access is denied")
+	if !deniedAccess {
+		return false
+	}
+	return strings.Contains(lower, "unable to access") ||
+		strings.Contains(lower, "reading the configuration files")
+}
+
 func runGitCommand(dir string, args ...string) error {
+	var lastErr error
+	for attempt := 1; attempt <= gitTransientAccessAttempts; attempt++ {
+		output, err := runGitCommandOnce(dir, args...)
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("git %v: %w\n%s", args, err, output)
+		if !isTransientGitAccessError(output) {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt) * gitTransientAccessBackoff)
+	}
+	return fmt.Errorf("git %v still failed with a transient file-access error after %d attempts (#3161): %w",
+		args, gitTransientAccessAttempts, lastErr)
+}
+
+func runGitCommandOnce(dir string, args ...string) (string, error) {
 	command := testgit.Command(args...)
 	if dir != "" {
 		command.Dir = dir
@@ -2174,8 +2233,60 @@ func runGitCommand(dir string, args ...string) error {
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("git %v: %w\n%s", args, err, output.String())
+	err := command.Run()
+	return output.String(), err
+}
+
+// #3161-#3164: the retry must fire for the observed Windows signature and for
+// nothing else. Retrying a genuine git failure would convert a flake-suppression
+// measure into a bug-suppression measure.
+func TestIsTransientGitAccessError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			// Verbatim from the failure that red-lit PR #3472's CI.
+			name: "observed windows workcopy signature",
+			output: "warning: unable to access 'C:/Users/runneradmin/AppData/Local/Temp/" +
+				"TestShippedWorkflowContracts.../workcopies/b049e36e60cc66b7/repo.git/config': Permission denied\n" +
+				"fatal: unknown error occurred while reading the configuration files",
+			want: true,
+		},
+		{
+			name:   "windows phrasing of the same denial",
+			output: "warning: unable to access 'repo.git/config': Access is denied",
+			want:   true,
+		},
+		{
+			name:   "permission denied without an access failure is not transient",
+			output: "fatal: could not read Username for 'https://github.com': Permission denied",
+			want:   false,
+		},
+		{
+			name:   "ordinary git failure is not retried",
+			output: "error: pathspec 'nope' did not match any file(s) known to git",
+			want:   false,
+		},
+		{
+			name:   "merge conflict is not retried",
+			output: "CONFLICT (content): Merge conflict in README.md",
+			want:   false,
+		},
+		{
+			name:   "empty output is not retried",
+			output: "",
+			want:   false,
+		},
 	}
-	return nil
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isTransientGitAccessError(tt.output); got != tt.want {
+				t.Fatalf("isTransientGitAccessError(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
 }

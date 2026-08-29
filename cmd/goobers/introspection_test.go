@@ -230,17 +230,17 @@ func TestFeaturesJSONContract(t *testing.T) {
 	})
 
 	t.Run("dsl-version", func(t *testing.T) {
-		code, stdout, stderr := runArgs(t, "features", "--json", "--dsl-version", supportmatrix.CurrentDSLVersion)
+		code, stdout, stderr := runArgs(t, "features", "--json", "--dsl-version", supportmatrix.NextDSLVersion)
 		if code != 0 || stderr != "" {
 			t.Fatalf("features --json --dsl-version: code=%d stderr=%q", code, stderr)
 		}
 		envelope := decodeFeaturesEnvelope(t, stdout)
 		assertFeaturesSchema(t, stdout)
-		if envelope.DSLVersion != supportmatrix.CurrentDSLVersion {
-			t.Fatalf("dslVersion = %q, want %q", envelope.DSLVersion, supportmatrix.CurrentDSLVersion)
+		if envelope.DSLVersion != supportmatrix.NextDSLVersion {
+			t.Fatalf("dslVersion = %q, want %q", envelope.DSLVersion, supportmatrix.NextDSLVersion)
 		}
 		assertGoldenFile(t, filepath.Join("testdata", "introspection", "features.dsl-version.golden.json"), stdout)
-		humanCode, humanStdout, humanStderr := runArgs(t, "features", "--dsl-version", supportmatrix.CurrentDSLVersion)
+		humanCode, humanStdout, humanStderr := runArgs(t, "features", "--dsl-version", supportmatrix.NextDSLVersion)
 		if humanCode != code || humanStderr != "" {
 			t.Fatalf("features --dsl-version human output: code=%d stderr=%q", humanCode, humanStderr)
 		}

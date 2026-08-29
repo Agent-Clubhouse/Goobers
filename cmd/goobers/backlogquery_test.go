@@ -61,9 +61,12 @@ func TestBacklogQueryReadOnlyReportsProviderFailure(t *testing.T) {
 
 	previousProvider := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		// The 503 exists to make the list fail, not to exercise the retry
+		// ladder: spending the transient-retry budget keeps the assertion
+		// identical while dropping 1+2+4+8 = 15s of real backoff sleep.
 		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
 			provider.BaseURL = server.URL
-		})...)
+		}, providers.WithMaxTransientRetries(0))...)
 	}
 	t.Cleanup(func() { newGitHubProvider = previousProvider })
 

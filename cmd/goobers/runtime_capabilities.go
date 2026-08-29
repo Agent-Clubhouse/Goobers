@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 )
 
@@ -227,6 +228,14 @@ func init() {
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
 			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
+		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).
+			withSynopsis(synopsisByID["netpol-render"]).
+			withHelp("render per-runner-class NetworkPolicy reference manifests from the runners: inventory", netpolRenderHelp).
+			withExamples(
+				"goobers netpol-render --out ./deploy/netpol",
+				"goobers netpol-render --out ./deploy/netpol --write-baseline",
+				"goobers netpol-render --out ./deploy/netpol --check",
+			),
 		groupCommand(
 			"config",
 			runConfig,
@@ -347,6 +356,7 @@ func init() {
 			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
 			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
+		command(dispatcher.DispatchExecCommand, apicontract.ActionWorkflowExecution, runDispatchExec),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
 		command(wslNetworkPreflightCommand, apicontract.ActionConfigTime, runWSLNetworkPreflight),
 		coreCommand("signal", apicontract.ActionWorkflowExecution, runSignal).
@@ -375,8 +385,8 @@ func init() {
 		).withHelp("list runs and report per-run disk usage", runsHelp),
 		coreCommand("status", apicontract.ActionReadOnlyNavigation, runStatus).
 			withSynopsis(synopsisByID["status"]).
-			withHelp("validate config, show warnings, list runs, or report daemon health", statusHelp).
-			withExamples("goobers status", "goobers status --daemon", "goobers status --watch"),
+			withHelp("validate config, show warnings, list runs, report daemon health, or list live agentic stages", statusHelp).
+			withExamples("goobers status", "goobers status --daemon", "goobers status --watch", "goobers status --agents", "goobers status --agents --json"),
 		coreCommand("stats", apicontract.ActionReadOnlyNavigation, runStats).
 			withSynopsis(synopsisByID["stats"]).
 			withHelp("show the instance lifetime summary card", statsHelp).
@@ -435,6 +445,18 @@ func init() {
 			withSynopsis(synopsisByID["trace"]).
 			withHelp("show a run's journal events or review verdicts, follow a live run, or show transcripts", traceHelp).
 			withExamples("goobers trace <run-id>", "goobers trace --summary <run-id>", "goobers trace --verdicts <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+		groupCommand(
+			"e2e",
+			runE2E,
+			subcommand("e2e verify", "verify", apicontract.ActionReadOnlyNavigation, runE2EVerify).
+				withSynopsis(synopsisByID["e2e verify"]).
+				withHelp("verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data", e2eVerifyHelp).
+				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json", "goobers e2e verify --print-runner-class network:allowlist"),
+			subcommand("e2e kill-inject", "kill-inject", apicontract.ActionMaintenance, runE2EKillInject).
+				withSynopsis(synopsisByID["e2e kill-inject"]).
+				withHelp("perform one live S6 kill-matrix cell (pod-kill) against a real cluster", e2eKillInjectHelp).
+				withExamples("goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers"),
+		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",
 			apicontract.ActionReadOnlyNavigation,

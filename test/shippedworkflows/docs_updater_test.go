@@ -201,8 +201,22 @@ func requireGate(t *testing.T, spec apiv1.WorkflowSpec, name string) apiv1.Gate 
 func normalizeDocsValidationCommand(definition *apiv1.Workflow) {
 	for index := range definition.Spec.Tasks {
 		task := &definition.Spec.Tasks[index]
-		if task.Name == "validate" && task.Run != nil {
-			task.Run.Command = []string{"project-ci"}
+		if task.Name != "validate" || task.Run == nil {
+			continue
+		}
+		task.Run.Command = []string{"project-ci"}
+		// expectedSubprocessTimeoutSeconds (#3377) documents the wall-clock
+		// ceiling of *this repo's own* `make ci` -> `go test -timeout 30m`;
+		// it does not generalize to the example's actual runtime command
+		// (acme-web's gaggle.yaml overrides to `npm run ci`, MGV-1/#1009), so
+		// it is legitimately reference-only and excluded from this
+		// comparison the same way the command itself is normalized above.
+		// Deleting down to an empty-but-non-nil map would itself drift
+		// against the example's untouched nil map, so drop the key to nil
+		// when it was the only entry.
+		delete(task.Inputs, "expectedSubprocessTimeoutSeconds")
+		if len(task.Inputs) == 0 {
+			task.Inputs = nil
 		}
 	}
 }

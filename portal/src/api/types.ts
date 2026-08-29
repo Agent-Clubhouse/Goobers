@@ -236,6 +236,7 @@ export interface WorkflowTrigger {
 }
 
 export interface ReadinessConditions {
+  desiredConcurrentRuns?: number;
   maxConcurrentRuns?: number;
   maxRunsPerHour?: number;
   maxRunsPerDay?: number;
@@ -250,7 +251,10 @@ export interface WorkflowDefinition {
 
 export interface WorkflowConcurrency {
   activeRuns: number;
+  desiredRuns?: number;
   maxConcurrentRuns: number;
+  admissionBlocked?: boolean;
+  blockingCondition?: string;
 }
 
 export interface WorkflowSummary {
@@ -401,7 +405,10 @@ export interface OperatorRunSummary {
   latestError?: { code: string; message?: string };
   review?: { verdict: string; rationale?: string };
   nextTransition?: string;
+  /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
   potentialBlockers: string[];
+  /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
+  diagnosticsLimitations?: string[];
 }
 
 export interface RunDetail extends RunSummary {
@@ -596,6 +603,31 @@ export interface AttemptList {
   attempts: StageAttempt[];
 }
 
+/**
+ * Placement provenance journaled under runner.* for one stage attempt:
+ * where it physically executed, as far as the executing substrate knew.
+ * Every field except runner is optional — a local attempt has no pod and
+ * never queued.
+ */
+export interface AttemptPlacement {
+  /** Runners-inventory entry name; "self" for the daemon's own host. */
+  runner: string;
+  /** Cluster node the attempt ran on — only ever a real node, never a hostname. */
+  node?: string;
+  /** The executing process's own hostname; inside a pod this is the pod name. */
+  host?: string;
+  /** GOOS of the executing substrate. */
+  os?: string;
+  /** Container image reference the attempt ran under. */
+  image?: string;
+  /** Pod identity for containerized attempts. */
+  pod?: string;
+  /** When the attempt entered the dispatch fabric. */
+  queuedAt?: string;
+  /** When the attempt's pod began executing. */
+  podStartedAt?: string;
+}
+
 export interface StageAttempt {
   id: string;
   visit: number;
@@ -612,6 +644,8 @@ export interface StageAttempt {
   error?: ErrorDetail;
   /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
   model?: string;
+  /** runner.* placement provenance; absent for journals recorded before it existed. */
+  placement?: AttemptPlacement;
 }
 
 export interface ArtifactContent {
@@ -635,6 +669,17 @@ export interface TelemetryStatsOptions {
   gaggle?: string;
   since?: string;
   until?: string;
+  trendSince?: string;
+  trendUntil?: string;
+  trendBuckets?: number;
+  trendPreviousSince?: string;
+  trendPreviousUntil?: string;
+}
+
+export interface TelemetryTrendBucket {
+  since: string;
+  until: string;
+  usage: TelemetryUsageStats[];
 }
 
 export interface TelemetryStatsResult {
@@ -644,8 +689,32 @@ export interface TelemetryStatsResult {
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
   creditAssignment: NodeCredit[];
+  causalCredit: CausalNodeCredit[] | null;
+  graphAnalytics?: GraphAnalytics;
+  promotionSignals?: PromotionSignal[];
+  promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+  trend?: TelemetryTrendBucket[];
+  trendPrevious?: TelemetryTrendBucket;
+}
+
+export interface GraphAnalytics {
+  centrality: CentralityScore[];
+  criticalPath: CriticalPath;
+  cycles: string[][];
+  confidence: "bounded" | "partial" | "untrusted" | string;
+  caveat?: string;
+}
+
+export interface CentralityScore {
+  node: string;
+  score: number;
+}
+
+export interface CriticalPath {
+  nodes: string[];
+  weight: number;
 }
 
 export interface NodeCredit {
@@ -659,6 +728,40 @@ export interface NodeCredit {
   failureShare: number;
   escalationRuns: number;
   retryWasteAttempts: number;
+  effect?: number;
+  lower?: number;
+  upper?: number;
+  identification: string;
+  caveat?: string;
+}
+
+export interface CausalNodeCredit {
+  node: string;
+  effect: number;
+  lower: number;
+  upper: number;
+  identification:
+    | "randomized"
+    | "observational-difference-in-differences"
+    | "unidentifiable";
+  caveat: string;
+  treatedBefore: number;
+  treatedAfter: number;
+  controlBefore: number;
+  controlAfter: number;
+  intervalAvailable: boolean;
+  promotionEligible: boolean;
+  promotionSource: string;
+}
+
+export interface PromotionSignal {
+  node: string;
+  value: number;
+  lower?: number;
+  upper?: number;
+  source: string;
+  caveat: string;
+  promotionEligible: boolean;
 }
 
 export interface TelemetryCurationStats {
@@ -699,6 +802,10 @@ export interface TelemetryGaggleStats {
   totalRuns: number;
   completedRuns: number;
   failedRuns: number;
+  // How many of failedRuns terminated on an infrastructure fault rather than a
+  // verdict about the work, and are therefore excluded from successRate's
+  // denominator (#3361/#3364).
+  infraFailedRuns: number;
   otherRuns: number;
   successRate?: number;
   avgDurationMs?: number;
@@ -717,6 +824,11 @@ export interface TelemetryRunStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  // How many of failedRuns terminated on an infrastructure fault (credential
+  // materialization, git, network, lock contention) rather than a verdict
+  // about the work, and are therefore excluded from successRate's denominator
+  // (#3361/#3364).
+  infraFailedRuns: number;
   // How many of totalRuns hung and were later aborted (the watchdog's
   // max-duration expiry), excluded from avg/min/maxDurationMs — disclosed
   // rather than silently dropped (#2534, #1439).

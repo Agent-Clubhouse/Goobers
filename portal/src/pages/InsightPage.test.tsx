@@ -286,20 +286,24 @@ describe("Insight page", () => {
         since: request?.since,
         until: request?.until,
       }));
-      // One call per trend bucket (7 for the default 7d window), plus one for
-      // the immediately preceding 7-day period, plus the page's own snapshot
-      // fetch for the selected window.
-      expect(ranges.length).toBeGreaterThanOrEqual(9);
-      const uniqueRanges = new Set(ranges.map((range) => `${range.since}:${range.until}`));
-      expect(uniqueRanges.size).toBeGreaterThanOrEqual(8);
+      expect(ranges.length).toBeGreaterThanOrEqual(2);
+      expect(getTelemetryStats.mock.calls.some(([request]) => request?.trendBuckets === 14)).toBe(
+        true,
+      );
     });
 
+    const trendRequestsBeforeAll = getTelemetryStats.mock.calls.filter(
+      ([request]) => request?.trendBuckets !== undefined,
+    ).length;
     await user.selectOptions(screen.getByLabelText("Time window"), "all");
     expect(
       await screen.findByText(
         "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
       ),
     ).toBeInTheDocument();
+    expect(
+      getTelemetryStats.mock.calls.filter(([request]) => request?.trendBuckets !== undefined),
+    ).toHaveLength(trendRequestsBeforeAll);
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
@@ -307,9 +311,24 @@ describe("Insight page", () => {
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     getTelemetryStats.mockResolvedValue({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [
-        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
-        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+        {
+          gaggle: "core",
+          totalRuns: 4,
+          completedRuns: 1,
+          failedRuns: 1,
+          infraFailedRuns: 0,
+          otherRuns: 2,
+        },
+        {
+          gaggle: "tools",
+          totalRuns: 1,
+          completedRuns: 0,
+          failedRuns: 0,
+          infraFailedRuns: 0,
+          otherRuns: 1,
+        },
       ],
       runs: [],
       stages: [],
@@ -397,6 +416,7 @@ describe("Insight page", () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -555,6 +575,7 @@ describe("Insight page", () => {
     );
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -667,6 +688,7 @@ describe("Insight page", () => {
     // #2277 bug shape (one writer dead, a sibling writer fine).
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -707,6 +729,7 @@ describe("Insight page", () => {
     // must read differently from "never recorded" above.
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],

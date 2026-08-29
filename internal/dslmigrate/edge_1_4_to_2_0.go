@@ -23,7 +23,7 @@ const (
 // — pinning `automated.pollIntervalSeconds: 10` on every such gate — so the
 // compiled behavior is identical immediately before and after the version
 // bump, and the change is visible in the migration diff for review.
-func applyCurrentToNext(root *yaml.Node) (bool, []string) {
+func applyCurrentToNext(_ []byte, root *yaml.Node) (bool, []string, error) {
 	var notes []string
 	changed := false
 	spec, _ := mapValue(root, "spec")
@@ -46,7 +46,7 @@ func applyCurrentToNext(root *yaml.Node) (bool, []string) {
 			}
 		}
 	}
-	return changed, notes
+	return changed, notes, nil
 }
 
 func pinCIPollInterval(task *yaml.Node, gatesByName map[string]*yaml.Node) (string, bool) {

@@ -101,6 +101,8 @@ type runnerCompositionInput struct {
 	ProviderQuota        *localscheduler.ProviderQuotaState
 }
 
+var runnerLookPath = exec.LookPath
+
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
 	cfg := input.Config
@@ -252,6 +254,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		}
 	}
 
+	// Shared with the ShellExecutor's built-in error file (#3342): the same
+	// already-writable scratch directory under the instance's workcopies root
+	// that scratch-mode deterministic commands use below, so the built-in
+	// error file never falls back to the OS default temp directory — which a
+	// read-only-root deployment may not have mounted anything writable at.
+	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
+
 	rc := runner.Config{
 		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
@@ -260,6 +269,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
+				ScratchDir: deterministicScratchDir,
 			})
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
@@ -270,7 +280,12 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 			})
 		},
-		Automated:         gate.NewAutomatedEvaluator(),
+		Automated: gate.NewAutomatedEvaluator(),
+		// Placement provenance is recorded only once this instance declares a
+		// runners: inventory (or supplies GOOBERS_RUNNER_* identity env) —
+		// zero-declaration installs keep byte-identical journals
+		// (goobernetes-architecture.md §11 item 1).
+		RunnersDeclared:   len(cfg.Runners) > 0,
 		Worktrees:         wtMgr,
 		PinnedWorkspace:   pinned,
 		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
@@ -279,7 +294,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
 		BranchNamespaces: branchNamespaces,
-		ScratchDir:       filepath.Join(l.WorkcopiesDir(), "scratch"),
+		ScratchDir:       deterministicScratchDir,
 		RunsDir:          l.RunsDir(),
 		RepoCloneURL:     repoCloneURL,
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
@@ -304,6 +319,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// Wire the existing-fix handler (#3236): when implement returns no-work
+		// with existingFixCommit set, strip goobers:ready to prevent reclaim.
+		ExistingFix: buildExistingFixHandler(l, cfg, resolver, sharedReg),
 		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
 		// covers PhaseFailed; this covers the remaining non-completed terminals
 		// so that a repeating escalation loop doesn't churn indefinitely.
@@ -312,7 +330,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
-		LookPathFunc: exec.LookPath,
+		LookPathFunc: runnerLookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
@@ -445,7 +463,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 		if err != nil {
 			return nil, err
 		}
-		resolve = mint
+		resolve = mint.DropExpiry()
 	case repo.Token.Configured():
 		// A static token ref (env|file|store) resolves through stores; a
 		// store-backed ref can never fall into the unauthenticated arm because
@@ -632,10 +650,15 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	}
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
-	// RequiredCapabilities union its own.
+	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
+	// gaggle runsOn floor — feeds the 3.0 interpreter's merge rule the same
+	// way (dsl-3.0.md §2), and pairing it with a pre-3.0 workflow is a
+	// compile error the router raises.
 	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	gaggleRunsOn := make(map[string]*apiv1.GaggleRunsOn, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
+		gaggleRunsOn[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RunsOn
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
@@ -649,6 +672,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
+			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}

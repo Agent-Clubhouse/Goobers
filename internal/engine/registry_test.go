@@ -11,7 +11,7 @@ import (
 func TestVersionPinning(t *testing.T) {
 	r := NewRegistryWithPreviewFeatures(true)
 
-	v1, err := r.Register("flow", linearSpec())
+	v1, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: linearSpec()})
 	if err != nil {
 		t.Fatalf("register v1: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestVersionPinning(t *testing.T) {
 	}
 
 	// Register a new version (adds a gate).
-	v2, err := r.Register("flow", gatedSpec())
+	v2, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: gatedSpec()})
 	if err != nil {
 		t.Fatalf("register v2: %v", err)
 	}
@@ -66,8 +66,8 @@ func TestGetAndLatest(t *testing.T) {
 	if _, ok := r.Latest("nope"); ok {
 		t.Error("Latest on unknown should be false")
 	}
-	_, _ = r.Register("flow", linearSpec())
-	_, _ = r.Register("flow", gatedSpec())
+	_, _ = r.RegisterDefinition(wf.Definition{Name: "flow", Spec: linearSpec()})
+	_, _ = r.RegisterDefinition(wf.Definition{Name: "flow", Spec: gatedSpec()})
 
 	def, ok := r.Get("flow", 1)
 	if !ok || def.Version != 1 || len(def.Spec.Gates) != 0 {
@@ -85,7 +85,7 @@ func TestGetAndLatest(t *testing.T) {
 func TestRegisterInvalidRejected(t *testing.T) {
 	r := NewRegistry()
 	bad := apiv1.WorkflowSpec{Start: "ghost"} // start not defined
-	if _, err := r.Register("bad", bad); err == nil {
+	if _, err := r.RegisterDefinition(wf.Definition{Name: "bad", Spec: bad}); err == nil {
 		t.Fatal("expected registration of invalid workflow to fail")
 	}
 	if _, ok := r.Latest("bad"); ok {
@@ -96,7 +96,7 @@ func TestRegisterInvalidRejected(t *testing.T) {
 func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
 	r := NewRegistryWithPreviewFeatures(true)
 	if _, err := r.RegisterDefinition(wf.Definition{
-		Name: "flow", DSLVersion: "1.4", Spec: linearSpec(),
+		Name: "flow", DSLVersion: "2.0", Spec: linearSpec(),
 	}); err != nil {
 		t.Fatalf("RegisterDefinition: %v", err)
 	}
@@ -104,15 +104,15 @@ func TestRegisterDefinitionRetainsDSLVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("registered definition not found")
 	}
-	if def.DSLVersion != "1.4" {
-		t.Fatalf("definition dslVersion = %q, want 1.4", def.DSLVersion)
+	if def.DSLVersion != "2.0" {
+		t.Fatalf("definition dslVersion = %q, want 2.0", def.DSLVersion)
 	}
 	in, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
 	if err != nil {
 		t.Fatalf("StartInput: %v", err)
 	}
-	if in.DSLVersion != "1.4" {
-		t.Fatalf("run input dslVersion = %q, want 1.4", in.DSLVersion)
+	if in.DSLVersion != "2.0" {
+		t.Fatalf("run input dslVersion = %q, want 2.0", in.DSLVersion)
 	}
 }
 
@@ -130,7 +130,7 @@ func TestConcurrentRegistrationAssignsMonotonicVersions(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			version, err := r.Register("flow", linearSpec())
+			version, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: linearSpec()})
 			if err != nil {
 				errs <- err
 				return

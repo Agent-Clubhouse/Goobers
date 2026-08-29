@@ -50,6 +50,12 @@ type JournalOp struct {
 	Span *JournalSpanOp `json:"span,omitempty"`
 	// Time is the workflow-deterministic timestamp for this write.
 	Time time.Time `json:"time"`
+	// EmitKey is the op's live-emission idempotency key (DS4), assigned once
+	// by assignEmitKeys for a run with live journaling and empty otherwise.
+	// The repair projection (ProjectRun) deliberately ignores it: a
+	// re-projected journal carries no emit keys, which is what
+	// livejournal.Authored keys the live/projected distinction on.
+	EmitKey string `json:"emitKey,omitempty"`
 }
 
 // JournalArtifactOp records one content-addressed artifact the projection
@@ -102,6 +108,13 @@ type JournalProjection struct {
 	// Definition is the pinned workflow definition used for crash-safe local
 	// reconstruction of this projection.
 	Definition json.RawMessage `json:"definition,omitempty"`
+	// GateGooberCapabilities is the reviewer-goober capability map pinned into
+	// the run input at start (#294) — journaled as the
+	// journal.PinnedGateGooberCapabilitiesInputName input snapshot so
+	// post-start consumers (the daemon credential plane, PR #3528) resolve an
+	// agentic gate's reviewer grants from the run's pin, never the
+	// currently-served config.
+	GateGooberCapabilities json.RawMessage `json:"gateGooberCapabilities,omitempty"`
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
@@ -123,6 +136,14 @@ type runJournal struct {
 	usesRepo       bool
 	branchRecorded bool
 	branchRef      *journal.ExternalRef
+
+	// Live emission state (DS4). live mirrors RunInput.LiveJournal — pinned
+	// input, so replay agrees. emitted is the count of ops the live writer has
+	// durably accepted; ordinals drives idempotency-key assignment
+	// (assignEmitKeys). All plain workflow state.
+	live     bool
+	emitted  int
+	ordinals map[string]int
 }
 
 // newRunJournal builds the recorder and registers the projection query. The
@@ -136,6 +157,14 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 	definition, err := json.Marshal(m.Def)
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow definition: %w", err)
+	}
+	// json.Marshal sorts map keys, so this is workflow-deterministic.
+	var gateGooberCapabilities json.RawMessage
+	if len(in.GateGooberCapabilities) > 0 {
+		gateGooberCapabilities, err = json.Marshal(in.GateGooberCapabilities)
+		if err != nil {
+			return nil, fmt.Errorf("engine: marshal pinned gate-goober capabilities: %w", err)
+		}
 	}
 	runControls := in.RunControls
 	if runControls.MaxRepasses == 0 && in.MaxRepasses > 0 {
@@ -157,11 +186,13 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				RunControls:     &runControls,
 				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
-			Item:       in.Item,
-			Graph:      graph,
-			Definition: definition,
+			Item:                   in.Item,
+			Graph:                  graph,
+			Definition:             definition,
+			GateGooberCapabilities: gateGooberCapabilities,
 		},
 		usesRepo: runner.MachineUsesRepo(m),
+		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
 			Kind:     "branch",

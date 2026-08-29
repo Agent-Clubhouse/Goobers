@@ -17,16 +17,13 @@ import (
 
 func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	root := initIntrospectionInstance(t)
-	currentPath := defaultWorkflowPath(root)
-	raw, err := os.ReadFile(currentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
-	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// A second workflow at a DIFFERENT loadable interpreter version, which the
+	// coder goober does NOT reference, proves the goober resolver routes by the
+	// goober's own referenced-workflow version — not by every workflow in the
+	// gaggle. CurrentDSLVersion (1.4) is dropped (#3507), so the other loadable
+	// version is V3DSLVersion (3.0); it is preview, so opt the instance in.
+	optInPreviewFeatures(t, instance.NewLayout(root))
+	writeLegacyV3Workflow(t, filepath.Dir(defaultWorkflowPath(root)))
 
 	const nextOnly workflow.FeatureID = "goober.spec.next-only"
 	var versions []string
@@ -89,7 +86,11 @@ func TestFeaturesListsBuildMatrix(t *testing.T) {
 }
 
 func TestFeaturesScopesToDSLVersion(t *testing.T) {
-	for _, version := range []string{supportmatrix.CurrentDSLVersion, supportmatrix.NextDSLVersion} {
+	// CurrentDSLVersion (1.4) is dropped (#3507): its interpreter is gone and
+	// the feature registry carries no 1.4 rows, so scope over the two versions
+	// the registry still enumerates — NextDSLVersion (2.0) and V3DSLVersion
+	// (3.0).
+	for _, version := range []string{supportmatrix.NextDSLVersion, supportmatrix.V3DSLVersion} {
 		t.Run(version, func(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "features", "--dsl-version", version)
 			if code != 0 {
@@ -182,19 +183,13 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := instance.NewLayout(root)
-	currentPath := filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows", "default-implement.yaml")
-	raw, err := os.ReadFile(currentPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The starter scaffold pins NextDSLVersion (2.0) since #2698, so the
-	// second workflow drops back to the deprecated-but-loadable
-	// CurrentDSLVersion (1.4) to exercise one row per interpreter version.
-	legacy := strings.Replace(string(raw), "dslVersion: \""+supportmatrix.NextDSLVersion+"\"\n", "dslVersion: \""+supportmatrix.CurrentDSLVersion+"\"\n", 1)
-	legacy = strings.Replace(legacy, "name: default-implement", "name: legacy-implement", 1)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(currentPath), "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// The starter scaffold pins NextDSLVersion (2.0). CurrentDSLVersion (1.4)
+	// is dropped (#3507) and no longer loads, so the second interpreter row
+	// comes from a V3DSLVersion (3.0) workflow — the other loadable version.
+	// 3.0 is preview, so opt the instance in on the Manifest (DVL011 otherwise)
+	// and keep the workflow WF022-clean with a single scratch-workspace task.
+	optInPreviewFeatures(t, layout)
+	writeLegacyV3Workflow(t, filepath.Join(layout.ConfigDir(), "gaggles", "example", "workflows"))
 
 	code, stdout, stderr := runArgs(t, "features", "--used", root)
 	if code != 0 {
@@ -211,10 +206,59 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("%s versions = %v, want one row per interpreter version:\n%s", feature, seen, stdout)
 	}
-	for _, version := range []string{supportmatrix.CurrentDSLVersion, supportmatrix.NextDSLVersion} {
+	for _, version := range []string{supportmatrix.NextDSLVersion, supportmatrix.V3DSLVersion} {
 		if !seen[version] {
 			t.Errorf("output missing %s row for DSL %s:\n%s", feature, version, stdout)
 		}
+	}
+}
+
+// writeLegacyV3Workflow drops a minimal, WF022-clean V3DSLVersion (3.0)
+// workflow into workflowsDir — a single scratch-workspace deterministic task,
+// so it needs no goober and declares no repo handoff. It is the "second
+// interpreter version" the mixed-version features tests need now that 1.4 is
+// gone. The instance must already carry the preview opt-in (optInPreviewFeatures).
+func writeLegacyV3Workflow(t *testing.T, workflowsDir string) {
+	t.Helper()
+	legacy := "apiVersion: goobers.dev/v1alpha1\n" +
+		"kind: Workflow\n" +
+		"dslVersion: \"" + supportmatrix.V3DSLVersion + "\"\n" +
+		"metadata:\n" +
+		"  name: legacy-implement\n" +
+		"spec:\n" +
+		"  gaggle: example\n" +
+		"  triggers:\n" +
+		"    - type: manual\n" +
+		"  start: noop\n" +
+		"  tasks:\n" +
+		"    - name: noop\n" +
+		"      type: deterministic\n" +
+		"      goal: A no-op task exercising the 3.0 interpreter.\n" +
+		"      run:\n" +
+		"        command: [\"true\"]\n" +
+		"        workspace: scratch\n"
+	if err := os.WriteFile(filepath.Join(workflowsDir, "legacy-implement.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// optInPreviewFeatures adds the Manifest opt-in a preview-level dslVersion pin
+// (DSL 3.0) requires — without it the pin is refused with DVL011.
+func optInPreviewFeatures(t *testing.T, layout instance.Layout) {
+	t.Helper()
+	manifestPath := filepath.Join(layout.ConfigDir(), "manifest.yaml")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const anchor = "metadata:\n  name: example-instance\n"
+	updated := strings.Replace(string(raw), anchor,
+		anchor+"  annotations:\n    "+workflow.PreviewFeaturesAnnotation+": \"true\"\n", 1)
+	if updated == string(raw) {
+		t.Fatalf("scaffolded manifest missing expected metadata anchor:\n%s", raw)
+	}
+	if err := os.WriteFile(manifestPath, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

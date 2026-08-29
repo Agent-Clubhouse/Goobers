@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 type FakeAdapter struct {
 	AdapterName            string
 	Act                    func(context.Context, RunRequest) error
+	NestedAct              func(context.Context, RunRequest) error
 	Transcript             []byte
 	TranscriptTruncated    bool
 	TranscriptDroppedBytes int64
@@ -26,6 +29,10 @@ func (f *FakeAdapter) Name() string {
 	return "fake"
 }
 
+func (f *FakeAdapter) ValidateNestedAgentPolicy(policy apiv1.NestedAgentPolicy) error {
+	return policy.Validate()
+}
+
 func (f *FakeAdapter) Preflight(context.Context) (PreflightInfo, error) {
 	if f.PreflightErr != nil {
 		return PreflightInfo{}, f.PreflightErr
@@ -38,14 +45,32 @@ func (f *FakeAdapter) Preflight(context.Context) (PreflightInfo, error) {
 }
 
 func (f *FakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
+	return f.run(ctx, req, f.Act)
+}
+
+func (f *FakeAdapter) RunNested(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateNestedExecution(req); err != nil {
+		return Outcome{}, err
+	}
+	act := f.NestedAct
+	if act == nil {
+		act = f.Act
+	}
+	return f.run(ctx, req, act)
+}
+
+func (f *FakeAdapter) run(ctx context.Context, req RunRequest, act func(context.Context, RunRequest) error) (Outcome, error) {
 	out := Outcome{
 		Transcript:             f.Transcript,
 		TranscriptTruncated:    f.TranscriptTruncated,
 		TranscriptDroppedBytes: f.TranscriptDroppedBytes,
 		Stderr:                 f.Stderr,
 	}
-	if f.Act != nil {
-		if err := f.Act(ctx, req); err != nil {
+	if act != nil {
+		if err := act(ctx, req); err != nil {
 			return out, err
 		}
 	}

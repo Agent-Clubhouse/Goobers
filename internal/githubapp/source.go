@@ -155,25 +155,37 @@ func Source(repo instance.RepoRef, registrar SecretRegistrar, stores credentials
 // cache is empty or within refreshSkew of expiry. Mint failures fail closed:
 // no stale token is returned and nothing falls back to a static credential.
 func (s *TokenSource) Token(ctx context.Context) (string, error) {
+	token, _, err := s.TokenWithExpiry(ctx)
+	return token, err
+}
+
+// TokenWithExpiry returns a currently-valid installation token together with
+// GitHub's stated expiry for it, atomically — the pair belongs to one mint, so
+// a concurrent refresh can never report a newer expiry against an older value.
+// The expiry is what lets the credential plane honor DS10
+// (distributed-state-and-coordination.md §11): a stage that receives this
+// token learns how long the snapshot lives instead of discovering it as a
+// mid-stage 401 (#3489).
+func (s *TokenSource) TokenWithExpiry(ctx context.Context) (string, time.Time, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.cfg.Now()
 	if s.token != "" && now.Add(refreshSkew).Before(s.expiresAt) {
-		return s.token, nil
+		return s.token, s.expiresAt, nil
 	}
 	token, expiresAt, err := s.mint(ctx, now)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if s.cfg.Registrar != nil {
 		s.cfg.Registrar.Register([]byte(token))
 	}
 	s.token, s.expiresAt = token, expiresAt
-	return token, nil
+	return token, expiresAt, nil
 }
 
 // mint signs a fresh App JWT and exchanges it for an installation token.

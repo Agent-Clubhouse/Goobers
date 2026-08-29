@@ -63,10 +63,12 @@ const (
 	// WarningSkillPackageCollision identifies a gaggle-scoped skill package
 	// shadowing an instance-level package with the same name.
 	WarningSkillPackageCollision WarningCode = "SKILL001"
-	// WarningMissingDSLVersion identifies a workflow with no dslVersion pin,
-	// defaulted to supportmatrix.CurrentDSLVersion during the transition
-	// window (DVL-3, #863).
-	WarningMissingDSLVersion WarningCode = "DVL001"
+	// ErrorMissingDSLVersion identifies a workflow with no dslVersion pin. This
+	// is a HARD ERROR since DSL 1.4 was dropped (#3507, dsl-3.0.md D13/§8.3):
+	// the transitional default was 1.4, which no longer loads, so an unpinned
+	// workflow can no longer be silently interpreted — the author must pin an
+	// explicit dslVersion. Keeps the DVL001 code id for continuity.
+	ErrorMissingDSLVersion WarningCode = "DVL001"
 	// WarningPreviewDSLVersionOptedIn identifies a workflow pinned to a
 	// preview-level dslVersion on an instance that has opted in.
 	WarningPreviewDSLVersionOptedIn WarningCode = "DVL010"
@@ -98,11 +100,13 @@ const (
 	// does not claim (RRQ-1/#1101). Schedule-time matching is an exact
 	// string set-membership check (internal/runnercap), so an unclaimed
 	// token means the scheduler refuses placement of every run of that
-	// gaggle and `goobers up` fails closed at startup
-	// (instance.CheckCapabilityRequirements) — a structural no-run state
-	// the config validator can see statically because it reads both files
-	// in the same pass (2026-08-08 cold-start audit, dotnet #7 / swift
-	// probes).
+	// gaggle at schedule time (#2860: the daemon itself starts and every
+	// other gaggle serves) — a structural no-run state the config validator
+	// can see statically because it reads both files in the same pass
+	// (2026-08-08 cold-start audit, dotnet #7 / swift probes). Scope frozen
+	// by dsl-3.0.md §5: 2.0 documents on inventory-less instances only —
+	// the RNR001 constraint solve owns 3.0 documents and every declared
+	// runners: inventory (at error severity there, the #3497 fix).
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
 	// WarningMaxOpenPRsUnenforceable identifies a workflow whose maxOpenPRs
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
@@ -121,6 +125,51 @@ const (
 	// declared completion is therefore unreachable dead config (2026-08-08
 	// cold-start audit, swift #3's verified shape).
 	WarningGateCompletionHidesFailure WarningCode = "WF018"
+	// WarningZeroMaxRunsPerHour identifies a workflow whose
+	// spec.readiness.maxRunsPerHour is explicitly written as 0 (or a
+	// negative value). Unlike instance.yaml's runConditions.maxParallelRuns
+	// — where zero means unlimited — a workflow's own maxRunsPerHour treats
+	// zero exactly the same as leaving the field unset: the scheduler
+	// substitutes its spec default of 10 (internal/localscheduler's
+	// Conditions.AdmitProviderWorkflow, #339). An operator who writes
+	// maxRunsPerHour: 0 expecting "unlimited" by analogy to maxParallelRuns
+	// instead gets silently throttled to 10/hour, with no error and no
+	// runtime signal (#3360). Informational: the config is still valid and
+	// behaves exactly as it would if the field were omitted.
+	WarningZeroMaxRunsPerHour WarningCode = "WF020"
+	// RunnerStageUnsatisfiable (RNR001) identifies a stage whose effective
+	// placement requirement (runsOn os/capabilities/restrictions plus derived
+	// requirements, or a pre-3.0 requiredCapabilities set) no runner in the
+	// resolved inventory satisfies (dsl-3.0.md §5 checkpoint 1, the shared
+	// solver internal/runnersolve). Severity is ERROR when the instance
+	// declares a runners: inventory — the #3497 fix: a config that cannot
+	// schedule must not exit 0 — and WARNING otherwise (advisory, matching
+	// the never-fatal legacy posture).
+	RunnerStageUnsatisfiable WarningCode = "RNR001"
+	// RunnerEngineMissing (RNR002) identifies a runner entry with a non-self
+	// host on an instance that declares no engine: connection config. The
+	// condition fails first at instance.yaml load
+	// (instance.RunnerEngineMissingError); validate attributes this code.
+	RunnerEngineMissing WarningCode = "RNR002"
+	// RunnerQuantityUnsatisfiable (RNR003) identifies a stage whose resource
+	// minimums exceed every otherwise-eligible runner's declared ceiling on a
+	// distributed-shape inventory. Same severity split as RNR001.
+	RunnerQuantityUnsatisfiable WarningCode = "RNR003"
+	// RunnerQuantityAdvisory (RNR004) identifies a local-mode inventory whose
+	// self runner's declared ceiling cannot cover a stage minimum. Always a
+	// WARNING: resource requirements are advisory on local modes by design
+	// (dsl-3.0.md D4) and never affect eligibility.
+	RunnerQuantityAdvisory WarningCode = "RNR004"
+	// WarningSubprocessTimeout identifies a deterministic stage whose command
+	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
+	// stage's own budget — a literal `go test -timeout` flag, an explicit
+	// GO_TEST_TIMEOUT override on a `make` invocation, or the
+	// expectedSubprocessTimeoutSeconds escape hatch for a tool this cannot
+	// parse. The executor kills the stage before the subprocess's own timeout
+	// can expire whenever the workload approaches it, discarding genuine
+	// in-progress work; the stage is unwinnable by construction regardless of
+	// typical-case duration (#3377).
+	WarningSubprocessTimeout WarningCode = "WF021"
 )
 
 const (
@@ -150,6 +199,9 @@ const (
 	errorGateGooberGaggle         WarningCode = "REF011"
 	errorRunnerCapability         WarningCode = "CAP001"
 	errorUnknownCapability        WarningCode = "CAP002"
+	errorOSTokenInV3              WarningCode = "CAP004"
+	errorUnknownRestriction       WarningCode = "CAP005"
+	errorRepoHandoff              WarningCode = "WF022"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -835,7 +887,32 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			return ok
 		})
 		ix.workflows[identity] = indexedWorkflow{definition: w, file: doc.file}
+		if explicitZeroMaxRunsPerHour(doc.json) {
+			r.addWarning(WarningZeroMaxRunsPerHour, doc.file, w.Spec.Gaggle, "Workflow", w.Name,
+				"spec.readiness.maxRunsPerHour is explicitly 0, which does NOT mean unlimited — the scheduler treats it the same as omitted and substitutes its default of 10 (internal/localscheduler's Conditions.Admit, #339). This is the opposite of instance.yaml's runConditions.maxParallelRuns, where 0 means unlimited. Set an explicit large value if you want a high hourly ceiling.")
+		}
 	}
+}
+
+// explicitZeroMaxRunsPerHour reports whether a Workflow document's
+// spec.readiness.maxRunsPerHour key is present in the source with a value
+// of zero (or negative) — distinct from the field being entirely absent.
+// apiv1.Workflow's MaxRunsPerHour is a plain int32: after yaml.Unmarshal an
+// explicit `maxRunsPerHour: 0` and an omitted field are indistinguishable,
+// so this probes the raw JSON (already parsed once for schema validation)
+// with a pointer field, where nil means "key not present" (#3360).
+func explicitZeroMaxRunsPerHour(raw []byte) bool {
+	var probe struct {
+		Spec struct {
+			Readiness struct {
+				MaxRunsPerHour *int32 `json:"maxRunsPerHour"`
+			} `json:"readiness"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.Spec.Readiness.MaxRunsPerHour != nil && *probe.Spec.Readiness.MaxRunsPerHour <= 0
 }
 
 func (ix *index) dupCheck(r *Report, doc loadedDoc, kind, name string, exists func() bool) {
@@ -1030,7 +1107,7 @@ func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
 			if scopedMissing && sharedMissing {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
-					"spec.skills declares %q, but no skill package directory was found at %q or %q",
+					"spec.skills declares %q, but no skill package directory was found at %q or %q; the dangling declaration contributes nothing at runtime — remove it or add the package",
 					skill,
 					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
 					filepath.ToSlash(filepath.Join("skills", skill)))
@@ -1063,9 +1140,13 @@ var dslSupportMatrix = supportmatrix.GetDSL
 func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
 	version := w.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
-		r.addWarning(WarningMissingDSLVersion, file, w.Spec.Gaggle, "Workflow", w.Name,
-			"spec has no dslVersion pin; defaulting to %q during the transition window — pin an explicit dslVersion before this becomes a hard error", version)
+		// The §8.3 cutover (#3507): a missing dslVersion used to default to 1.4
+		// and warn; 1.4 is dropped, so this is now a hard error naming the
+		// versions the author may pin.
+		r.addCoded(ErrorMissingDSLVersion, Error, file, "Workflow", w.Name,
+			"spec has no dslVersion pin; pin an explicit dslVersion (loadable: %s) — the transitional default is gone now that DSL 1.4 is dropped",
+			strings.Join(loadableDSLVersions(), ", "))
+		return
 	}
 
 	support, ok := dslSupportMatrix().Lookup(version)
@@ -1104,6 +1185,20 @@ func knownDSLVersions() []string {
 	names := make([]string, len(versions))
 	for i, v := range versions {
 		names[i] = v.Version
+	}
+	return names
+}
+
+// loadableDSLVersions lists the versions an author may pin — every declared
+// version that is not unsupported. It is what the missing-pin diagnostic
+// suggests: a dropped version like 1.4 is a valid matrix entry (so a stale pin
+// gets a precise DVL030) but never a suggestion to migrate TO.
+func loadableDSLVersions() []string {
+	var names []string
+	for _, v := range dslSupportMatrix().Versions() {
+		if v.Level != supportmatrix.LevelUnsupported {
+			names = append(names, v.Version)
+		}
 	}
 	return names
 }
@@ -1796,11 +1891,31 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// token is a platform every stage shares, which can prove a transition
 	// same-platform that stage-level tokens alone would flag.
 	var gaggleRequiredCapabilities []string
+	var gaggleRunsOn *apiv1.GaggleRunsOn
 	if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 		gaggleRequiredCapabilities = gaggle.Spec.RequiredCapabilities
+		gaggleRunsOn = gaggle.Spec.RunsOn
 	}
 	for _, msg := range wf.CheckPushBoundaries(def, gaggleRequiredCapabilities) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// The DSL 3.0 scheduling surface (dsl-3.0.md §5). On a 3.0 document these
+	// are the CAP004/CAP005 vocabulary errors, the structural runsOn problems,
+	// and the WF022 repo-handoff analysis; on an earlier pin the placement
+	// check instead refuses any use of the 3.0-only fields (which those
+	// frozen interpreters must never learn), reported under WF010 like the
+	// other admission findings.
+	for _, msg := range wf.CheckRunsOnOSTokens(def, gaggleRunsOn) {
+		r.add(errorOSTokenInV3, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRunsOnRestrictions(def, gaggleRunsOn) {
+		r.add(errorUnknownRestriction, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRunsOnPlacement(def, gaggleRunsOn) {
+		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckRepoHandoffs(def) {
+		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
@@ -1835,6 +1950,14 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// A stage's own subprocess can carry a longer wall-clock ceiling than the
+	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
+	// under a 25-minute stage timeout. Warning, not error: detection only
+	// trusts evidence visible in the stage's own declaration, so it is
+	// intentionally incomplete (#3377).
+	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
+		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's

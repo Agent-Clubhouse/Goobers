@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // Run status values, mirroring internal/journal.RunPhase's on-disk strings
@@ -50,6 +52,26 @@ const runErrorCodeDurationExceeded = "run_duration_exceeded"
 // transparency (#1439's principle).
 const stuckAbortedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE code = '` + runErrorCodeDurationExceeded + `'`
 
+// infraFailedRunsSubquery selects the run_id of every failed run whose
+// terminal cause (the run_failed row — the one event failTerminal/
+// finishStageFailure append exactly at the terminal, so a retried-then-
+// recovered infra error can never match) classifies as an infrastructure
+// fault: the producer's runner-namespace refinement projects the typed class
+// onto that row (#3361). Literal, no bind params — every value is a package
+// constant. The class list mirrors telemetry.ErrorClass.InfraFault, spelled
+// from the same constants so the two cannot drift.
+//
+// Used to split FailedRuns into work failures and infra faults (#3364):
+// "the credential was down" is not evidence against the lane, and a success
+// rate that counts it as such misleads in only one direction. Rows written
+// by producers older than the refinement carry no class and conservatively
+// count as work failures.
+const infraFailedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE code = 'run_failed' AND error_class IN ('` +
+	string(telemetry.ErrorClassInfra) + `', '` +
+	string(telemetry.ErrorClassInfraGit) + `', '` +
+	string(telemetry.ErrorClassInfraNet) + `', '` +
+	string(telemetry.ErrorClassInfraLock) + `')`
+
 // Stage attempt status values, mirroring api/v1alpha1.ResultStatus's wire
 // strings (a stable, long-merged contract package — safe to reference by
 // value here without importing it, keeping this package free of the api/
@@ -92,16 +114,20 @@ var ErrBranchAttributionRequiresRebuild = errors.New("rollup: branch attribution
 
 // GaggleStats is the success/failure/duration aggregate for one gaggle.
 type GaggleStats struct {
-	Gaggle        string  `json:"gaggle"`
-	TotalRuns     int     `json:"totalRuns"`
-	CompletedRuns int     `json:"completedRuns"`
-	FailedRuns    int     `json:"failedRuns"`
-	OtherRuns     int     `json:"otherRuns"`
-	SuccessRate   float64 `json:"successRate"`
-	AvgDurationMs float64 `json:"avgDurationMs"`
-	MinDurationMs int64   `json:"minDurationMs"`
-	MaxDurationMs int64   `json:"maxDurationMs"`
-	HasDuration   bool    `json:"-"`
+	Gaggle        string `json:"gaggle"`
+	TotalRuns     int    `json:"totalRuns"`
+	CompletedRuns int    `json:"completedRuns"`
+	FailedRuns    int    `json:"failedRuns"`
+	// InfraFailedRuns is how many of FailedRuns terminated on an
+	// infrastructure fault (infraFailedRunsSubquery) — disclosed, and
+	// excluded from SuccessRate's denominator (#3361/#3364).
+	InfraFailedRuns int     `json:"infraFailedRuns"`
+	OtherRuns       int     `json:"otherRuns"`
+	SuccessRate     float64 `json:"successRate"`
+	AvgDurationMs   float64 `json:"avgDurationMs"`
+	MinDurationMs   int64   `json:"minDurationMs"`
+	MaxDurationMs   int64   `json:"maxDurationMs"`
+	HasDuration     bool    `json:"-"`
 }
 
 // RunStats is the success/failure/duration aggregate for one workflow.
@@ -113,10 +139,18 @@ type RunStats struct {
 	TotalRuns      int    `json:"totalRuns"`
 	CompletedRuns  int    `json:"completedRuns"`
 	FailedRuns     int    `json:"failedRuns"`
-	OtherRuns      int    `json:"otherRuns"` // aborted, escalated, or still running
-	// SuccessRate is CompletedRuns / (CompletedRuns + FailedRuns), the rate
-	// over runs that have reached a success/failure verdict. 0 when neither
-	// has occurred yet (avoids a divide-by-zero, not a claim of 0% success).
+	// InfraFailedRuns is how many of FailedRuns terminated on an
+	// infrastructure fault (infraFailedRunsSubquery): the substrate failed,
+	// not the work, so they are disclosed here and excluded from
+	// SuccessRate's denominator rather than silently scored against the
+	// lane (#3361/#3364).
+	InfraFailedRuns int `json:"infraFailedRuns"`
+	OtherRuns       int `json:"otherRuns"` // aborted, escalated, or still running
+	// SuccessRate is CompletedRuns / (CompletedRuns + FailedRuns −
+	// InfraFailedRuns), the rate over runs that reached a success/failure
+	// verdict ABOUT THE WORK — infra-fault terminals carry no such verdict
+	// (#3364). 0 when the denominator is empty (avoids a divide-by-zero,
+	// not a claim of 0% success).
 	SuccessRate   float64 `json:"successRate"`
 	AvgDurationMs float64 `json:"avgDurationMs"`
 	MinDurationMs int64   `json:"minDurationMs"`
@@ -243,18 +277,40 @@ type StatsResult struct {
 	ReadyPool ReadyPoolHealth `json:"readyPool"`
 }
 
+// TrendRequest describes the windows to aggregate in one rollup read.
+type TrendRequest struct {
+	Stats   StatsRequest
+	Windows []TrendWindow
+}
+
+// TrendWindow identifies one inclusive/exclusive trend range.
+type TrendWindow struct {
+	Since time.Time
+	Until time.Time
+}
+
+// TrendResult contains usage aggregates in the same order as TrendRequest.Windows.
+type TrendResult struct {
+	Usage []UsageStats
+}
+
 // InstanceSummary is the lifetime (or Since-windowed) instance card exposed by
 // `goobers stats`. SuccessRate follows RunStats: completed / (completed +
-// failed), excluding phases that do not represent a success/failure verdict.
+// failed − infraFailed), excluding phases and infra-fault terminals that do
+// not represent a success/failure verdict about the work (#3364).
 type InstanceSummary struct {
 	TotalRuns     int
 	CompletedRuns int
 	FailedRuns    int
-	AbortedRuns   int
-	EscalatedRuns int
-	RunningRuns   int
-	OtherRuns     int
-	SuccessRate   float64
+	// InfraFailedRuns is how many of FailedRuns terminated on an
+	// infrastructure fault — disclosed, and excluded from SuccessRate's
+	// denominator (#3361/#3364).
+	InfraFailedRuns int
+	AbortedRuns     int
+	EscalatedRuns   int
+	RunningRuns     int
+	OtherRuns       int
+	SuccessRate     float64
 
 	PullRequestsOpened int
 	PullRequestsMerged int
@@ -285,12 +341,16 @@ func (db *DB) InstanceSummaryStats(ctx context.Context, since time.Time) (Instan
 		SELECT COUNT(*),
 			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = ? AND ifr.run_id IS NOT NULL THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0)
-		FROM runs %s`, runWhere)
+		FROM runs
+		LEFT JOIN (%s) ifr ON ifr.run_id = runs.run_id
+		%s`, infraFailedRunsSubquery, runWhere)
 	args := append([]any{
 		runStatusCompleted,
+		runStatusFailed,
 		runStatusFailed,
 		runStatusAborted,
 		runStatusEscalated,
@@ -300,6 +360,7 @@ func (db *DB) InstanceSummaryStats(ctx context.Context, since time.Time) (Instan
 		&out.TotalRuns,
 		&out.CompletedRuns,
 		&out.FailedRuns,
+		&out.InfraFailedRuns,
 		&out.AbortedRuns,
 		&out.EscalatedRuns,
 		&out.RunningRuns,
@@ -307,7 +368,7 @@ func (db *DB) InstanceSummaryStats(ctx context.Context, since time.Time) (Instan
 		return InstanceSummary{}, fmt.Errorf("rollup: query instance run summary: %w", err)
 	}
 	out.OtherRuns = out.TotalRuns - out.CompletedRuns - out.FailedRuns - out.AbortedRuns - out.EscalatedRuns - out.RunningRuns
-	if terminal := out.CompletedRuns + out.FailedRuns; terminal > 0 {
+	if terminal := out.CompletedRuns + out.FailedRuns - out.InfraFailedRuns; terminal > 0 {
 		out.SuccessRate = float64(out.CompletedRuns) / float64(terminal)
 	}
 
@@ -466,11 +527,13 @@ func (db *DB) gaggleStats(ctx context.Context, req StatsRequest) ([]GaggleStats,
 			COUNT(*) AS total,
 			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed,
 			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN status = ? AND ifr.run_id IS NOT NULL THEN 1 ELSE 0 END) AS infra_failed,
 			AVG(duration_ms), MIN(duration_ms), MAX(duration_ms)
 		FROM runs
+		LEFT JOIN (%s) ifr ON ifr.run_id = runs.run_id
 		%s
-		GROUP BY gaggle ORDER BY gaggle`, where)
-	args = append([]any{runStatusCompleted, runStatusFailed}, args...)
+		GROUP BY gaggle ORDER BY gaggle`, infraFailedRunsSubquery, where)
+	args = append([]any{runStatusCompleted, runStatusFailed, runStatusFailed}, args...)
 
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -483,11 +546,11 @@ func (db *DB) gaggleStats(ctx context.Context, req StatsRequest) ([]GaggleStats,
 		var s GaggleStats
 		var avg sql.NullFloat64
 		var min, max sql.NullInt64
-		if err := rows.Scan(&s.Gaggle, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max); err != nil {
+		if err := rows.Scan(&s.Gaggle, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &s.InfraFailedRuns, &avg, &min, &max); err != nil {
 			return nil, fmt.Errorf("rollup: scan gaggle stats: %w", err)
 		}
 		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
-		if terminal := s.CompletedRuns + s.FailedRuns; terminal > 0 {
+		if terminal := s.CompletedRuns + s.FailedRuns - s.InfraFailedRuns; terminal > 0 {
 			s.SuccessRate = float64(s.CompletedRuns) / float64(terminal)
 		}
 		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64
@@ -508,17 +571,19 @@ func (db *DB) runStats(ctx context.Context, req StatsRequest) ([]RunStats, error
 			COUNT(*) AS total,
 			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS completed,
 			SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN r.status = ? AND ifr.run_id IS NOT NULL THEN 1 ELSE 0 END) AS infra_failed,
 			AVG(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
 			MIN(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
 			MAX(CASE WHEN sar.run_id IS NULL THEN r.duration_ms END),
 			COUNT(CASE WHEN sar.run_id IS NOT NULL THEN 1 END)
 		FROM runs r
 		LEFT JOIN (%s) sar ON sar.run_id = r.run_id
+		LEFT JOIN (%s) ifr ON ifr.run_id = r.run_id
 		%s
 		%s
 		GROUP BY r.gaggle, r.workflow%s ORDER BY r.gaggle, r.workflow%s`,
-		selectDimensions, stuckAbortedRunsSubquery, join, where, groupDimensions, groupDimensions)
-	args := append([]any{runStatusCompleted, runStatusFailed}, joinArgs...)
+		selectDimensions, stuckAbortedRunsSubquery, infraFailedRunsSubquery, join, where, groupDimensions, groupDimensions)
+	args := append([]any{runStatusCompleted, runStatusFailed, runStatusFailed}, joinArgs...)
 	args = append(args, whereArgs...)
 
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
@@ -534,12 +599,12 @@ func (db *DB) runStats(ctx context.Context, req StatsRequest) ([]RunStats, error
 		var min, max sql.NullInt64
 		scan := []any{&s.Gaggle, &s.Workflow}
 		scan = appendAgentDimensionScan(scan, req, &s.Model, &s.HarnessVersion)
-		scan = append(scan, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &avg, &min, &max, &s.StuckAbortedRuns)
+		scan = append(scan, &s.TotalRuns, &s.CompletedRuns, &s.FailedRuns, &s.InfraFailedRuns, &avg, &min, &max, &s.StuckAbortedRuns)
 		if err := rows.Scan(scan...); err != nil {
 			return nil, fmt.Errorf("rollup: scan run stats: %w", err)
 		}
 		s.OtherRuns = s.TotalRuns - s.CompletedRuns - s.FailedRuns
-		if terminal := s.CompletedRuns + s.FailedRuns; terminal > 0 {
+		if terminal := s.CompletedRuns + s.FailedRuns - s.InfraFailedRuns; terminal > 0 {
 			s.SuccessRate = float64(s.CompletedRuns) / float64(terminal)
 		}
 		s.AvgDurationMs, s.MinDurationMs, s.MaxDurationMs = avg.Float64, min.Int64, max.Int64

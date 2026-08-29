@@ -90,6 +90,7 @@ describe("workflow detail page", () => {
   it("renders live definition metadata, the canonical graph, stage context, and filtered runs", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     const user = userEvent.setup();
     render(<App client={client} />);
 
@@ -116,6 +117,12 @@ describe("workflow detail page", () => {
     expect(listRuns).toHaveBeenCalledWith(
       { gaggle: "core", workflow: "implementation", limit: 20 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await waitFor(() =>
+      expect(getTelemetryStats).toHaveBeenCalledWith(
+        expect.objectContaining({ gaggle: "core", workflow: "implementation" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
   });
 

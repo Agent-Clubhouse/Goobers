@@ -25,18 +25,28 @@ var ErrAlreadyAtTarget = errors.New("dslmigrate: workflow is already at the targ
 // document's top-level mapping node) in place, returning whether it made any
 // semantic changes beyond the version pin and human-readable notes describing
 // each change it made — the scaffold's equivalent of a Terraform StateUpgrader
-// function.
+// function. It also receives the original source bytes (some edges reuse the
+// interpreter's own analysis, which parses the typed spec) and may refuse the
+// migration with an error — the 2.0→3.0 edge refuses a stage whose os=* tokens
+// are self-contradictory or a repo chain whose coverage cannot be computed
+// (dsl-3.0.md §6 rules 3 and 5), rather than emitting a document that fails to
+// validate under 3.0.
 type Edge struct {
 	From  string
 	To    string
-	Apply func(root *yaml.Node) (changed bool, notes []string)
+	Apply func(source []byte, root *yaml.Node) (changed bool, notes []string, err error)
 }
 
 // edges is the registry of one-step migrations this binary knows how to
-// perform. Only the DVL-5 v_current→v_next edge exists today; a future
-// version bump registers its own Edge here rather than extending this one.
+// perform: the DVL-5 1.4→2.0 edge and the Goobernetes 2.0→3.0 edge
+// (dsl-3.0.md §6). 1.4 is dropped as a loadable version (D13), but the edge
+// survives as the recovery path DVL030 names — `goobers fix --to 2.0` on a
+// 1.4 document, then `--to 3.0` — so a stranded 1.4 config can still be
+// mechanically carried forward one step at a time. A future version bump
+// registers its own Edge here rather than extending an existing one.
 var edges = []Edge{
 	{From: supportmatrix.CurrentDSLVersion, To: supportmatrix.NextDSLVersion, Apply: applyCurrentToNext},
+	{From: supportmatrix.NextDSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyNextToV3},
 }
 
 // FindEdge returns the registered migration from from to to, if any.
@@ -91,7 +101,10 @@ func Migrate(source []byte, to string) (*Result, error) {
 	}
 
 	before := string(source)
-	transformed, notes := edge.Apply(root)
+	transformed, notes, err := edge.Apply(source, root)
+	if err != nil {
+		return nil, fmt.Errorf("dslmigrate: migrate dslVersion %q→%q: %w", from, to, err)
+	}
 	var after string
 	if transformed {
 		setScalar(root, "dslVersion", to, "!!str")

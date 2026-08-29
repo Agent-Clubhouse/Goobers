@@ -5,7 +5,7 @@
   "description": "Version 1 of the deterministic telemetry-query connector artifact (TEL-045).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "window", "since", "findings"],
+  "required": ["schema", "window", "since", "findings", "promotionCandidates"],
   "properties": {
     "schema": {
       "const": "goobers.dev/candidate-findings/v1"
@@ -24,6 +24,56 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/finding"
+      }
+    },
+    "causalCredit": {
+      "type": "array",
+      "description": "Causal estimates and explicit cannot-identify verdicts for workflow nodes.",
+      "items": {
+        "$ref": "#/$defs/causalCredit"
+      }
+    },
+    "promotionSignals": {
+      "type": "array",
+      "description": "All bounded promotion evidence, including ineligible correlational fallbacks.",
+      "items": {
+        "$ref": "#/$defs/promotionSignal"
+      }
+    },
+    "promotionCandidates": {
+      "type": "array",
+      "description": "Machine-filtered causal signals that are eligible for automated nomination or promotion.",
+      "items": {
+        "examples": [
+          {
+            "node": "review",
+            "value": 0.25,
+            "lower": 0.1,
+            "upper": 0.4,
+            "source": "randomized",
+            "caveat": "Eligible only for the observed randomized cohort.",
+            "promotionEligible": true
+          }
+        ],
+        "allOf": [
+          {
+            "$ref": "#/$defs/promotionSignal"
+          },
+          {
+            "properties": {
+              "promotionEligible": {
+                "const": true,
+                "description": "Every item crossing the promotionCandidates boundary is promotion-eligible."
+              },
+              "source": {
+                "not": {
+                  "const": "correlational-fallback"
+                },
+                "description": "The promotionCandidates boundary excludes correlational fallback sources."
+              }
+            }
+          }
+        ]
       }
     },
     "noWork": {
@@ -48,7 +98,9 @@
             "gate-never-fails",
             "gate-repass-churn",
             "workflow-untriggered",
-            "stage-unreached"
+            "stage-unreached",
+            "credit-assignment",
+            "learning-episode"
           ]
         },
         "subject": {
@@ -69,8 +121,323 @@
           "items": {
             "$ref": "#/$defs/journalPointer"
           }
+        },
+        "nomination_guardrails": {
+          "$ref": "#/$defs/nominationGuardrails",
+          "description": "Machine-readable checks required before a credit-assignment finding may become a nomination."
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The normalized stable finding signature shared by the clustered learning episodes."
+        },
+        "classification": {
+          "type": "string",
+          "enum": ["instruction", "skill", "workflow", "gate", "validation", "code-defect"],
+          "description": "The governed durable-learning classification for this finding cluster."
+        },
+        "recommendedAction": {
+          "type": "string",
+          "enum": ["instruction-or-skill", "workflow-or-gate", "targeted-test-mapping", "code-issue"],
+          "description": "The single governed action family allowed to consume this learning cluster."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "credit-assignment"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["nomination_guardrails"]
+          }
+        }
+      ]
+    },
+    "nominationGuardrails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dedupe_key",
+        "requires_upstream_cause_check",
+        "requires_human_review",
+        "governing_target_treatment"
+      ],
+      "properties": {
+        "dedupe_key": {
+          "type": "string",
+          "pattern": "^credit-assignment:sha256:[0-9a-f]{64}$",
+          "examples": ["credit-assignment:sha256:0000000000000000000000000000000000000000000000000000000000000000"],
+          "description": "Stable node and fault-family key used to suppress duplicate nominations."
+        },
+        "requires_upstream_cause_check": {
+          "const": true,
+          "description": "The nominator must reject attribution when journal or repo evidence identifies an upstream cause."
+        },
+        "requires_human_review": {
+          "type": "boolean",
+          "description": "True when deterministic node classification identifies a governing gate, prompt, or workflow."
+        },
+        "governing_target_treatment": {
+          "const": "label-goobers:needs-human-and-preserve-evaluator",
+          "description": "If the target governs its evaluator, require human review and prohibit removing, weakening, or bypassing that evaluator."
         }
       }
+    },
+    "causalCredit": {
+      "type": "object",
+      "examples": [
+        {
+          "node": "review",
+          "effect": 0.25,
+          "lower": 0,
+          "upper": 0,
+          "identification": "unidentifiable",
+          "caveat": "No trusted randomized assignment or valid comparison cohort.",
+          "treatedBefore": 0,
+          "treatedAfter": 0,
+          "controlBefore": 0,
+          "controlAfter": 0,
+          "intervalAvailable": false,
+          "promotionEligible": false,
+          "promotionSource": "correlational-fallback"
+        }
+      ],
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "effect",
+        "lower",
+        "upper",
+        "identification",
+        "caveat",
+        "treatedBefore",
+        "treatedAfter",
+        "controlBefore",
+        "controlAfter",
+        "intervalAvailable",
+        "promotionEligible",
+        "promotionSource"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workflow node identity."
+        },
+        "effect": {
+          "type": "number",
+          "description": "Identified effect, or the retained correlational contrast when promotionSource is correlational-fallback."
+        },
+        "lower": {
+          "type": "number",
+          "description": "Lower confidence bound when an interval is available."
+        },
+        "upper": {
+          "type": "number",
+          "description": "Upper confidence bound when an interval is available."
+        },
+        "identification": {
+          "type": "string",
+          "description": "Identification strategy, or unidentifiable when causal conditions are unmet.",
+          "enum": [
+            "randomized",
+            "observational-difference-in-differences",
+            "unidentifiable"
+          ]
+        },
+        "caveat": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required limitation or cannot-identify explanation."
+        },
+        "treatedBefore": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Treated cohort size before the intervention."
+        },
+        "treatedAfter": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Treated cohort size after the intervention."
+        },
+        "controlBefore": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Control cohort size before the intervention."
+        },
+        "controlAfter": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Control cohort size after the intervention."
+        },
+        "intervalAvailable": {
+          "type": "boolean",
+          "description": "Whether the bounds are a promotion-eligible causal confidence interval."
+        },
+        "promotionEligible": {
+          "type": "boolean",
+          "description": "Whether this identified estimate may cross the automated promotion boundary."
+        },
+        "promotionSource": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identified causal strategy, or correlational-fallback when ineligible."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "promotionEligible": {
+                "const": true
+              }
+            },
+            "required": [
+              "promotionEligible"
+            ]
+          },
+          "then": {
+            "properties": {
+              "identification": {
+                "not": {
+                  "const": "unidentifiable"
+                }
+              },
+              "intervalAvailable": {
+                "const": true
+              },
+              "promotionSource": {
+                "not": {
+                  "const": "correlational-fallback"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "promotionEligible": {
+                "const": false
+              }
+            },
+            "required": [
+              "promotionEligible"
+            ]
+          },
+          "then": {
+            "properties": {
+              "promotionSource": {
+                "const": "correlational-fallback"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "promotionSignal": {
+      "type": "object",
+      "examples": [
+        {
+          "node": "review",
+          "value": 0.25,
+          "source": "correlational-fallback",
+          "caveat": "No trusted randomized assignment or valid comparison cohort.",
+          "promotionEligible": false
+        }
+      ],
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "value",
+        "source",
+        "caveat",
+        "promotionEligible"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workflow node identity."
+        },
+        "value": {
+          "type": "number",
+          "description": "Causal effect when eligible, otherwise the preserved correlational fallback value."
+        },
+        "lower": {
+          "type": "number",
+          "description": "Lower causal confidence bound for an eligible signal."
+        },
+        "upper": {
+          "type": "number",
+          "description": "Upper causal confidence bound for an eligible signal."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identified causal strategy or correlational-fallback."
+        },
+        "caveat": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identification caveat that must accompany the signal."
+        },
+        "promotionEligible": {
+          "type": "boolean",
+          "description": "Whether this signal may cross the machine-filtered promotion boundary."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "promotionEligible": {
+                "const": true
+              }
+            },
+            "required": [
+              "promotionEligible"
+            ]
+          },
+          "then": {
+            "required": [
+              "lower",
+              "upper"
+            ],
+            "properties": {
+              "source": {
+                "not": {
+                  "const": "correlational-fallback"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "promotionEligible": {
+                "const": false
+              }
+            },
+            "required": [
+              "promotionEligible"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "const": "correlational-fallback"
+              }
+            }
+          }
+        }
+      ]
     },
     "journalPointer": {
       "type": "object",
@@ -81,6 +448,11 @@
           "type": "string",
           "minLength": 1,
           "description": "The run whose journal contains evidence for this finding."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The exact journal event sequence containing the evidence."
         }
       }
     }

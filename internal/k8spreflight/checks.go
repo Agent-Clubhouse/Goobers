@@ -62,7 +62,7 @@ func checkClusterVersion(_ context.Context, client kubernetes.Interface, _ Optio
 func checkNetworkPolicySupport(_ context.Context, client kubernetes.Interface, _ Options) Result {
 	result := Result{
 		ID:       "networkpolicy-api",
-		Title:    "NetworkPolicy API served (deny-first defaults enforceable)",
+		Title:    "NetworkPolicy API served (enforcement unverified — needs a negative control)",
 		Citation: "§5",
 		Severity: SeverityRequired,
 	}
@@ -75,9 +75,15 @@ func checkNetworkPolicySupport(_ context.Context, client kubernetes.Interface, _
 	}
 	for _, resource := range resources.APIResources {
 		if resource.Name == "networkpolicies" {
-			result.Status = StatusPass
-			result.Detail = "networking.k8s.io/v1 networkpolicies served — enforcement still depends on the CNI"
-			result.Hint = "a CNI without NetworkPolicy support ignores policies silently; verify deny-first takes effect with a probe pod"
+			// API-discovery only: a served API is a correlate of enforcement,
+			// not proof of it — a CNI can serve networking.k8s.io/v1 and still
+			// drop policies on the floor silently. This check is read-only
+			// (doctor --k8s never mutates the cluster), so it cannot fire the
+			// denied-attempt probe that would actually prove enforcement; that
+			// stays a warn, not a pass, until such a probe runs.
+			result.Status = StatusWarn
+			result.Detail = "networking.k8s.io/v1 networkpolicies served, but enforcement is unverified by this read-only check"
+			result.Hint = "a served API is only a correlate — a CNI can serve NetworkPolicy and still ignore it silently; enforcement can only be proven by a denied attempt (an in-cluster negative control, e.g. the Goobernetes S9 probe), not by this check"
 			return result
 		}
 	}

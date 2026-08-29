@@ -447,6 +447,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
 		return 1
 	}
+	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
+	if err != nil {
+		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
+		return 1
+	}
 
 	runID, workflowName, err := providerRunContext()
 	if err != nil {
@@ -494,7 +499,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 		return applyAdvisoryVerdict(
 			ctx, githubProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
-			*verdict, runID, resultFile, stdout, stderr,
+			*verdict, runID, resultFile, publishAdvisory, stdout, stderr,
 		)
 	}
 
@@ -890,7 +895,7 @@ func applyAdvisoryVerdict(
 	selectedNumber int,
 	selectedNumberStr, selectedHeadSHA, selectedBaseSHA string,
 	verdict apiv1.Verdict,
-	runID, resultFile string,
+	runID, resultFile string, publishAdvisory bool,
 	stdout, stderr io.Writer,
 ) int {
 	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
@@ -915,6 +920,10 @@ func applyAdvisoryVerdict(
 	if _, err := nativeReviewDecision(verdict.Decision); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if !publishAdvisory {
+		pf(stdout, "advisory %s verdict for PR #%d retained locally; public publication disabled by policy\n", verdict.Decision, selectedNumber)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
 	}
 
 	verdict.HeadSHA = selectedHeadSHA

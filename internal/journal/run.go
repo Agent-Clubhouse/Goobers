@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,14 @@ import (
 
 // ErrClosed is returned by writer operations after Close.
 var ErrClosed = errors.New("journal: run is closed")
+
+// ErrTerminalGenerationChanged means a continuation was checked against an
+// older terminal event than the source currently records.
+var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
+
+// ErrImmutableSourceLockMissing means a continuation source cannot be locked
+// without creating a file inside the source journal.
+var ErrImmutableSourceLockMissing = errors.New("immutable source journal lock is missing")
 
 // Run is a writer over a single run journal. It owns the append handle to
 // events.jsonl and enforces the durability contract: every Append scrubs, writes
@@ -60,6 +70,15 @@ func acquireRunLock(dir string) (*journalLock, error) {
 	return acquireJournalLock(dir, "run")
 }
 
+func acquireExistingRunLock(dir string) (*journalLock, error) {
+	path := filepath.Join(dir, fileLock)
+	lock, err := acquireExistingJournalLockPath(path, dir, "run")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: %s", ErrImmutableSourceLockMissing, path)
+	}
+	return lock, err
+}
+
 // releaseRunLock unlocks and closes a lock file acquireRunLock returned. Safe
 // to call with nil (a Run that never acquired one, e.g. a construction path
 // that failed before acquireRunLock ran).
@@ -72,6 +91,7 @@ type config struct {
 	scrubber       Scrubber
 	now            func() time.Time
 	inputIntegrity map[string]apiv1.Integrity
+	inputSource    map[string]string
 	appendObserver func(runID string, seq uint64)
 }
 
@@ -104,6 +124,17 @@ func WithInputIntegrity(grades map[string]apiv1.Integrity) Option {
 		c.inputIntegrity = make(map[string]apiv1.Integrity, len(grades))
 		for name, grade := range grades {
 			c.inputIntegrity[name] = grade
+		}
+	}
+}
+
+// WithInputSource records the caller-provided provenance for immutable input
+// snapshots.
+func WithInputSource(sources map[string]string) Option {
+	return func(c *config) {
+		c.inputSource = make(map[string]string, len(sources))
+		for name, source := range sources {
+			c.inputSource[name] = source
 		}
 	}
 }
@@ -204,6 +235,10 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	// the scrubbed digests.
 	id.Inputs = id.Inputs[:0:0]
 	for _, name := range sortedKeys(inputs) {
+		if name == "" || name == "." || name == ".." || path.Base(name) != name || strings.ContainsAny(name, `/\`) {
+			releaseRunLock(lock)
+			return nil, fmt.Errorf("journal: invalid input name %q", name)
+		}
 		ref, err := writeContent(dir, path.Join(dirInputs, name), inputs[name], cfg.scrubber)
 		if err != nil {
 			releaseRunLock(lock)
@@ -218,7 +253,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 			return nil, fmt.Errorf("journal: snapshot input %q has unknown integrity %q", name, integrity)
 		}
 		ref.Integrity = integrity
-		id.Inputs = append(id.Inputs, InputRef{Name: name, Ref: ref, Integrity: integrity})
+		id.Inputs = append(id.Inputs, InputRef{
+			Name: name, Ref: ref, Source: cfg.inputSource[name], Integrity: integrity,
+		})
 	}
 	if err := writeRunYAML(dir, id); err != nil {
 		releaseRunLock(lock)
@@ -247,11 +284,16 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 		lock:     lock,
 		phase:    PhaseRunning,
 	}
-	if err := r.append(Event{Type: EventRunStarted, Status: string(PhaseRunning)}); err != nil {
+	if err := r.append(Event{
+		Type: EventRunStarted, Status: string(PhaseRunning),
+		SourceRunID: id.ContinuedFromRunID, SourceTerminalSeq: id.SourceTerminalSeq,
+		Actor: id.Operator, Target: id.RequestedTarget,
+	}); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
 		return nil, err
 	}
+
 	if err := r.checkpoint(); err != nil {
 		_ = events.Close()
 		releaseRunLock(lock)
@@ -282,6 +324,180 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	return published, nil
 }
 
+// ContinuationRequest is the journal-side creation contract for a continuation.
+// Inputs are copied into the new journal and never read from the source journal.
+type ContinuationRequest struct {
+	RunID               string
+	SourceRunID         string
+	ExpectedTerminalSeq uint64
+	Operator            string
+	Target              string
+	Inputs              map[string][]byte
+	InputIntegrity      map[string]apiv1.Integrity
+	InputSource         map[string]string
+	SourceBranch        string
+	ExpectedSourceSHA   string
+	SourceRepository    *apiv1.RepoRef
+	ContextPointers     []apiv1.ContextPointer
+	// VerifySourceBranch checks the provider's current branch head before reuse.
+	VerifySourceBranch func(branch, sha string) error
+}
+
+// CreateContinuation creates a distinct journal from a terminal source
+// generation. The source is opened read-only and is never rewritten.
+func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option) (*Run, error) {
+	if !apiv1.ValidRunID(req.SourceRunID) {
+		return nil, fmt.Errorf("journal: invalid source run id %q", req.SourceRunID)
+	}
+	if !apiv1.ValidRunID(req.RunID) {
+		return nil, fmt.Errorf("journal: invalid continuation run id %q", req.RunID)
+	}
+	if req.ExpectedTerminalSeq == 0 {
+		return nil, errors.New("journal: expected terminal sequence is required")
+	}
+	if strings.TrimSpace(req.Operator) == "" {
+		return nil, errors.New("journal: operator is required")
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		return nil, errors.New("journal: continuation target is required")
+	}
+	sourceDir := filepath.Join(runsDir, req.SourceRunID)
+	// Refuse legacy journals before taking their run lock. Lock acquisition can
+	// create .lock, and OpenRead may migrate, so either operation would mutate a
+	// source whose bytes must remain immutable.
+	if _, err := OpenReadOnly(sourceDir); err != nil {
+		return nil, fmt.Errorf("journal: inspect continuation source: %w", err)
+	}
+	sourceLock, err := acquireExistingRunLock(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: lock continuation source: %w", err)
+	}
+	defer releaseRunLock(sourceLock)
+	reader, err := OpenReadOnly(sourceDir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: open continuation source: %w", err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source phase: %w", err)
+	}
+	if phase != PhaseCompleted && phase != PhaseFailed && phase != PhaseAborted && phase != PhaseEscalated {
+		return nil, fmt.Errorf("journal: continuation source %q is not terminal (phase=%s)", req.SourceRunID, phase)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source events: %w", err)
+	}
+	var terminalSeq uint64
+	for _, event := range events {
+		if event.Type == EventRunFinished {
+			terminalSeq = event.Seq
+		}
+	}
+	if terminalSeq != req.ExpectedTerminalSeq {
+		return nil, fmt.Errorf("%w: source %q is at sequence %d, expected %d", ErrTerminalGenerationChanged, req.SourceRunID, terminalSeq, req.ExpectedTerminalSeq)
+	}
+	var recordedBranch, recordedSHA string
+	for _, event := range events {
+		if event.Type == EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+			recordedBranch = event.ExternalRef.ID
+			recordedSHA = event.ExternalRef.CommitSHA
+		}
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return nil, fmt.Errorf("journal: read continuation source identity: %w", err)
+	}
+	if recordedBranch == "" {
+		recordedBranch = strings.TrimSpace(id.WorkspaceBranch)
+	}
+	if recordedSHA == "" {
+		recordedSHA = strings.TrimSpace(id.WorkspaceBranchSHA)
+	}
+	if (req.SourceBranch != "" || req.ExpectedSourceSHA != "") &&
+		(recordedBranch == "" || recordedSHA == "") {
+		return nil, fmt.Errorf("journal: continuation source %q has no recorded branch and commit", req.SourceRunID)
+	}
+	if req.SourceBranch != "" && req.SourceBranch != recordedBranch {
+		return nil, fmt.Errorf("journal: continuation source branch changed from %q to %q", req.SourceBranch, recordedBranch)
+	}
+	if req.ExpectedSourceSHA != "" && !strings.EqualFold(req.ExpectedSourceSHA, recordedSHA) {
+		return nil, fmt.Errorf("journal: continuation source branch %q is at commit %q, expected %q", recordedBranch, recordedSHA, req.ExpectedSourceSHA)
+	}
+	if req.VerifySourceBranch != nil && (recordedBranch == "" || recordedSHA == "") {
+		return nil, fmt.Errorf("journal: continuation source %q has no recorded branch and commit", req.SourceRunID)
+	}
+	if req.VerifySourceBranch != nil {
+		if err := req.VerifySourceBranch(recordedBranch, recordedSHA); err != nil {
+			return nil, fmt.Errorf("journal: verify continuation source branch %q: %w", recordedBranch, err)
+		}
+	}
+	id.RunID = req.RunID
+	id.ContinuedFromRunID = req.SourceRunID
+	id.SourceTerminalSeq = req.ExpectedTerminalSeq
+	id.Operator = strings.TrimSpace(req.Operator)
+	id.RequestedTarget = strings.TrimSpace(req.Target)
+	id.WorkspaceBranch = strings.TrimSpace(req.SourceBranch)
+	id.WorkspaceBranchSHA = strings.TrimSpace(req.ExpectedSourceSHA)
+	if req.SourceRepository != nil {
+		repository := *req.SourceRepository
+		id.WorkspaceRepository = &repository
+	}
+	if id.WorkspaceBranch == "" {
+		id.WorkspaceBranch = recordedBranch
+	}
+	if id.WorkspaceBranchSHA == "" {
+		id.WorkspaceBranchSHA = recordedSHA
+	}
+	// The request is the complete allowlist; never inherit ambient source context.
+	id.ContextPointers = make([]apiv1.ContextPointer, len(req.ContextPointers))
+	copy(id.ContextPointers, req.ContextPointers)
+	for i := range id.ContextPointers {
+		p := &id.ContextPointers[i]
+		if p.RunID == "" {
+			p.RunID = req.SourceRunID
+		}
+		if p.Artifact == nil || p.External != nil {
+			return nil, fmt.Errorf("journal: continuation context pointer %q is not an explicit source artifact", p.Name)
+		}
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("journal: invalid continuation context pointer %q: %w", p.Name, err)
+		}
+	}
+	id.Trigger = Trigger{Kind: TriggerManual, Ref: req.SourceRunID}
+	// Inputs are immutable snapshots; expose each injected snapshot only through
+	// an artifact pointer, alongside the explicitly selected source pointers.
+	if len(req.Inputs) > 0 {
+		updated := make([]apiv1.ContextPointer, 0, len(id.ContextPointers)+len(req.Inputs))
+		updated = append(updated, id.ContextPointers...)
+		names := make([]string, 0, len(req.Inputs))
+		for name := range req.Inputs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			grade := req.InputIntegrity[name]
+			if grade == "" {
+				grade = apiv1.IntegrityTrusted
+			}
+			updated = append(updated, apiv1.ContextPointer{
+				Name: name, Integrity: grade,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: "inputs/" + name, Digest: apiv1.Digest(req.Inputs[name]), Integrity: grade,
+				},
+			})
+		}
+		id.ContextPointers = updated
+	}
+	created, err := Create(runsDir, id, req.Inputs, append(opts,
+		WithInputIntegrity(req.InputIntegrity), WithInputSource(req.InputSource),
+	)...)
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are
 // assigned by the journal — any values set by the caller are overwritten.
 func (r *Run) Append(ev Event) error {
@@ -290,6 +506,7 @@ func (r *Run) Append(ev Event) error {
 	if r.closed {
 		return ErrClosed
 	}
+
 	if err := r.append(ev); err != nil {
 		return err
 	}
@@ -321,6 +538,35 @@ func (r *Run) Append(ev Event) error {
 		r.observer(r.id.RunID, r.seq)
 	}
 	return nil
+}
+
+// AppendIfAbsent appends ev while holding the journal lock only when no
+// committed event matches match. It makes a check-and-append operation atomic.
+func (r *Run) AppendIfAbsent(ev Event, match func(Event) bool) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false, ErrClosed
+	}
+	events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range events {
+		if match(existing) {
+			return false, nil
+		}
+	}
+	if err := r.append(ev); err != nil {
+		return false, err
+	}
+	if err := r.checkpoint(); err != nil {
+		return false, err
+	}
+	if r.observer != nil {
+		r.observer(r.id.RunID, r.seq)
+	}
+	return true, nil
 }
 
 // ClaimNotificationDelivery appends pending unless the journal already contains
@@ -384,9 +630,33 @@ func (r *Run) append(ev Event) error {
 // IfLastActivityBefore runs claim while holding the writer mutex only when no
 // event has been appended at or after cutoff. It lets a live owner atomically
 // claim a stale journal without racing a concurrent heartbeat append.
+//
+// A ZERO lastActivity means "not observed here", NOT "idle since the beginning
+// of time", and the difference is the whole correctness of this check. The
+// field advances on Append through THIS handle and via ObserveActivity, which
+// only the local runner path calls — a mode-3 stage runs in a pod and writes
+// its events through the journal PLANE, so nothing ever advances the handle the
+// watchdog holds. Treating that as staleness makes now.Sub(zero) equal the
+// maximum Duration, which is greater than EVERY configurable timeout, so the
+// run is escalated on the first sweep and no setting can prevent it.
+//
+// MEASURED (#3774): run 1214fd79 was escalated 11 minutes into a 60-minute
+// agentic stage, reporting "no journal progress for 2562047h47m16s (last
+// activity 0001-01-01T00:00:00Z; timeout 45m0s)" — while the trace showed five
+// recorded events. Raising the timeout to 90m changed nothing, which is the
+// tell: no finite threshold beats an unbounded baseline. Short pod stages
+// survived only by finishing before a sweep evaluated them.
+//
+// So this fails SAFE. An inactivity that cannot be determined is not evidence
+// of inactivity, and the cost of the two mistakes is not symmetric: declining
+// to escalate delays detection of a genuinely hung run, while escalating on an
+// unknown kills healthy work and cannot be configured away.
 func (r *Run) IfLastActivityBefore(cutoff time.Time, claim func(time.Time)) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.lastActivity.IsZero() {
+		return false
+	}
 	if !r.lastActivity.Before(cutoff) {
 		return false
 	}
@@ -568,6 +838,39 @@ func (r *Run) RecordStageArtifactWithIntegrity(stage string, attempt int, class 
 	}, data, 0)
 }
 
+// RecordStageArtifactAnnotated is RecordStageArtifactWithIntegrity with
+// caller-supplied runner.* annotations stamped on the artifact.recorded
+// event. The Runner map is the sanctioned non-normative namespace, so the
+// annotations never enter the conformance view — the live journal writer's
+// idempotency key (livejournal.EmitKeyRunnerField) rides here.
+func (r *Run) RecordStageArtifactAnnotated(stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
+		Runner: copyRunnerMeta(runnerMeta),
+	}, data, 0)
+}
+
+// RecordArtifactAnnotated is RecordArtifactWithIntegrity with caller-supplied
+// runner.* annotations on the artifact.recorded event.
+func (r *Run) RecordArtifactAnnotated(name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.recordArtifact(Event{
+		Type: EventArtifactRecorded, Name: name, Integrity: integrity, Runner: copyRunnerMeta(runnerMeta),
+	}, data, 0)
+}
+
+// copyRunnerMeta isolates the recorded event from later caller mutation of
+// the annotation map. nil in, nil out.
+func copyRunnerMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	copied := make(map[string]any, len(meta))
+	for k, v := range meta {
+		copied[k] = v
+	}
+	return copied
+}
+
 // RecordBranchStageArtifact is RecordStageArtifact with explicit
 // parallel-branch attribution.
 func (r *Run) RecordBranchStageArtifact(branch int, stage string, attempt int, class AttemptClass, name string, data []byte) (Ref, error) {
@@ -637,6 +940,15 @@ func (r *Run) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) 
 	return r.recordSpan(0, stage, name, dataSchema, data)
 }
 
+// RecordSpanAnnotated is RecordSpanWithSchema with caller-supplied runner.*
+// annotations on the span.recorded event (the live journal writer's
+// idempotency key).
+func (r *Run) RecordSpanAnnotated(stage, name, dataSchema string, data []byte, runnerMeta map[string]any) (Ref, error) {
+	return r.recordSpanEvent(Event{
+		Type: EventSpanRecorded, Stage: stage, Name: name, DataSchema: dataSchema, Runner: copyRunnerMeta(runnerMeta),
+	}, data)
+}
+
 // RecordBranchSpanWithSchema is RecordSpanWithSchema for a stage running
 // inside a parallel branch, attributing the resulting span.recorded event to
 // that branch — the same branch-attribution seam RecordBranchArtifact et al.
@@ -646,6 +958,10 @@ func (r *Run) RecordBranchSpanWithSchema(branch int, stage, name, dataSchema str
 }
 
 func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte) (Ref, error) {
+	return r.recordSpanEvent(Event{Type: EventSpanRecorded, Branch: branch, Stage: stage, Name: name, DataSchema: dataSchema}, data)
+}
+
+func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -659,9 +975,10 @@ func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte
 	}
 	ref, err := writeContentScrubbed(r.dir, relPath, scrubbed, digest)
 	if err != nil {
-		return Ref{}, fmt.Errorf("journal: record span %q: %w", name, err)
+		return Ref{}, fmt.Errorf("journal: record span %q: %w", ev.Name, err)
 	}
-	if err := r.append(Event{Type: EventSpanRecorded, Branch: branch, Stage: stage, Name: name, DataSchema: dataSchema, Ref: &ref}); err != nil {
+	ev.Ref = &ref
+	if err := r.append(ev); err != nil {
 		return Ref{}, err
 	}
 	if err := r.checkpoint(); err != nil {

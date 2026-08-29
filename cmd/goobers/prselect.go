@@ -96,7 +96,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runPRSelectADO(root, repo, stdout, stderr)
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 	)
@@ -132,6 +132,20 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
+	requiredOptInLabel := strings.TrimSpace(providerInput("requireOptInLabel", ""))
+	respectAssignee, err := strconv.ParseBool(providerInput("respectAssignee", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
+		return 1
+	}
+	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
+	if respectAssignee && selfIdentity == "" {
+		selfIdentity, err = provider.AuthenticatedLogin(ctx)
+		if err != nil {
+			pf(stderr, "error: resolve selfIdentity for assignee policy: %v\n", err)
+			return 1
+		}
+	}
 	now := time.Now().UTC()
 	expectedAuthorLogin := daemonIdentityAuthorLogin(ctx, root, provider)
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
@@ -209,6 +223,11 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			continue
 		}
+		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
+			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
+				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
+			continue
+		}
 		parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
@@ -272,6 +291,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -279,6 +299,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -315,6 +336,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
+		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
@@ -326,6 +348,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
+	pf(stdout, "selection eligibility policy: %s\n", mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity))
 	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
 		priority.Wait.Round(time.Second),
 		fairness.MaxWait.Round(time.Second),
@@ -408,7 +431,7 @@ func pullRequestsForSelection(
 //     satisfy, and several would otherwise issue a PR-as-work-item write against
 //     wit/workitems (wrong-object hazard). No sibling is parked here.
 func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newProviderForStage(root, repo, true)
+	adoProvider, err := newMergeReviewProvider(root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -435,6 +458,17 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	now := time.Now().UTC()
+	requiredOptInLabel := strings.TrimSpace(providerInput("requireOptInLabel", ""))
+	respectAssignee, err := strconv.ParseBool(providerInput("respectAssignee", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
+		return 1
+	}
+	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
+	if respectAssignee && selfIdentity == "" {
+		pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
+		return 1
+	}
 	// ADO has no AuthenticatedLogin (merge-wiring-plan §2): daemonIdentityAuthorLogin
 	// would return "" here, so isOwnPullRequest falls to the branch-prefix
 	// heuristic against headPrefixes. See §8 (the advisoryMode misfire): the ADO
@@ -474,6 +508,11 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			continue
 		}
+		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
+			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
+				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
+			continue
+		}
 		eligible = append(eligible, pr)
 	}
 
@@ -488,6 +527,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
 	)
+	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
 			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
@@ -495,6 +535,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
 		)
+		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
@@ -531,6 +572,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
+		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
 	})
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
@@ -542,6 +584,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 	}
 
 	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
+	pf(stdout, "selection eligibility policy: %s\n", mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity))
 	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
 		priority.Wait.Round(time.Second),
 		fairness.MaxWait.Round(time.Second),
@@ -549,6 +592,71 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		noneIfEmpty(joinPRNumbers(fairness.Starved)),
 	)
 	return 0
+}
+
+func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {
+	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
+	if !targeted {
+		return candidates
+	}
+
+	number, err := strconv.Atoi(pullID)
+	if err != nil {
+		return nil
+	}
+
+	for _, candidate := range candidates {
+		if candidate.Number == number {
+			return []providers.PullRequestSummary{candidate}
+		}
+	}
+	return nil
+}
+
+func eligibleByMergeReviewPolicy(pr providers.PullRequestSummary, requiredOptInLabel string, respectAssignee bool, selfIdentity string) bool {
+	if requiredOptInLabel != "" && !hasAnyLabel(pr.Labels, []string{requiredOptInLabel}) {
+		return false
+	}
+
+	if respectAssignee && selfIdentity != "" &&
+		!containsIdentity(pr.Assignees, selfIdentity) &&
+		!containsIdentity(pr.RequestedReviewers, selfIdentity) {
+		return false
+	}
+	return true
+}
+
+func mergeReviewPolicyRejection(pr providers.PullRequestSummary, requiredOptInLabel string, respectAssignee bool, selfIdentity string) string {
+	if requiredOptInLabel != "" && !hasAnyLabel(pr.Labels, []string{requiredOptInLabel}) {
+		return "missing required opt-in label " + requiredOptInLabel
+	}
+	if respectAssignee && selfIdentity != "" {
+		return "not assigned to or requesting review from " + selfIdentity
+	}
+	return "policy rule mismatch"
+}
+
+func containsIdentity(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeReviewEligibilityDescription(requiredOptInLabel string, respectAssignee bool, selfIdentity string) string {
+	var rules []string
+	if requiredOptInLabel != "" {
+		rules = append(rules, "label:"+requiredOptInLabel)
+	}
+	if respectAssignee {
+		rules = append(rules, "assignee-or-reviewer:"+selfIdentity)
+	}
+	if len(rules) == 0 {
+		return "legacy"
+	}
+	return strings.Join(rules, ",")
 }
 
 // adoSelectProvider is the minimal mandatory-Provider surface pr-select's ADO

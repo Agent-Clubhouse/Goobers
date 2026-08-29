@@ -34,13 +34,6 @@ func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 	}
 }
 
-// Register appends spec as the next version of the named workflow and returns the
-// new version number (1-based). It validates the definition compiles before
-// accepting it, so a broken definition can never be started.
-func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
-	return r.RegisterDefinition(wf.Definition{Name: name, Spec: spec})
-}
-
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
 // Version assignment, validation, and the append run under one critical
@@ -99,11 +92,6 @@ func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
 	return wf.Compile(def, wf.WithPreviewFeatures(r.allowPreviewFeatures))
 }
 
-// PreviewFeaturesEnabled reports the policy carried by registered definitions.
-func (r *Registry) PreviewFeaturesEnabled() bool {
-	return r.allowPreviewFeatures
-}
-
 // Get returns a specific pinned version of a workflow (1-based).
 func (r *Registry) Get(name string, version int) (wf.Definition, bool) {
 	r.mu.RLock()
@@ -144,6 +132,14 @@ type StartSpec struct {
 	// GateGooberCapabilities maps reviewer goober names to their granted
 	// capabilities; instance policy pinned into the run at start (WF-016).
 	GateGooberCapabilities map[string][]string
+	// LiveJournal pins live journal authorship (DS4) into the run: the
+	// starter sets it when the daemon's journal plane serves this instance.
+	LiveJournal bool
+	// Placements pins each task's resolved execution placement (#3588) —
+	// bootstrap.PinStagePlacements' output for this definition. Nil for
+	// every zero-declaration and local-mode instance, which leaves every
+	// stage on the legacy self path byte for byte.
+	Placements []PinnedPlacement
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -178,5 +174,7 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		TriggerKind:            s.TriggerKind,
 		BranchNamespace:        s.BranchNamespace,
 		GateGooberCapabilities: s.GateGooberCapabilities,
+		LiveJournal:            s.LiveJournal,
+		Placements:             s.Placements,
 	}, nil
 }

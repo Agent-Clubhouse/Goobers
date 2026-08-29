@@ -26,7 +26,7 @@ _goobers_completion()
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
-            'status:validate config, show warnings, list runs, or report daemon health'
+            'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
             'stats:show the instance lifetime summary card'
             'trace:show a run'\''s journal events or review verdicts, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
@@ -89,6 +89,9 @@ _goobers_completion()
         doctor)
             flags+=(--k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout)
             ;;
+        netpol-render)
+            flags+=(--out --check --baseline --write-baseline --timeout --print-blob-endpoint)
+            ;;
         config)
             case "${words[3]:-}" in
                 diff) flags+=(--against) ;;
@@ -113,13 +116,13 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=(--gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key)
+            flags+=(--gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal)
             ;;
         engine-project)
             flags+=(--gaggle --temporal-hostport --temporal-namespace)
             ;;
         worker)
-            flags+=(--instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
+            flags+=(--instance --blob-store --daemon-api --dispatch-namespace --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         dashboard)
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
@@ -128,7 +131,7 @@ _goobers_completion()
             flags+=(--port --no-open --workdir)
             ;;
         run)
-            flags+=(--gaggle --no-wait)
+            flags+=(--gaggle --pr --no-wait)
             ;;
         approve)
             flags+=(--decision --actor)
@@ -151,7 +154,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=(--daemon --json --phase --workflow --gaggle --limit --watch --interval)
+            flags+=(--agents --daemon --json --phase --workflow --gaggle --limit --watch --interval)
             ;;
         stats)
             flags+=(--since --json)
@@ -178,6 +181,12 @@ _goobers_completion()
             ;;
         trace)
             flags+=(--json --follow --summary --verdicts --transcripts --transcript)
+            ;;
+        e2e)
+            case "${words[3]:-}" in
+                verify) flags+=(--run --gaggle --expected --out --print-runner-class) ;;
+                kill-inject) flags+=(--run --stage --stage-class --namespace --poll-timeout --out) ;;
+            esac
             ;;
         escalations)
             flags+=(--json)
@@ -216,7 +225,7 @@ _goobers_completion()
             flags+=(--max --lookback)
             ;;
         telemetry-query)
-            flags+=(--window --aggregate --threshold --format --gaggle --workflow)
+            flags+=(--window --aggregate --learning-action --threshold --format --gaggle --workflow)
             ;;
         docs-churn)
             flags+=(--repo --workflow --gaggle --since --buffer-multiplier --format)
@@ -361,6 +370,13 @@ _goobers_completion()
                 candidates=()
                 candidates+=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
+                return
+            fi
+            ;;
+        e2e)
+            if (( CURRENT == 3 )); then
+                candidates=(verify kill-inject)
+                _describe -V 'command' candidates
                 return
             fi
             ;;

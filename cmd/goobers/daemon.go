@@ -47,6 +47,7 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // RollupDB.Close once it's done driving runs, exactly as it did before this
 // seam existed.
 type schedulerSetup struct {
+	Root         string
 	Runner       *runner.Runner
 	Runners      map[string]*runner.Runner
 	LegacyRunner *runner.Runner
@@ -63,6 +64,9 @@ type schedulerSetup struct {
 	// the daemon's shutdown path stops it with everything else, rather than the
 	// loop outliving the process's other goroutines.
 	StopProjector func()
+	// RetentionStats snapshots projection-retention loop counters for status
+	// diagnostics while the daemon is running.
+	RetentionStats func() readmodel.RetentionStats
 	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
 	// at open so a broken store surfaces at daemon start rather than on the first
 	// read. It becomes the SSE cursor's epoch component in Wave 5.
@@ -98,6 +102,10 @@ type schedulerSetup struct {
 	// Interventions is the atomically replaced definition snapshot used by the
 	// daemon's mutation service during config reload.
 	Interventions *interventionDefinitionRegistry
+	// CredentialPlane is the daemon credential service (#3511); set by up.go
+	// after API wiring so config reload can swap its config-derived snapshot
+	// alongside the intervention definitions. Nil outside the `up` daemon.
+	CredentialPlane *daemonCredentialService
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that
@@ -204,8 +212,21 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	//
 	// So: one unsatisfiable stage no longer takes the whole instance down, and
 	// every OTHER gaggle keeps running.
-	if err := instance.CheckCapabilityRequirements(cfg.Runner.Capabilities, set); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
+	//
+	// Zero-declaration instances only: with a declared runners: inventory
+	// this whole-gaggle self-claims union would mis-warn about capabilities
+	// another declared runner provides, so the per-workflow constraint solve
+	// (placementRefusals, checkpoint 3 of dsl-3.0.md §5) replaces it there —
+	// same never-fatal posture, per-workflow diagnostics, journaled as
+	// workflow.refused. That solve is substrate-aware
+	// (runnersolve.SolveExecutable): a stage needing a capability only a
+	// remote runner claims still surfaces as a boot refusal naming the
+	// capability and the remote-only placement, so the operator signal for
+	// the capability axis survives on declared inventories too.
+	if len(cfg.Runners) == 0 {
+		if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
+		}
 	}
 	// CONF-6/#2079: fail closed at startup when a workflow requires a provider
 	// capability its gaggle's connected provider does not declare — a
@@ -251,6 +272,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var readModelEpoch string
 	var watermarks *intake.Store
 	var stopProjector func()
+	var retentionStats func() readmodel.RetentionStats
 	var instanceLog *journal.InstanceLog
 	defer func() {
 		if err == nil {
@@ -375,7 +397,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector = startProjector(ctx, readStore, intakeStore, l, cfg)
+				stopProjector, retentionStats = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
@@ -397,9 +419,18 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return err
 		}
-		recoveredClaims, err = ledger.RecoverExpired(time.Now())
-		if err != nil {
-			return err
+		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
+		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
+		// so `goobers up` closes this gate and reaps in its own startup
+		// recovery pass after the rebuild. The one-shot callers (`run`,
+		// `signal`) do the same when `engine:` is configured
+		// (oneShotClaimRecovery); only a pure mode-1 one-shot passes no gate
+		// and keeps reaping here as before.
+		if options.claimRecoveryGate.RecoveryPermitted() {
+			recoveredClaims, err = ledger.RecoverExpired(time.Now())
+			if err != nil {
+				return err
+			}
 		}
 		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
@@ -445,6 +476,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}
 
 	return &schedulerSetup{
+		Root:              l.Root,
 		Runner:            definitions.Runner,
 		Runners:           definitions.Runners,
 		LegacyRunner:      legacyRunner,
@@ -453,6 +485,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		ReadModel:         readModel,
 		Watermarks:        watermarks,
 		StopProjector:     stopProjector,
+		RetentionStats:    retentionStats,
 		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,
@@ -594,8 +627,14 @@ func buildSchedulerDefinitions(
 	stores credentials.StoreResolver,
 	startupProgress func(string),
 ) (*schedulerDefinitions, error) {
+	// Resolve gaggle CI commands on every compilation path, including config
+	// reloads, so preflight and execution see the same effective command.
+	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
 	goobers := goobersByName(set)
+	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+		return nil, err
+	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, err
@@ -690,6 +729,20 @@ func buildSchedulerDefinitions(
 		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
 	}
 
+	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
+	// declared inventory; an unsatisfiable workflow is marked refused with a
+	// named diagnostic — journaled and refused per-run by the scheduler —
+	// while the daemon and every other workflow keep serving. nil on a
+	// zero-declaration instance (see placementrefusal.go).
+	refusals, err := placementRefusals(cfg, set, goobers, machines)
+	if err != nil {
+		return nil, err
+	}
+	for identity, diagnostic := range refusals {
+		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
+			identity.Workflow, identity.Gaggle, diagnostic)
+	}
+
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
@@ -776,17 +829,32 @@ func buildSchedulerDefinitions(
 		if err != nil {
 			return nil, err
 		}
+		refillDemandCounter, err := buildRefillDemandCounter(
+			cfg,
+			gagglesByName[wf.Spec.Gaggle],
+			wf,
+			repoRefs[identity],
+			credResolver,
+			sharedReg,
+			l.SchedulerDir(),
+			selfIdentities[wf.Spec.Gaggle],
+			providerQuota,
+		)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, localscheduler.WorkflowEntry{
-			Workflow:          wf.Name,
-			WorkflowVersion:   machine.Def.Version,
-			WorkflowDigest:    machine.Digest(),
-			Gaggle:            wf.Spec.Gaggle,
-			Readiness:         wf.Spec.Readiness,
-			Schedules:         scheds,
-			ScheduleBackoffs:  scheduleBackoffs,
-			Signals:           sigs,
-			PollFallbackCause: pollFallbackCause,
-			BacklogCounter:    backlogCounter,
+			Workflow:            wf.Name,
+			WorkflowVersion:     machine.Def.Version,
+			WorkflowDigest:      machine.Digest(),
+			Gaggle:              wf.Spec.Gaggle,
+			Readiness:           wf.Spec.Readiness,
+			Schedules:           scheds,
+			ScheduleBackoffs:    scheduleBackoffs,
+			Signals:             sigs,
+			PollFallbackCause:   pollFallbackCause,
+			BacklogCounter:      backlogCounter,
+			RefillDemandCounter: refillDemandCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
 				branchNamespaces[wf.Spec.Gaggle], providerQuota,
@@ -799,6 +867,9 @@ func buildSchedulerDefinitions(
 			RepoRef:      repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
+			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
+			// above found this workflow unplaceable on the declared inventory.
+			PlacementRefusal: refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
@@ -1072,8 +1143,17 @@ func buildRuntimeRunner(
 	if err != nil {
 		return nil, nil, err
 	}
+	// #3347: retire the provider-visible claim marker in the same terminal
+	// cleanup step that releases the ledger lease, so a run that never reaches
+	// issue-close-out (the `no-work` outcome short-circuits straight to
+	// completed) cannot leave claims.json and the provider disagreeing until
+	// the next backlog-curation cycle.
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
+	if err != nil {
+		return nil, nil, err
+	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return finalizeTerminalRun(l, instanceLog, manager, runID)
+		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
 	if terminalNotifier != nil {
@@ -1112,11 +1192,16 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 	// here uniformly for every caller (both `up` and `run`), not gated behind
 	// an up.go-only branch.
 	opts := []localscheduler.Option{localscheduler.WithProviderQuota(s.ProviderQuota)}
+	if s.Root != "" {
+		opts = append(opts, localscheduler.WithTargetedPRValidator(func(ctx context.Context, entry localscheduler.WorkflowEntry, number int) error {
+			return validateTargetedPullRequest(ctx, s.Root, s.Config, s.SecretStores, s.SharedRegistry, entry, number)
+		}))
+	}
 	// RRQ-1/#1101: the local runner's static advertised capability set, so
 	// dispatch can refuse a run whose gaggle/stages require a capability this
 	// runner does not claim. Wired uniformly for both `up` and `run`.
 	if s.Config != nil {
-		opts = append(opts, localscheduler.WithRunnerCapabilities(s.Config.Runner.Capabilities))
+		opts = append(opts, localscheduler.WithRunnerCapabilities(s.Config.SelfRunnerCapabilities()))
 	}
 	if s.Telemetry != nil {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))

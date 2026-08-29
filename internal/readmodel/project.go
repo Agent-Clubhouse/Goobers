@@ -161,6 +161,8 @@ type NodeRow struct {
 	Kind               string
 	Name               string
 	Identity           string
+	Randomized         bool
+	Arm                string
 	Attempts           int
 	RetryWasteAttempts int
 
@@ -168,6 +170,30 @@ type NodeRow struct {
 	gateOpen       map[int]bool
 	humanVisit     map[int]bool
 	humanRequested map[int]bool
+}
+
+// RemediationExampleRow is one projected failure -> remediation example used by
+// retrieval-augmented remediation.
+type RemediationExampleRow struct {
+	RunID          string
+	Stage          string
+	Attempt        int
+	ErrorClass     string
+	FailureExcerpt string
+	FixExcerpt     string
+	DidItHelp      bool
+	ObservedAt     time.Time
+	ConfigDigest   string
+}
+
+// NodeParentRow records a declared workflow-graph edge for a projected node.
+type NodeParentRow struct {
+	RunID      string
+	Kind       string
+	Name       string
+	Identity   string
+	ParentKind string
+	ParentName string
 }
 
 // StageMeasurement is what the telemetry rollup knows about one stage that the
@@ -250,9 +276,11 @@ func (p *Projection) rollUpMeasurement() {
 
 // Projection is the full result of projecting a run.
 type Projection struct {
-	Run    RunRow
-	Stages []StageRow
-	Nodes  []NodeRow
+	Run         RunRow
+	Stages      []StageRow
+	Nodes       []NodeRow
+	Remediation []RemediationExampleRow
+	NodeParents []NodeParentRow
 }
 
 // ProjectRun folds a run's identity and events into a projection.
@@ -397,6 +425,11 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
+			node := nodeRow(nodes, row.RunID, "stage", event.Stage, "")
+			if randomized, arm, ok := randomizedInterventionFromOutputs(event.Outputs); ok {
+				node.Randomized = randomized
+				node.Arm = arm
+			}
 			if row.Operator.IssueTitle == "" {
 				id, idOK := event.Outputs["id"].(string)
 				title, titleOK := event.Outputs["title"].(string)
@@ -420,6 +453,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				node.recordAttempt(event.Branch, "")
 			}
 			node.gateOpen[event.Branch] = false
+			node.Arm = event.Verdict
 			row.OutcomeVerdict = event.Verdict
 			row.OutcomeTarget = event.Target
 			if event.Gate == "review" {
@@ -518,6 +552,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 // blobs to the otherwise pure event projection.
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
+	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated ||
@@ -569,12 +604,269 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 				break
 			}
 		}
+		projection.NodeParents = declaredNodeParents(projection.Run.RunID, projection.Nodes, &graph)
 		break
 	}
 	if projection.Run.Operator.PullRequest != nil {
 		projection.Run.Operator.PROpenerStage = ""
 	}
 	return projection, nil
+}
+
+func projectRemediationExamples(identity journal.RunIdentity, run RunRow, events []journal.Event) []RemediationExampleRow {
+	if !run.Terminal {
+		return nil
+	}
+	scrubber := journal.NewPatternScrubber()
+	failures := make(map[string]journal.Event)
+	examples := make([]RemediationExampleRow, 0)
+	for _, event := range events {
+		if !event.KnownSchema() {
+			continue
+		}
+		if event.Type == journal.EventError && event.Stage != "" && event.Error != nil &&
+			event.Integrity != "unapproved" {
+			failures[event.Stage] = event
+			continue
+		}
+		if event.Type != journal.EventStageFinished || event.Status != "success" ||
+			event.Integrity == "unapproved" {
+			continue
+		}
+		failure, ok := failures[event.Stage]
+		if !ok {
+			continue
+		}
+		didItHelp, outcomeKnown := remediationOutcome(event.Outputs)
+		if !outcomeKnown || outputsContentExcluded(event.Outputs) ||
+			errorContentExcluded(failure.Error) {
+			continue
+		}
+		fix := remediationOutputExcerpt(event.Outputs)
+		if fix == "" {
+			fix = "stage completed successfully after the prior failure"
+		}
+		examples = append(examples, RemediationExampleRow{
+			RunID:          identity.RunID,
+			Stage:          event.Stage,
+			Attempt:        event.Attempt,
+			ErrorClass:     failure.Error.Code,
+			FailureExcerpt: scrubExcerpt(scrubber, failure.Error.Message),
+			FixExcerpt:     scrubExcerpt(scrubber, fix),
+			DidItHelp:      didItHelp,
+			ObservedAt:     event.Time,
+			ConfigDigest:   identity.WorkflowDigest,
+		})
+		delete(failures, event.Stage)
+	}
+	return examples
+}
+
+func remediationOutcome(outputs map[string]any) (bool, bool) {
+	for _, key := range []string{"didItHelp", "did-it-help", "did_it_help"} {
+		value, ok := outputs[key]
+		if !ok {
+			continue
+		}
+		switch value := value.(type) {
+		case bool:
+			return value, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "true":
+				return true, true
+			case "false":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func randomizedInterventionFromOutputs(outputs map[string]any) (bool, string, bool) {
+	if len(outputs) == 0 {
+		return false, "", false
+	}
+	// randomizedIntervention is the reserved, explicit journal fact. Generic
+	// arm/randomized fields may describe observational or self-selected
+	// cohorts and must never upgrade them to randomized evidence.
+	randomized, hasRandomized := parseBoolField(outputs, "randomizedIntervention")
+	arm, hasArm := parseStringField(outputs, "arm", "banditArm", "assignmentArm", "treatmentArm")
+	source, hasSource := parseStringField(outputs, "randomizedInterventionSource")
+	if !hasRandomized {
+		return false, "", false
+	}
+	if randomized && (!hasSource || source != "bandit-assignment" ||
+		!hasArm || (arm != "control" && arm != "treatment")) {
+		return false, arm, true
+	}
+	return randomized, arm, true
+}
+
+func parseBoolField(values map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case bool:
+			return v, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "true", "yes", "1":
+				return true, true
+			case "false", "no", "0":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func outputsContentExcluded(outputs map[string]any) bool {
+	for _, key := range []string{"contentExcluded", "content_excluded", "excludedContent"} {
+		value, exists := outputs[key]
+		if exists {
+			switch value := value.(type) {
+			case bool:
+				if value {
+					return true
+				}
+			case string:
+				if strings.EqualFold(strings.TrimSpace(value), "true") {
+					return true
+				}
+			}
+		}
+	}
+	for _, value := range outputs {
+		if contentExcludedText(fmt.Sprint(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func errorContentExcluded(err *journal.ErrorDetail) bool {
+	return err != nil &&
+		(contentExcludedText(err.Code) || contentExcludedText(err.Message))
+}
+
+func contentExcludedText(value string) bool {
+	value = strings.ToLower(value)
+	for _, marker := range []string{
+		"content exclusion",
+		"content_exclusion",
+		"content-exclusion",
+		"contentexclusion",
+		"excluded by your organization",
+		"excluded by the repository owner",
+		"organization policy blocks",
+		"org content policy",
+		"copilot is disabled for this file",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubExcerpt(scrubber journal.Scrubber, value string) string {
+	return strings.TrimSpace(string(scrubber.Scrub([]byte(value))))
+}
+
+func remediationOutputExcerpt(outputs map[string]any) string {
+	if len(outputs) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(outputs)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func parseStringField(values map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		return strings.ToLower(text), true
+	}
+	return "", false
+}
+
+func declaredNodeParents(runID string, nodes []NodeRow, graph *workflow.Graph) []NodeParentRow {
+	if graph == nil || len(nodes) == 0 {
+		return nil
+	}
+	kindByID := map[string]string{}
+	for _, node := range graph.Nodes {
+		switch node.Kind {
+		case workflow.GraphNodeAgentic, workflow.GraphNodeDeterministic:
+			kindByID[node.ID] = "stage"
+		case workflow.GraphNodeGate:
+			kindByID[node.ID] = "gate"
+		}
+	}
+	parents := map[string]map[string]struct{}{}
+	for _, edge := range graph.Edges {
+		if edge.Terminal != "" {
+			continue
+		}
+		childKind, childOK := kindByID[edge.Target]
+		parentKind, parentOK := kindByID[edge.Source]
+		if !childOK || !parentOK {
+			continue
+		}
+		key := childKind + "\x00" + edge.Target
+		if parents[key] == nil {
+			parents[key] = map[string]struct{}{}
+		}
+		parents[key][parentKind+"\x00"+edge.Source] = struct{}{}
+	}
+	var out []NodeParentRow
+	for _, node := range nodes {
+		key := node.Kind + "\x00" + node.Name
+		nodeParents := parents[key]
+		for encoded := range nodeParents {
+			parts := strings.SplitN(encoded, "\x00", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			out = append(out, NodeParentRow{
+				RunID: runID, Kind: node.Kind, Name: node.Name, Identity: node.Identity,
+				ParentKind: parts[0], ParentName: parts[1],
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Identity != out[j].Identity {
+			return out[i].Identity < out[j].Identity
+		}
+		if out[i].ParentKind != out[j].ParentKind {
+			return out[i].ParentKind < out[j].ParentKind
+		}
+		return out[i].ParentName < out[j].ParentName
+	})
+	return out
 }
 
 // OperatorTrajectory classifies a run's current stage for operator-facing status.
