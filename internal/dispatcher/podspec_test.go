@@ -161,12 +161,13 @@ func TestRenderPodRefusesRestrictionMismatch(t *testing.T) {
 
 // §8 item 4: on a Windows pod, readOnlyRootFilesystem is NOT stamped —
 // Kubernetes silently ignores it on Windows, which fails OPEN (decision 007).
-// A v1 Windows pod carries no restrictions (D4), so it gets NO ContainerUser
-// either — ContainerUser is the fs:readonly binding, not a Windows default —
-// and the Linux-only baseline fields are absent.
+// A Windows pod whose stage does not require the admin privilege runs as
+// ContainerUser, stamped EXPLICITLY (#3619: the identity is the dispatcher's
+// decision, not the image's USER default), and the Linux-only baseline
+// fields are absent.
 func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	runner := windowsRunner()
-	runner.Restrictions = nil // Windows declares no restrictions in v1 (D4)
+	runner.Restrictions = []string{"tmp:ephemeral"} // the live windows-shell shape
 	pod, err := RenderPod(testConfig(), testAttempt(), runner)
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
@@ -175,12 +176,8 @@ func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	if container.SecurityContext != nil && container.SecurityContext.ReadOnlyRootFilesystem != nil {
 		t.Fatal("readOnlyRootFilesystem stamped on a Windows pod — silently ignored by Kubernetes, fails OPEN (decision 007)")
 	}
-	// No fs:readonly in the class → NO ContainerUser. ContainerUser binds only
-	// to fs:readonly-except-workspace (dispatcher §5); stamping it on a plain
-	// Windows stage imposes a non-admin identity the stage never asked for and
-	// admin-requiring stages hit Access Denied at cutover.
-	if sc := pod.Spec.SecurityContext; sc != nil && sc.WindowsOptions != nil && sc.WindowsOptions.RunAsUserName != nil {
-		t.Fatalf("ContainerUser stamped on a Windows pod with no fs:readonly (runAsUserName=%q)", *sc.WindowsOptions.RunAsUserName)
+	if got := windowsIdentity(t, pod); got != WindowsRunAsUserName {
+		t.Fatalf("runAsUserName = %q, want %q: a Windows stage that does not require privilege=windows-admin runs as ContainerUser, stamped explicitly", got, WindowsRunAsUserName)
 	}
 	if sc := pod.Spec.SecurityContext; sc != nil && (sc.RunAsNonRoot != nil || sc.SeccompProfile != nil) {
 		t.Fatal("Linux-only securityContext fields stamped on a Windows pod")
@@ -199,27 +196,48 @@ func TestRenderPodWindowsDoesNotStampReadOnlyRootFilesystem(t *testing.T) {
 	}
 }
 
-// The Windows fs:readonly binding (the positive case): a Windows pod whose
-// class DOES carry fs:readonly-except-workspace gets ContainerUser (the Windows
-// equivalent of readOnlyRootFilesystem) — but STILL not readOnlyRootFilesystem
-// itself, which fails open on Windows (decision 007). The v1 solver won't place
-// fs:readonly on Windows (D4); this pins the renderer's binding regardless, so
-// the gate is proven in both directions.
-func TestRenderPodWindowsContainerUserGatedOnFSReadonly(t *testing.T) {
+// A Windows class carrying a restriction Windows cannot bind is refused at
+// render (#3619; restrictions doc D4/D11): fs:readonly-except-workspace used
+// to bind to ContainerUser here, but ContainerUser is now every non-admin
+// Windows pod's identity, and readOnlyRootFilesystem fails open on Windows
+// (decision 007) — so the class would carry the label, the annotation, and
+// none of the effect. The inventory loader refuses the entry first; this is
+// the dispatch-time re-assertion.
+func TestRenderPodWindowsRefusesUnbindableClassRestriction(t *testing.T) {
+	for _, restriction := range []string{"fs:readonly-except-workspace", "network:none", "network:allowlist"} {
+		runner := windowsRunner()
+		runner.Restrictions = []string{"tmp:ephemeral", restriction}
+		_, err := RenderPod(testConfig(), testAttempt(), runner)
+		var identity *WindowsIdentityError
+		if !errors.As(err, &identity) || !strings.Contains(err.Error(), `"`+restriction+`", which has no Windows binding`) {
+			t.Fatalf("restriction %s: RenderPod err = %v, want WindowsIdentityError naming it", restriction, err)
+		}
+	}
+	// The two Windows-bindable effects render.
 	runner := windowsRunner()
-	runner.Restrictions = []string{"fs:readonly-except-workspace"}
-	pod, err := RenderPod(testConfig(), testAttempt(), runner)
-	if err != nil {
-		t.Fatalf("RenderPod: %v", err)
+	runner.Restrictions = []string{"tmp:ephemeral", "env:default-deny"}
+	if _, err := RenderPod(testConfig(), testAttempt(), runner); err != nil {
+		t.Fatalf("tmp:ephemeral + env:default-deny must render on Windows: %v", err)
 	}
+}
+
+// windowsIdentity reads the stamped Windows identity off a rendered pod,
+// asserting the pod level and the stage container level AGREE — the
+// container-level value is the one Kubernetes honours when both are set.
+func windowsIdentity(t *testing.T, pod *corev1.Pod) string {
+	t.Helper()
 	sc := pod.Spec.SecurityContext
-	if sc == nil || sc.WindowsOptions == nil || sc.WindowsOptions.RunAsUserName == nil ||
-		*sc.WindowsOptions.RunAsUserName != WindowsRunAsUserName {
-		t.Fatal("ContainerUser not stamped on a Windows pod carrying fs:readonly-except-workspace")
+	if sc == nil || sc.WindowsOptions == nil || sc.WindowsOptions.RunAsUserName == nil {
+		t.Fatal("no pod-level windowsOptions.runAsUserName stamped")
 	}
-	if c := pod.Spec.Containers[0]; c.SecurityContext != nil && c.SecurityContext.ReadOnlyRootFilesystem != nil {
-		t.Fatal("readOnlyRootFilesystem stamped on a Windows pod — fails OPEN (decision 007), even with fs:readonly present")
+	csc := pod.Spec.Containers[0].SecurityContext
+	if csc == nil || csc.WindowsOptions == nil || csc.WindowsOptions.RunAsUserName == nil {
+		t.Fatal("no stage-container windowsOptions.runAsUserName stamped")
 	}
+	if *sc.WindowsOptions.RunAsUserName != *csc.WindowsOptions.RunAsUserName {
+		t.Fatalf("pod-level identity %q disagrees with the stage container's %q", *sc.WindowsOptions.RunAsUserName, *csc.WindowsOptions.RunAsUserName)
+	}
+	return *csc.WindowsOptions.RunAsUserName
 }
 
 // The Linux counterpart: fs:readonly-except-workspace stamps
@@ -646,8 +664,12 @@ func TestRenderSetsWorkingDirToTheWorkspace(t *testing.T) {
 		{name: "windows", os: "windows", want: WindowsWorkspacePath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A Windows class cannot carry linuxRunner()'s fs:readonly (#3619
+			// refuses it at render), so each OS uses its own fixture.
 			runner := linuxRunner()
-			runner.OS = tc.os
+			if tc.os == "windows" {
+				runner = windowsRunner()
+			}
 			pod, err := RenderPod(testConfig(), testAttempt(), runner)
 			if err != nil {
 				t.Fatalf("RenderPod: %v", err)
@@ -676,9 +698,7 @@ func TestRenderSetsWorkingDirToTheWorkspace(t *testing.T) {
 // targeting a node the pod may not land on — a failure that looks like
 // capacity, not configuration.
 func TestWindowsStagePodToleratesBothTaintConventions(t *testing.T) {
-	runner := linuxRunner()
-	runner.OS = "windows"
-	pod, err := RenderPod(testConfig(), testAttempt(), runner)
+	pod, err := RenderPod(testConfig(), testAttempt(), windowsRunner())
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}

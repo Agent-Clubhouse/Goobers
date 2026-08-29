@@ -256,9 +256,19 @@ const (
 	// are stamped: tolerating a taint a cluster does not apply costs nothing,
 	// and picking one convention silently breaks every cluster using the other.
 	WindowsTolerationKeyLegacy = "kubernetes.io/os"
-	// WindowsRunAsUserName is the non-admin Windows container identity the
-	// fs restriction binds to (decision 007).
+	// WindowsRunAsUserName is the non-admin Windows container identity EVERY
+	// Windows stage pod runs as unless the stage requires — and its runner
+	// class provides — runnercap.CapabilityWindowsAdmin (#3619). Stamped
+	// explicitly rather than inherited from the image's USER directive, so
+	// least privilege is a property of the rendered spec, not of whichever
+	// image a class happens to name.
 	WindowsRunAsUserName = "ContainerUser"
+	// WindowsAdminRunAsUserName is the administrator identity a Windows
+	// stage pod runs as when — and only when — the stage requires
+	// runnercap.CapabilityWindowsAdmin and the resolved runner class provides
+	// it. Provided-but-not-required stays ContainerUser; required-but-not-
+	// provided is refused at create (WindowsIdentityError), never defaulted.
+	WindowsAdminRunAsUserName = "ContainerAdministrator"
 	// StageContainerName names the stage container in dispatcher-rendered
 	// pods.
 	StageContainerName = "stage"
@@ -312,6 +322,34 @@ func (e *RestrictionMismatchError) Error() string {
 		e.Runner, strings.Join(e.Missing, ", "))
 }
 
+// WindowsIdentityError is the create-time refusal of the Windows identity
+// and binding rules (#3619; restrictions doc D4 as corrected there):
+//
+//   - the stage requires runnercap.CapabilityWindowsAdmin and the resolved
+//     runner does not provide it (or is not Windows at all) — the solver
+//     should never have placed it here, and a stage that needs admin is
+//     never served as ContainerUser to fail later with Access Denied, nor
+//     served as ContainerAdministrator on a class that never claimed it;
+//   - the resolved Windows runner's class carries a restriction Windows
+//     cannot bind (runnercap.DeclarableOnWindows is false) — the pod would
+//     carry the class label and the restrictions annotation and none of the
+//     isolation they name, the fail-open shape decision 007 refused for
+//     readOnlyRootFilesystem.
+//
+// Both are re-assertions of facts the validator and the inventory loader
+// already refuse; this is the dispatch-time arm ("asserted at dispatch,
+// refuse-to-create on mismatch", restrictions doc §6).
+type WindowsIdentityError struct {
+	// Runner is the resolved runner.
+	Runner string
+	// Reason is the named, human-readable cause.
+	Reason string
+}
+
+func (e *WindowsIdentityError) Error() string {
+	return fmt.Sprintf("dispatcher: refusing to create stage pod on runner %q: %s", e.Runner, e.Reason)
+}
+
 // PodName derives the fresh pod's name for one attempt: deterministic per
 // (run, stage, attempt) and unique across attempts, so "a new attempt is a
 // new pod" holds by construction and a redelivered create of the SAME attempt
@@ -358,6 +396,10 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		return nil, err
 	}
 	if err := assertRestrictionsEnforced(attempt, runner); err != nil {
+		return nil, err
+	}
+	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
 		return nil, err
 	}
 
@@ -423,7 +465,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 
 	stampResources(cfg, attempt, runner, &container, class, windows)
 	stampVolumes(cfg, attempt, &pod.Spec, &container, class, windows)
-	stampSecurity(&pod.Spec, &container, class, windows)
+	stampSecurity(&pod.Spec, &container, class, windows, admin)
 	if windows {
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsTolerations()...)
 	}
@@ -446,6 +488,10 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		return nil, err
 	}
 	if err := assertRestrictionsEnforced(attempt, runner); err != nil {
+		return nil, err
+	}
+	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
 		return nil, err
 	}
 	template := deployment.Spec.Template.DeepCopy()
@@ -520,9 +566,10 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
 	// Security bindings stamp the STAGE container and the pod level; sidecar
-	// containers keep the consumer's own settings except the fs restriction,
-	// which is a pod-wide effect and stamps every container.
-	stampSecurity(spec, stage, class, windows)
+	// containers keep the consumer's own settings — on Windows, a sidecar's
+	// own windowsOptions.runAsUserName included (stampSecurity) — except the
+	// fs restriction, which is a pod-wide effect and stamps every container.
+	stampSecurity(spec, stage, class, windows, admin)
 	if !windows && class[string(runnercap.RestrictionFSReadonly)] {
 		for i := 1; i < len(spec.Containers); i++ {
 			side := &spec.Containers[i]
@@ -606,6 +653,40 @@ func assertRestrictionsEnforced(attempt Attempt, runner RunnerSpec) error {
 		return &RestrictionMismatchError{Runner: runner.Name, Missing: missing}
 	}
 	return nil
+}
+
+// assertWindowsIdentity decides the Windows container identity of the
+// attempt on runner, refusing the incoherent shapes (WindowsIdentityError).
+// It returns admin=true exactly when the stage REQUIRES
+// runnercap.CapabilityWindowsAdmin and the runner PROVIDES it — the one
+// case stampSecurity renders ContainerAdministrator. On a Linux runner it
+// only refuses a stage that requires the Windows privilege; the Linux
+// identity model is untouched.
+func assertWindowsIdentity(attempt Attempt, runner RunnerSpec) (admin bool, err error) {
+	required := runnercap.HasWindowsAdmin(attempt.RunsOnCapabilities)
+	windows := runner.OS == osWindows
+	if required && !windows {
+		return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+			"the stage requires %q (the ContainerAdministrator identity of a Windows stage pod) but the runner's os is %q — the solver should never have placed it here (#3619)",
+			runnercap.CapabilityWindowsAdmin, runner.OS)}
+	}
+	if !windows {
+		return false, nil
+	}
+	for _, effect := range runnercap.CanonicalRestrictions(runner.Restrictions) {
+		if runnercap.KnownRestriction(effect) && !runnercap.DeclarableOnWindows(runnercap.Restriction(effect)) {
+			return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+				"its class declares %q, which has no Windows binding in v1 — the pod would carry the class label and none of the isolation it names (restrictions doc D4/D11; the inventory loader refuses this entry)",
+				effect)}
+		}
+	}
+	provided := runnercap.HasWindowsAdmin(runner.Capabilities)
+	if required && !provided {
+		return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+			"the stage requires %q but the runner's provides.capabilities does not claim it — a stage that needs ContainerAdministrator is refused, never served as ContainerUser to fail with Access Denied, and never granted on a class that did not claim it (#3619)",
+			runnercap.CapabilityWindowsAdmin)}
+	}
+	return required && provided, nil
 }
 
 func restrictionSet(restrictions []string) map[string]bool {
@@ -951,27 +1032,53 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 //     RuntimeDefault seccomp, no privilege escalation, drop ALL), and
 //     readOnlyRootFilesystem: true exactly when the class carries
 //     fs:readonly-except-workspace.
-//   - Windows: the fs restriction binds to
-//     windowsOptions.runAsUserName: ContainerUser, and the dispatcher MUST
-//     NOT stamp readOnlyRootFilesystem — Kubernetes silently ignores it on
-//     Windows, which FAILS OPEN: a spec that says readonly and a pod that
-//     is not (decision 007). The Linux-only baseline fields are likewise
-//     not stamped (Windows kubelets reject or ignore them).
-func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows bool) {
+//   - Windows: the container IDENTITY is the binding (#3619). Every Windows
+//     stage pod is stamped windowsOptions.runAsUserName explicitly:
+//     ContainerAdministrator when admin (the stage requires
+//     runnercap.CapabilityWindowsAdmin and the class provides it —
+//     assertWindowsIdentity), ContainerUser otherwise. The pre-#3619 shape
+//     stamped ContainerUser only as the fs:readonly binding and let every
+//     other Windows pod inherit the image's USER; now that an
+//     admin-requiring stage has a declaration path, the identity is the
+//     dispatcher's decision in BOTH directions, never the image's default.
+//     The dispatcher MUST NOT stamp readOnlyRootFilesystem — Kubernetes
+//     silently ignores it on Windows, which FAILS OPEN: a spec that says
+//     readonly and a pod that is not (decision 007); fs:readonly is not
+//     declarable on a Windows class at all (assertWindowsIdentity refuses
+//     it). The Linux-only baseline fields are likewise not stamped (Windows
+//     kubelets reject or ignore them).
+func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows, admin bool) {
 	if windows {
-		// ContainerUser binds ONLY to fs:readonly-except-workspace (dispatcher
-		// §5, AC-4), the Windows equivalent of readOnlyRootFilesystem. Stamping
-		// it unconditionally would impose a non-admin identity on every Windows
-		// stage — Access Denied for admin-requiring stages — and nothing asked
-		// for it. In v1 no Windows pod carries fs:readonly (restrictions D4), so
-		// this branch stamps nothing in v1; the binding is here for when it can.
-		if class[string(runnercap.RestrictionFSReadonly)] {
-			spec.SecurityContext = &corev1.PodSecurityContext{
-				WindowsOptions: &corev1.WindowsSecurityContextOptions{
-					RunAsUserName: ptr.To(WindowsRunAsUserName),
-				},
-			}
+		identity := WindowsRunAsUserName
+		if admin {
+			identity = WindowsAdminRunAsUserName
 		}
+		// Pod level, so the identity is legible on the pod and is the default
+		// for every container a consumer template brought along that sets no
+		// identity of its own; AND the stage container itself, because a
+		// container-level runAsUserName wins over the pod-level one in
+		// Kubernetes — a template whose stage container pre-set
+		// ContainerAdministrator would otherwise override the dispatcher's
+		// decision silently. A template SIDECAR that sets its own
+		// runAsUserName keeps it (the container level wins there too): the
+		// decision here is the STAGE's identity, and sidecars are
+		// operator-owned infrastructure on the same trust root as
+		// instance.yaml — the same boundary the Linux arm draws, which
+		// stamps the PSS baseline on the stage container only.
+		if spec.SecurityContext == nil {
+			spec.SecurityContext = &corev1.PodSecurityContext{}
+		}
+		if spec.SecurityContext.WindowsOptions == nil {
+			spec.SecurityContext.WindowsOptions = &corev1.WindowsSecurityContextOptions{}
+		}
+		spec.SecurityContext.WindowsOptions.RunAsUserName = ptr.To(identity)
+		if container.SecurityContext == nil {
+			container.SecurityContext = &corev1.SecurityContext{}
+		}
+		if container.SecurityContext.WindowsOptions == nil {
+			container.SecurityContext.WindowsOptions = &corev1.WindowsSecurityContextOptions{}
+		}
+		container.SecurityContext.WindowsOptions.RunAsUserName = ptr.To(identity)
 		return
 	}
 	spec.SecurityContext = &corev1.PodSecurityContext{

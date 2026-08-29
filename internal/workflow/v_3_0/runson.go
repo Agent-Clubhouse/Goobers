@@ -22,6 +22,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/runnersolve"
 )
 
 // runsOnOSValues is the validated os enum (D2): the product spellings, not
@@ -235,6 +236,41 @@ func runsOnProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
 			}
 		}
 	}
+	return append(problems, windowsAdminProblems(def, gaggleRunsOn)...)
+}
+
+// windowsAdminProblems is the stage-side coherence rule for the one
+// product-interpreted capability token (#3619, runnercap.CapabilityWindowsAdmin):
+// a stage whose EFFECTIVE requirement (declared ∪ gaggle floor) carries
+// privilege=windows-admin must have an effective runsOn.os of windows —
+// declared explicitly, on the stage or by the floor. The token names a
+// Windows container identity (ContainerAdministrator); on any other OS it is
+// meaningless, and on an unset OS it would place only by the accident of
+// which runners happen to claim it. Explicit-complete (D3) cuts the other
+// way here: an admin-requiring stage is exactly the stage whose OS must be
+// visible in the yaml. A floor that carries the token under a non-Windows
+// gaggle OS is reported once at the gaggle, not once per stage.
+func windowsAdminProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	var problems []string
+	if gaggleRunsOn != nil && runnercap.HasWindowsAdmin(gaggleRunsOn.Capabilities) &&
+		gaggleRunsOn.OS != "" && gaggleRunsOn.OS != runnersolve.OSWindows {
+		return []string{fmt.Sprintf(
+			"gaggle runsOn.capabilities requires %q, the ContainerAdministrator identity of a Windows stage pod, but gaggle runsOn.os is %q: the privilege exists only on runsOn.os: windows (#3619)",
+			runnercap.CapabilityWindowsAdmin, gaggleRunsOn.OS)}
+	}
+	for _, stage := range runsOnStages(def) {
+		effective := EffectiveRunsOn(stage, gaggleRunsOn)
+		if !runnercap.HasWindowsAdmin(effective.Capabilities) || effective.OS == runnersolve.OSWindows {
+			continue
+		}
+		have := "unset"
+		if effective.OS != "" {
+			have = fmt.Sprintf("%q", effective.OS)
+		}
+		problems = append(problems, fmt.Sprintf(
+			"%s %q runsOn.capabilities requires %q, the ContainerAdministrator identity of a Windows stage pod, but its effective runsOn.os is %s: declare runsOn.os: windows explicitly (on the stage or the gaggle floor) — the privilege is refused everywhere else, never defaulted (#3619)",
+			stage.Kind, stage.Name, runnercap.CapabilityWindowsAdmin, have))
+	}
 	return problems
 }
 
@@ -305,7 +341,63 @@ func restrictionProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []str
 			}
 		}
 	}
+	return append(problems, windowsRestrictionProblems(def, gaggleRunsOn)...)
+}
+
+// windowsRestrictionProblems is the OS-conditional half of CAP005
+// (restrictions doc D4 as corrected by #3619; acceptance criterion 2): a
+// stage whose EFFECTIVE placement is windows (runsOn.os declared on the
+// stage or inherited from the gaggle floor) may require only the effects
+// Windows can bind — runnercap.DeclarableOnWindows: tmp:ephemeral and
+// env:default-deny. The closed list was OS-blind here before: a Windows task
+// could require network:none or fs:readonly-except-workspace, validate
+// clean, and then either fail to place (the honest outcome, but late and
+// named by the solver rather than the vocabulary) or — worse, on an
+// inventory that mis-declared — run with no isolation at all, the fail-open
+// shape LEDGER L-107 found once already (readOnlyRootFilesystem silently
+// inert on Windows). The instance loader refuses the same effects on a
+// Windows runner entry and the dispatcher re-asserts at pod render; the
+// three sites read one predicate.
+//
+// Only KNOWN effects are judged (an unknown token is already the vocabulary
+// error above). A floor restriction under a Windows gaggle OS is reported
+// once at the gaggle; the per-stage walk covers everything else, including
+// a floor restriction meeting a stage-declared windows OS.
+func windowsRestrictionProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	var problems []string
+	reportedAtGaggle := map[string]bool{}
+	if gaggleRunsOn != nil && gaggleRunsOn.OS == runnersolve.OSWindows {
+		for _, token := range gaggleRunsOn.Restrictions {
+			if !runnercap.KnownRestriction(token) || runnercap.DeclarableOnWindows(runnercap.Restriction(token)) {
+				continue
+			}
+			reportedAtGaggle[token] = true
+			problems = append(problems, fmt.Sprintf("gaggle runsOn.restrictions: %s", windowsUndeclarableRestriction(token)))
+		}
+	}
+	for _, stage := range runsOnStages(def) {
+		effective := EffectiveRunsOn(stage, gaggleRunsOn)
+		if effective.OS != runnersolve.OSWindows {
+			continue
+		}
+		for _, token := range effective.Restrictions {
+			if reportedAtGaggle[token] || !runnercap.KnownRestriction(token) || runnercap.DeclarableOnWindows(runnercap.Restriction(token)) {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("%s %q runsOn.restrictions: %s", stage.Kind, stage.Name, windowsUndeclarableRestriction(token)))
+		}
+	}
 	return problems
+}
+
+func windowsUndeclarableRestriction(token string) string {
+	declarable := runnercap.WindowsDeclarableRestrictions()
+	names := make([]string, 0, len(declarable))
+	for _, r := range declarable {
+		names = append(names, string(r))
+	}
+	return fmt.Sprintf("%q has no Windows binding in v1 — a stage whose effective runsOn.os is windows may require only %s; Kubernetes ignores readOnlyRootFilesystem on a Windows pod and the network effects await the Windows sandboxing epic (goobernetes-restrictions.md D4/D11)",
+		token, strings.Join(names, ", "))
 }
 
 func unknownRestriction(token string) string {
