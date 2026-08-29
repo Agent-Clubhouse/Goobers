@@ -60,10 +60,11 @@ Each item has one of these curation modes:
   item. Inspect it for re-sweep context, but never comment on, label, edit,
   close, or split it. Its active implementation/review owns all mutations.
 - `curationMode: "dependency-recheck"` means the deterministic selector
-  revalidated the item's native named blockers and found that every blocker
-  closed or that an open blocker now carries `goobers:needs-human`. Re-read the
-  blockers and apply §6. Unchanged open implementation dependencies are filtered
-  before claim and never reach this mode.
+  revalidated the item's native named blockers and the scheduler's recorded
+  block record, and found that every blocker closed or that an open blocker now
+  carries `goobers:needs-human`. Re-read the blockers and apply §6. Unchanged
+  open implementation dependencies are filtered before claim and never reach
+  this mode.
 
 For each mutable item, in order:
 
@@ -241,7 +242,12 @@ uses that relationship to revalidate the blocker without claiming the item.
 
 Before assigning any dependency disposition, re-read every named blocker and
 its linked PRs from the provider; never rely on an earlier curation comment or
-the claimed-items snapshot for current state. Apply these cases:
+the claimed-items snapshot for current state. The blockers are exactly the ones
+registered as native dependencies on the item — never a dependency set inferred
+from the prose of an earlier escalation or comment, which can name issues that
+were never the recorded blocker. If you cannot resolve every registered blocker
+to a current state, leave `goobers:blocked-on-sibling` in place and say which
+blocker you could not clear. Apply these cases:
 
 - **Open implementation dependency:** use `goobers:blocked-on-sibling`, never
   `goobers:needs-human`.

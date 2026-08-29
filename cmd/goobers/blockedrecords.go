@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -445,6 +446,89 @@ func blockedRecordItemID(key string, rec blockedRecord) string {
 	return key
 }
 
+// recordedBlockerResolver answers "which blockers does scheduler/blocked.json
+// still record as holding this item?" against live provider state (#1911).
+//
+// blocked.json is the machine-readable block record, and it is the only
+// authoritative statement of what an item is blocked on. A curation pass that
+// infers the dependency set from an escalation comment's prose can clear
+// `goobers:blocked-on-sibling` while the recorded blocker is still open, which
+// leaves the operator-facing label disagreeing with the record the selector
+// actually enforces.
+//
+// It fails closed, like filterBlockedEligibility: a blocker whose state cannot
+// be resolved counts as still blocking, because "we could not check" is never
+// "it closed".
+type recordedBlockerResolver struct {
+	provider  backlogIssueProvider
+	repo      providers.RepositoryRef
+	byItem    map[string][]string
+	openCache map[string]bool
+}
+
+func newRecordedBlockerResolver(provider backlogIssueProvider, repo providers.RepositoryRef, recs map[string]blockedRecord) *recordedBlockerResolver {
+	byItem := make(map[string][]string, len(recs))
+	for recordKey, rec := range recs {
+		if !blockedRecordAppliesToRepository(rec, repo) {
+			continue
+		}
+		byItem[blockedRecordItemID(recordKey, rec)] = append([]string(nil), rec.Blockers...)
+	}
+	return &recordedBlockerResolver{
+		provider:  provider,
+		repo:      repo,
+		byItem:    byItem,
+		openCache: map[string]bool{},
+	}
+}
+
+// unresolvedBlockers returns the recorded blockers of itemID that are not
+// verified closed, sorted. err is non-nil only to explain lookups that could
+// not be resolved; those blockers are still reported as blocking.
+func (r *recordedBlockerResolver) unresolvedBlockers(ctx context.Context, itemID string) (blockers []string, err error) {
+	recorded := r.byItem[itemID]
+	if len(recorded) == 0 {
+		return nil, nil
+	}
+	var lookupErrs []error
+	for _, blockerID := range recorded {
+		open, ok := r.openCache[blockerID]
+		if !ok {
+			item, gerr := r.provider.GetWorkItem(ctx, r.repo, blockedLookupID(blockerID))
+			if gerr != nil {
+				lookupErrs = append(lookupErrs, fmt.Errorf("check recorded blocker %s for %s: %w", blockerID, itemID, gerr))
+				blockers = append(blockers, blockerID)
+				continue
+			}
+			open = strings.EqualFold(item.State, "open")
+			r.openCache[blockerID] = open
+		}
+		if open {
+			blockers = append(blockers, blockerID)
+		}
+	}
+	sort.Strings(blockers)
+	return slices.Compact(blockers), errors.Join(lookupErrs...)
+}
+
+// blockedRecordLabelDrift reports the operator-facing inconsistency this
+// filter is uniquely placed to see (#1911): an item the block record still
+// holds, but which no longer carries the label a human reads as "parked". The
+// selector keeps excluding it correctly, so the item silently never moves
+// while the label says it is ready.
+func blockedRecordLabelDrift(item providers.WorkItem, blockers []string) string {
+	// No label data at all is no evidence either way: eligible items come from
+	// a provider listing that always carries at least the trust label, so an
+	// empty set means the caller passed a bare id, not an unlabeled item.
+	if len(blockers) == 0 || len(item.Labels) == 0 || item.HasLabel(blockedOnSiblingLabel) {
+		return ""
+	}
+	sorted := append([]string(nil), blockers...)
+	sort.Strings(sorted)
+	return fmt.Sprintf("blocked-record drift: item %s is recorded blocked on %s in %s but no longer carries `%s`",
+		item.ID, strings.Join(slices.Compact(sorted), ","), blockedRecordsFileName, blockedOnSiblingLabel)
+}
+
 func blockedRepositoryEmpty(repo providers.RepositoryRef) bool {
 	return repo.Provider == "" && repo.Owner == "" && repo.Project == "" && repo.Name == ""
 }
@@ -757,9 +841,9 @@ func filterBlockedEligibility(ctx context.Context, provider backlogIssueProvider
 	}
 	sort.Strings(recordKeys)
 
-	eligibleIDs := make(map[string]bool, len(eligible))
+	eligibleIDs := make(map[string]providers.WorkItem, len(eligible))
 	for _, item := range eligible {
-		eligibleIDs[item.ID] = true
+		eligibleIDs[item.ID] = item
 	}
 
 	skip := make(map[string]bool, len(recs))
@@ -776,7 +860,7 @@ func filterBlockedEligibility(ctx context.Context, provider backlogIssueProvider
 			// Fail closed: an item whose own state cannot be resolved stays
 			// parked, never pruned and never released.
 			lookupWarnings = append(lookupWarnings, fmt.Sprintf("check blocked item %s: %v", itemID, oerr))
-			if eligibleIDs[itemID] {
+			if _, ok := eligibleIDs[itemID]; ok {
 				skip[itemID] = true
 				skipped = append(skipped, blockedEligibilitySkip{
 					ItemID:              itemID,
@@ -809,7 +893,10 @@ func filterBlockedEligibility(ctx context.Context, provider backlogIssueProvider
 			}
 		}
 		if len(unresolvedBlockers) != 0 {
-			if eligibleIDs[itemID] {
+			if item, ok := eligibleIDs[itemID]; ok {
+				if drift := blockedRecordLabelDrift(item, append(append([]string(nil), openBlockers...), unresolvedBlockers...)); drift != "" {
+					lookupWarnings = append(lookupWarnings, drift)
+				}
 				skip[itemID] = true
 				skipped = append(skipped, blockedEligibilitySkip{
 					ItemID:             itemID,
@@ -831,7 +918,10 @@ func filterBlockedEligibility(ctx context.Context, provider backlogIssueProvider
 			remove = append(remove, recordKey)
 			continue
 		}
-		if eligibleIDs[itemID] {
+		if item, ok := eligibleIDs[itemID]; ok {
+			if drift := blockedRecordLabelDrift(item, openBlockers); drift != "" {
+				lookupWarnings = append(lookupWarnings, drift)
+			}
 			skip[itemID] = true
 			skipped = append(skipped, blockedEligibilitySkip{ItemID: itemID, OpenBlockers: openBlockers, record: rec})
 		}

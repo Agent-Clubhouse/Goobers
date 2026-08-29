@@ -115,8 +115,11 @@ spec:
         # Continuous re-curation (CURE-1): only leftover batch capacity may be
         # used for ready-item re-sweeps. The same daily, rotating pass checks at
         # most five blocked items before claim and selects only resolved gates
-        # or blockers carrying a current human decision. Unchanged blockers are
-        # never claimed. In-flight ready items are read-only context.
+        # or blockers carrying a current human decision. An item whose blockers
+        # in scheduler/blocked.json are still open stays parked (#1911), so the
+        # label can never drift from the machine-readable block record.
+        # Unchanged blockers are never claimed. In-flight ready items are
+        # read-only context.
         resweepMaxItems: "5"
         resweepInterval: "24h"
         resweepReadyLabel: "goobers:ready"

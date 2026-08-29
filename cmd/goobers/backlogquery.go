@@ -1277,7 +1277,29 @@ func appendBlockedResweepCandidates(
 		items = items[:opts.policy.maxItems]
 	}
 	budget := opts.maxItems - len(result.eligible)
+	records, err := snapshotBlockedRecordsForRepository(env.layout, env.repo)
+	if err != nil {
+		pf(env.stderr, "error: read blocked records for dependency recheck: %v\n", err)
+		return nil, 1
+	}
+	recorded := newRecordedBlockerResolver(env.issueProvider, env.repo, records)
 	for _, item := range items {
+		// blocked.json is the authoritative record of what parked this item, so
+		// it gates the recheck before the native dependency set is consulted
+		// (#1911): a recheck that only revalidates natively named blockers can
+		// hand the curator an item whose recorded blocker is still open, and
+		// clearing the label there leaves the operator-facing signal contradicting
+		// the record the selector still enforces.
+		unresolved, resolveErr := recorded.unresolvedBlockers(ctx, item.ID)
+		if resolveErr != nil {
+			pf(env.stderr, "warning: dependency recheck item %s: %v\n", item.ID, resolveErr)
+		}
+		if len(unresolved) > 0 {
+			pf(env.stderr, "warning: dependency recheck item %s is still recorded blocked on %s in %s; leaving it parked\n",
+				item.ID, strings.Join(unresolved, ","), blockedRecordsFileName)
+			env.debugf("excluded %s: recorded blocker(s) still unresolved: %s", item.ID, strings.Join(unresolved, ","))
+			continue
+		}
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
 		if err != nil {
 			pf(env.stderr, "warning: dependency recheck item %s: %v\n", item.ID, err)
