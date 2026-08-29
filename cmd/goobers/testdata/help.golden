@@ -164,6 +164,8 @@ Advanced operator commands:
                                 stage and request a supervised binary update
   goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] [--live-journal] <workflow> [path]
                                 dispatch one run onto the tier-3 engine (experimental)
+  goobers engine-queues [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--timeout <duration>] [--json] [path]
+                                report which workers poll this instance's engine and dispatch task queues (experimental)
   goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
                                 write a completed engine run's journal into the instance (experimental)
   goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>] [--dispatch-namespace <ns>]
@@ -1018,6 +1020,32 @@ Write a completed engine run's standard journal into the instance.
 
 Exit codes: 0 = projected or already present, 1 = query/write failure,
 2 = usage/config error.
+
+### engine-queues
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
 
 ### engine-start
 Usage: goobers engine-start [flags] <workflow> [path]

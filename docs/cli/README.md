@@ -61,6 +61,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
 | [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
+| [`goobers engine-queues`](#goobers-engine-queues) | report which workers poll this instance's engine and dispatch task queues (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
@@ -1262,6 +1263,44 @@ Exit codes: 0 = projected or already present, 1 = query/write failure,
 
 ~~~console
 $ goobers engine-project --gaggle example <run-id>
+~~~
+
+## `goobers engine-queues`
+
+report which workers poll this instance's engine and dispatch task queues (experimental)
+
+~~~text
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-queues
+$ goobers engine-queues --json
 ~~~
 
 ## `goobers engine-start`

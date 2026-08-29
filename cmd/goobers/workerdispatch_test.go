@@ -33,13 +33,13 @@ func TestMergeQueues(t *testing.T) {
 // plane, or no loadable instance, refuses with the cause named.
 func TestBuildStageDispatchFailsClosed(t *testing.T) {
 	t.Run("missing instance", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", t.TempDir())
+		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", t.TempDir(), "goobers-worker-0")
 		if err == nil || !strings.Contains(err.Error(), "instance config") {
 			t.Fatalf("error = %v, want the instance-load refusal", err)
 		}
 	})
 	t.Run("missing surrender plane", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", "")
+		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", "", "goobers-worker-0")
 		if err == nil || !strings.Contains(err.Error(), "surrender plane") {
 			t.Fatalf("error = %v, want the surrender-plane requirement named", err)
 		}
@@ -97,7 +97,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir()); err != nil {
+	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0"); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if !slices.Contains(built.EnvPassthrough, "OPERATOR_DECLARED_VAR") {
