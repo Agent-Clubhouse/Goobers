@@ -1024,6 +1024,8 @@ func TestEveryStampedStageVarIsAllowlistedOrStrippedOrProcenvBase(t *testing.T) 
 			attempt.KitDigest = "sha256:0123456789abcdef"
 			attempt.CheckoutCapability = "provider:contents:read"
 			attempt.WorkspaceDelta = "sha256:fedcba9876543210"
+			attempt.WorkspaceBranch = "goobers/impl/remediation-364"
+			attempt.SyncBase = true
 			attempt.Capabilities = []string{"provider:pr:write"}
 			cfg := testConfig()
 			cfg.EnvPassthrough = []string{"OPERATOR_DECLARED_VAR"}
@@ -1092,6 +1094,56 @@ func TestTemplateDeclaredContainerEnvIsAllowlistedUnderEnvDefaultDeny(t *testing
 	if !slices.Contains(allow, "TEMPLATE_DECLARED_VAR") {
 		t.Fatalf("%s = %v omits TEMPLATE_DECLARED_VAR — the in-pod rebuild will drop the var the consumer "+
 			"Deployment declared, on a restricted class only (#3725)", EnvStageEnvAllow, allow)
+	}
+}
+
+// #392: the run's REBOUND workspace branch and the stage's syncBase
+// declaration reach the pod only through its spec — a pod can derive the RUN
+// branch (namespace + workflow + run id) and nothing else, and a rebound run
+// is by definition not on it. Both are PRIVILEGED: a stage that could rewrite
+// either would choose which branch the platform provisions for it, and in
+// pr-remediation that branch is the one push-remediated force-pushes with a
+// lease.
+func TestPodSpecStampsTheReboundWorkspaceBranchAndSyncBase(t *testing.T) {
+	const branch = "goobers/impl/remediation-364"
+	attempt := testAttempt()
+	attempt.Workspace = "repo"
+	attempt.WorkspaceBranch = branch
+	attempt.SyncBase = true
+
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := podEnv(pod)
+	if env[EnvWorkspaceBranch] != branch {
+		t.Fatalf("%s = %q, want %q — without it the pod clones the run branch and remediates a tree nobody is reviewing", EnvWorkspaceBranch, env[EnvWorkspaceBranch], branch)
+	}
+	if env[EnvStageSyncBase] != "true" {
+		t.Fatalf("%s = %q, want \"true\" — a syncBase stage that skips the merge builds against a stale base", EnvStageSyncBase, env[EnvStageSyncBase])
+	}
+	for _, name := range []string{EnvWorkspaceBranch, EnvStageSyncBase} {
+		if !slices.Contains(DispatcherPrivilegedEnv, name) {
+			t.Errorf("%s is stage-visible; a stage that can set it provisions its own branch", name)
+		}
+	}
+}
+
+// A run that never rebound, and a stage that never declared syncBase, must
+// produce a pod spec byte-identical to the one they produced before either
+// field existed — the zero-declaration invariance guard on this seam.
+func TestPodSpecOmitsTheBranchStampsWhenNothingWasDeclared(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Workspace = "repo"
+
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == EnvWorkspaceBranch || e.Name == EnvStageSyncBase {
+			t.Fatalf("%s was stamped for a stage that declared neither", e.Name)
+		}
 	}
 }
 
