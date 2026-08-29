@@ -874,14 +874,6 @@ func unmergedConflictFiles(dir string) ([]mergeresolve.File, error) {
 	return mergeresolve.UnmergedFiles(execGit(dir))
 }
 
-func hasStandardTextMergeAttributes(dir, path string) (bool, error) {
-	return mergeresolve.HasStandardTextMergeAttributes(execGit(dir), path)
-}
-
-func mergeAdjacentLineInsertions(path string, ancestor, upstream, incoming []byte) ([]byte, bool) {
-	return mergeresolve.MergeAdjacentLineInsertions(path, ancestor, upstream, incoming)
-}
-
 func abortRebase(dir string) error {
 	abort := exec.Command("git", "rebase", "--abort")
 	abort.Dir = dir
