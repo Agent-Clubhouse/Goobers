@@ -495,16 +495,23 @@ func basicAuth(username, token string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+token))
 }
 
-// withRunIDFooter appends a run-id breadcrumb footer to a PR body so the run
-// journal (once #8 lands) can link the PR URL back to the run bidirectionally.
-// A no-op when runID is empty.
+// RunIDFooterPrefix is the prefix of the run-id footer line withRunIDFooter
+// embeds in every body it writes. It is control text: CreateWorkItem's
+// idempotency lookup (#140) treats any body containing the footer for a run
+// id as that run's own creation, so a writer that renders model-authored text
+// into a body must refuse it (internal/nomination does).
+const RunIDFooterPrefix = "goobers run-id: "
+
 // runFooter is the marker line withRunIDFooter embeds to tie a created provider
 // entity back to its run — and the exact term CreateWorkItem searches for to
 // make creation idempotent (#140).
 func runFooter(runID string) string {
-	return "goobers run-id: " + runID
+	return RunIDFooterPrefix + runID
 }
 
+// withRunIDFooter appends a run-id breadcrumb footer to a PR body so the run
+// journal (once #8 lands) can link the PR URL back to the run bidirectionally.
+// A no-op when runID is empty.
 func withRunIDFooter(body, runID string) string {
 	if runID == "" {
 		return body

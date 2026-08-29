@@ -111,6 +111,27 @@
     ]
   },
   {
+    "command": "file-issues",
+    "resultFile": "filed-nominations.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so the nomination dedupe scan fails at runtime",
+        "exact": true,
+        "anyFlags": [
+          "check"
+        ]
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so nomination issue creation fails at runtime",
+        "unlessFlags": [
+          "check"
+        ]
+      }
+    ]
+  },
+  {
     "command": "gather-ci-failures",
     "resultFile": "remediation-brief.json",
     "capabilities": [
