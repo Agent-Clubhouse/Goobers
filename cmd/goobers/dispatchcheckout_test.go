@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -354,6 +356,37 @@ func TestCheckoutRefusesAReboundBranchThatDoesNotExist(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
+	}
+}
+
+// The refusal must not INVENT the cause. `clone --branch <b>` fails for a
+// missing branch and equally for a bad credential, an unreachable host, or a
+// repository that is gone; the refusal is right in all of them, but the error
+// it surrenders is the record that outlives the pod, so it has to say what git
+// said rather than assert absence it never checked.
+//
+// This drives the failure with an unreachable remote — the branch question is
+// never even reached — and asserts both halves: git's own diagnostic rides the
+// message, and the cause is WRAPPED, so errors.As reaches the ExitError instead
+// of a caller having to string-match.
+func TestCheckoutReboundRefusalCarriesTheCloneFailuresCause(t *testing.T) {
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	// A path with no repository in it: git fails before any branch resolution.
+	stageCheckoutEnv(t, filepath.Join(t.TempDir(), "no-such-origin.git"), string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/remediation-364")
+
+	var errOut strings.Builder
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	if err == nil {
+		t.Fatal("checkout succeeded against a remote that does not exist")
+	}
+	if !strings.Contains(err.Error(), "fatal:") {
+		t.Errorf("error %q carries none of git's own diagnostic; the surrendered envelope names a cause nobody verified", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("error %q does not wrap the clone failure; errors.As cannot reach the cause", err)
 	}
 }
 

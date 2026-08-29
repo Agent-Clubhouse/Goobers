@@ -141,7 +141,8 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// is what #3763 measured: the universal idiom commits in one stage and
 	// pushes in a later one, so the common case is unpushed commits that must
 	// still reach this stage. applyStageWorkspaceDelta covers that.
-	if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, "."); err == nil {
+	cloneErr := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, ".")
+	if cloneErr == nil {
 		if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
 			return err
 		}
@@ -152,18 +153,28 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		// base into a branch the delta is about to reset away from.
 		return syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base)
 	}
-	// A REBOUND branch that does not exist is a refusal, not a fallback (#392).
-	// The fallback below creates the branch locally at base, which is right for
-	// the first stage of a run — the run branch legitimately does not exist yet
-	// — and catastrophically wrong for a rebound one: the branch was named by a
-	// producer stage that read it off a real, open PR, so its absence means the
-	// premise broke. Falling back would hand the stage a pristine base checkout
-	// wearing the PR's branch name, and push-remediated would then force-push
-	// THAT over the PR head with a lease. The local runner refuses the same
-	// case (createStageWorkspace's RequireExistingBranch, set exactly when the
-	// branch was rebound); this is that refusal on the pod substrate.
+	// A REBOUND branch this pod could not clone is a refusal, not a fallback
+	// (#392). The fallback below creates the branch locally at base, which is
+	// right for the first stage of a run — the run branch legitimately does not
+	// exist yet — and catastrophically wrong for a rebound one: the branch was
+	// named by a producer stage that read it off a real, open PR, so failing to
+	// get it means the premise broke. Falling back would hand the stage a
+	// pristine base checkout wearing the PR's branch name, and push-remediated
+	// would then force-push THAT over the PR head with a lease. The local
+	// runner refuses the same case (createStageWorkspace's
+	// RequireExistingBranch, set exactly when the branch was rebound); this is
+	// that refusal on the pod substrate.
+	//
+	// The refusal WRAPS the clone's own error rather than announcing a cause it
+	// did not establish. `clone --branch <b>` fails for a missing branch, but
+	// equally for a bad credential, a DNS or TLS fault, a full disk, or a
+	// repository that is gone — and this error is what the surrendered envelope
+	// carries after the pod is disposed of, so naming "does not exist" when the
+	// truth was an expired token sends the next reader after the wrong bug.
+	// The refusal itself is unchanged and still fails closed on every one of
+	// those; only its account of why is now sourced from git.
 	if rebound != "" {
-		return fmt.Errorf("rebound workspace branch %q does not exist at %s; refusing to create it at base — the branch names work that already exists", rebound, cloneURL)
+		return fmt.Errorf("rebound workspace branch %q could not be cloned from %s; refusing to create it at base — the branch names work that already exists: %w", rebound, cloneURL, cloneErr)
 	}
 	// First stage of the run: the branch does not exist yet.
 	//
