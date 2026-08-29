@@ -154,8 +154,10 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		return "", err
 	}
 	// Publication goes through journal.ReplaceRun: the whole
-	// recheck→remove→rename span runs under the run publication lock, a live
-	// writer holding the run-dir lock refuses the replacement
+	// recheck→move-aside→rename span runs under the run publication lock, the
+	// superseded journal is only dropped once the replacement is published
+	// and synced (and restored if it is not, #3641), a live writer holding
+	// the run-dir lock refuses the replacement
 	// (journal.ErrRunActive — deleting its directory would strand
 	// acknowledged emits in unlinked inodes), and the completeness recheck
 	// happens under those locks, so a journal another owner finished while we
