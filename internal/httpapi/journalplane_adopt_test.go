@@ -126,11 +126,12 @@ func runEvents(t *testing.T, runsDir, runID string) []journal.Event {
 // bytes land under the run), and interleaved with the runner's own appends on
 // the same handle, which is far-side evidence item 3's exact shape.
 func TestAdoptedRunTakesPodPlaneEmitsThroughTheRunnersOpenHandle(t *testing.T) {
-	// Shortened so "did not wait out the lock" is a claim this test can make
-	// in well under a second rather than by out-waiting the 30s production
-	// bound. The assertion below is that the emit finished far inside even
-	// this shrunken window.
-	t.Cleanup(journal.SetLockTimeoutForTest(2*time.Second, 20*time.Millisecond))
+	// Shortened from the 30s production bound so this test cannot sit on a
+	// contended lock. With it in force, the 200 below is ITSELF the proof that
+	// no lock was taken: the runner holds this run's lock for the run's life,
+	// so an acquire could never win — it could only fail after lockTimeout.
+	const lockTimeout = 2 * time.Second
+	t.Cleanup(journal.SetLockTimeoutForTest(lockTimeout, 20*time.Millisecond))
 
 	runsDir, jr := runnerHeldRun(t, "run-adopted")
 	handler, writer, errorLog := journalPlaneOver(t, runsDir)
@@ -149,8 +150,10 @@ func TestAdoptedRunTakesPodPlaneEmitsThroughTheRunnersOpenHandle(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("emit status = %d, body = %s, error log = %s", response.Code, response.Body, errorLog)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("emit took %s: it contended the run lock instead of using the adopted handle", elapsed)
+	// Kept loose on purpose — the status above carries the claim, and a
+	// budget tight enough to flake on a loaded runner would not add to it.
+	if elapsed >= lockTimeout {
+		t.Fatalf("emit took %s, at or past the %s lock timeout: it contended the run lock instead of using the adopted handle", elapsed, lockTimeout)
 	}
 	if errorLog.Len() != 0 {
 		t.Fatalf("journal plane logged an error: %s", errorLog)
