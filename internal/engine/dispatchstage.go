@@ -342,6 +342,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// invoked directly in tests, and a stamp the workflow owns is the same
 		// value on the first attempt and on every activity retry.
 		OwningWorkflowID: input.OwningWorkflowID,
+		// The runner-capability requirement, for the Windows identity stamp
+		// (#3619) — distinct from the credential Capabilities set below.
+		RunsOnCapabilities: input.Placement.Capabilities,
 	}
 	if input.Run != nil {
 		attempt.Command = input.Run.Command

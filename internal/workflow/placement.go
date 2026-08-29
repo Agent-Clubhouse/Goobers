@@ -10,6 +10,9 @@ package workflow
 // therefore byte-identical admission — before and after the 3.0 release.
 
 import (
+	"fmt"
+	"strings"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/runnersolve"
@@ -29,13 +32,13 @@ func StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string
 	if err != nil {
 		return nil, err
 	}
-	return interp.stagePlacements(def, gaggle, goobers), nil
+	return interp.stagePlacements(def, gaggle, goobers)
 }
 
 // v30StagePlacements adapts the 3.0 interpreter's builder to the router
 // signature.
-func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
-	return v30.StagePlacements(def, gaggle.RunsOn, goobers)
+func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
+	return v30.StagePlacements(def, gaggle.RunsOn, goobers), nil
 }
 
 // preV30StagePlacements is the arm for every interpreter before 3.0: the only
@@ -45,7 +48,18 @@ func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[str
 // runsOn, so every 2.0 gate stays in the control plane). It lives here in
 // the router, like preV30SurfaceProblems, so the frozen packages stay
 // untouched.
-func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
+//
+// The one token the product interprets — privilege=windows-admin (#3619) —
+// is refused rather than matched: it would otherwise pin a 2.0 task to an
+// admin-providing class and render ContainerAdministrator with no OS and no
+// coherence rule (preV30WindowsAdminProblems). Compile refuses the same
+// document first; this arm re-asserts it on the solver input because
+// validate's checkpoint solve and the run-start pin read StagePlacements
+// directly.
+func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
+	if problems := preV30WindowsAdminProblems(def, gaggle.RequiredCapabilities); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
 	requirements := make([]runnersolve.StageRequirement, 0, len(def.Spec.Tasks))
 	for _, task := range def.Spec.Tasks {
 		var capabilities []string
@@ -60,7 +74,7 @@ func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string
 			Capabilities: capabilities,
 		})
 	}
-	return requirements
+	return requirements, nil
 }
 
 func containsToken(values []string, want string) bool {

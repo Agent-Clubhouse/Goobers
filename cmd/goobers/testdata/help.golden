@@ -1117,8 +1117,22 @@ that owns every goobers:* label). The finder proposes area/type labels
 and evidence; this stage dedupes by body marker against every issue
 carrying the nominated label, excludes anything flake-watch already
 fingerprints, enforces maxPerRun, and creates issues with a retry-safe
-idempotency key. It never applies goobers:approved: that is the SEC-047
-trust decision and a maintainer supplies it.
+idempotency key.
+
+goobers:approved (the SEC-047 trust label) is applied on one condition
+only (decision 004): the nomination's evidence names a finding — a go
+vet diagnostic, a golangci-lint issue (linter + file + line) or a go
+test failure (package + test) — that the deterministic signalsStage's
+stdout artifact of THIS run contains byte for byte, as parsed by this
+stage from the run journal; plus riskClass low, type:bug, one package,
+no load-bearing path, no needs-human trigger, and no open or recently
+closed nominated issue naming the same finding (a body marker the
+filer computes from the finding, not the model's dedupeKey), nor an
+earlier nomination of the same artifact naming it. autoApprove=
+deterministic-only (exactly; default never) opts in and the label is
+added with the github:issues:approve credential only.
+Everything else files unapproved with the reasons in the result. On a
+stage pod the run journal is unreachable, so nothing is approved.
 
 With --check, only validate the artifact and run the read-only dedupe
 scan (github:issues:read); nothing is created. The write path must be
@@ -1129,9 +1143,9 @@ checkStage's recorded result is in the run journal.
 
 Inputs: nominationsFile (nominations.json), producerStage (triage),
 backlogLabel (required), partitionLabel (required), maxPerRun (3),
-dedupeWindowDays (21), nominatedLabel, checkDigest, checkFile
-(nomination-check.json), checkStage (validate-nominations),
-resultFile (filed-nominations.json).
+dedupeWindowDays (21), nominatedLabel, autoApprove (never), signalsStage
+(collect-repo-signals), checkDigest, checkFile (nomination-check.json),
+checkStage (validate-nominations), resultFile (filed-nominations.json).
 Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 
 ### fix

@@ -265,6 +265,15 @@ type Attempt struct {
 	// (declared ∪ mandates, as solved). It must be a subset of the resolved
 	// runner's enforced set; the dispatcher refuses the mismatch at create.
 	Restrictions []string
+	// RunsOnCapabilities is the stage's effective runsOn.capabilities
+	// requirement (declared ∪ derived ∪ gaggle floor, as solved) — the
+	// RUNNER-capability tags, not the credential Capabilities below. The
+	// dispatcher reads exactly one token from it: runnercap.CapabilityWindowsAdmin,
+	// which decides a Windows pod's container identity (#3619). A stage that
+	// requires it on a runner that does not provide it is refused at create;
+	// a stage that does not require it runs as ContainerUser even on a runner
+	// that provides it.
+	RunsOnCapabilities []string
 	// Timeout is the stage's declared timeout; zero uses
 	// DefaultStageTimeout. activeDeadlineSeconds = Timeout + margin.
 	Timeout time.Duration
@@ -377,6 +386,14 @@ type RunnerSpec struct {
 	// Restrictions are the isolation effects this runner enforces — the
 	// resolved restriction set the runner-class label derives from.
 	Restrictions []string `json:"restrictions,omitempty"`
+	// Capabilities is the runner's provides.capabilities claim set. The
+	// dispatcher consults one token of it — runnercap.CapabilityWindowsAdmin,
+	// the claim that a Windows class may run a stage as
+	// ContainerAdministrator (#3619); everything else is the solver's.
+	// Additive on the pinned-placement wire contract (omitempty): a recorded
+	// history without it decodes to a runner claiming nothing, which is the
+	// fail-closed reading (no admin identity).
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // SpecFromEntry converts a validated inventory entry into the dispatcher's
@@ -399,6 +416,7 @@ func SpecFromEntry(e instance.RunnerEntry) (RunnerSpec, error) {
 		Memory:       e.Provides.Memory,
 		Disk:         e.Provides.Disk,
 		Restrictions: restrictions,
+		Capabilities: append([]string(nil), e.Provides.Capabilities...),
 	}, nil
 }
 

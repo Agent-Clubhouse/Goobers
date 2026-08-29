@@ -45,7 +45,10 @@ type fileIssuesFixture struct {
 // server, a scratch workspace as the process cwd (the stage worktree), and
 // the run/repo/credential env the runner would inject. The write path is
 // bound to a check through the checkDigest input (see writeArtifact); the
-// binding test unbinds it to exercise the other arms.
+// binding test unbinds it to exercise the other arms. The approve credential
+// and the autoApprove input are left to each test (enableAutoApprove), and
+// so is the collect-repo-signals artifact (recordSignals): without it the
+// stage is in the pod shape and can approve nothing.
 func newFileIssuesFixture(t *testing.T) *fileIssuesFixture {
 	t.Helper()
 	f := &fileIssuesFixture{t: t, root: t.TempDir(), workspace: t.TempDir()}
@@ -63,6 +66,8 @@ func newFileIssuesFixture(t *testing.T) *fileIssuesFixture {
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "write-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "read-token")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "")
+	t.Setenv(executor.InputEnvVar("autoApprove"), "")
 	t.Setenv(executor.InputEnvVar("backlogLabel"), "goobers")
 	t.Setenv(executor.InputEnvVar("partitionLabel"), fileIssuesTestPartLbl)
 	t.Setenv(executor.InputEnvVar("maxPerRun"), "")
@@ -92,6 +97,86 @@ func lowRisk(key string) nomination.Nomination {
 		RiskReason: "a vet finding with a source location and an artifact-backed stack",
 		Evidence: []nomination.Evidence{
 			artifactEvidence(key+"-vet.txt", "internal/worktree/manager.go:88: result of Close is not used ("+key+")"),
+			{Kind: nomination.EvidenceSource, Path: "internal/worktree/manager.go", Line: 88},
+		},
+	}
+}
+
+// fileIssuesTestSignals is a collect-repo-signals stdout in the shape the
+// defect-nomination lane prints: the raw tool output under fixed headers.
+// It carries one vet diagnostic, one lint issue and one test failure in
+// approvable packages, and one vet diagnostic on a load-bearing path.
+const fileIssuesTestSignals = `=== repo-signals ===
+{"schema":"goobers.dev/repo-signals/v1","head":"abc","signalCount":4,"signals":[]}
+=== go vet (exit 1) ===
+# github.com/goobers/goobers/internal/worktree
+internal/worktree/manager.go:88:2: result of (*os.File).Close call not used
+providers/model.go:10:2: unreachable code
+=== golangci-lint (exit 1) ===
+{"Issues":[{"FromLinter":"errcheck","Text":"Error return value of ` + "`f.Close`" + ` is not checked","Pos":{"Filename":"internal/worktree/manager.go","Offset":65,"Line":88,"Column":9}}],"Report":{"Linters":[]}}
+=== go test failures (exit 1) ===
+{"Time":"2026-08-29T07:08:45Z","Action":"fail","Package":"github.com/goobers/goobers/internal/runner","Test":"TestRunnerRace","Elapsed":0.2}
+=== go test stderr ===
+
+=== go test output of failing tests ===
+--- github.com/goobers/goobers/internal/runner TestRunnerRace ---
+    run_test.go:41: expected 3 got 2
+`
+
+// recordSignals records stdout as the collect-repo-signals stage's stdout
+// artifact in runID's run journal, exactly as the executor does for a
+// deterministic stage (internal/executor/shell.go: "<task>/stdout.log" listed
+// in the stage.finished event) — the only source the filer confirms finding
+// evidence against.
+func (f *fileIssuesFixture) recordSignals(runID, stdout string) {
+	f.t.Helper()
+	run, err := journal.Create(layoutFor(f.root).RunsDir(), journal.RunIdentity{RunID: runID, Workflow: "defect-nomination", Gaggle: "goobers"}, nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	ref, err := run.RecordArtifact(runID+":collect-repo-signals/stdout.log", []byte(stdout))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "collect-repo-signals", Attempt: 1, Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{ref}}); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// enableAutoApprove opts the stage in (autoApprove=deterministic-only) and,
+// when asked, injects the approve credential.
+func (f *fileIssuesFixture) enableAutoApprove(withCredential bool) {
+	f.t.Helper()
+	f.t.Setenv(executor.InputEnvVar("autoApprove"), "deterministic-only")
+	if withCredential {
+		f.t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "approve-token")
+	}
+}
+
+// Finding pointers copied byte for byte from fileIssuesTestSignals.
+var (
+	fileIssuesVetFinding  = nomination.Evidence{Kind: nomination.EvidenceFinding, Tool: nomination.ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of (*os.File).Close call not used"}
+	fileIssuesLintFinding = nomination.Evidence{Kind: nomination.EvidenceFinding, Tool: nomination.ToolLint, Path: "internal/worktree/manager.go", Line: 88, Rule: "errcheck"}
+	fileIssuesTestFinding = nomination.Evidence{Kind: nomination.EvidenceFinding, Tool: nomination.ToolTest, Package: "github.com/goobers/goobers/internal/runner", Test: "TestRunnerRace"}
+)
+
+// confirmed is a nomination that clears every approval bound once the stage
+// opts in, the credential resolves and the signals artifact is recorded: a
+// low-risk type:bug whose evidence names the vet finding byte for byte plus
+// a source pointer in the same package.
+func confirmed(key string) nomination.Nomination {
+	return nomination.Nomination{
+		Key: key, DedupeKey: "vet:internal/worktree/manager.go:close-unchecked:" + key,
+		Title:      "go vet: result of Close is not used in internal/worktree/manager.go (" + key + ")",
+		Body:       "go vet reports `result of (*os.File).Close call not used` at internal/worktree/manager.go:88; the error from Close is dropped on the cleanup path.",
+		Labels:     []string{"area:runner", "type:bug"},
+		RiskClass:  nomination.RiskLow,
+		RiskReason: "a vet finding confined to one file; the fix is one line plus a test in the same package",
+		Evidence: []nomination.Evidence{
+			fileIssuesVetFinding,
 			{Kind: nomination.EvidenceSource, Path: "internal/worktree/manager.go", Line: 88},
 		},
 	}
@@ -369,8 +454,10 @@ func TestFileIssuesRequiresBacklogAndPartitionLabels(t *testing.T) {
 }
 
 // TestFileIssuesLabelPolicy pins the closed label set the publisher applies
-// for every risk class, and that goobers:approved is never among them: the
-// SEC-047 trust label is a maintainer's decision, not the filer's.
+// with the write credential for every risk class, and that goobers:approved
+// is never among them without the autoApprove opt-in — a credential in the
+// env alone changes nothing. (The approval path is pinned separately by
+// TestFileIssuesApprovesAConfirmedFinding and TestFileIssuesApprovalBounds.)
 func TestFileIssuesLabelPolicy(t *testing.T) {
 	base := []string{"goobers", fileIssuesTestPartLbl, providers.LabelNominated, "area:runner", "type:bug"}
 	cases := []struct {
@@ -387,9 +474,10 @@ func TestFileIssuesLabelPolicy(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFileIssuesFixture(t)
-			// An approve credential in the env changes nothing: the stage never
-			// asks for it.
+			// An approve credential in the env changes nothing without the
+			// autoApprove=deterministic-only opt-in: the stage never asks for it.
 			t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "approve-token")
+			f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
 			n := lowRisk("policy")
 			n.RiskClass = tc.risk
 			n.RequiresHumanReview = tc.humanReview
@@ -419,6 +507,9 @@ func TestFileIssuesLabelPolicy(t *testing.T) {
 			if wantHuman := slices.Contains(want, providers.LabelNeedsHuman); wantHuman != strings.Contains(body, "For the human:") {
 				t.Fatalf("For the human block present = %v, want %v:\n%s", !wantHuman, wantHuman, body)
 			}
+			if result.Issues[0].Approved || result.Approved != 0 || result.Unapproved != 1 {
+				t.Fatalf("result = %+v; want the issue reported unapproved", result)
+			}
 		})
 	}
 
@@ -432,6 +523,450 @@ func TestFileIssuesLabelPolicy(t *testing.T) {
 			t.Fatal("a usage error filed an issue")
 		}
 	})
+	// The vocabulary is closed AND exact: the admission policy table
+	// prescribes approve-issue for the literal "deterministic-only" only, so
+	// a spelling the table does not know must be a usage error here, never a
+	// case-folded opt-in that approves on a stage that declared no
+	// approve-issue action (TestFileIssuesPolicyActions pins the table side).
+	for _, mode := range []string{"low-risk-only", "Deterministic-Only", "DETERMINISTIC-ONLY", "Never", "deterministic_only"} {
+		t.Run("autoApprove vocabulary is closed: "+mode, func(t *testing.T) {
+			f := newFileIssuesFixture(t)
+			f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+			t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "approve-token")
+			f.writeArtifact(confirmed("mode"))
+			t.Setenv(executor.InputEnvVar("autoApprove"), mode)
+			if code, _, stderr := f.run(); code != 1 || !strings.Contains(stderr, "autoApprove input must be never or deterministic-only") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if f.issueCount() != 0 {
+				t.Fatal("an unknown autoApprove mode filed an issue")
+			}
+		})
+	}
+}
+
+// findingMarkerFor is the finding marker the publisher renders for a
+// finding pointer: keyed on the pointer's exact tuple.
+func findingMarkerFor(e nomination.Evidence) string {
+	return nomination.FindingMarker(nomination.FindingHash(nomination.Finding{Tool: e.Tool, Rule: e.Rule, Path: e.Path, Line: e.Line, Package: e.Package, Test: e.Test}))
+}
+
+// TestFileIssuesApprovesAtMostOneIssuePerFinding pins that the "no open or
+// windowed-closed duplicate" bound (decision 004 §2) is keyed on the
+// finding the tool reported, not on the dedupeKey the model wrote: two
+// nominations naming one confirmed finding under two keys both file, but
+// only the first approves; a prior nominated issue carrying the finding's
+// marker (open at any age, or closed inside the dedupe window) makes a
+// re-nomination under a new key file unapproved, naming the prior issue;
+// a retry changes nothing.
+func TestFileIssuesApprovesAtMostOneIssuePerFinding(t *testing.T) {
+	vetFinding := "vet internal/worktree/manager.go:88 result of (*os.File).Close call not used"
+	t.Run("two nominations of one artifact", func(t *testing.T) {
+		f := newFileIssuesFixture(t)
+		f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+		f.enableAutoApprove(true)
+		first, second := confirmed("a-first"), confirmed("b-second")
+		if first.DedupeKey == second.DedupeKey {
+			t.Fatal("the two nominations must carry different dedupeKeys")
+		}
+		f.writeArtifact(second, first)
+
+		check := f.mustCheck(filepath.Join(t.TempDir(), fileIssuesCheckFileName))
+		if check.FiledCount != 2 || check.ApprovableCount != 1 {
+			t.Fatalf("check = %+v; want 2 to file, 1 approvable", check)
+		}
+		result := f.mustRun()
+		if result.Created != 2 || result.Filed != 2 || result.Approved != 1 || result.Unapproved != 1 {
+			t.Fatalf("result = %+v; want both filed and exactly one approved", result)
+		}
+		if result.Issues[0].Key != "a-first" || !result.Issues[0].Approved || len(result.Issues[0].ApprovalUnmet) != 0 {
+			t.Fatalf("first issue = %+v; want a-first approved", result.Issues[0])
+		}
+		want := `nomination "a-first" of this artifact already names finding ` + vetFinding
+		if result.Issues[1].Key != "b-second" || result.Issues[1].Approved || !strings.Contains(strings.Join(result.Issues[1].ApprovalUnmet, "\n"), want) {
+			t.Fatalf("second issue = %+v; want b-second unapproved with %q", result.Issues[1], want)
+		}
+		for i, issue := range result.Issues {
+			number := f.issueNumber(issue.IssueID)
+			if !strings.Contains(f.issueBody(number), findingMarkerFor(fileIssuesVetFinding)) {
+				t.Fatalf("issue %d body carries no finding marker:\n%s", i, f.issueBody(number))
+			}
+		}
+		secondNumber := f.issueNumber(result.Issues[1].IssueID)
+		if f.server.issueHasLabel(secondNumber, providers.LabelApproved) {
+			t.Fatalf("the duplicate carries goobers:approved: %v", f.server.issueLabels(secondNumber))
+		}
+		for _, event := range f.server.labelEvents(secondNumber) {
+			if strings.Contains(event, "approve-token") {
+				t.Fatalf("the approve credential touched the duplicate: %q", event)
+			}
+		}
+		retried := f.mustRun()
+		if retried.Created != 0 || retried.Filed != 2 || retried.Approved != 1 || retried.Issues[0].Key != "a-first" || !retried.Issues[0].Approved || retried.Issues[1].Approved {
+			t.Fatalf("retry = %+v; want the same outcome and nothing new", retried)
+		}
+		if f.issueCount() != 2 {
+			t.Fatalf("issues = %d, want 2", f.issueCount())
+		}
+	})
+	t.Run("a prior issue naming the finding under another key", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			closed   bool
+			age      time.Duration
+			approved bool
+			want     string
+		}{
+			{name: "open, however old", age: 400 * 24 * time.Hour, want: "open issue #10 already names finding " + vetFinding},
+			{name: "closed inside the dedupe window", closed: true, age: 5 * 24 * time.Hour, want: "issue #10 naming finding " + vetFinding + " closed inside the dedupe window"},
+			{name: "closed outside the dedupe window", closed: true, age: 40 * 24 * time.Hour, approved: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newFileIssuesFixture(t)
+				f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+				f.enableAutoApprove(true)
+				prior := confirmed("old-spelling")
+				f.seedFiledIssue(10, "run-old", prior, "goobers", fileIssuesTestPartLbl, providers.LabelNominated)
+				if tc.closed {
+					f.server.closeIssue(10)
+				}
+				f.server.setIssueUpdatedAt(10, time.Now().Add(-tc.age))
+				renamed := confirmed("new-spelling")
+				if renamed.DedupeKey == prior.DedupeKey {
+					t.Fatal("the re-nomination must carry a different dedupeKey")
+				}
+				f.writeArtifact(renamed)
+
+				result := f.mustRun()
+				if result.Created != 1 || result.Filed != 1 || len(result.Issues) != 1 {
+					t.Fatalf("result = %+v; want the re-nomination filed under its new key", result)
+				}
+				issue := result.Issues[0]
+				number := f.issueNumber(issue.IssueID)
+				if tc.approved {
+					if !issue.Approved || result.Approved != 1 || !f.server.issueHasLabel(number, providers.LabelApproved) {
+						t.Fatalf("issue = %+v; want approved once the prior closed outside the window", issue)
+					}
+					return
+				}
+				if issue.Approved || result.Approved != 0 || !strings.Contains(strings.Join(issue.ApprovalUnmet, "\n"), tc.want) {
+					t.Fatalf("issue = %+v; want unapproved with %q", issue, tc.want)
+				}
+				if f.server.issueHasLabel(number, providers.LabelApproved) || f.server.issueHasLabel(10, providers.LabelApproved) {
+					t.Fatal("goobers:approved was applied")
+				}
+				for _, n := range []int{number, 10} {
+					for _, event := range f.server.labelEvents(n) {
+						if strings.Contains(event, "approve-token") {
+							t.Fatalf("the approve credential touched #%d: %q", n, event)
+						}
+					}
+				}
+			})
+		}
+	})
+}
+
+// TestFileIssuesApprovesAConfirmedFinding pins the one approval path
+// (decision 004): a low-risk type:bug nomination whose evidence names a
+// finding the collect-repo-signals artifact of this run contains byte for
+// byte — for each of the three tools — is filed and labelled
+// goobers:approved through the approve credential, never the write token
+// (the fake's label-event ledger names the actor, as GitHub's does), with
+// the label add recorded in the mutation sidecar. A retried attempt neither
+// re-creates nor re-labels.
+func TestFileIssuesApprovesAConfirmedFinding(t *testing.T) {
+	cases := map[string]nomination.Nomination{
+		"vet": confirmed("vet-close"),
+		"lint": func() nomination.Nomination {
+			n := confirmed("lint-errcheck")
+			n.DedupeKey = "lint:internal/worktree/manager.go:errcheck"
+			n.Evidence[0] = fileIssuesLintFinding
+			return n
+		}(),
+		"test": func() nomination.Nomination {
+			n := confirmed("test-runner-race")
+			n.DedupeKey = "test:internal/runner:TestRunnerRace"
+			n.Title = "TestRunnerRace fails deterministically: expected 3 got 2"
+			n.Evidence = []nomination.Evidence{fileIssuesTestFinding, {Kind: nomination.EvidenceSource, Path: "internal/runner/run.go", Line: 41}}
+			n.TestFailure = &nomination.TestFailure{Package: "github.com/goobers/goobers/internal/runner", Test: "TestRunnerRace", Signature: "run_test.go:41: expected 3 got 2"}
+			return n
+		}(),
+	}
+	for name, n := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFileIssuesFixture(t)
+			f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+			f.enableAutoApprove(true)
+			f.writeArtifact(n)
+
+			result := f.mustRun()
+			if result.Created != 1 || result.Approved != 1 || result.Unapproved != 0 || len(result.Issues) != 1 {
+				t.Fatalf("result = %+v; want one created, approved issue", result)
+			}
+			issue := result.Issues[0]
+			if !issue.Approved || len(issue.ApprovalUnmet) != 0 {
+				t.Fatalf("issue = %+v; want approved with nothing unmet", issue)
+			}
+			if !result.Findings.Available || result.Findings.Vet != 2 || result.Findings.Lint != 1 || result.Findings.Test != 1 {
+				t.Fatalf("findings summary = %+v", result.Findings)
+			}
+			number := f.issueNumber(issue.IssueID)
+			if !f.server.issueHasLabel(number, providers.LabelApproved) {
+				t.Fatalf("labels = %v; want goobers:approved", f.server.issueLabels(number))
+			}
+			events := f.server.labelEvents(number)
+			if !slices.Contains(events, "labeled "+providers.LabelApproved+" by approve-token") {
+				t.Fatalf("label events = %v; want goobers:approved applied by the approve credential", events)
+			}
+			for _, event := range events {
+				if strings.Contains(event, providers.LabelApproved) {
+					continue
+				}
+				if !strings.HasSuffix(event, " by write-token") {
+					t.Fatalf("label event %q was not applied by the write credential (all events: %v)", event, events)
+				}
+			}
+			if !strings.Contains(f.issueBody(number), "- finding: "+string(n.Evidence[0].Tool)+" `") {
+				t.Fatalf("body does not render the finding pointer:\n%s", f.issueBody(number))
+			}
+			if !strings.Contains(f.issueBody(number), findingMarkerFor(n.Evidence[0])) {
+				t.Fatalf("body does not carry the finding marker:\n%s", f.issueBody(number))
+			}
+			data, err := os.ReadFile(filepath.Join(f.workspace, mutationsSidecarFile))
+			if err != nil {
+				t.Fatalf("read mutation sidecar: %v", err)
+			}
+			labelled := false
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				var fact mutationFact
+				if err := json.Unmarshal([]byte(line), &fact); err != nil {
+					t.Fatalf("parse sidecar line %q: %v", line, err)
+				}
+				if fact.ID == issue.IssueID && fact.Operation == "label" {
+					labelled = true
+				}
+			}
+			if !labelled {
+				t.Fatalf("sidecar does not record the approve label add on #%s:\n%s", issue.IssueID, data)
+			}
+
+			retried := f.mustRun()
+			if retried.Created != 0 || retried.Approved != 1 || f.issueCount() != 1 {
+				t.Fatalf("retry = %+v, issues = %d; want nothing new and still approved", retried, f.issueCount())
+			}
+			approvals := 0
+			for _, event := range f.server.labelEvents(number) {
+				if strings.HasPrefix(event, "labeled "+providers.LabelApproved) {
+					approvals++
+				}
+			}
+			if approvals != 1 {
+				t.Fatalf("goobers:approved applied %d times; want once", approvals)
+			}
+		})
+	}
+}
+
+// TestFileIssuesApprovalBounds ablates every approval bound one at a time:
+// each must file the issue UNAPPROVED (never skip it, never error), name the
+// unmet bound in the result, and leave goobers:approved off the issue. The
+// first cases are the fabricated-finding cases the decision's far-side
+// evidence names: a finding the artifact does not contain approves nothing,
+// even beside a real one. (The remaining §2 bound — no open or
+// windowed-closed duplicate — is the dedupe scan itself, pinned by
+// TestFileIssuesDedupeOpenAlwaysClosedWithinWindow: such a nomination is
+// suppressed, never filed, so it is never a candidate for approval.)
+func TestFileIssuesApprovalBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(f *fileIssuesFixture, n *nomination.Nomination)
+		want  string
+	}{
+		{"fabricated finding not in the artifact", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence[0].Line = 89
+		}, "evidence 0 names a vet finding the collect-repo-signals artifact of this run does not contain"},
+		{"fabricated finding beside a real one", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			forged := fileIssuesLintFinding
+			forged.Rule = "gosec"
+			n.Evidence = append(n.Evidence, forged)
+		}, "evidence 2 names a lint finding the collect-repo-signals artifact of this run does not contain"},
+		{"paraphrased vet diagnostic", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence[0].Rule = "result of Close is not used"
+		}, "does not contain"},
+		{"no finding evidence at all", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence = lowRisk("telemetry").Evidence
+			n.Evidence = append(n.Evidence, nomination.Evidence{Kind: nomination.EvidenceJournal, RunID: fileIssuesTestRunID, Seq: 1})
+		}, "no evidence names a deterministic tool finding"},
+		{"riskClass standard", func(_ *fileIssuesFixture, n *nomination.Nomination) { n.RiskClass = nomination.RiskStandard }, `riskClass is "standard", not low`},
+		{"type:chore", func(_ *fileIssuesFixture, n *nomination.Nomination) { n.Labels = []string{"area:runner", "type:chore"} }, "labels do not include type:bug"},
+		{"type:feature", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Labels = []string{"area:runner", "type:feature"}
+		}, "labels do not include type:bug"},
+		{"finding on a load-bearing path", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence = []nomination.Evidence{
+				{Kind: nomination.EvidenceFinding, Tool: nomination.ToolVet, Path: "providers/model.go", Line: 10, Rule: "unreachable code"},
+				{Kind: nomination.EvidenceSource, Path: "providers/model.go", Line: 10},
+			}
+		}, "finding vet providers/model.go:10 unreachable code touches a load-bearing path"},
+		{"source evidence on a load-bearing path", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence = append(n.Evidence, nomination.Evidence{Kind: nomination.EvidenceSource, Path: "api/v1alpha1/workflow_types.go", Line: 1})
+		}, `source evidence touches load-bearing path "api/v1alpha1/workflow_types.go"`},
+		{"source evidence outside the finding's package", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence = append(n.Evidence, nomination.Evidence{Kind: nomination.EvidenceSource, Path: "internal/runner/run.go", Line: 1})
+		}, `source evidence "internal/runner/run.go" is outside the finding's package "internal/worktree"`},
+		{"findings in two packages", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			n.Evidence = append(n.Evidence, fileIssuesTestFinding)
+		}, "the confirmed findings span more than one package"},
+		{"source evidence in a same-named directory elsewhere", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			// A test finding's package is resolved to its repository
+			// directory (internal/runner); a top-level runner/ is not it.
+			n.Evidence = []nomination.Evidence{fileIssuesTestFinding, {Kind: nomination.EvidenceSource, Path: "runner/run.go", Line: 1}}
+		}, `source evidence "runner/run.go" is outside the finding's package "internal/runner"`},
+		{"the source finding requires human review", func(_ *fileIssuesFixture, n *nomination.Nomination) { n.RequiresHumanReview = true }, "requires human review"},
+		{"autoApprove never", func(f *fileIssuesFixture, _ *nomination.Nomination) {
+			f.t.Setenv(executor.InputEnvVar("autoApprove"), "never")
+		}, "autoApprove is never on this stage"},
+		{"approve credential missing", func(f *fileIssuesFixture, _ *nomination.Nomination) {
+			f.t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "")
+		}, "the github:issues:approve credential did not resolve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFileIssuesFixture(t)
+			f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+			f.enableAutoApprove(true)
+			n := confirmed("bar")
+			tc.setup(f, &n)
+			f.writeArtifact(n)
+
+			result := f.mustRun()
+			if result.Created != 1 || len(result.Issues) != 1 {
+				t.Fatalf("result = %+v; want exactly one created issue", result)
+			}
+			if result.Approved != 0 || result.Unapproved != 1 || result.Issues[0].Approved {
+				t.Fatalf("issue was approved despite %s: %+v", tc.name, result.Issues[0])
+			}
+			if !strings.Contains(strings.Join(result.Issues[0].ApprovalUnmet, "\n"), tc.want) {
+				t.Fatalf("approvalUnmet = %v, want one containing %q", result.Issues[0].ApprovalUnmet, tc.want)
+			}
+			labels := f.server.issueLabels(f.issueNumber(result.Issues[0].IssueID))
+			if slices.Contains(labels, providers.LabelApproved) {
+				t.Fatalf("issue carries goobers:approved: %v", labels)
+			}
+			for _, event := range f.server.labelEvents(f.issueNumber(result.Issues[0].IssueID)) {
+				if strings.Contains(event, "approve-token") {
+					t.Fatalf("the approve credential touched the issue: %q", event)
+				}
+			}
+		})
+	}
+}
+
+// TestFileIssuesRefusesApprovalWithoutTheSignalsArtifact pins the pod shape:
+// with no run journal reachable (a stage pod), or a journal that records no
+// successful collect-repo-signals stage, nothing can be confirmed, so a
+// nomination that would otherwise be approved files unapproved with the
+// named reason — never approved on the model's word.
+func TestFileIssuesRefusesApprovalWithoutTheSignalsArtifact(t *testing.T) {
+	t.Run("no run journal", func(t *testing.T) {
+		f := newFileIssuesFixture(t)
+		f.enableAutoApprove(true)
+		f.writeArtifact(confirmed("pod"))
+		code, _, stderr := f.run()
+		if code != 0 || !strings.Contains(stderr, "no nomination can be approved") {
+			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		}
+		result := f.mustRun()
+		if result.Created != 0 || result.Filed != 1 || result.Approved != 0 || result.Unapproved != 1 {
+			t.Fatalf("result = %+v; want the issue filed once, unapproved", result)
+		}
+		reasons := strings.Join(result.Issues[0].ApprovalUnmet, "\n")
+		if !strings.Contains(reasons, "no tool finding can be confirmed") || !strings.Contains(reasons, "collect-repo-signals stdout artifact of run "+fileIssuesTestRunID+" is not readable from this stage") || !strings.Contains(reasons, "a stage pod cannot reach the run journal") {
+			t.Fatalf("approvalUnmet = %v", result.Issues[0].ApprovalUnmet)
+		}
+		if result.Findings.Available || result.Findings.Reason == "" || result.Findings.Stage != "collect-repo-signals" {
+			t.Fatalf("findings summary = %+v", result.Findings)
+		}
+		if f.server.issueHasLabel(f.issueNumber(result.Issues[0].IssueID), providers.LabelApproved) {
+			t.Fatal("approved without the signals artifact")
+		}
+	})
+	t.Run("journal without the signals stage", func(t *testing.T) {
+		f := newFileIssuesFixture(t)
+		f.enableAutoApprove(true)
+		run, err := journal.Create(layoutFor(f.root).RunsDir(), journal.RunIdentity{RunID: fileIssuesTestRunID, Workflow: "defect-nomination", Gaggle: "goobers"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A stdout artifact recorded by some OTHER stage, and a failed
+		// signals stage, bind nothing.
+		ref, err := run.RecordArtifact(fileIssuesTestRunID+":gather-telemetry/stdout.log", []byte(fileIssuesTestSignals))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "gather-telemetry", Attempt: 1, Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{ref}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "collect-repo-signals", Attempt: 1, Status: string(apiv1.ResultFailure)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.writeArtifact(confirmed("pod-no-stage"))
+		result := f.mustRun()
+		if result.Approved != 0 || result.Unapproved != 1 || !strings.Contains(strings.Join(result.Issues[0].ApprovalUnmet, "\n"), "records no successful collect-repo-signals stage with a stdout artifact") {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("signalsStage input names the stage", func(t *testing.T) {
+		f := newFileIssuesFixture(t)
+		f.enableAutoApprove(true)
+		t.Setenv(executor.InputEnvVar("signalsStage"), "repo-signals")
+		run, err := journal.Create(layoutFor(f.root).RunsDir(), journal.RunIdentity{RunID: fileIssuesTestRunID, Workflow: "defect-nomination", Gaggle: "goobers"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := run.RecordArtifact(fileIssuesTestRunID+":repo-signals/stdout.log", []byte(fileIssuesTestSignals))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "repo-signals", Attempt: 1, Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{ref}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.writeArtifact(confirmed("renamed-stage"))
+		if result := f.mustRun(); result.Approved != 1 || result.Findings.Stage != "repo-signals" {
+			t.Fatalf("result = %+v; want approved against the renamed stage", result)
+		}
+	})
+}
+
+// TestFileIssuesCheckReportsWhatTheWriteWouldApprove pins that --check
+// evaluates the same deterministic bounds (without the opt-in or the approve
+// credential, which it never holds) and reports approvableCount and the
+// findings summary, mutating nothing.
+func TestFileIssuesCheckReportsWhatTheWriteWouldApprove(t *testing.T) {
+	f := newFileIssuesFixture(t)
+	f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+	fabricated := confirmed("fabricated")
+	fabricated.Evidence[0].Line = 89
+	f.writeArtifact(confirmed("real"), fabricated, lowRisk("source-only"))
+
+	check := f.mustCheck("")
+	if !check.Valid || check.FiledCount != 3 || check.ApprovableCount != 1 {
+		t.Fatalf("check = %+v; want 3 to file, 1 approvable", check)
+	}
+	if !check.Findings.Available || check.Findings.Vet != 2 || check.Findings.Lint != 1 || check.Findings.Test != 1 || len(check.Findings.Problems) != 0 {
+		t.Fatalf("findings summary = %+v", check.Findings)
+	}
+	if f.issueCount() != 0 {
+		t.Fatal("--check created issues")
+	}
 }
 
 func TestFileIssuesDedupeOpenAlwaysClosedWithinWindow(t *testing.T) {
@@ -571,17 +1106,24 @@ func TestFileIssuesAttributionLineDoesNotAdoptAnIssue(t *testing.T) {
 	}
 }
 
-func TestFileIssuesBudgetOrdersByEvidenceAndOverflows(t *testing.T) {
+// TestFileIssuesBudgetOrdersByConfirmedFindingAndOverflows pins that the
+// maxPerRun budget is keyed on the deterministic match alone: nominations
+// whose finding pointers the signals artifact confirms file first, and every
+// other evidence kind the model can claim — artifact digests, journal
+// pointers, a fabricated finding — ranks equally, by key. The model cannot
+// promote its own items into the budget by claiming evidence kinds.
+func TestFileIssuesBudgetOrdersByConfirmedFindingAndOverflows(t *testing.T) {
 	f := newFileIssuesFixture(t)
-	sourceOnly := lowRisk("z-source-only")
-	sourceOnly.Evidence = sourceOnly.Evidence[1:]
+	f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+	confirmedLast := confirmed("z-confirmed")
+	fabricated := confirmed("a-fabricated")
+	fabricated.Evidence[0].Line = 89
 	journalBacked := lowRisk("y-journal")
 	journalBacked.Evidence = []nomination.Evidence{{Kind: nomination.EvidenceJournal, RunID: "run-x", Seq: 4}, journalBacked.Evidence[1]}
-	artifactA := lowRisk("b-artifact")
-	artifactB := lowRisk("a-artifact")
-	weakest := lowRisk("w-source-only")
-	weakest.Evidence = weakest.Evidence[1:]
-	f.writeArtifact(sourceOnly, weakest, journalBacked, artifactA, artifactB)
+	artifactBacked := lowRisk("c-artifact")
+	sourceOnly := lowRisk("b-source-only")
+	sourceOnly.Evidence = sourceOnly.Evidence[1:]
+	f.writeArtifact(sourceOnly, journalBacked, artifactBacked, fabricated, confirmedLast)
 
 	result := f.mustRun()
 	if result.Created != 3 || result.Overflow != 2 || len(result.Issues) != 3 {
@@ -591,18 +1133,18 @@ func TestFileIssuesBudgetOrdersByEvidenceAndOverflows(t *testing.T) {
 	for _, issue := range result.Issues {
 		keys = append(keys, issue.Key)
 	}
-	if want := []string{"a-artifact", "b-artifact", "y-journal"}; !slices.Equal(keys, want) {
-		t.Fatalf("filed order = %v, want %v (artifact > journal > source, then key)", keys, want)
+	if want := []string{"z-confirmed", "a-fabricated", "b-source-only"}; !slices.Equal(keys, want) {
+		t.Fatalf("filed order = %v, want %v (confirmed finding first, then key)", keys, want)
 	}
-	if want := []string{"w-source-only", "z-source-only"}; !slices.Equal(result.OverflowKeys, want) {
+	if want := []string{"c-artifact", "y-journal"}; !slices.Equal(result.OverflowKeys, want) {
 		t.Fatalf("overflow = %v, want %v", result.OverflowKeys, want)
 	}
 
 	t.Setenv(executor.InputEnvVar("maxPerRun"), "1")
 	t.Setenv("GOOBERS_RUN_ID", "run-next")
-	f.writeArtifactForRun("run-next", sourceOnly, weakest, journalBacked, artifactA, artifactB)
+	f.writeArtifactForRun("run-next", sourceOnly, journalBacked, artifactBacked, fabricated, confirmedLast)
 	next := f.mustRun()
-	if next.Created != 1 || next.Suppressed != 3 || next.Overflow != 1 || next.Issues[0].Key != "w-source-only" {
+	if next.Created != 1 || next.Suppressed != 3 || next.Overflow != 1 || next.Issues[0].Key != "c-artifact" {
 		t.Fatalf("next cycle = %+v; want the overflow drained one at a time", next)
 	}
 }
