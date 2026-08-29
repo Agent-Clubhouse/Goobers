@@ -468,12 +468,18 @@ type projectionQuerier interface {
 // ProjectCompletedRun queries a run's journal projection from Temporal
 // (replaying its history — the projection is a function of history, #629) and
 // writes it into the standard runs/<id>/ layout under runsDir.
-func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, runsDir string) (string, error) {
+//
+// opts are handed straight to ProjectRun. The one that matters in production
+// is WithSpanSource: a repair/backfill projection that cannot adopt spans the
+// live writer CAN adopt produces a journal that differs from the live one by
+// an event, which is a divergence about the environment rather than about the
+// run (#3805).
+func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, runsDir string, opts ...ProjectOption) (string, error) {
 	proj, err := queryProjection(ctx, q, workflowID)
 	if err != nil {
 		return "", err
 	}
-	return ProjectRun(runsDir, proj)
+	return ProjectRun(runsDir, proj, opts...)
 }
 
 // ProjectCompletedScheduledRun projects both sides of a schedule fire: the

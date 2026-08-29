@@ -242,7 +242,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		SharedRegistry:   registry,
 		RunsDir:          runsDir,
 		SandboxPosture:   instance.SandboxPosture(kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir},
+		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir, blobs: podBlobClient()},
 		SecretRegistrar:  registry,
 		AgenticAdapter:   newAgenticAdapter,
 	})
@@ -268,13 +268,26 @@ type podArtifactRecorder struct {
 	stderr   io.Writer
 	scrubber journal.Scrubber
 	dir      string
+	// blobs is the pod's blob-plane client, used to publish span bytes by
+	// digest so the daemon can adopt them (#3805). nil when this pod has no
+	// blob endpoint (the loopback / pre-blob-plane deployment shape), in
+	// which case spans degrade exactly as they did before.
+	blobs *dispatcher.BlobClient
 }
 
-func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
-	scrubbed := data
-	if r.scrubber != nil {
-		scrubbed = r.scrubber.Scrub(data)
+// scrub applies the pod's boundary scrubber once. Every content address this
+// recorder derives commits to the OUTPUT of this call, so any byte handed
+// onward — journal artifact, blob-plane PUT — must be this same slice.
+func (r podArtifactRecorder) scrub(data []byte) []byte {
+	if r.scrubber == nil {
+		return data
 	}
+	return r.scrubber.Scrub(data)
+}
+
+// recordScrubbed derives the content address of already-scrubbed bytes and
+// emits them as a journal artifact.
+func (r podArtifactRecorder) recordScrubbed(name string, scrubbed []byte) (journal.Ref, error) {
 	ref, err := journal.ArtifactRef(scrubbed)
 	if err != nil {
 		return journal.Ref{}, fmt.Errorf("derive artifact ref for %s: %w", name, err)
@@ -286,13 +299,56 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 	return ref, nil
 }
 
+func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return r.recordScrubbed(name, r.scrub(data))
+}
+
 // RecordSpanWithSchema satisfies harness.SpanRecorder. A span is an artifact
 // under a "spans" prefix — the same shape the worker-side recorder uses, so a
-// span produced in a pod lands under the same name it would locally.
+// span produced in a pod lands under the same name it would locally — AND it
+// is published to the blob plane under its digest.
+//
+// The PUT is the half that makes the daemon's SpanSource wiring mean
+// anything. The engine workflow never holds the transcript: it emits a
+// pointer-only span op (internal/engine/journal.go JournalSpanOp) and the
+// daemon's live writer fetches the bytes by digest. Until this PUT, no
+// producer ever placed those bytes anywhere the daemon could fetch them, so
+// wiring a span source alone would only change the recorded failure from
+// "no span source configured" to "blobstore: blob not found" — the same
+// span_unavailable code, the same missing transcript.
+//
+// Best effort with a stderr line, deliberately, and in that ORDER: the
+// journal artifact is emitted first so the transcript is preserved even when
+// the blob plane is unreachable, and a stage that produced its work has not
+// failed because its telemetry could not be stored. That is the same posture
+// recordStageArtifacts and workerhost.StagingArtifacts already take.
 func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	_ = stage
 	_ = dataSchema
-	return r.RecordArtifact("spans/"+name, data)
+	// Scrubbed ONCE. The ref below commits to exactly these bytes and the PUT
+	// stores exactly these bytes: re-scrubbing between the two would let the
+	// stored content drift from the address it is stored under, and
+	// blobstore.Dir.Get re-verifies the digest, so the drift would surface as
+	// a permanently unavailable span rather than as an error here.
+	scrubbed := r.scrub(data)
+	ref, err := r.recordScrubbed("spans/"+name, scrubbed)
+	if err != nil {
+		return journal.Ref{}, err
+	}
+	r.putSpanBlob(ref.Digest, scrubbed)
+	return ref, nil
+}
+
+// putSpanBlob publishes span bytes to the blob plane under digest. Silent on
+// success — the daemon-side evidence is the blob's presence — and one stderr
+// line on failure, never an error: see RecordSpanWithSchema.
+func (r podArtifactRecorder) putSpanBlob(digest string, scrubbed []byte) {
+	if r.blobs == nil {
+		return
+	}
+	if err := r.blobs.Put(context.Background(), digest, scrubbed); err != nil {
+		_, _ = fmt.Fprintf(r.stderr, "record span blob %s: %v\n", digest, err)
+	}
 }
 
 // RecordArtifactBounded satisfies executor.BoundedArtifactRecorder. The limit

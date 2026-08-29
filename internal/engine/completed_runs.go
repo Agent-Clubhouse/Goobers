@@ -40,6 +40,7 @@ type CompletedRunReconciler struct {
 	spans         SpanSink
 	live          LiveJournalRegistry
 	report        DivergenceReporter
+	projectOpts   []ProjectOption
 	verified      map[string]bool
 	nextPageToken []byte
 }
@@ -84,6 +85,32 @@ func (r *CompletedRunReconciler) WithLiveJournals(live LiveJournalRegistry) *Com
 // to. Optional: without one, divergences surface only as reconcile errors.
 func (r *CompletedRunReconciler) WithDivergenceReporter(report DivergenceReporter) *CompletedRunReconciler {
 	r.report = report
+	return r
+}
+
+// WithSpanSource attaches the same span source the live writer runs with, so
+// the reconciler's BOTH projections — the repair/backfill write and the
+// verification re-projection — can adopt an executor-recorded span by digest.
+//
+// Threading it into only one of the two is worse than threading it into
+// neither (#3805). span.recorded is deliberately excluded from the
+// conformance view (internal/journal/event.go), but the EventError that
+// replaces an unadoptable span is NOT — its code is projected
+// (internal/journal/conformance.go). So a live writer that adopts spans while
+// the verification re-projection cannot produces a normative-view mismatch of
+// exactly one event on every run carrying a transcript, and DS5 files a
+// live_journal_divergence for each of them: a fleet-wide false alarm about
+// blob-store reachability, reported as if the run itself disagreed with its
+// own history. verify.go's DiffLiveJournal doc states the requirement; this
+// is what honours it.
+//
+// Optional: a nil source leaves the reconciler exactly as it was, which is
+// the correct shape for an instance whose live writer has no source either.
+func (r *CompletedRunReconciler) WithSpanSource(src SpanSource) *CompletedRunReconciler {
+	if src == nil {
+		return r
+	}
+	r.projectOpts = []ProjectOption{WithSpanSource(src)}
 	return r
 }
 
@@ -211,7 +238,7 @@ func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, runID, gaggle
 		// silent.
 		backfillingLive = inspection.liveAuthored
 	}
-	if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe, r.spans); err != nil {
+	if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe, r.spans, r.projectOpts...); err != nil {
 		return false, err
 	}
 	if backfillingLive {
@@ -236,7 +263,11 @@ func (r *CompletedRunReconciler) verifyLiveRun(ctx context.Context, runID, gaggl
 			proj.Identity.Gaggle, proj.Identity.RunID, gaggle, runID))
 		return nil
 	}
-	divergence, err := DiffLiveJournal(liveEvents, proj)
+	// The SAME projection options the live writer authored with — without
+	// them a span the writer adopted re-projects as a span_unavailable error
+	// event, which IS conformance-normative, and the diff reports an
+	// environment difference as a run divergence (#3805).
+	divergence, err := DiffLiveJournal(liveEvents, proj, r.projectOpts...)
 	if err != nil {
 		return fmt.Errorf("engine: verify live journal for %q: %w", runID, err)
 	}
@@ -277,7 +308,7 @@ func completedRunDir(runsDir, workflowID string) (string, error) {
 	return filepath.Join(runsDir, workflowID), nil
 }
 
-func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver, spans SpanSink) (string, error) {
+func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, gaggle, runsDir string, observe ProjectionObserver, spans SpanSink, opts ...ProjectOption) (string, error) {
 	proj, err := queryProjection(ctx, q, workflowID)
 	if err != nil {
 		return "", err
@@ -288,7 +319,7 @@ func projectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, g
 	if proj.Identity.Gaggle != gaggle {
 		return "", fmt.Errorf("%w: workflow %q memo gaggle %q does not match projected gaggle %q", ErrUnprojectable, workflowID, gaggle, proj.Identity.Gaggle)
 	}
-	dir, err := ProjectCompletedRun(ctx, q, workflowID, runsDir)
+	dir, err := ProjectCompletedRun(ctx, q, workflowID, runsDir, opts...)
 	if err != nil {
 		return "", err
 	}

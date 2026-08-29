@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -34,10 +35,18 @@ const liveJournalIdleClose = 10 * time.Minute
 // writer and the demoted reconciler are two halves of one authority story
 // (DS4/DS5). Returns nil (not an error) for an instance with no engine.
 //
-// No span source is wired yet: span ops degrade to span_unavailable error
-// events, exactly as the daemon's history projection does today — the
-// blobstore wiring for both is the recorded #3515/#3513 open point.
-func newLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog) (*livejournal.Writer, error) {
+// blobs is the span source (#3805): the daemon's own blob store, which is
+// also what a mode-3 stage pod PUTs its scrubbed transcript into over the
+// blob plane before the workflow emits the pointer-only span op. Without it
+// every pod-executed agentic stage records an error.code=span_unavailable
+// event in place of its span.recorded — measured on five live runs. nil is
+// accepted and keeps the old degrade-softly behaviour.
+//
+// The SAME store must reach the reconciler (startEngineProjection ->
+// CompletedRunReconciler.WithSpanSource), or DS5's verification re-projection
+// will disagree with this writer by exactly one normative event per
+// transcript-carrying run.
+func newLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store) (*livejournal.Writer, error) {
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		return nil, nil
 	}
@@ -46,6 +55,9 @@ func newLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance
 		runsDirs[gaggle] = l.ForGaggle(gaggle).RunsDir()
 	}
 	opts := []livejournal.Option{}
+	if blobs != nil {
+		opts = append(opts, livejournal.WithSpanSource(blobs))
+	}
 	if observer := runIntakeObserver(watermarks, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —
 		// which is what makes a live engine run's stage transitions reach SSE

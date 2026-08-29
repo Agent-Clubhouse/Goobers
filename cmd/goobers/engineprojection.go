@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -18,7 +19,7 @@ var (
 	dialEngineProjection     = bootstrap.DialTemporal
 )
 
-func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer) (func(), error) {
+func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer, blobs blobstore.Store) (func(), error) {
 	if !cfg.EngineProjectionEnabled() {
 		return func() {}, nil
 	}
@@ -44,6 +45,13 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 	// completed run is written, backdated to the run's own timestamps. nil when
 	// telemetry is disabled, which the synthesizer treats as a no-op.
 	reconciler = reconciler.WithSpans(newEngineSpanSink(tel))
+	// The SAME blob store newLiveJournalWriter adopts spans from (#3805).
+	// Both of the reconciler's projections need it: the repair/backfill write
+	// so a recovered run keeps its transcripts, and — the load-bearing half —
+	// the DS5 verification re-projection, so a span the live writer adopted
+	// does not re-project as a conformance-normative span_unavailable error
+	// event and get filed as a divergence on every agentic run.
+	reconciler = reconciler.WithSpanSource(blobs)
 	if liveJournals != nil {
 		// DS5: the reconciler is repair/verify, never a second writer, for
 		// runs the live writer authored — skip open journals, verify complete
