@@ -915,8 +915,8 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 // `run` holds its own instance lock) stays PhaseRunning indefinitely by
 // design; ctx cancellation (SIGINT/SIGTERM) is what lets a caller stop
 // waiting on it, reporting its phase as of that moment.
-// runTerminalWaitTimeout, when > 0, bounds how long waitForRunTerminal polls for
-// a run to reach a terminal phase before giving up with an error. It is 0
+// runTerminalWaitTimeout, when > 0, bounds how long waitForRunTerminal polls
+// WITHOUT OBSERVING PROGRESS before giving up with an error. It is 0
 // (unbounded) in production: a human running `goobers run` waits until the run
 // finishes or they Ctrl-C, and nothing should cut that short. The test suite
 // sets a generous bound (see cmd/goobers TestMain) so that if the
@@ -924,6 +924,17 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 // FAILS FAST — in ~2 minutes — instead of silently hanging the whole local-ci
 // stage for its full 10-minute limit and wedging the merge queue with no signal.
 // Var, not const, so only the suite opts in; production leaves it 0.
+//
+// The bound is idle time, not total elapsed time, because a wedge is the
+// ABSENCE of journal progress, not slowness. Bounding total elapsed time made
+// the tripwire fire on runs that were demonstrably healthy: under a saturated
+// concurrent `make ci`, TestDemoTourRunsOfflineThroughDaemon's nested run kept
+// advancing stage by stage (curate at 12s, implement at 1m39s, review at 1m53s)
+// and was failed at the 2-minute mark purely for being slow — a false red that
+// costs a whole CI repass and teaches nothing. Resetting the deadline on every
+// newly observed journal event keeps a genuinely wedged run failing just as
+// fast (a wedge appends nothing, so its idle clock never resets) while a
+// merely-slow-under-load run runs to completion.
 var runTerminalWaitTimeout time.Duration
 
 // isTerminalPhase reports whether a run has reached one of the four terminal
@@ -945,18 +956,18 @@ func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, 
 }
 
 func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {
-	if runTerminalWaitTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, runTerminalWaitTimeout)
-		defer cancel()
-	}
-
 	dir := filepath.Join(runsDir, runID)
+	observedEvents := -1
+	lastProgress := time.Now()
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
 			events, eventsErr := reader.Events()
 			if eventsErr != nil {
 				return journal.PhaseRunning, fmt.Errorf("read progress for run %s: %w", runID, eventsErr)
+			}
+			if len(events) != observedEvents {
+				observedEvents = len(events)
+				lastProgress = time.Now()
 			}
 			progress.observe(events, time.Now())
 			// Terminality is decided from the very slice just rendered, not by
@@ -973,21 +984,30 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
+		// An idle bound (only ever set by the test suite) elapsing on a
+		// still-running run is the #827-regression tripwire: surface it as an
+		// error so the caller exits non-zero and the test fails fast, rather
+		// than reporting a non-terminal phase as though the wait completed
+		// normally.
+		if idle := time.Since(lastProgress); runTerminalWaitTimeout > 0 && idle >= runTerminalWaitTimeout {
+			phase := journal.PhaseRunning
+			if reader, err := journal.OpenRead(dir); err == nil {
+				phase = runPhase(reader)
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait timeout: %w", runID, err)
+			}
+			if isTerminalPhase(phase) {
+				return phase, nil
+			}
+			return phase, fmt.Errorf("run %s did not reach a terminal phase and made no journal progress for %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
+		}
+
 		select {
 		case <-ctx.Done():
 			if reader, err := journal.OpenRead(dir); err == nil {
-				phase := runPhase(reader)
-				// A deadline (only ever set by the test suite) firing on a
-				// still-running run is the #827-regression tripwire: surface it
-				// as an error so the caller exits non-zero and the test fails
-				// fast, rather than reporting a non-terminal phase as though the
-				// wait completed normally. A signal-driven cancel (production
-				// Ctrl-C, which sets no deadline) keeps the prior behavior:
-				// report whatever phase we can read.
-				if ctx.Err() == context.DeadlineExceeded && !isTerminalPhase(phase) {
-					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
-				}
-				return phase, nil
+				// A signal-driven cancel (production Ctrl-C) reports whatever
+				// phase we can read, with no error.
+				return runPhase(reader), nil
 			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
 				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}
