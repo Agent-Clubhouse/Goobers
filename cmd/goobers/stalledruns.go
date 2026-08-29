@@ -365,6 +365,14 @@ func sweepStalledRuns(
 						sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
 					}
 				}
+				// Deliberately no `release`: a cancellation is a REQUEST, and
+				// the run's scheduler slot belongs to whoever learns the
+				// outcome. For a run this daemon seeded at startup that is
+				// reattachEngineRun's goroutine, still waiting on the workflow
+				// and releasing when it closes; a run started during this
+				// daemon's life has no reconciled slot to release at all.
+				// Freeing it here, on a request that has not landed yet, is the
+				// same duplicate-admission hazard from the other end.
 				continue
 			}
 
