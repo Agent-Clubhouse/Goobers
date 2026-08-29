@@ -170,6 +170,173 @@ func TestWorkspaceDeltaRefusesASubstitutedBundle(t *testing.T) {
 	}
 }
 
+// publishDeltaFrom is a small helper for the ancestry-guard tests below: it
+// commits one file in dir on the given branch (creating the branch off
+// whatever is already checked out) and publishes a workspace delta for it,
+// returning the digest and the resulting HEAD.
+func publishDeltaFrom(t *testing.T, dir, branch, file, content string) (digest, head string) {
+	t.Helper()
+	runGitT(t, dir, "checkout", "-B", branch)
+	// Set per-repo, not relied on from the environment: a clone carries no
+	// identity of its own, and these tests must not depend on the host or CI
+	// container having a global git user configured.
+	runGitT(t, dir, "config", "user.name", "delta-test")
+	runGitT(t, dir, "config", "user.email", "delta-test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", file, err)
+	}
+	runGitT(t, dir, "add", file)
+	runGitT(t, dir, "commit", "-m", "commit "+file)
+	head = strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
+	digest, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
+	if err != nil {
+		t.Fatalf("publishWorkspaceDelta: %v", err)
+	}
+	if digest == "" {
+		t.Fatal("no delta published for a branch that carries a commit")
+	}
+	return digest, head
+}
+
+// The ancestry guard's three arms (#3803/#3767 PR-B): a STALE digest must
+// never rewind a checkout that has already moved past it — self-placed
+// (worker) stages and provider-side producers such as update-behind-pr
+// advance the run branch without ever publishing a delta, so the next pod can
+// be handed an older digest than what it already has checked out.
+//
+// All three tests share one shape: two independent clones of the same run
+// branch (standing in for two pods, or a pod after a worker/provider-side
+// advance), one publishes a delta, and applyWorkspaceDelta is asked to apply
+// it to the OTHER clone, which is independently seeded to be ahead, equal, or
+// diverged.
+func TestApplyWorkspaceDeltaAncestryGuard(t *testing.T) {
+	const branch = "e2e/wf/run-ff-guard"
+
+	t.Run("fast-forward: checkout at base, delta ahead -> applies", func(t *testing.T) {
+		origin := initBareOrigin(t)
+		endpoint, _ := fakeBlobPlane(t)
+		t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+		t.Setenv(dispatcher.EnvPodToken, "pod-token")
+		t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+
+		publisher := filepath.Join(t.TempDir(), "publisher")
+		runGitT(t, filepath.Dir(publisher), "clone", "--branch", "main", origin, publisher)
+		digest, head := publishDeltaFrom(t, publisher, branch, "carried.txt", "work\n")
+
+		checkout := filepath.Join(t.TempDir(), "checkout")
+		runGitT(t, filepath.Dir(checkout), "clone", "--branch", "main", origin, checkout)
+		runGitT(t, checkout, "checkout", "-b", branch)
+
+		if err := applyWorkspaceDelta(context.Background(), checkout, digest, nil, os.Stderr); err != nil {
+			t.Fatalf("applyWorkspaceDelta: %v", err)
+		}
+		if got := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD")); got != head {
+			t.Fatalf("checkout HEAD = %s, want the fast-forwarded delta tip %s", got, head)
+		}
+	})
+
+	t.Run("behind: checkout already ahead of a stale digest -> no-op, keeps checkout", func(t *testing.T) {
+		origin := initBareOrigin(t)
+		endpoint, _ := fakeBlobPlane(t)
+		t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+		t.Setenv(dispatcher.EnvPodToken, "pod-token")
+		t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+
+		// The "stale digest": published from a clone that only ever gets one
+		// commit, standing in for a pod that ran early in the walk.
+		publisher := filepath.Join(t.TempDir(), "publisher")
+		runGitT(t, filepath.Dir(publisher), "clone", "--branch", "main", origin, publisher)
+		staleDigest, staleHead := publishDeltaFrom(t, publisher, branch, "first.txt", "first\n")
+
+		// The checkout under test: built ON TOP of that same commit and then
+		// advanced FURTHER — standing in for a self-placed (worker) stage or a
+		// provider-side producer (update-behind-pr) that moved the branch past
+		// this digest without ever publishing one, exactly the gap this guard
+		// exists to cover. Fetched directly from the publisher's own branch
+		// ref (not through applyWorkspaceDelta) so this setup step does not
+		// depend on the function under test.
+		checkout := filepath.Join(t.TempDir(), "checkout")
+		runGitT(t, filepath.Dir(checkout), "clone", "--branch", "main", origin, checkout)
+		runGitT(t, checkout, "checkout", "-b", branch)
+		runGitT(t, checkout, "fetch", publisher, branch)
+		runGitT(t, checkout, "reset", "--hard", "FETCH_HEAD")
+		if got := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD")); got != staleHead {
+			t.Fatalf("test setup: checkout HEAD = %s, want it seeded at the stale digest's tip %s", got, staleHead)
+		}
+		_, aheadHead := publishDeltaFrom(t, checkout, branch, "second.txt", "second\n")
+		if aheadHead == staleHead {
+			t.Fatal("test setup did not actually advance the checkout past the stale digest")
+		}
+		beforeHead := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD"))
+
+		var captured strings.Builder
+		if err := applyWorkspaceDelta(context.Background(), checkout, staleDigest, nil, &captured); err != nil {
+			t.Fatalf("applyWorkspaceDelta returned an error for a stale-but-ancestor digest: %v", err)
+		}
+		if got := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD")); got != beforeHead {
+			t.Fatalf("checkout HEAD moved from %s to %s; a stale digest must never rewind the checkout", beforeHead, got)
+		}
+		msg := captured.String()
+		if !strings.Contains(msg, "workspace delta is behind the checkout") {
+			t.Fatalf("stderr = %q, want it to name the behind-checkout no-op", msg)
+		}
+		if !strings.Contains(msg, beforeHead) || !strings.Contains(msg, staleHead) {
+			t.Fatalf("stderr = %q, want it to name both the kept checkout SHA (%s) and the stale delta's SHA (%s)", msg, beforeHead, staleHead)
+		}
+	})
+
+	t.Run("diverged: neither is an ancestor of the other -> fails closed, checkout untouched", func(t *testing.T) {
+		origin := initBareOrigin(t)
+		endpoint, _ := fakeBlobPlane(t)
+		t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+		t.Setenv(dispatcher.EnvPodToken, "pod-token")
+		t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+
+		// Both sides start from the SAME commit (a shared ancestor beyond base)
+		// and then commit independently, so neither is reachable from the
+		// other — a genuine divergence, not merely a stale digest.
+		shared := filepath.Join(t.TempDir(), "shared")
+		runGitT(t, filepath.Dir(shared), "clone", "--branch", "main", origin, shared)
+		_, sharedHead := publishDeltaFrom(t, shared, branch, "shared.txt", "shared\n")
+		runGitT(t, shared, "push", origin, branch+":"+branch)
+
+		branchDigest := filepath.Join(t.TempDir(), "branch-a")
+		runGitT(t, filepath.Dir(branchDigest), "clone", "--branch", branch, origin, branchDigest)
+		divergedDigest, divergedHead := publishDeltaFrom(t, branchDigest, branch, "a.txt", "a\n")
+		if divergedHead == sharedHead {
+			t.Fatal("test setup did not diverge the publisher from the shared ancestor")
+		}
+
+		checkout := filepath.Join(t.TempDir(), "branch-b")
+		runGitT(t, filepath.Dir(checkout), "clone", "--branch", branch, origin, checkout)
+		runGitT(t, checkout, "config", "user.name", "b")
+		runGitT(t, checkout, "config", "user.email", "b@example.com")
+		if err := os.WriteFile(filepath.Join(checkout, "b.txt"), []byte("b\n"), 0o644); err != nil {
+			t.Fatalf("write b.txt: %v", err)
+		}
+		runGitT(t, checkout, "add", "b.txt")
+		runGitT(t, checkout, "commit", "-m", "diverge from a")
+		beforeHead := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD"))
+		if beforeHead == divergedHead {
+			t.Fatal("test setup did not diverge the checkout from the delta")
+		}
+
+		err := applyWorkspaceDelta(context.Background(), checkout, divergedDigest, nil, os.Stderr)
+		if err == nil {
+			t.Fatal("applyWorkspaceDelta accepted a diverged digest instead of failing closed")
+		}
+		if !strings.Contains(err.Error(), "diverged") {
+			t.Fatalf("error = %v, want it to name the divergence", err)
+		}
+		if !strings.Contains(err.Error(), beforeHead) || !strings.Contains(err.Error(), divergedHead) {
+			t.Fatalf("error = %v, want it to name both the checkout's SHA (%s) and the delta's SHA (%s)", err, beforeHead, divergedHead)
+		}
+		if got := strings.TrimSpace(runGitOutputT(t, checkout, "rev-parse", "HEAD")); got != beforeHead {
+			t.Fatalf("checkout HEAD moved from %s to %s on a failed apply; a rejected divergence must leave the checkout untouched", beforeHead, got)
+		}
+	})
+}
+
 // A writable repo workspace whose branch cannot be determined must FAIL, not
 // report "nothing to carry".
 //

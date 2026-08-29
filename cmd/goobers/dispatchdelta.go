@@ -31,9 +31,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -159,6 +161,21 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (s
 // silent-wrong-result this whole mechanism exists to prevent: the stage would
 // run against base, quite possibly succeed, and ship a diff that silently
 // dropped its predecessor's work.
+//
+// THE ANCESTRY GUARD. The digest this stage was handed is whatever the engine
+// last recorded, which today is last-writer, not "the producer this stage
+// actually depends on" (#3767) — and self-placed (worker) stages and
+// provider-side producers (update-behind-pr) advance the run branch without
+// ever publishing a delta at all. Either gap can hand a pod a STALE digest
+// while its own checkout is already ahead of it — self-placed stages never
+// publish, so a pod that follows one still carries whatever the last POD
+// published. Blindly `reset --hard`ing onto that digest would silently
+// rewind real work back to a prior commit. So before moving anything, compare
+// the checkout's current HEAD against the fetched tip: HEAD already contains
+// the delta (fast-forward or equal) -> apply as before; the delta is strictly
+// behind HEAD -> the checkout already has more than the delta carries, so keep
+// it and say so; neither contains the other -> the two histories genuinely
+// disagree and this must fail rather than guess.
 func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []string, stderr io.Writer) error {
 	client := podBlobClient()
 	if client == nil {
@@ -187,8 +204,84 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 	if err := runGit(ctx, dir, gitEnv, stderr, "fetch", "--quiet", bundlePath, workspaceDeltaRef); err != nil {
 		return fmt.Errorf("apply workspace delta %s: %w", digest, err)
 	}
-	if err := runGit(ctx, dir, gitEnv, stderr, "reset", "--quiet", "--hard", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("move onto workspace delta %s: %w", digest, err)
+
+	// Resolve both tips before touching anything. Neither call needs the
+	// stage's credential (this is all local, post-fetch); routed through
+	// workspaceGitCommand for the same safe.directory reason every other
+	// delta-path git call is (see composeGitEnv's comment) — an in-pod
+	// workspace fails "detected dubious ownership" on any call that skips it.
+	head, err := workspaceRevParse(dir, "HEAD")
+	if err != nil {
+		return fmt.Errorf("workspace delta %s: determine current HEAD: %w", digest, err)
 	}
-	return nil
+	tip, err := workspaceRevParse(dir, "FETCH_HEAD")
+	if err != nil {
+		return fmt.Errorf("workspace delta %s: determine fetched tip: %w", digest, err)
+	}
+
+	// HEAD already contains the delta's tip (equal counts, since a commit is
+	// its own ancestor) -> this is an ordinary fast-forward, apply it.
+	fastForward, err := workspaceIsAncestor(dir, head, tip)
+	if err != nil {
+		return fmt.Errorf("workspace delta %s: check whether %s is an ancestor of %s: %w", digest, head, tip, err)
+	}
+	if fastForward {
+		if err := runGit(ctx, dir, gitEnv, stderr, "reset", "--quiet", "--hard", "FETCH_HEAD"); err != nil {
+			return fmt.Errorf("move onto workspace delta %s: %w", digest, err)
+		}
+		return nil
+	}
+
+	// The delta's tip is strictly behind HEAD -> the checkout already carries
+	// everything the delta does and then some (a self-placed stage or a
+	// provider-side producer such as update-behind-pr advanced the branch
+	// after this digest was published). Resetting onto it would rewind that
+	// work. Keep what is checked out and say so, loudly enough that the
+	// stage's own stderr — the only record that survives pod disposal —
+	// carries the far-side evidence.
+	behind, err := workspaceIsAncestor(dir, tip, head)
+	if err != nil {
+		return fmt.Errorf("workspace delta %s: check whether %s is an ancestor of %s: %w", digest, tip, head, err)
+	}
+	if behind {
+		pf(stderr, "workspace delta is behind the checkout; keeping %s (delta %s carries %s)\n", head, digest, tip)
+		return nil
+	}
+
+	// Neither is an ancestor of the other: the checkout and the delta each
+	// carry commits the other lacks. There is no safe automatic resolution —
+	// a merge or rebase here would be inventing history nobody in this run
+	// asked for — so fail closed and name both tips.
+	return fmt.Errorf("workspace delta %s has diverged from the checked-out branch: checkout is at %s, delta carries %s (neither is an ancestor of the other); refusing to overwrite local history", digest, head, tip)
+}
+
+// workspaceRevParse resolves ref to the commit SHA it names within dir.
+// Routed through workspaceGitCommand for the safe.directory exemption every
+// delta-path git call needs in-pod.
+func workspaceRevParse(dir, ref string) (string, error) {
+	out, err := workspaceGitCommand(dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// workspaceIsAncestor reports whether commit ancestor is reachable from
+// descendant — a commit counts as its own ancestor, matching git's own
+// `merge-base --is-ancestor`. Routed through workspaceGitCommand rather than
+// the package's other gitIsAncestor (remediationcollision.go), which runs
+// with the bare process environment: that is fine on the worker, where it is
+// used today, but an in-pod workspace needs the safe.directory exemption on
+// every call or "detected dubious ownership" resurfaces exactly as #3763's
+// own history describes above.
+func workspaceIsAncestor(dir, ancestor, descendant string) (bool, error) {
+	err := workspaceGitCommand(dir, "merge-base", "--is-ancestor", ancestor, descendant).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w", ancestor, descendant, err)
 }
