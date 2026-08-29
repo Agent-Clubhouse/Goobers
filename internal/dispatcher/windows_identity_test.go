@@ -142,3 +142,48 @@ func TestRenderFromTemplateWindowsIdentityOverridesTemplate(t *testing.T) {
 		t.Fatalf("RenderFromTemplate err = %v, want WindowsIdentityError", err)
 	}
 }
+
+// The identity decision is the STAGE's. A template's sidecars are operator-
+// owned infrastructure (same trust root as instance.yaml): one that sets its
+// own windowsOptions.runAsUserName keeps it — the container level wins in
+// Kubernetes and the dispatcher does not rewrite it — while one that sets none
+// inherits the pod-level stamp. Pinned so the boundary is a stated property
+// of the rendered spec, not an accident of which containers stampSecurity
+// happens to touch (the Linux arm draws the same line: PSS baseline on the
+// stage container only).
+func TestRenderFromTemplateWindowsSidecarsKeepTheirOwnIdentity(t *testing.T) {
+	deployment := testDeployment()
+	deployment.Spec.Template.Spec.Containers = append(deployment.Spec.Template.Spec.Containers,
+		corev1.Container{
+			Name: "log-shipper", Image: "ghcr.io/example/shipper:v1",
+			SecurityContext: &corev1.SecurityContext{
+				WindowsOptions: &corev1.WindowsSecurityContextOptions{RunAsUserName: ptr.To(WindowsAdminRunAsUserName)},
+			},
+		},
+		corev1.Container{Name: "metrics", Image: "ghcr.io/example/metrics:v1"},
+	)
+	runner := windowsAdminRunner()
+	runner.HostKind = "deployment"
+	runner.Host = "consumer-template"
+
+	attempt := testAttempt()
+	attempt.RunsOnCapabilities = []string{"dotnet@8"}
+	pod, err := RenderFromTemplate(testConfig(), attempt, runner, deployment)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	if got := windowsIdentity(t, pod); got != WindowsRunAsUserName {
+		t.Fatalf("stage runAsUserName = %q, want %q", got, WindowsRunAsUserName)
+	}
+	if len(pod.Spec.Containers) != 3 {
+		t.Fatalf("containers = %d, want the stage plus both template sidecars", len(pod.Spec.Containers))
+	}
+	shipper := pod.Spec.Containers[1].SecurityContext
+	if shipper == nil || shipper.WindowsOptions == nil || shipper.WindowsOptions.RunAsUserName == nil ||
+		*shipper.WindowsOptions.RunAsUserName != WindowsAdminRunAsUserName {
+		t.Fatalf("sidecar %q securityContext = %+v, want its own operator-set %s kept", pod.Spec.Containers[1].Name, shipper, WindowsAdminRunAsUserName)
+	}
+	if metrics := pod.Spec.Containers[2].SecurityContext; metrics != nil && metrics.WindowsOptions != nil && metrics.WindowsOptions.RunAsUserName != nil {
+		t.Fatalf("sidecar %q got a container-level runAsUserName %q; it should inherit the pod-level stamp", pod.Spec.Containers[2].Name, *metrics.WindowsOptions.RunAsUserName)
+	}
+}

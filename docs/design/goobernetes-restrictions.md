@@ -188,7 +188,7 @@ requiring it simply cannot match such a runner, and apply says so.
 
 | Restriction | Linux pod (mode 3) | Windows pod (mode 3) | Linux/macOS `self` (modes 1/2) | Windows `self` (mode 1) |
 | --- | --- | --- | --- | --- |
-| `network:none` | **Enforced** — deny-all NetworkPolicy class, probe-verified (D12). In-pod userns is unavailable under restricted PSS (D8) and is not used | Not declarable (D11 epic) — refused at load / validate / render (#3619) | **Enforced**, deterministic stages — userns / Seatbelt, `ProbeNoNetwork` preflight (internal/executor/network.go) | Marker-only: #2034 de-isolation with journaled `unsupported-windows` marker; retired by D11. Not declarable in a `runners:` entry (#3619) |
+| `network:none` | **Enforced** — deny-all NetworkPolicy class, probe-verified (D12). In-pod userns is unavailable under restricted PSS (D8) and is not used | Not declarable (D11 epic) — refused at load / validate / render (#3619) | **Enforced**, deterministic stages — userns / Seatbelt, `ProbeNoNetwork` preflight (internal/executor/network.go) | Marker-only: #2034 de-isolation with journaled `unsupported-windows` marker; retired by D11. Not declarable on a `runners:` entry that declares `provides.os: windows` (#3619); an os-less `self` entry on a Windows daemon host is not caught by that load-time check (the loader keys on the declared OS — the `HostOS()` substitution is runtime-only, `internal/instance/placement.go`) and keeps the marker-only behaviour until D11 |
 | `network:allowlist` | **Enforced** — CIDR NetworkPolicy per class (D5), probe-verified | Not declarable — refused at load / validate / render (#3619) | Not declarable — no local mechanism (bwrap keeps host network; Seatbelt agentic profile allows network) | Not declarable |
 | `fs:readonly-except-workspace` | **Enforced** — dispatcher-stamped `securityContext` + mounts | Not declarable — k8s silently ignores `readOnlyRootFilesystem` on Windows pods (fails open); refused at load / validate / render (#3619) | **Enforced**, agentic stages — internal/sandbox (bwrap/Seatbelt), smoke-run preflight (internal/sandbox/native_linux.go:19-42) | Not declarable — `sandbox.New` is `ErrUnsupported` |
 | `tmp:ephemeral` | **Enforced by construction** — fresh pod + emptyDir | **Enforced and declarable** — dispatcher-bound sized emptyDir at the profile temp path + `TMP`/`TEMP` (#3619 correction of D4; the live `windows-shell` class declares it) | Declarable — daemon-side TMPDIR scoping | Declarable — same daemon-side binding |
@@ -363,14 +363,21 @@ is an accepted v1 asymmetry, not an acceptable steady state. Candidate contents:
 
 **Settled outside the epic — Windows runner identity (#3619, 2026-08-29).** Every Windows
 stage pod runs as `ContainerUser`, stamped explicitly by the dispatcher (pod level *and* the
-stage container, so a consumer template cannot override it) — never inherited from the
-image's `USER`. A stage that needs the administrator identity declares
+stage container, so a consumer template cannot override the *stage's* identity; a template's
+sidecar containers are operator-owned infrastructure and keep their own
+`windowsOptions.runAsUserName` when they set one, inheriting the pod-level stamp otherwise —
+the same boundary the Linux baseline draws, which stamps the stage container only) — never
+inherited from the image's `USER`. A stage that needs the administrator identity declares
 `privilege=windows-admin` in `runsOn.capabilities`; it is legal only with an effective
 `runsOn.os: windows`, places only on a runner class whose `provides.capabilities` claims the
 same token (accepted only on a `provides.os: windows` entry), and on that placement the
 dispatcher stamps `ContainerAdministrator`. Provided-but-not-required stays `ContainerUser`;
 required-but-not-provided is refused at dispatch (`WindowsIdentityError`), never served as
 `ContainerUser` to fail with Access Denied and never granted on a class that did not claim it.
+A 2.0 document cannot reach the identity through `requiredCapabilities` (task or gaggle
+level): the token is refused there by the DSL router, like `runsOn` itself, at compile and on
+the solver input — the 2.0 surface has no OS and no coherence rule, and the frozen
+interpreter never learns a product-interpreted token (PO-D0).
 This is a **capability, not a restriction** — it names what the substrate *offers*, not an
 isolation effect it takes away — so the closed list above is unchanged and the runner-class
 label (derived from restrictions alone) is unaffected: an admin-providing class and a plain

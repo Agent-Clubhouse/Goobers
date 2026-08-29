@@ -389,6 +389,14 @@ func (r RunnerEntry) validate(i int, seen map[string]bool, engineConfigured bool
 //     The claim is refused on a non-Windows entry, and on an entry that
 //     claims no OS at all (a Windows claim needs a Windows runner, not an
 //     OS-less one the solver would never match to os: windows anyway).
+//
+// Both rules key on the DECLARED provides.os. A `host: self` entry that
+// declares no OS is os-unknown here even when the daemon later runs on
+// Windows: the HostOS() substitution is runtime-only and deliberately absent
+// from the load/validate path (PlacementRunners, cmd validatereality — a
+// machine-independent validate). Such an entry keeps the pre-#3619 #2034
+// marker-only behaviour for a restriction like network:none until D11; the
+// restrictions doc's Windows-self column says so.
 func (r RunnerEntry) validateWindowsBindings(i int) error {
 	windows := r.Provides.OS == RunnerOSWindows
 	if windows {

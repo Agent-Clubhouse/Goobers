@@ -566,8 +566,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
 	// Security bindings stamp the STAGE container and the pod level; sidecar
-	// containers keep the consumer's own settings except the fs restriction,
-	// which is a pod-wide effect and stamps every container.
+	// containers keep the consumer's own settings — on Windows, a sidecar's
+	// own windowsOptions.runAsUserName included (stampSecurity) — except the
+	// fs restriction, which is a pod-wide effect and stamps every container.
 	stampSecurity(spec, stage, class, windows, admin)
 	if !windows && class[string(runnercap.RestrictionFSReadonly)] {
 		for i := 1; i < len(spec.Containers); i++ {
@@ -1052,12 +1053,18 @@ func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[
 		if admin {
 			identity = WindowsAdminRunAsUserName
 		}
-		// Pod level, so the identity is legible on the pod and covers every
-		// container a consumer template brought along; AND the stage
-		// container itself, because a container-level runAsUserName wins over
-		// the pod-level one in Kubernetes — a template whose stage container
-		// pre-set ContainerAdministrator would otherwise override the
-		// dispatcher's decision silently.
+		// Pod level, so the identity is legible on the pod and is the default
+		// for every container a consumer template brought along that sets no
+		// identity of its own; AND the stage container itself, because a
+		// container-level runAsUserName wins over the pod-level one in
+		// Kubernetes — a template whose stage container pre-set
+		// ContainerAdministrator would otherwise override the dispatcher's
+		// decision silently. A template SIDECAR that sets its own
+		// runAsUserName keeps it (the container level wins there too): the
+		// decision here is the STAGE's identity, and sidecars are
+		// operator-owned infrastructure on the same trust root as
+		// instance.yaml — the same boundary the Linux arm draws, which
+		// stamps the PSS baseline on the stage container only.
 		if spec.SecurityContext == nil {
 			spec.SecurityContext = &corev1.PodSecurityContext{}
 		}

@@ -91,7 +91,13 @@ Every field is optional, including the whole block (D3). Semantics per field:
   other Windows stage pod is stamped `ContainerUser` explicitly — a class that *provides* the
   privilege still runs a stage that did not *require* it as `ContainerUser`, and a stage that
   requires it on a class that lacks it is refused at dispatch. Spelled with `=` because the
-  colon namespace is reserved for derived tags an author cannot declare.
+  colon namespace is reserved for derived tags an author cannot declare. **On a 2.0 document
+  the token is refused outright** — in a task's `requiredCapabilities` and in the gaggle-level
+  set — by the router, the same arm that refuses `runsOn` there: `requiredCapabilities` has no
+  OS and no coherence rule, so the frozen interpreter must never match it (PO-D0). The
+  refusal is asserted at compile and again on the solver input (`StagePlacements`), so
+  validate's checkpoint solve and the run-start pin cannot reach `ContainerAdministrator`
+  through the 2.0 surface either. Every other token stays an opaque tag on 2.0.
 - **`restrictions`** — a stage may *require* a restricted runner (PO-D7: v1 closed list
   `network:none`, `network:allowlist`, `fs:readonly-except-workspace`, `tmp:ephemeral`,
   `env:default-deny`). Unknown token = error with suggestion (CAP005, the CAP002 idiom).
