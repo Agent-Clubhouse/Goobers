@@ -793,8 +793,49 @@
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",
               "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+            },
+            "tls": {
+              "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "caFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
+                  "examples": ["/etc/goobers/otlp-ca.crt"]
+                },
+                "serverName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
+                  "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
+                },
+                "certFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
+                },
+                "keyFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
+                }
+              }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
+              "then": {
+                "properties": {
+                  "endpoint": {
+                    "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
+                  }
+                }
+              }
+            }
+          ]
         },
         "retention": {
           "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-IN: with this block absent nothing is ever pruned, and `goobers telemetry prune --dry-run` can preview the same policy at any time.",

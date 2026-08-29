@@ -36,6 +36,9 @@ import (
 //
 // With no store configured this is a no-op, which is the tier-1 case: one
 // runner, one directory, every blob local by construction.
+//
+// A POINTER IS UNTRUSTED INPUT and this function WRITES FILES, so every path is
+// validated before it is joined — see the refusal below.
 func MaterializeContext(ctx context.Context, store blobstore.Store, stagingRoot string, pointers []apiv1.ContextPointer) error {
 	if store == nil || stagingRoot == "" || len(pointers) == 0 {
 		return nil
@@ -44,6 +47,31 @@ func MaterializeContext(ctx context.Context, store blobstore.Store, stagingRoot 
 		ref := pointers[i].Artifact
 		if ref == nil || ref.Path == "" || ref.Digest == "" {
 			continue
+		}
+		// CONTAINMENT, before the join that would otherwise honour whatever
+		// the pointer said.
+		//
+		// This is the only place in the fetch half that turns a declared path
+		// into a WRITE (MkdirAll + WriteFile below), and ref.Path arrives from
+		// an envelope this process did not author: on a worker it comes from an
+		// upstream stage's surrendered ResultEnvelope, which is a bare
+		// json.Unmarshal away from the producing pod; in a pod (#3823) it comes
+		// over the network from the dispatcher. Every other call site that
+		// reads a declared relative path against a fixed root goes through the
+		// #120 containment primitive — ArtifactPointer.Resolve does, and
+		// artifact-pointer.schema.json exists so "a foreign-authored envelope
+		// that would escape the journal fails at validate time, not only at
+		// resolve time". A fetch that wrote first and let Resolve judge later
+		// would place a new filesystem-write primitive AHEAD of that check,
+		// with the escaped bytes already on disk by the time anything refused.
+		//
+		// ArtifactPointer.Validate is that check, without touching the disk:
+		// no absolute path, no volume, no ".." traversal, and a syntactically
+		// real digest. Refused HARD rather than skipped — an escaping path is
+		// not a cache miss to fill in later, it is an envelope that must not be
+		// acted on at all.
+		if err := ref.Validate(); err != nil {
+			return fmt.Errorf("workerhost: refuse context pointer %q: %w", pointers[i].Name, err)
 		}
 		dest := filepath.Join(stagingRoot, filepath.FromSlash(ref.Path))
 		if _, err := os.Stat(dest); err == nil {

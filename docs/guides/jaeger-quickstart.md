@@ -45,6 +45,35 @@ uses TLS. Goobers rejects remote insecure endpoints, `http` without explicit
 insecure mode, and contradictory `https` plus `insecure: true` settings before
 the daemon starts.
 
+## Trusting a private collector certificate
+
+A collector presenting a certificate the system trust store does not already
+recognize — a private/internal CA — needs `telemetry.otlp.tls`:
+
+```yaml
+telemetry:
+  otlp:
+    endpoint: goobers-collector.goobers-system.svc.cluster.local:4317
+    tls:
+      caFile: /etc/goobers/otlp-ca.crt
+```
+
+`caFile` adds to the system trust pool; it does not replace it. `serverName`
+overrides SNI/verification when the endpoint's host does not match the
+certificate (for example, reaching the collector through a Kubernetes Service
+name other than the certificate's SAN), and `certFile`/`keyFile` present a
+client certificate for mTLS (both required together, or both omitted). `tls`
+conflicts with `insecure: true` — it only applies on the encrypted path.
+
+Every path is a shape-only field at load: `goobers validate` never reads
+these files, so a config error (a wrong path, an unparsable PEM) is never a
+reason a config with no telemetry client — `goobers worker --instance`, most
+notably — refuses to start. The files are read only when the daemon actually
+builds its OTLP exporter; if that read or parse fails, the daemon still
+starts with local-only telemetry and records a loud
+`telemetry_otlp_unavailable` event in the instance journal rather than
+refusing to start over a collector-trust misconfiguration.
+
 ## Authentication
 
 Collector credentials are never stored inline. Configure each OTLP metadata

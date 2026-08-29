@@ -273,6 +273,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var stopProjector func()
 	var retentionStats func() readmodel.RetentionStats
 	var instanceLog *journal.InstanceLog
+	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
+	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
+	// logged once instanceLog opens below, not returned as a setup failure:
+	// a CA path typo degrades to local-only telemetry rather than failing
+	// daemon start (#3804) — the daemon's job is not observability.
+	var telemetryOTLPDegradeErr error
 	defer func() {
 		if err == nil {
 			return
@@ -313,7 +319,18 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig, secretStores)
 		if err != nil {
-			return nil, err
+			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
+				return nil, err
+			}
+			// tel is still a valid, usable client (local-only — see
+			// ErrOTLPUnavailable's doc); warn now on stderr — the daemon has
+			// no instance log open yet, and `kubectl logs` is the only place
+			// an operator watching a rollout will see this — then park the
+			// cause to also log loudly once instanceLog opens, matching the
+			// other non-fatal degrades in this function.
+			fmt.Fprintf(os.Stderr, "warning: otlp telemetry unavailable, continuing local-only: %v\n", err)
+			telemetryOTLPDegradeErr = err
+			err = nil
 		}
 		rollupDB, err = rollup.Open(l.TelemetryDB())
 		if err != nil {
@@ -404,6 +421,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
+	}
+	if telemetryOTLPDegradeErr != nil {
+		logIngestFailure(instanceLog, "", "telemetry_otlp_unavailable", telemetryOTLPDegradeErr)
 	}
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
