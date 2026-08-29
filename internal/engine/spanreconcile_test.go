@@ -42,11 +42,13 @@ func liveWriterWithSpans(t *testing.T, gaggle string, src SpanSource) (*livejour
 	return w, runsDir
 }
 
-// assertLiveJournalAdoptedSpan is the FIRST half: the live writer really did
-// resolve the span op to a span.recorded whose bytes read back identical, and
-// recorded no span_unavailable. Without this the second half would pass
-// vacuously — two journals with no span in either also agree.
-func assertLiveJournalAdoptedSpan(t *testing.T, runsDir, runID string, want []byte) {
+// assertJournalAdoptedSpan reads a journal on disk and requires that whoever
+// wrote it — the live writer, or the reconciler's repair projection — really
+// did resolve the span op to a span.recorded whose bytes read back identical,
+// recording no span_unavailable. For the live cases below this is the FIRST
+// half, without which the second would pass vacuously: two journals with no
+// span in either also agree.
+func assertJournalAdoptedSpan(t *testing.T, runsDir, runID string, want []byte) {
 	t.Helper()
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
@@ -63,19 +65,19 @@ func assertLiveJournalAdoptedSpan(t *testing.T, runsDir, runID string, want []by
 		}
 		if events[i].Type == journal.EventError && events[i].Error != nil &&
 			events[i].Error.Code == spanUnavailableErrorCode {
-			t.Fatalf("live journal recorded %s despite a configured span source: %+v",
+			t.Fatalf("journal recorded %s despite a configured span source: %+v",
 				spanUnavailableErrorCode, events[i])
 		}
 	}
 	if span == nil || span.Ref == nil {
-		t.Fatalf("live journal has no span.recorded event; events = %+v", events)
+		t.Fatalf("journal has no span.recorded event; events = %+v", events)
 	}
 	got, err := rd.SpanBytes(*span.Ref)
 	if err != nil {
 		t.Fatalf("SpanBytes: %v", err)
 	}
 	if string(got) != string(want) {
-		t.Fatalf("live-adopted span bytes = %q, want %q", got, want)
+		t.Fatalf("adopted span bytes = %q, want %q", got, want)
 	}
 }
 
@@ -94,7 +96,7 @@ func TestReconcilerWithSpanSourceVerifiesAnAdoptedSpanWithoutDivergence(t *testi
 
 	writer, runsDir := liveWriterWithSpans(t, proj.Identity.Gaggle, src)
 	liveAuthor(t, writer, proj, len(proj.Ops))
-	assertLiveJournalAdoptedSpan(t, runsDir, proj.Identity.RunID, data)
+	assertJournalAdoptedSpan(t, runsDir, proj.Identity.RunID, data)
 
 	var divergences []string
 	reconciler, fake, _ := reconcilerFor(t, proj, runsDir, writer, &divergences)
@@ -115,6 +117,48 @@ func TestReconcilerWithSpanSourceVerifiesAnAdoptedSpanWithoutDivergence(t *testi
 	}
 }
 
+// TestReconcilerWithSpanSourceAdoptsSpansInTheRepairProjection is the OTHER
+// half WithSpanSource's contract names: the repair/backfill WRITE.
+//
+// The verification re-projection above decides whether DS5 files a false
+// divergence; this one decides what a recovered run's journal actually
+// CONTAINS. A run with no live-authored journal — the crash-orphan the daemon
+// never wrote, and every engine run projected before the live writer existed —
+// is reconstructed from history by projectCompletedRun, and if the option list
+// does not reach THAT call the recovered journal permanently carries
+// span_unavailable in place of the transcript the blob store is still holding.
+//
+// Without this test the ablation survives: dropping r.projectOpts from
+// reconcileRun's projectCompletedRun call left the whole engine suite green,
+// because every other span-reconcile case is live-authored and takes the
+// verification branch instead.
+func TestReconcilerWithSpanSourceAdoptsSpansInTheRepairProjection(t *testing.T) {
+	data := []byte(`{"event":"prompt","adapter":"copilot-cli"}`)
+	proj := singleTranscriptStageProj(t, "repair-span-project", data)
+	src := &fakeSpanSource{blobs: map[string][]byte{journal.Digest(data): data}}
+
+	// No live journal on disk and no live registry: the crash-orphan / legacy
+	// shape, which is the branch that writes rather than verifies.
+	runsDir := filepath.Join(t.TempDir(), "runs")
+	var divergences []string
+	reconciler, _, _ := reconcilerFor(t, proj, runsDir, nil, &divergences)
+	reconciler = reconciler.WithSpanSource(src)
+
+	count, err := reconciler.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Reconcile projected %d runs, want 1: a run with no journal on disk is repaired, not verified", count)
+	}
+	// The same read the live-adoption assertion makes, against the journal the
+	// REPAIR path wrote.
+	assertJournalAdoptedSpan(t, runsDir, proj.Identity.RunID, data)
+	if len(divergences) != 0 {
+		t.Fatalf("a first projection filed divergences: %v", divergences)
+	}
+}
+
 // TestReconcilerWithoutSpanSourceFilesAdoptedSpanAsDivergence pins the hazard
 // the test above guards, so the two-sidedness is a stated property rather
 // than an accident of wiring order: give the live writer a source and the
@@ -129,7 +173,7 @@ func TestReconcilerWithoutSpanSourceFilesAdoptedSpanAsDivergence(t *testing.T) {
 
 	writer, runsDir := liveWriterWithSpans(t, proj.Identity.Gaggle, src)
 	liveAuthor(t, writer, proj, len(proj.Ops))
-	assertLiveJournalAdoptedSpan(t, runsDir, proj.Identity.RunID, data)
+	assertJournalAdoptedSpan(t, runsDir, proj.Identity.RunID, data)
 
 	var divergences []string
 	// Deliberately NOT WithSpanSource: the half-wired daemon.

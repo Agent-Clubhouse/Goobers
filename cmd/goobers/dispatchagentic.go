@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -72,7 +73,24 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
 
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted)
+	// The staging root: what the executor's contextResolver is rooted at AND
+	// what the recorder reports as its Dir(). Created HERE rather than inside
+	// buildPodAgenticExecutor because context materialization has to fill the
+	// same directory the resolver will read, and a directory the constructor
+	// alone knows about cannot be filled from out here.
+	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
+	if err != nil {
+		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("create runs dir: %v", err))
+	}
+
+	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
+	// See dispatchcontext.go: without this every artifact-backed pointer fails
+	// to resolve, because a pod's staging root starts empty.
+	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
+		return failureEnvelope("context_materialize_failed", err.Error())
+	}
+
+	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return failureEnvelope("agentic_executor_unavailable", err.Error())
 	}
@@ -146,19 +164,25 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 		name, strings.Join(capabilities, ", "))
 }
 
-// The two construction seams buildPodAgenticExecutor's own test substitutes,
-// same var-hook shape as dialEngineProjection and harnessAdapterFor: a pod's
-// harness preflight runs against a real signed-in CLI no test machine has,
-// and the invoke.Goober that comes back does not expose the recorder the
-// wiring test is about. Both point at the real functions in production.
-var (
-	podHarnessRegistry = buildHarnessRegistry
-	podExecutorBuilder = buildAgenticExecutor
-)
+// podHarnessRegistry builds the pod's harness registry, and is a var SO THAT
+// buildPodAgenticExecutor HAS A TEST CALLER AT ALL.
+//
+// The real builder produces adapters that preflight an actual harness binary,
+// which is why this constructor had none — and why the one invariant it cannot
+// get wrong (the staging directory it is handed must be the directory the
+// executor reads context from) was unobservable: a reviewer's ablation that
+// reintroduced a constructor-local os.MkdirTemp here, the original bug's exact
+// shape, passed the entire cmd/goobers suite. Swapping the registry is the
+// smallest seam that lets a test drive the whole constructor. Mirrors the
+// existing newAgenticAdapter / repoCloneURL test seams.
+var podHarnessRegistry = buildHarnessRegistry
 
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
+// runsDir is the staging root the caller already created and already
+// materialized this stage's context into; it becomes both the recorder's Dir()
+// and the contextResolver's root, which is what makes the two agree.
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
@@ -235,28 +259,75 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
 
-	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
-	if err != nil {
-		return nil, fmt.Errorf("create runs dir: %w", err)
-	}
+	return buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
+		Kit:             kit,
+		RunsDir:         runsDir,
+		Stderr:          stderr,
+		Scrubber:        scrubber,
+		Registry:        registry,
+		Resolver:        resolver,
+		Grants:          grants,
+		AdapterRegistry: adapterRegistry,
+		HarnessInfo:     harnessInfo,
+	}))
+}
 
-	return podExecutorBuilder(agenticExecutorInput{
-		GooberName:       gooberName,
-		Goobers:          kit.Goobers,
-		Instructions:     kit.Instructions,
-		Assets:           kit.AssetBundles(),
-		HarnessInfo:      harnessInfo,
-		AdapterRegistry:  adapterRegistry,
-		EnvCapabilities:  kit.EnvCapabilities,
-		Resolver:         resolver,
-		Grants:           grants,
-		SharedRegistry:   registry,
-		RunsDir:          runsDir,
-		SandboxPosture:   instance.SandboxPosture(kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir, blobs: podBlobClient()},
-		SecretRegistrar:  registry,
+// podExecutorWiring is everything buildPodAgenticExecutor discovers about this
+// pod before it can name an executor: the kit it fetched, the staging root its
+// caller materialized context into, and the local facilities (scrubber,
+// credential resolver, preflighted harness) it built along the way.
+type podExecutorWiring struct {
+	Kit     *agentickit.Kit
+	RunsDir string
+	Stderr  io.Writer
+	// Scrubber redacts artifact bytes before they are digested and emitted.
+	Scrubber journal.Scrubber
+	// Registry is the same scrubber's registry, used as both the shared secret
+	// registry and the SecretRegistrar.
+	Registry        *journal.RegistryScrubber
+	Resolver        credentials.Resolver
+	Grants          []credentials.Grant
+	AdapterRegistry *harness.Registry
+	HarnessInfo     harnessPreflightInfo
+}
+
+// podAgenticExecutorInput assembles the executor input for a pod stage.
+//
+// FACTORED OUT SO THE DIRECTORY AGREEMENT IS OBSERVABLE. The bug this file's
+// change fixes crosses two edges: materializePodContext must be CALLED before
+// the executor is built, AND it must fill the SAME directory the executor's
+// contextResolver reads. The first edge is pinned by a test that drives
+// runAgenticStage. The second could not be pinned at the production
+// constructor, because buildPodAgenticExecutor calls adapter.Preflight against
+// a real harness binary and therefore has no test callers at all — so a
+// refactor that reintroduced a constructor-local staging dir (the original
+// bug's exact shape) would ship green.
+//
+// RunsDir and the recorder's dir are the two fields that MUST name that one
+// directory: the first is where harness.NewContextResolver looks for an
+// upstream artifact, the second is where a produced artifact is reported from.
+// Both are assigned from w.RunsDir here, in a function a test can call, and
+// TestPodAgenticStageReadsAnUpstreamArtifactPointer builds its executor through
+// this function rather than a hand-assembled replica — so the agreement is
+// exercised by the same code production runs.
+func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
+	return agenticExecutorInput{
+		GooberName:       w.Kit.Envelope.Goober,
+		Goobers:          w.Kit.Goobers,
+		Instructions:     w.Kit.Instructions,
+		Assets:           w.Kit.AssetBundles(),
+		HarnessInfo:      w.HarnessInfo,
+		AdapterRegistry:  w.AdapterRegistry,
+		EnvCapabilities:  w.Kit.EnvCapabilities,
+		Resolver:         w.Resolver,
+		Grants:           w.Grants,
+		SharedRegistry:   w.Registry,
+		RunsDir:          w.RunsDir,
+		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
+		ArtifactRecorder: podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir},
+		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
-	})
+	}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.
@@ -279,26 +350,20 @@ type podArtifactRecorder struct {
 	stderr   io.Writer
 	scrubber journal.Scrubber
 	dir      string
-	// blobs is the pod's blob-plane client, used to publish span bytes by
-	// digest so the daemon can adopt them (#3805). nil when this pod has no
-	// blob endpoint (the loopback / pre-blob-plane deployment shape), in
-	// which case spans degrade exactly as they did before.
-	blobs *dispatcher.BlobClient
 }
 
-// scrub applies the pod's boundary scrubber once. Every content address this
-// recorder derives commits to the OUTPUT of this call, so any byte handed
-// onward — journal artifact, blob-plane PUT — must be this same slice.
-func (r podArtifactRecorder) scrub(data []byte) []byte {
-	if r.scrubber == nil {
-		return data
+// RecordArtifact scrubs ONCE, derives the content address of the scrubbed
+// bytes, and hands those SAME bytes to recordStageArtifacts — which is both
+// the journal emit and (#3823) the blob-plane write-through. Re-scrubbing
+// between the digest and the PUT would let the stored content drift from the
+// address it is stored under, and blobstore.Dir.Get re-verifies the digest on
+// the way out, so the drift would surface as a permanently unavailable blob
+// rather than as an error here.
+func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	scrubbed := data
+	if r.scrubber != nil {
+		scrubbed = r.scrubber.Scrub(data)
 	}
-	return r.scrubber.Scrub(data)
-}
-
-// recordScrubbed derives the content address of already-scrubbed bytes and
-// emits them as a journal artifact.
-func (r podArtifactRecorder) recordScrubbed(name string, scrubbed []byte) (journal.Ref, error) {
 	ref, err := journal.ArtifactRef(scrubbed)
 	if err != nil {
 		return journal.Ref{}, fmt.Errorf("derive artifact ref for %s: %w", name, err)
@@ -310,78 +375,41 @@ func (r podArtifactRecorder) recordScrubbed(name string, scrubbed []byte) (journ
 	return ref, nil
 }
 
-func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
-	return r.recordScrubbed(name, r.scrub(data))
-}
-
 // RecordSpanWithSchema satisfies harness.SpanRecorder. A span is an artifact
 // under a "spans" prefix — the same shape the worker-side recorder uses, so a
-// span produced in a pod lands under the same name it would locally — AND it
-// is published to the blob plane under its digest.
+// span produced in a pod lands under the same name it would locally — and,
+// BECAUSE it goes through RecordArtifact, it is also published to the blob
+// plane under the exact digest its ref names.
 //
-// The PUT is the half that makes the daemon's SpanSource wiring mean
-// anything. The engine workflow never holds the transcript: it emits a
+// THAT PUBLISH IS THE HALF THAT MAKES THE DAEMON'S SpanSource WIRING MEAN
+// ANYTHING (#3805). The engine workflow never holds the transcript: it emits a
 // pointer-only span op (internal/engine/journal.go JournalSpanOp) and the
-// daemon's live writer fetches the bytes by digest FROM THE BLOB STORE.
-// Until this PUT, no producer had placed those bytes in that store, so
-// wiring a span source alone would only change the recorded failure from
-// "no span source configured" to "blobstore: blob not found" — the same
-// span_unavailable code, the same missing transcript.
+// daemon's live writer fetches the bytes by digest FROM THE BLOB STORE. Until
+// something PUT them there, wiring a span source alone would only change the
+// recorded failure from "no span source configured" to "blobstore: blob not
+// found" — the same span_unavailable code, the same missing transcript.
 //
-// PRECISELY: the daemon does already receive these exact bytes, at this
-// exact digest, moments earlier — recordStageArtifacts puts them on the wire
-// as a livejournal.OpArtifact and the daemon writes them under
-// runs/<id>/artifacts/. What it cannot do is FIND them by digest: the span
-// source reads the blob store, and nothing mirrors an artifact op into it.
-// (The alternative design — have the daemon mirror artifact ops named
-// spans/* into its store — is recorded on #3805; it trades this second
-// transfer for a dependency on artifact NAMING, and loses both copies if the
-// artifact emit fails.)
+// PRECISELY: the daemon does already receive these exact bytes, at this exact
+// digest, moments earlier — recordStageArtifacts puts them on the wire as a
+// livejournal.OpArtifact and the daemon writes them under runs/<id>/artifacts/.
+// What it could not do is FIND them by digest: the span source reads the blob
+// store, and nothing mirrored an artifact op into it. (The alternative design —
+// have the daemon mirror artifact ops named spans/* into its store — is
+// recorded on #3805; it trades a second transfer for a dependency on artifact
+// NAMING, and loses both copies if the artifact emit fails.)
 //
-// Best effort with a stderr line, deliberately, and in that ORDER: the
-// journal artifact is emitted first so the transcript is preserved even when
-// the blob plane is unreachable, and a stage that produced its work has not
-// failed because its telemetry could not be stored. That is the same posture
-// recordStageArtifacts and workerhost.StagingArtifacts already take.
+// ONE WRITE-THROUGH, NOT TWO. #3823's putStageArtifactBlob, inside
+// recordStageArtifacts, already publishes every content-addressed stream a pod
+// produces — spans included, since they reach it through RecordArtifact. A
+// second, span-specific PUT beside it would duplicate the transfer, carry its
+// own timeout, and give the same bytes two chances to disagree about which
+// slice the digest committed to. The properties #3805 needs are exactly the
+// ones that helper already has: the bytes the ref was derived from, best effort
+// with a stderr line, under one batch budget (blobWriteThroughBudget).
 func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	_ = stage
 	_ = dataSchema
-	// Scrubbed ONCE. The ref below commits to exactly these bytes and the PUT
-	// stores exactly these bytes: re-scrubbing between the two would let the
-	// stored content drift from the address it is stored under, and
-	// blobstore.Dir.Get re-verifies the digest, so the drift would surface as
-	// a permanently unavailable span rather than as an error here.
-	scrubbed := r.scrub(data)
-	ref, err := r.recordScrubbed("spans/"+name, scrubbed)
-	if err != nil {
-		return journal.Ref{}, err
-	}
-	r.putSpanBlob(ref.Digest, scrubbed)
-	return ref, nil
-}
-
-// spanBlobPutTimeout bounds the span PUT. This call sits on the stage's
-// critical path — the harness has finished, the result is not returned until
-// the recorder does — and BlobClient's own fallback is 60s
-// (internal/dispatcher/blob.go defaultBlobTimeout), so a blob plane that
-// HANGS rather than refusing would hold a finished stage for a minute for a
-// best-effort telemetry copy. A transcript is bounded by
-// DefaultMaxTranscriptBytes, so this is generous for the transfer itself.
-// A var, not a const, so the timeout path itself is testable in bounded time.
-var spanBlobPutTimeout = 10 * time.Second
-
-// putSpanBlob publishes span bytes to the blob plane under digest. Silent on
-// success — the daemon-side evidence is the blob's presence — and one stderr
-// line on failure, never an error: see RecordSpanWithSchema.
-func (r podArtifactRecorder) putSpanBlob(digest string, scrubbed []byte) {
-	if r.blobs == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), spanBlobPutTimeout)
-	defer cancel()
-	if err := r.blobs.Put(ctx, digest, scrubbed); err != nil {
-		_, _ = fmt.Fprintf(r.stderr, "record span blob %s: %v\n", digest, err)
-	}
+	return r.RecordArtifact("spans/"+name, data)
 }
 
 // RecordArtifactBounded satisfies executor.BoundedArtifactRecorder. The limit

@@ -235,20 +235,22 @@ github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer 
 
 # Goobernetes dispatcher (#3513): the engine-side substrate is production-wired by the
 # #3588 mode-3 cutover (goobers worker --dispatch-namespace binds the dispatch queues and
-# serves DispatchStage). What remains exempt is the POD-side surface — the
-# stage-credential resolve and the egress-probe acceptance tooling — whose
-# callers are the in-pod stage runtime (image contract,
-# docs/design/goobernetes-deployment-images.md) and the v1 exit smoke (#3517).
+# serves DispatchStage). What remains exempt is the POD-side surface — the stage-credential
+# resolve and the egress-probe acceptance tooling — whose callers are the in-pod stage
+# runtime (image contract, docs/design/goobernetes-deployment-images.md) and the v1 exit
+# smoke (#3517).
 #
-# BlobClient.Has and BlobClient.Describe left this list in #3805 WITHOUT gaining a
-# caller: no production code calls either one today. They stopped being REPORTED
-# because podArtifactRecorder (cmd/goobers/dispatchagentic.go) now carries a
-# *dispatcher.BlobClient field and is converted to workerhost.ArtifactRecorder, which
-# puts *BlobClient in the analyzer's runtime-type set — so RTA admits it as a possible
-# receiver for the blobstore.Store.Describe() call in cmd/goobers/worker.go and treats
-# Has as reflection-reachable. Both are blobstore.Store interface methods and cannot be
-# deleted while BlobClient implements that interface. If a later change drops that field,
-# they become unreviewed dead code again and these two entries must come back.
+# BlobClient is no longer on that list. #3823 wired the pod's context-materialization path
+# (cmd/goobers/dispatchcontext.go), which calls BlobClient.Describe directly for the
+# blob-plane diagnostic and hands the client to workerhost.MaterializeContext as a
+# blobstore.Store — an interface that declares Has. Both methods are reachable from
+# production now, so exempting them would be a stale entry and test/deadcode rejects it.
+#
+# #3805 removed the same two entries independently, on a WEAKER footing — the pod span
+# recorder then carried a *dispatcher.BlobClient field, which only put the type in the
+# analyzer's runtime-type set. That field is gone (spans now ride #3823's one
+# write-through), and this reachability does not depend on it: dispatchcontext.go's
+# Describe call is a direct, named production caller.
 github.com/goobers/goobers/internal/dispatcher.EgressTriple.Verdict # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeTCP # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).

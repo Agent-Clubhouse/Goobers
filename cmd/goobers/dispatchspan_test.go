@@ -1,21 +1,30 @@
 package main
 
-// dispatchspan_test.go covers the pod half of #3805: the stage pod publishes
-// its scrubbed transcript to the blob plane under the SAME digest the journal
-// artifact ref carries, so the daemon's span source has something to fetch.
+// dispatchspan_test.go covers the pod half of #3805: the stage pod's scrubbed
+// transcript reaches the blob plane under the SAME digest the journal artifact
+// ref carries, so the daemon's span source has something to fetch.
 //
-// Without this PUT the daemon-side wiring is a no-op that looks like a fix —
-// the recorded failure merely changes from "no span source configured" to
-// "blobstore: blob not found", under the same span_unavailable code, with the
-// same missing transcript. MEASURED on the cluster before the change: run
-// d3edc8f3804eae63bc39115aeb6cd542's transcript digest sha256:2715ad13… is in
-// runs/<id>/artifacts/ and absent from /var/lib/goobers/blobstore/.
+// Without those bytes in the store the daemon-side wiring is a no-op that looks
+// like a fix — the recorded failure merely changes from "no span source
+// configured" to "blobstore: blob not found", under the same span_unavailable
+// code, with the same missing transcript. MEASURED on the cluster before the
+// change: run d3edc8f3804eae63bc39115aeb6cd542's transcript digest
+// sha256:2715ad13… is in runs/<id>/artifacts/ and absent from
+// /var/lib/goobers/blobstore/.
 //
-// The central test drives the REAL daemon blob plane (httpapi + podauth), not
-// a stand-in: the plane is fail-closed on pod principal, so a span PUT that
-// lost its bearer would 403 and the whole feature would no-op behind one
-// stderr line in a pod log. Acceptance here is the same fact the far-side
-// check reads on the cluster — the bytes are in the DAEMON's store.
+// THE PUT ITSELF IS NOT SPAN-SPECIFIC, and after #3823 there is exactly one of
+// them: recordStageArtifacts write-throughs every content-addressed stream a
+// pod produces (putStageArtifactBlob), and a span reaches it through
+// RecordArtifact like any other artifact. What these tests pin is that the SPAN
+// path actually arrives there — a recorder that stopped routing spans through
+// RecordArtifact, or a write-through that stopped covering the "spans/" names,
+// would restore the original defect with the whole suite green.
+//
+// The central test drives the REAL daemon blob plane (httpapi + podauth), not a
+// stand-in: the plane is fail-closed on pod principal, so a PUT that lost its
+// bearer would 403 and the feature would silently no-op behind one stderr line
+// in a pod log. Acceptance here is the same fact the far-side check reads on the
+// cluster — the bytes are in the DAEMON's store.
 
 import (
 	"bytes"
@@ -24,22 +33,16 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
-	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // podBlobPlane is the daemon's REAL blob plane: podauth in front of a
@@ -80,14 +83,31 @@ func newPodBlobPlane(t *testing.T, runID string) *podBlobPlane {
 	return &podBlobPlane{server: server, store: store, token: token}
 }
 
-// stampPod puts the plane's endpoint and the stage's bearer in the pod's
-// environment exactly as the dispatcher stamps them, so the test builds its
-// client through podBlobClient() — the production constructor — rather than
-// by hand.
-func (p *podBlobPlane) stampPod(t *testing.T, token string) {
+// stampPodSpanEnv puts a stage pod's whole environment in place: the journal
+// plane recordStageArtifacts emits through, the blob endpoint it write-throughs
+// to, and the stage identity both are keyed by. The recorder is then built with
+// nothing hand-wired — the client comes from podBlobClient(), the production
+// constructor, exactly as it does in a pod.
+func stampPodSpanEnv(t *testing.T, journalURL, blobURL, token, runID string) {
 	t.Helper()
-	t.Setenv(dispatcher.EnvBlobEndpoint, p.server.URL)
+	t.Setenv(dispatcher.EnvDaemonAPI, journalURL)
+	t.Setenv(dispatcher.EnvBlobEndpoint, blobURL)
 	t.Setenv(dispatcher.EnvPodToken, token)
+	t.Setenv(dispatcher.EnvRunID, runID)
+	t.Setenv(dispatcher.EnvStage, "implement")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+}
+
+// acceptingJournalPlane is the journal half of a stage pod's environment: it
+// must be up for recordStageArtifacts to emit at all, and a test about the BLOB
+// half should never fail because of it.
+func acceptingJournalPlane(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"applied":1}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // blobPlaneRecorder is a stand-in for the daemon's blob plane used only where
@@ -141,14 +161,14 @@ func (b *blobPlaneRecorder) authorization(digest string) string {
 // spanRecorderFixture builds a pod recorder with a real DefaultScrubber (the
 // Chain(Registry, Pattern) a stage pod actually runs) holding one registered
 // secret, so a test also pins that what is PUT is the SCRUBBED byte slice.
-func spanRecorderFixture(t *testing.T, blobs *dispatcher.BlobClient, secret string) (podArtifactRecorder, *bytes.Buffer) {
+func spanRecorderFixture(t *testing.T, secret string) (podArtifactRecorder, *bytes.Buffer) {
 	t.Helper()
 	registry, scrubber := journal.DefaultScrubber()
 	if secret != "" {
 		registry.Register([]byte(secret))
 	}
 	stderr := &bytes.Buffer{}
-	return podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: t.TempDir(), blobs: blobs}, stderr
+	return podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: t.TempDir()}, stderr
 }
 
 // TestPodSpanRecorderPutsExactlyTheBytesTheRefAddresses is the pod→daemon
@@ -165,9 +185,9 @@ func spanRecorderFixture(t *testing.T, blobs *dispatcher.BlobClient, secret stri
 func TestPodSpanRecorderPutsExactlyTheBytesTheRefAddresses(t *testing.T) {
 	const secret = "ghp-not-a-real-token-fixture"
 	plane := newPodBlobPlane(t, "run-span-1")
-	plane.stampPod(t, plane.token)
+	stampPodSpanEnv(t, acceptingJournalPlane(t), plane.server.URL, plane.token, "run-span-1")
 
-	rec, stderr := spanRecorderFixture(t, podBlobClient(), secret)
+	rec, stderr := spanRecorderFixture(t, secret)
 	transcript := []byte(`{"event":"prompt","auth":"` + secret + `","body":"implement the thing"}`)
 
 	ref, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript",
@@ -205,7 +225,7 @@ func TestPodSpanRecorderPutsExactlyTheBytesTheRefAddresses(t *testing.T) {
 // no-ops and the daemon still reports span_unavailable.
 func TestPodSpanRecorderNeedsThePodBearer(t *testing.T) {
 	plane := newPodBlobPlane(t, "run-span-2")
-	plane.stampPod(t, "")
+	stampPodSpanEnv(t, acceptingJournalPlane(t), plane.server.URL, "", "run-span-2")
 
 	client := podBlobClient()
 	if client == nil {
@@ -214,7 +234,7 @@ func TestPodSpanRecorderNeedsThePodBearer(t *testing.T) {
 	if client.Token != "" {
 		t.Fatalf("fixture error: client carries a token %q", client.Token)
 	}
-	rec, stderr := spanRecorderFixture(t, client, "")
+	rec, stderr := spanRecorderFixture(t, "")
 	transcript := []byte(`{"event":"prompt"}`)
 
 	ref, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", transcript)
@@ -224,8 +244,9 @@ func TestPodSpanRecorderNeedsThePodBearer(t *testing.T) {
 	if _, err := plane.store.Get(context.Background(), ref.Digest); err == nil {
 		t.Fatal("the blob plane accepted an unauthenticated span PUT; its pod-principal gate is not fail-closed")
 	}
-	if !strings.Contains(stderr.String(), "record span blob") {
-		t.Fatalf("a refused span PUT was silent; stderr = %q", stderr.String())
+	if !strings.Contains(stderr.String(), "blob plane") ||
+		!strings.Contains(stderr.String(), "spans/copilot-cli.transcript") {
+		t.Fatalf("a refused span PUT did not name the span and the plane; stderr = %q", stderr.String())
 	}
 }
 
@@ -241,9 +262,8 @@ func TestPodSpanRecorderSurvivesABlobPlaneFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(plane.handler))
 	defer server.Close()
 
-	t.Setenv(dispatcher.EnvBlobEndpoint, server.URL)
-	t.Setenv(dispatcher.EnvPodToken, "pod-token-fixture")
-	rec, stderr := spanRecorderFixture(t, podBlobClient(), "")
+	stampPodSpanEnv(t, acceptingJournalPlane(t), server.URL, "pod-token-fixture", "run-span-3")
+	rec, stderr := spanRecorderFixture(t, "")
 	transcript := []byte(`{"event":"prompt"}`)
 
 	ref, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", transcript)
@@ -256,15 +276,16 @@ func TestPodSpanRecorderSurvivesABlobPlaneFailure(t *testing.T) {
 	if got := plane.authorization(ref.Digest); got != "Bearer pod-token-fixture" {
 		t.Fatalf("span PUT Authorization = %q, want the pod's stage-scoped bearer", got)
 	}
-	if !strings.Contains(stderr.String(), "record span blob") {
+	if !strings.Contains(stderr.String(), "blob plane") {
 		t.Fatalf("a failed span PUT was silent; stderr = %q", stderr.String())
 	}
 }
 
 // TestPodSpanRecorderGivesUpOnAHangingBlobPlane: the PUT sits on the stage's
-// critical path, so it carries its own deadline rather than falling back to
-// BlobClient's 60s default. A plane that hangs costs the stage the timeout,
-// once, and then the same single stderr line.
+// critical path — the harness has finished and the result is not returned until
+// the recorder does — so it carries its own deadline rather than falling back
+// to BlobClient's 60s default. A plane that hangs costs the stage
+// blobWriteThroughBudget, once, and then the same single stderr line.
 func TestPodSpanRecorderGivesUpOnAHangingBlobPlane(t *testing.T) {
 	release := make(chan struct{})
 	plane := newBlobPlaneRecorder(http.StatusCreated)
@@ -273,13 +294,12 @@ func TestPodSpanRecorderGivesUpOnAHangingBlobPlane(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
 
-	previous := spanBlobPutTimeout
-	spanBlobPutTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { spanBlobPutTimeout = previous })
+	previous := blobWriteThroughBudget
+	blobWriteThroughBudget = 100 * time.Millisecond
+	t.Cleanup(func() { blobWriteThroughBudget = previous })
 
-	t.Setenv(dispatcher.EnvBlobEndpoint, server.URL)
-	t.Setenv(dispatcher.EnvPodToken, "pod-token-fixture")
-	rec, stderr := spanRecorderFixture(t, podBlobClient(), "")
+	stampPodSpanEnv(t, acceptingJournalPlane(t), server.URL, "pod-token-fixture", "run-span-4")
+	rec, stderr := spanRecorderFixture(t, "")
 
 	start := time.Now()
 	if _, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", []byte(`{"event":"prompt"}`)); err != nil {
@@ -288,7 +308,7 @@ func TestPodSpanRecorderGivesUpOnAHangingBlobPlane(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
 		t.Fatalf("the span PUT held the stage for %s; it must carry its own deadline", elapsed)
 	}
-	if !strings.Contains(stderr.String(), "record span blob") {
+	if !strings.Contains(stderr.String(), "blob plane") {
 		t.Fatalf("a timed-out span PUT was silent; stderr = %q", stderr.String())
 	}
 }
@@ -298,8 +318,8 @@ func TestPodSpanRecorderGivesUpOnAHangingBlobPlane(t *testing.T) {
 // every type-1 and type-2 posture) records exactly as it did before — no PUT
 // attempted, no stderr noise, same ref.
 func TestPodSpanRecorderWithoutABlobEndpointIsUnchanged(t *testing.T) {
-	t.Setenv(dispatcher.EnvBlobEndpoint, "")
-	rec, stderr := spanRecorderFixture(t, podBlobClient(), "")
+	stampPodSpanEnv(t, acceptingJournalPlane(t), "", "pod-token-fixture", "run-span-5")
+	rec, stderr := spanRecorderFixture(t, "")
 	transcript := []byte(`{"event":"prompt"}`)
 
 	ref, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", transcript)
@@ -315,7 +335,7 @@ func TestPodSpanRecorderWithoutABlobEndpointIsUnchanged(t *testing.T) {
 }
 
 // TestPodBlobClientFollowsTheStampedEndpoint pins the construction half: the
-// recorder's client comes from podBlobClient(), which reads the same
+// write-through's client comes from podBlobClient(), which reads the same
 // GOOBERS_BLOB_ENDPOINT and GOOBERS_POD_TOKEN the dispatcher stamps on every
 // stage pod — so a pod that HAS the endpoint gets an authenticated client and
 // one that does not gets nil. Both halves matter: the plane is fail-closed on
@@ -339,75 +359,5 @@ func TestPodBlobClientFollowsTheStampedEndpoint(t *testing.T) {
 	if client.Token != "pod-token-fixture" {
 		t.Fatalf("client token = %q, want the stamped pod bearer; the blob plane refuses an "+
 			"unauthenticated PUT and every span would silently 401", client.Token)
-	}
-}
-
-// TestBuildPodAgenticExecutorGivesTheRecorderTheBlobClient is the pod-side
-// CONSTRUCTION seam. RecordSpanWithSchema only PUTs when the recorder holds a
-// client, and the one production site that gives it one is
-// buildPodAgenticExecutor — the entry point every mode-3 agentic stage goes
-// through. Nothing else in the repo exercises it, so without this test the
-// whole pod half of #3805 is a field that can be deleted with a green suite.
-func TestBuildPodAgenticExecutorGivesTheRecorderTheBlobClient(t *testing.T) {
-	registry := harness.NewRegistry()
-	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{
-		AdapterName: string(apiv1.HarnessCopilot),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	previousRegistry := podHarnessRegistry
-	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool,
-		func(context.Context) (string, error)) (*harness.Registry, error) {
-		return registry, nil
-	}
-	t.Cleanup(func() { podHarnessRegistry = previousRegistry })
-
-	var captured agenticExecutorInput
-	previousBuilder := podExecutorBuilder
-	podExecutorBuilder = func(input agenticExecutorInput) (invoke.Goober, error) {
-		captured = input
-		return nil, nil
-	}
-	t.Cleanup(func() { podExecutorBuilder = previousBuilder })
-
-	kit := &agentickit.Kit{
-		Envelope: apiv1.InvocationEnvelope{Goober: "implementer"},
-		Goobers: map[string]apiv1.GooberSpec{
-			"implementer": {Harness: apiv1.HarnessCopilot},
-		},
-	}
-
-	t.Setenv(dispatcher.EnvBlobEndpoint, "https://goobers-api.goobers-system.svc.cluster.local:8080")
-	t.Setenv(dispatcher.EnvPodToken, "pod-token-fixture")
-	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil); err != nil {
-		t.Fatalf("buildPodAgenticExecutor: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(captured.RunsDir) })
-	recorder, ok := captured.ArtifactRecorder.(podArtifactRecorder)
-	if !ok {
-		t.Fatalf("pod executor was built with a %T recorder", captured.ArtifactRecorder)
-	}
-	if recorder.blobs == nil {
-		t.Fatal("the pod's span recorder was built with NO blob client: every transcript stays " +
-			"inside the pod and the daemon's span source finds nothing to adopt")
-	}
-	if recorder.blobs.BaseURL != "https://goobers-api.goobers-system.svc.cluster.local:8080" ||
-		recorder.blobs.Token != "pod-token-fixture" {
-		t.Fatalf("recorder blob client = %+v, want the stamped endpoint and pod bearer", recorder.blobs)
-	}
-
-	// A pod with no blob endpoint keeps the pre-#3805 posture exactly: no
-	// client, so no PUT is ever attempted.
-	t.Setenv(dispatcher.EnvBlobEndpoint, "")
-	if _, err := buildPodAgenticExecutor(kit, io.Discard, nil); err != nil {
-		t.Fatalf("buildPodAgenticExecutor without a blob endpoint: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(captured.RunsDir) })
-	recorder, ok = captured.ArtifactRecorder.(podArtifactRecorder)
-	if !ok {
-		t.Fatalf("pod executor was built with a %T recorder", captured.ArtifactRecorder)
-	}
-	if recorder.blobs != nil {
-		t.Fatalf("an unstamped pod built a blob client anyway: %+v", recorder.blobs)
 	}
 }
