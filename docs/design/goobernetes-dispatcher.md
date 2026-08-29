@@ -173,10 +173,24 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   **`activeDeadlineSeconds` as the always-on backstop** (every stage pod carries one, derived
   from the stage timeout + a margin, so a dispatcher crash between create and the stage's own
   completion cannot leak the pod past its deadline) **plus a label + reconcile sweep** (the
-  dispatcher labels every pod it creates with the run/attempt identity and, on restart,
-  reconciles: any labeled pod whose run is terminal or unknown is deleted). No ownerReference.
+  dispatcher labels every pod it creates with the run/attempt identity and its own owner
+  identity and, on restart, reconciles the pods carrying ITS owner label). No ownerReference.
   This is a per-attempt-leak-bounded design, not a zero-leak one — acceptable for v1 since
   activeDeadlineSeconds caps the leak window.
+
+  **The sweep's direction was reversed by decision 003** (graft: "owner label on
+  dispatcher-created pods; `SweepOrphans` wired on the WORKER only, with a RunStates over
+  Temporal Describe; the daemon never sweeps"). This section previously read "any labeled pod
+  whose run is terminal or unknown is deleted" — fail-closed toward *deletion*. That is the
+  hazard the record cites when it rejects the in-process-dispatcher option: with two drivers
+  in the tree the sweep would delete pods belonging to live engine-start attempts, and a pod
+  deleted mid-stage destroys in-flight work (invisibly, for a mutating stage like open-pr or
+  merge-pr). The rule is now the other way round: a pod is disposed only when the sweep
+  POSITIVELY establishes that no workflow is executing its attempt (Completed / Failed / no
+  such execution under either `<run>/<stage>/<attempt>` or `<run>`); a Running attempt is
+  ADOPTED, and an unreachable engine, an unaddressable pod or any other uncertainty leaves the
+  pod to `activeDeadlineSeconds`. Leaving a settled pod costs one stage timeout of capacity;
+  deleting a live one cannot be undone.
 
 ## 6. The version-skew check (decision 009 — tag comparison, publish-verified)
 

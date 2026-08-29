@@ -198,6 +198,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
 		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
+	"engine-queues": {
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
+		{name: "timeout", takesArg: true, desc: "Bound on the whole describe"},
+		{name: "json", desc: "Emit JSON"},
+	},
 	"engine-project": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},

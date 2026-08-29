@@ -22,6 +22,7 @@ import (
 func testConfig() Config {
 	return Config{
 		Namespace:       "gaggle-alpha",
+		Owner:           "goobers-worker-0",
 		EmbeddedCommit:  "0123456789abcdef0123456789abcdef01234567",
 		EmbeddedVersion: "v0.1.0",
 		BlobEndpoint:    "http://goobers-api.goobers-system:7777",
@@ -1068,3 +1069,138 @@ func TestTemplateDeclaredContainerEnvIsAllowlistedUnderEnvDefaultDeny(t *testing
 			"Deployment declared, on a restricted class only (#3725)", EnvStageEnvAllow, allow)
 	}
 }
+
+// Decision 003's worker-hygiene graft, the stamp half: every dispatcher-created
+// stage pod carries the owner label its creator's orphan sweep scopes itself
+// to, plus the VERBATIM attempt identity that sweep needs to ADDRESS the
+// attempt on the engine.
+//
+// The labels cannot serve as that address. sanitizeNameSegment lowercases,
+// maps every non-alphanumeric rune to '-' and truncates at 63, so it is not
+// injective: the identity below has a stage whose label collides with a
+// DIFFERENT stage's, and a sweep composing <run>/<stage>/<attempt> out of the
+// label would describe some other execution. The answer it would get back is
+// "no such workflow" — which this sweep reads as SETTLED and disposes. A lossy
+// address on the delete path is the fail-open shape, so the exact strings ride
+// as annotations.
+func TestRenderPodStampsOwnerAndVerbatimIdentity(t *testing.T) {
+	cfg := testConfig()
+	cfg.Owner = "goobers-worker-7"
+	attempt := testAttempt()
+	attempt.Number = 4
+	attempt.RunID = "Run.2026_08_22.0001"
+	attempt.Stage = "run.unit_tests"
+	pod, err := RenderPod(cfg, attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
+		t.Fatalf("%s = %q, want the creating worker's identity", LabelOwner, got)
+	}
+	if got := pod.Annotations[AnnotationRunID]; got != attempt.RunID {
+		t.Fatalf("%s = %q, want the verbatim run id %q", AnnotationRunID, got, attempt.RunID)
+	}
+	if got := pod.Annotations[AnnotationStage]; got != attempt.Stage {
+		t.Fatalf("%s = %q, want the verbatim stage %q", AnnotationStage, got, attempt.Stage)
+	}
+	// The labels are lossy for exactly this identity, which is what makes the
+	// annotations load-bearing rather than redundant.
+	if pod.Labels[LabelRun] == attempt.RunID || pod.Labels[LabelStage] == attempt.Stage {
+		t.Fatalf("labels (%q/%q) round-tripped this identity — pick one the sanitizer actually mangles, or this test asserts nothing",
+			pod.Labels[LabelRun], pod.Labels[LabelStage])
+	}
+	// Non-injective, concretely: a different stage sanitizes to the same label.
+	if pod.Labels[LabelStage] != sanitizeNameSegment("run-unit-tests", 63) {
+		t.Fatalf("stage label %q does not collide with the distinct stage \"run-unit-tests\" — the collision is the reason the address cannot come from the label",
+			pod.Labels[LabelStage])
+	}
+	if got := pod.Labels[LabelAttempt]; got != "4" {
+		t.Fatalf("%s = %q, want the attempt ordinal", LabelAttempt, got)
+	}
+}
+
+// The template path (DI-9) stamps the same ownership and identity: a consumer
+// Deployment controls sidecars and volumes, never whether its stage pod can be
+// reclaimed by the worker that created it.
+func TestRenderFromTemplateStampsOwnerAndVerbatimIdentity(t *testing.T) {
+	cfg := testConfig()
+	cfg.Owner = "goobers-worker-7"
+	template := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "consumer-runner"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "stage", Image: "ghcr.io/consumer/fat:1"}},
+				},
+			},
+		},
+	}
+	runner := RunnerSpec{
+		Name: "consumer", OS: "linux", HostKind: instance.RunnerHostDeployment, Host: "consumer-runner",
+	}
+	attempt := testAttempt()
+	pod, err := RenderFromTemplate(cfg, attempt, runner, template)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
+		t.Fatalf("%s = %q on the template path", LabelOwner, got)
+	}
+	if pod.Annotations[AnnotationRunID] != attempt.RunID || pod.Annotations[AnnotationStage] != attempt.Stage {
+		t.Fatalf("template-path pod carries no verbatim attempt identity: %v", pod.Annotations)
+	}
+}
+
+// An owner that is not label grammar is sanitized, not rejected and not
+// stamped raw — a pod create refused on a hostname is a worker that cannot
+// dispatch at all. The sweep's selector goes through the same function, so
+// stamp and selector agree by construction.
+func TestOwnerLabelSanitized(t *testing.T) {
+	cfg := testConfig()
+	cfg.Owner = "Worker_A.example.com"
+	pod, err := RenderPod(cfg, testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	got := pod.Labels[LabelOwner]
+	if got != cfg.ownerLabel() {
+		t.Fatalf("stamped owner %q != selector owner %q — a sweep would match nothing", got, cfg.ownerLabel())
+	}
+	if !labelValue.MatchString(got) {
+		t.Fatalf("owner label %q is not valid label grammar", got)
+	}
+}
+
+// No owner stamps NO label rather than a placeholder: a placeholder is a value
+// every other ownerless dispatcher would match too, which is the cross-worker
+// disposal the label exists to prevent.
+func TestOwnerLabelAbsentWithoutOwner(t *testing.T) {
+	cfg := testConfig()
+	cfg.Owner = ""
+	pod, err := RenderPod(cfg, testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if _, ok := pod.Labels[LabelOwner]; ok {
+		t.Fatalf("%s stamped without a configured owner: %q", LabelOwner, pod.Labels[LabelOwner])
+	}
+}
+
+// The identity annotations live in the goobers.dev/* namespace, so the §3
+// refuse-to-create already covers them: a workflow cannot pre-set the run id
+// its pod claims and thereby point the sweep at somebody else's workflow.
+func TestIdentityAnnotationsNonOverridable(t *testing.T) {
+	attempt := testAttempt()
+	attempt.ExtraAnnotations = map[string]string{AnnotationRunID: "someone-elses-run"}
+	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
+		t.Fatalf("workflow input set %s and the render accepted it", AnnotationRunID)
+	}
+	attempt = testAttempt()
+	attempt.ExtraLabels = map[string]string{LabelOwner: "goobers-worker-99"}
+	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
+		t.Fatalf("workflow input set %s and the render accepted it — a pod could hide from its owner's sweep", LabelOwner)
+	}
+}
+
+// labelValue is Kubernetes' label-value grammar.
+var labelValue = regexp.MustCompile(`^[a-z0-9A-Z]([-_.a-z0-9A-Z]*[a-z0-9A-Z])?$`)
