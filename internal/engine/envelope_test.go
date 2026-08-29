@@ -535,7 +535,7 @@ func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
 	a := &Activities{Det: det, Workspaces: workspaces}
 	res, err := a.RunDeterministic(context.Background(),
 		apiv1.InvocationEnvelope{TaskID: "run-x:local-ci", RunID: "run-x"},
-		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, "")
+		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, "", "")
 	if err != nil {
 		t.Fatalf("RunDeterministic error = %v, want a business-failure envelope", err)
 	}
