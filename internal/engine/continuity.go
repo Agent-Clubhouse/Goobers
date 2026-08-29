@@ -18,11 +18,24 @@ import (
 // Before this record the walk held ONE string — the last digest any pod
 // surrendered — and threaded it only to the next pod. Two things were wrong
 // with that. It was unkeyed, so nothing could say WHO a consumer was
-// building on, which is what DSL 3.0's repoFrom declares and what delivery
-// decision 002 rule 4 asks the runtime to enforce; and it reached only the
-// pod arm, so a self-placed stage or an agentic gate after a pod stage saw
-// base (#3803), and a pod after a self-placed committer was handed a stale
-// digest.
+// building on, which is what DSL 3.0's repoFrom (WF022, dsl-3.0.md §4)
+// declares and what #3767 asks the runtime to enforce; and it reached only
+// the pod arm, so a self-placed stage or an agentic gate after a pod stage
+// saw base (#3803), and a pod after a self-placed committer was handed a
+// stale digest.
+//
+// AUTHORITY for the runtime half of WF022 (selectDelta's refusal arm): this
+// is a rule this record introduces under #3767, not one of the numbered
+// rulings in delivery decisions 001-003. Decision 001 ruling 4 covers only
+// the gate arm (a gate inherits its subject's repo state through the
+// nil-repoFrom arm). repofrom.go's compile half classifies producers
+// statically (commitsRepo, agentic on a writable repo, the ref-advancing
+// builtins); the runtime record holds the stages that ACTUALLY committed —
+// a worker publishes only its stage's own commits (workerhost.PublishDelta),
+// a pod only base..HEAD when HEAD moved — so the refusal fires exactly when
+// the last stage that really advanced the branch is one the consumer did not
+// declare (the "unclassified committer" arm), and never for a stage whose
+// branch moved only because syncBase merged the base in.
 //
 // Everything here is plain workflow state derived from the pinned spec and
 // recorded activity results — deterministic under replay (architecture D8).
@@ -53,8 +66,8 @@ type deltaPublication struct {
 }
 
 // RepoHandoffUndeclaredErrorCode is the journal error code for the runtime
-// half of WF022 (decision 002 rule 4): a 3.0 consumer would have built on
-// commits from a stage its repoFrom does not declare. The run fails closed.
+// half of WF022 (#3767): a 3.0 consumer would have built on commits from a
+// stage its repoFrom does not declare. The run fails closed.
 const RepoHandoffUndeclaredErrorCode = "repo_handoff_undeclared"
 
 // selectDelta picks the continuity entry stage continues from.
@@ -85,7 +98,7 @@ func selectDelta(record []continuityEntry, stage string, repoFrom []string) (con
 	latest := record[len(record)-1]
 	if !declared[latest.Stage] {
 		return continuityEntry{}, fmt.Errorf(
-			"engine: stage %q would build on commits from %q (attempt %d, workspace delta %s), which its repoFrom [%s] does not declare (WF022 runtime, decision 002 rule 4); declare the producer or take it off the writable repo workspace",
+			"engine: stage %q would build on commits from %q (attempt %d, workspace delta %s), which its repoFrom [%s] does not declare (WF022 runtime, #3767); declare the producer or take it off the writable repo workspace",
 			stage, latest.Stage, latest.Attempt, latest.Digest, strings.Join(repoFrom, ", "))
 	}
 	for i := len(record) - 1; i >= 0; i-- {
@@ -97,37 +110,19 @@ func selectDelta(record []continuityEntry, stage string, repoFrom []string) (con
 	return latest, nil
 }
 
-// stageWorkspaceMode is the workspace mode a task's SELF arm provisions —
-// Run.Workspace for a deterministic task, the task-level Workspace for an
-// agentic one ("" being the writable repo default on both). The pod arm
-// reads the declaration itself (dispatchstage.go) and gates the delta on
-// IsWritableRepo there, where "" provisions nothing.
-func stageWorkspaceMode(t apiv1.Task) apiv1.WorkspaceMode {
-	if t.Type == apiv1.TaskDeterministic {
-		if t.Run == nil {
-			return ""
-		}
-		return t.Run.Workspace
-	}
-	return t.Workspace
-}
-
-// gateWorkspaceMode is the workspace an agentic gate's reviewer evaluates in:
-// AgenticGate.Workspace, "" preserving the historical writable repo worktree.
-func gateWorkspaceMode(g apiv1.Gate) apiv1.WorkspaceMode {
-	if g.Agentic == nil {
-		return ""
-	}
-	return g.Agentic.Workspace
-}
-
 // taskConsumesDelta reports whether a task's workspace, on the arm it will
 // execute on, is one the continuity record feeds. Scratch and repo-readonly
 // never receive a delta on either arm (a read-only stage reads the pinned
 // base by definition); the pod arm additionally treats an undeclared mode as
 // no workspace at all.
+//
+// The mode is Task.EffectiveWorkspace — the SAME resolution the pod dispatch
+// (dispatchstage.go) and the activities provision from. A private copy here
+// that read Run.Workspace alone once disagreed with them for a task-level
+// `workspace: repo`: the pod was cut a writable repo workspace and handed no
+// delta, the exact silent drop this record exists to remove.
 func taskConsumesDelta(t apiv1.Task, remote bool) bool {
-	mode := stageWorkspaceMode(t)
+	mode := t.EffectiveWorkspace()
 	if remote {
 		return mode.IsWritableRepo()
 	}
@@ -161,7 +156,7 @@ func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []c
 // is handed the last entry whenever its reviewer evaluates in a writable repo
 // workspace.
 func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntry, rec *runJournal) continuityEntry {
-	if g.Evaluator != apiv1.EvaluatorAgentic || !writableWorkspace(gateWorkspaceMode(g)) {
+	if g.Evaluator != apiv1.EvaluatorAgentic || !writableWorkspace(g.EffectiveWorkspace()) {
 		return continuityEntry{}
 	}
 	selected, _ := selectDelta(record, g.Name, nil)

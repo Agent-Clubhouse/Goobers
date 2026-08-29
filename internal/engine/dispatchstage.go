@@ -275,12 +275,12 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// well-behaved agent reports the absence rather than failing loudly.
 	//
 	// Run.Workspace takes precedence when both are set, matching the field's
-	// documented contract.
+	// documented contract — apiv1.EffectiveWorkspace is the one place that
+	// precedence is written, shared with the walk's continuity selector so
+	// the pod's workspace and the delta it is handed can never be decided
+	// from two different readings of one declaration.
 	needsRepoContext := false
-	workspace := input.Workspace
-	if input.Run != nil && input.Run.Workspace != "" {
-		workspace = input.Run.Workspace
-	}
+	workspace := apiv1.EffectiveWorkspace(input.Workspace, input.Run)
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
@@ -397,11 +397,13 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		WorkspaceDelta:     surrendered.WorkspaceDelta,
 		WorkspaceDeltaBase: surrendered.WorkspaceDeltaBase,
 		WorkspaceDeltaTip:  surrendered.WorkspaceDeltaTip,
-		// A pod on a writable repo workspace that succeeded and surrendered
-		// no digest had no commits beyond base (dispatch-exec fails the stage
-		// rather than guess when it cannot tell), so the record's silence is
-		// a fact worth journaling.
-		WorkspaceDeltaUnchanged: surrendered.WorkspaceDelta == "" && workspace.IsWritableRepo() && surrendered.Result.Status == apiv1.ResultSuccess,
+		// "Unchanged" is a positive claim about the branch — the pod checked
+		// and found no commits beyond base — so it is REPORTED by the pod
+		// (dispatch-exec, beside the digest it did not publish), never
+		// inferred here from an absent digest: a stage image that predates
+		// the field surrenders nothing about it and is journaled as nothing,
+		// not as a verified fact.
+		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 	})
 }
 

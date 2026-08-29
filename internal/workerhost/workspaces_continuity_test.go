@@ -243,3 +243,240 @@ func TestWorktreeWorkspacePublishesDelta(t *testing.T) {
 		t.Fatalf("PublishDelta without a store = %+v, %v; want nothing", pub, err)
 	}
 }
+
+// A gate or agentic task declaring `workspace: repo-readonly` reaches this
+// provisioner with that mode — the engine threads the declaration through
+// unchanged — and until this arm existed it fell to the unknown-mode
+// default: a gate that used to run (as an over-privileged writable worktree)
+// failed closed with `unknown workspace mode "repo-readonly"`. The arm is the
+// local runner's createStageWorkspace arm: a DETACHED checkout at the pinned
+// base, so it never sees the run branch's commits, never collides with the
+// branch another worktree holds, and never enters the continuity record.
+func TestProvisionRepoReadOnlyIsDetachedAtBase(t *testing.T) {
+	repo := newFixtureRepo(t)
+	base := gitOutput(t, repo, "rev-parse", "main")
+	store, err := blobstore.NewDir(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &WorktreeWorkspaces{Manager: mgr, CloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil }, Store: store}
+	req := engine.WorkspaceRequest{
+		RunID: "run-ro", Stage: "implement", Gaggle: "web", Workflow: "implementation",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Mode:    apiv1.WorkspaceRepo,
+	}
+	// The run branch moves ahead of base first, so "at base" is
+	// distinguishable from "on the run branch".
+	writable, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(writable.Path(), "from-implement.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, writable.Path(), "add", "from-implement.txt")
+	runGit(t, writable.Path(), "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "-m", "implement")
+	if err := writable.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	req.Stage = "review"
+	req.Mode = apiv1.WorkspaceRepoReadOnly
+	ro, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatalf("REGRESSION: a stage declaring workspace: repo-readonly cannot be provisioned on a worker: %v", err)
+	}
+	defer func() { _ = ro.Remove(context.Background()) }()
+	if got := gitOutput(t, ro.Path(), "rev-parse", "HEAD"); got != base {
+		t.Fatalf("read-only HEAD = %s, want the pinned base %s", got, base)
+	}
+	if got := gitOutput(t, ro.Path(), "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+		t.Fatalf("read-only checkout is on branch %q, want detached", got)
+	}
+	if _, err := os.Stat(filepath.Join(ro.Path(), "from-implement.txt")); !os.IsNotExist(err) {
+		t.Fatalf("read-only workspace carries the run branch's commit (stat err %v); want the pinned base only", err)
+	}
+	if _, err := os.Stat(filepath.Join(ro.Path(), "README.md")); err != nil {
+		t.Fatalf("read-only workspace has no checkout content: %v", err)
+	}
+	// Never a publisher: nothing reported, not even Unchanged.
+	if pub, err := ro.(engine.DeltaPublisher).PublishDelta(context.Background()); err != nil || pub != (engine.WorkspaceDeltaPublication{}) {
+		t.Fatalf("PublishDelta on a read-only workspace = %+v, %v; want nothing", pub, err)
+	}
+	// Each contradiction with "reads the pinned base" is refused by name.
+	for _, tc := range []struct {
+		name string
+		mut  func(*engine.WorkspaceRequest)
+		want string
+	}{
+		{"syncBase", func(r *engine.WorkspaceRequest) { r.SyncBase = true }, "syncBase requires a writable repo workspace"},
+		{"rebound branch", func(r *engine.WorkspaceRequest) { r.WorkspaceBranch = "goobers/pr/7" }, "rebound branch"},
+		{"delta", func(r *engine.WorkspaceRequest) {
+			r.WorkspaceDelta = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		}, "read-only stage reads the pinned base"},
+	} {
+		bad := req
+		bad.Stage = "ro-" + strings.ReplaceAll(tc.name, " ", "-")
+		tc.mut(&bad)
+		if _, err := p.Provision(context.Background(), bad); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("repo-readonly + %s = %v, want a refusal naming %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// The contract the engine's fakeWorkspaces mirrors (its
+// provisionableWorkspaceModes): every value the WorkspaceMode enum admits,
+// plus the unset default, has an arm here, and an unknown value has none.
+// Both defects the review found were declaration-SHAPE defects (a spelling,
+// an enum value) that no mechanism ablation could surface; this table is the
+// check that would have caught the enum half.
+func TestProvisionAcceptsEveryDeclaredWorkspaceMode(t *testing.T) {
+	repo := newFixtureRepo(t)
+	mgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &WorktreeWorkspaces{
+		Manager: mgr, ScratchDir: filepath.Join(t.TempDir(), "scratch"),
+		CloneURL: func(apiv1.RepoRef) (string, error) { return repo, nil },
+	}
+	for _, mode := range []apiv1.WorkspaceMode{"", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly} {
+		stage := "stage-" + string(mode)
+		if mode == "" {
+			stage = "stage-default"
+		}
+		ws, err := p.Provision(context.Background(), engine.WorkspaceRequest{
+			RunID: "run-enum", Stage: stage, Gaggle: "web", Workflow: "implementation",
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+			Mode:    mode,
+		})
+		if err != nil {
+			t.Errorf("Provision(%q) = %v, want every enum value provisionable on a worker", mode, err)
+			continue
+		}
+		if ws.Path() == "" {
+			t.Errorf("Provision(%q) returned no path", mode)
+		}
+		_ = ws.Remove(context.Background())
+	}
+	if _, err := p.Provision(context.Background(), engine.WorkspaceRequest{RunID: "run-enum", Stage: "bad", Mode: "warp"}); err == nil || !strings.Contains(err.Error(), "unknown workspace mode") {
+		t.Fatalf("Provision(\"warp\") = %v, want the unknown-mode refusal", err)
+	}
+}
+
+// A stage that declares run.syncBase and commits NOTHING is not a
+// publication. PublishDelta once keyed on the worktree's starting ref, which
+// Create captures BEFORE the syncBase merge, so a base that advanced between
+// two stages read as "this stage moved its branch": when the fast-forward
+// landed the branch exactly at base the bundle range was empty and git
+// refused it — a hard failure for a stage that did nothing wrong — and in
+// every other case a non-producer (the implementation lane's local-ci)
+// became the record's newest entry, which the engine's WF022 runtime arm
+// then refuses a declared 3.0 consumer over. Publication is gated on the
+// stage's OWN commits, measured from the HEAD it was handed.
+func TestSyncBaseOnlyStageDoesNotPublish(t *testing.T) {
+	src := t.TempDir()
+	runGit(t, src, "init", "--initial-branch=main")
+	runGit(t, src, "config", "user.email", "test@example.com")
+	runGit(t, src, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, src, "add", "README.md")
+	runGit(t, src, "commit", "-q", "-m", "initial")
+	advanceBase := func(name string) {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, src, "add", name)
+		runGit(t, src, "commit", "-q", "-m", "advance "+name)
+	}
+
+	store, err := blobstore.NewDir(filepath.Join(t.TempDir(), "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log strings.Builder
+	p := &WorktreeWorkspaces{Manager: mgr, CloneURL: func(apiv1.RepoRef) (string, error) { return src, nil }, Store: store, Log: &log}
+	req := engine.WorkspaceRequest{
+		RunID: "run-sync", Stage: "one", Gaggle: "web", Workflow: "implementation",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Mode:    apiv1.WorkspaceRepo,
+	}
+	// Stage one creates the run branch at main and commits nothing.
+	one, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub, err := one.(engine.DeltaPublisher).PublishDelta(context.Background()); err != nil || !pub.Unchanged || pub.Digest != "" {
+		t.Fatalf("stage one PublishDelta = %+v, %v; want Unchanged", pub, err)
+	}
+	if err := one.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Base advances; stage two syncs it in and commits nothing.
+	advanceBase("build-fix.txt")
+	req.Stage, req.SyncBase = "two", true
+	two, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(two.Path(), "build-fix.txt")); err != nil {
+		t.Fatalf("syncBase did not land the advanced base: %v", err)
+	}
+	pub, err := two.(engine.DeltaPublisher).PublishDelta(context.Background())
+	if err != nil {
+		t.Fatalf("stage two PublishDelta failed on a stage that committed nothing: %v", err)
+	}
+	if !pub.Unchanged || pub.Digest != "" {
+		t.Fatalf("stage two PublishDelta = %+v, want Unchanged: a syncBase-only stage is not a producer", pub)
+	}
+	if err := two.Remove(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Base advances again; stage three syncs AND commits — that IS a
+	// publication, carrying its commit on top of the synced base into a pod.
+	advanceBase("second-fix.txt")
+	req.Stage = "three"
+	three, err := p.Provision(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = three.Remove(context.Background()) }()
+	if err := os.WriteFile(filepath.Join(three.Path(), "from-three.txt"), []byte("three\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, three.Path(), "add", "from-three.txt")
+	runGit(t, three.Path(), "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "-m", "three")
+	head := gitOutput(t, three.Path(), "rev-parse", "HEAD")
+	pub, err = three.(engine.DeltaPublisher).PublishDelta(context.Background())
+	if err != nil {
+		t.Fatalf("stage three PublishDelta: %v", err)
+	}
+	if pub.Digest == "" || pub.Unchanged || pub.Tip != head {
+		t.Fatalf("stage three PublishDelta = %+v, want a digest with tip %s", pub, head)
+	}
+	data, err := store.Get(context.Background(), pub.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := workspacedelta.Load(data, pub.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := filepath.Join(t.TempDir(), "pod")
+	runGit(t, filepath.Dir(pod), "clone", "-q", "--branch", "main", src, pod)
+	if tip, err := workspacedelta.Fetch(context.Background(), testGit{}, pod, bundle); err != nil || tip != head {
+		t.Fatalf("Fetch into a pod clone = %s, %v; want %s", tip, err, head)
+	}
+}

@@ -38,6 +38,17 @@ func testWorkspaces(t *testing.T) *fakeWorkspaces {
 	return &fakeWorkspaces{root: t.TempDir()}
 }
 
+// provisionableWorkspaceModes is the set of modes the PRODUCTION provisioner
+// (workerhost.WorktreeWorkspaces.Provision) has an arm for — the full
+// WorkspaceMode enum plus the unset default. The fake refuses anything else
+// exactly as the real one does, so an engine test cannot pass by threading a
+// mode the worker would reject; workerhost's
+// TestProvisionAcceptsEveryDeclaredWorkspaceMode runs the same table through
+// the real provisioner, which is what keeps the two in agreement.
+var provisionableWorkspaceModes = map[apiv1.WorkspaceMode]bool{
+	"": true, apiv1.WorkspaceRepo: true, apiv1.WorkspaceScratch: true, apiv1.WorkspaceRepoReadOnly: true,
+}
+
 func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Workspace, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -45,6 +56,9 @@ func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Wor
 		err := f.provisionErrs[0]
 		f.provisionErrs = f.provisionErrs[1:]
 		return nil, err
+	}
+	if !provisionableWorkspaceModes[req.Mode] {
+		return nil, fmt.Errorf("fakeWorkspaces: unknown workspace mode %q for stage %q (workerhost.WorktreeWorkspaces would refuse it too)", req.Mode, req.Stage)
 	}
 	f.requests = append(f.requests, req)
 	if f.emptyPath {

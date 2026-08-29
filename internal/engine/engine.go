@@ -558,13 +558,17 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
 		// the journal ungraded and diverge from the local runner.
-		// workspaceDelta rides beside workspaceBranch as a trailing positional
-		// argument (see Activities.InvokeGoober for why positional).
+		// workspaceDelta and the declared workspace ride beside
+		// workspaceBranch as trailing positional arguments (see
+		// Activities.InvokeGoober for why positional). The workspace is the
+		// task's own declaration — the same one the continuity selector
+		// decided the delta from — so the worktree the agent is cut and the
+		// commits it is handed can never disagree.
 		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta).Get(ctx, &result)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace()).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
 		}, deltaOut)
@@ -580,6 +584,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return apiv1.ResultEnvelope{}, fmt.Errorf("task %q run declares no command or script; refusing to dispatch an empty command or script", t.Name)
 	}
 	run := *t.Run
+	// The activity provisions (and publishes) from run.Workspace, so the
+	// declared precedence is resolved HERE, once, before dispatch: a
+	// task-level `workspace:` on a deterministic task whose run block omits
+	// one is legal (Run.Workspace merely wins when both are set) and must
+	// reach the provisioner, exactly as the pod arm and the local runner's
+	// taskWorkspaceMode already read it. Pure over the pinned spec, so
+	// replay-deterministic.
+	run.Workspace = t.EffectiveWorkspace()
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
@@ -658,7 +670,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// history recorded before them replays (see Activities.ReviewGoober).
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta, gateWorkspaceMode(g)).Get(ctx, &verdict)
+			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta, g.EffectiveWorkspace()).Get(ctx, &verdict)
 		}); err != nil {
 			return "", nil, err
 		}

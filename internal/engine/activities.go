@@ -272,25 +272,36 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 	return nil
 }
 
-// InvokeGoober executes an agentic task.
+// InvokeGoober executes an agentic task in the workspace the task declares
+// (Task.Workspace; "" keeps the historical writable repo worktree), the same
+// mode the walk's continuity selector decided the delta from — so a stage
+// declaring repo-readonly is cut a detached read-only checkout, is handed no
+// delta, and can never publish a base-rooted bundle over its predecessor's
+// entry. This is the local runner's taskWorkspaceMode parity; before it the
+// engine hard-coded the writable repo here and honoured the declaration only
+// in the selector, which is two readings of one field.
 //
-// workspaceDelta (#3803) is a TRAILING POSITIONAL argument, like
-// workspaceBranch before it, rather than a struct replacing both. The Go
-// SDK decodes activity arguments positionally and zero-fills parameters the
-// recorded payload does not carry (converter.FromPayloads stops at the
-// shorter side), so an activity scheduled by the previous engine build — an
-// in-flight run at deploy — executes here with workspaceDelta == "" and
-// behaves exactly as it did, and a history recorded with the two-argument
-// shape replays under this code (TestContinuityPreChangeHistoryReplays). A
-// struct in the second position would fail to decode those payloads.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
+// workspaceDelta (#3803) and workspace are TRAILING POSITIONAL arguments,
+// like workspaceBranch before them, rather than a struct replacing all of
+// them. The Go SDK decodes activity arguments positionally and zero-fills
+// parameters the recorded payload does not carry (converter.FromPayloads
+// stops at the shorter side), so an activity scheduled by the previous engine
+// build — an in-flight run at deploy — executes here with workspaceDelta ==
+// "" and workspace == "" and behaves exactly as it did, and a history
+// recorded with the two-argument shape replays under this code
+// (TestContinuityPreChangeHistoryReplays). A struct in the second position
+// would fail to decode those payloads.
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
 		return stageActivityResult{}, err
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch, workspaceDelta)
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
@@ -300,7 +311,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	result := stageActivityResult{ResultEnvelope: res}
-	if err := publishWorkspaceDelta(ctx, ws, apiv1.WorkspaceRepo, &result); err != nil {
+	if err := publishWorkspaceDelta(ctx, ws, workspace, &result); err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	return a.scrubStageActivityResult(result)
@@ -336,10 +347,12 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	return a.scrubVerdict(verdict)
 }
 
-// RunDeterministic executes a deterministic task in the workspace mode the
-// task's run block declares (repo by default, scratch on request).
-// workspaceDelta is a trailing positional for the replay reason InvokeGoober
-// documents.
+// RunDeterministic executes a deterministic task in the workspace mode
+// run.Workspace carries (repo by default, scratch on request). The walk
+// resolves the task's declared precedence into run.Workspace before
+// dispatch (Task.EffectiveWorkspace), so a task-level `workspace:` reaches
+// this provisioner too. workspaceDelta is a trailing positional for the
+// replay reason InvokeGoober documents.
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)

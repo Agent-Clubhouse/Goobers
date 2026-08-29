@@ -142,7 +142,32 @@ func TestWorkspaceDeltaRefusesNonWritableWorkspaces(t *testing.T) {
 			if digest != "" {
 				t.Fatalf("publishWorkspaceDelta(%q) = %q, want no delta", mode, digest)
 			}
+			if published.Unchanged {
+				t.Fatalf("publishWorkspaceDelta(%q) claims Unchanged; a non-writable workspace has checked no branch and must claim nothing", mode)
+			}
 		})
+	}
+}
+
+// "Unchanged" is the pod's own finding — a writable repo branch it CHECKED
+// and found carrying nothing beyond base — surrendered explicitly so the
+// engine journals it as a fact rather than inferring it from an absent digest
+// (which is also what a scratch stage, or a stage image predating the field,
+// surrenders).
+func TestWorkspaceDeltaReportsUnchangedForACheckedWritableBranch(t *testing.T) {
+	origin := initBareOrigin(t)
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+	pod := filepath.Join(t.TempDir(), "pod")
+	runGitT(t, filepath.Dir(pod), "clone", "--branch", "main", origin, pod)
+	runGitT(t, pod, "checkout", "-b", "e2e/wf/run-unchanged")
+	published, err := publishWorkspaceDelta(context.Background(), pod, os.Stderr)
+	if err != nil {
+		t.Fatalf("publishWorkspaceDelta: %v", err)
+	}
+	if published.Digest != "" || !published.Unchanged {
+		t.Fatalf("publishWorkspaceDelta on a branch at base = %+v, want Unchanged and no digest", published)
 	}
 }
 

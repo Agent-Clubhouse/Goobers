@@ -92,7 +92,7 @@ func TestDispatchCanaryRefusesLeakedEnvelopes(t *testing.T) {
 	env := poisonedEnvelope(secret)
 	ctx := context.Background()
 
-	_, err := activities.InvokeGoober(ctx, env, "goobers/wf/run-canary", "")
+	_, err := activities.InvokeGoober(ctx, env, "goobers/wf/run-canary", "", "")
 	assertCanaryRefusal(t, err)
 	_, err = activities.ReviewGoober(ctx, env, "goobers/wf/run-canary", "", "")
 	assertCanaryRefusal(t, err)

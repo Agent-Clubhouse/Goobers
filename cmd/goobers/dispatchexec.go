@@ -109,6 +109,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
 		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		WorkspaceDeltaUnchanged: delta.Unchanged,
 	})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)

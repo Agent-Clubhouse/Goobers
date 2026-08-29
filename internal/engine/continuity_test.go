@@ -353,7 +353,7 @@ func TestRepoFromSelectsDeclaredProducer(t *testing.T) {
 	}
 }
 
-// #3767 negative arm — the discriminating one (decision 002 rule 4): an
+// #3767 negative arm — the discriminating one (WF022 runtime half): an
 // UNCLASSIFIED committer (an sh stage on the repo workspace without
 // commitsRepo) is bundled by its pod regardless, so the record's most recent
 // entry is a stage the consumer's repoFrom does not declare. The run fails
@@ -386,7 +386,7 @@ func TestRepoFromRefusesUndeclaredRuntimeProducer(t *testing.T) {
 	env.ExecuteWorkflow(Run, in)
 	err := env.GetWorkflowError()
 	if err == nil {
-		t.Fatal("the run completed: c built on x's undeclared commits (last-writer), where decision 002 rule 4 requires a fail-closed refusal")
+		t.Fatal("the run completed: c built on x's undeclared commits (last-writer), where the WF022 runtime half (#3767) requires a fail-closed refusal")
 	}
 	for _, want := range []string{`stage "c"`, `commits from "x"`, "repoFrom [a]", "WF022 runtime"} {
 		if !strings.Contains(err.Error(), want) {
@@ -609,5 +609,262 @@ func TestContinuityPreChangeHistoryReplays(t *testing.T) {
 	replayer.RegisterWorkflow(Run)
 	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
 		t.Fatalf("pre-change history does not replay under the continuity-record code: %v", err)
+	}
+}
+
+// Both spellings of one declaration — Task.Workspace and Run.Workspace —
+// resolve through apiv1.Task.EffectiveWorkspace on EVERY arm, over the full
+// WorkspaceMode enum. Found in review of this PR: a deterministic task
+// declaring `workspace: repo` at the TASK level with a run block that omits
+// one compiles clean (checks.go refuses only two DIFFERENT values), was cut a
+// WRITABLE repo pod workspace by dispatch (which resolved Run-then-Task), and
+// was handed NO delta by the selector (a private copy that read Run.Workspace
+// alone) — the exact #3803 silent drop, still open for one legal spelling.
+// Every earlier continuity test built its pod tasks with podTask(), which
+// always spells the mode on Run, so the table is what makes the two
+// spellings' agreement a tested fact at the real seams: the dispatcher's
+// attempt on the pod arm, the provisioner's request on the self arm.
+func TestWorkspaceDeclarationSpellingsAgreeOnEveryArm(t *testing.T) {
+	spellings := []struct {
+		name  string
+		apply func(*apiv1.Task, apiv1.WorkspaceMode)
+	}{
+		{"run.workspace", func(t *apiv1.Task, m apiv1.WorkspaceMode) { t.Run.Workspace = m }},
+		{"task.workspace", func(t *apiv1.Task, m apiv1.WorkspaceMode) { t.Workspace = m }},
+	}
+	modes := []apiv1.WorkspaceMode{apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly}
+	consumer := func(spell func(*apiv1.Task, apiv1.WorkspaceMode), mode apiv1.WorkspaceMode) apiv1.Task {
+		consume := apiv1.Task{Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume", Run: &apiv1.DeterministicRun{Command: []string{"consume.sh"}}}
+		spell(&consume, mode)
+		return consume
+	}
+	for _, sp := range spellings {
+		for _, mode := range modes {
+			name := sp.name + "/" + string(mode)
+			t.Run("pod/"+name, func(t *testing.T) {
+				spec := apiv1.WorkflowSpec{
+					Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "seed",
+					Tasks: []apiv1.Task{podTask("seed", "consume", nil), consumer(sp.apply, mode)},
+				}
+				in := runInput("spelling-pod-"+sp.name+"-"+string(mode), spec)
+				in.Placements = []PinnedPlacement{remotePin("seed"), remotePin("consume")}
+				surrenders := surrenderStore(t)
+				surrenderDelta(t, surrenders, in.RunID, "seed", 1, deltaA)
+				putSurrendered(t, surrenders, in.RunID, "consume", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
+				fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+				var ts testsuite.WorkflowTestSuite
+				env := temporaltest.NewWorkflowEnvironment(&ts)
+				env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+				env.ExecuteWorkflow(Run, in)
+				if err := env.GetWorkflowError(); err != nil {
+					t.Fatalf("workflow error: %v", err)
+				}
+				attempts, _ := fake.recorded()
+				if len(attempts) != 2 {
+					t.Fatalf("attempts = %d, want seed and consume", len(attempts))
+				}
+				got := attempts[1]
+				if got.Workspace != string(mode) {
+					t.Fatalf("consume pod workspace = %q, want the declared %q", got.Workspace, mode)
+				}
+				wantDelta := ""
+				if mode.IsWritableRepo() {
+					wantDelta = deltaA
+				}
+				if got.WorkspaceDelta != wantDelta {
+					t.Fatalf("consume pod: workspace %q, delta %q; want delta %q — a WRITABLE pod workspace handed no delta checks out base and silently drops seed's commits", got.Workspace, got.WorkspaceDelta, wantDelta)
+				}
+			})
+			t.Run("self/"+name, func(t *testing.T) {
+				spec := apiv1.WorkflowSpec{
+					Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "seed",
+					Tasks: []apiv1.Task{podTask("seed", "consume", nil), consumer(sp.apply, mode)},
+				}
+				in := projectionInput("spelling-self-"+sp.name+"-"+string(mode), spec)
+				in.Placements = []PinnedPlacement{remotePin("seed")}
+				surrenders := surrenderStore(t)
+				surrenderDelta(t, surrenders, in.RunID, "seed", 1, deltaA)
+				fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+				workspaces := testWorkspaces(t)
+				var ran apiv1.DeterministicRun
+				det := &fakeRunner{run: func(_ context.Context, _ apiv1.InvocationEnvelope, r apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+					ran = r
+					return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+				}}
+				proj := executeForProjection(t, in, &Activities{Det: det, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenders}, false)
+				got := requestFor(t, workspaces.provisioned(), "consume")
+				if got.Mode != mode || ran.Workspace != mode {
+					t.Fatalf("consume provisioned as %q and executed with run.workspace %q, want the declared %q on both", got.Mode, ran.Workspace, mode)
+				}
+				wantDelta := ""
+				if writableWorkspace(mode) {
+					wantDelta = deltaA
+				}
+				if got.WorkspaceDelta != wantDelta {
+					t.Fatalf("consume provisioned with delta %q on a %q workspace, want %q", got.WorkspaceDelta, mode, wantDelta)
+				}
+				var selected int
+				for _, ev := range deltaEvents(proj) {
+					if ev.Stage == "consume" && ev.Runner["action"] == string(journal.WorkspaceDeltaSelected) {
+						selected++
+					}
+				}
+				wantSelected := 0
+				if wantDelta != "" {
+					wantSelected = 1
+				}
+				if selected != wantSelected {
+					t.Fatalf("journal has %d selected events for a %q consumer, want %d", selected, mode, wantSelected)
+				}
+			})
+		}
+	}
+}
+
+// An agentic task's declared workspace (Task.Workspace — the only place an
+// agentic task can express one) reaches the self-arm provisioner and gates
+// its PUBLICATION, not just the selector. Before this, InvokeGoober
+// hard-coded the writable repo: a `workspace: repo-readonly` research stage
+// (the field's own motivating case) was denied a delta by the selector yet
+// cut a WRITABLE worktree at base, and publishWorkspaceDelta was invoked
+// with the hard-coded repo mode — so had the agent committed, a base-rooted
+// bundle would have become the record's newest entry over the real
+// producer's, and the next pod would have lost the producer's work.
+func TestAgenticTaskHonoursDeclaredWorkspace(t *testing.T) {
+	build := func(name string, mode apiv1.WorkspaceMode) (RunInput, *dispatcher.SurrenderDir) {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "seed",
+			Tasks: []apiv1.Task{
+				podTask("seed", "research", nil),
+				{Name: "research", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "research", Workspace: mode, Next: "consume"},
+				podTask("consume", "", nil),
+			},
+		}
+		in := projectionInput(name, spec)
+		in.Placements = []PinnedPlacement{remotePin("seed"), remotePin("consume")}
+		surrenders := surrenderStore(t)
+		surrenderDelta(t, surrenders, in.RunID, "seed", 1, deltaA)
+		putSurrendered(t, surrenders, in.RunID, "consume", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
+		return in, surrenders
+	}
+	inv := &fakeInvoker{invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+	}}
+	// The fake workspace WOULD publish if asked — the declared mode is what
+	// must stop the ask.
+	publishing := func(t *testing.T) *fakeWorkspaces {
+		w := testWorkspaces(t)
+		w.publish = func(string) (WorkspaceDeltaPublication, error) {
+			return WorkspaceDeltaPublication{Digest: deltaB, Base: "b0", Tip: "b1"}, nil
+		}
+		return w
+	}
+	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceRepoReadOnly, apiv1.WorkspaceScratch} {
+		t.Run("self/"+string(mode), func(t *testing.T) {
+			in, surrenders := build("agentic-self-"+string(mode), mode)
+			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+			workspaces := publishing(t)
+			proj := executeForProjection(t, in, &Activities{Goober: inv, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenders}, false)
+			got := requestFor(t, workspaces.provisioned(), "research")
+			if got.Mode != mode || got.WorkspaceDelta != "" {
+				t.Fatalf("research provisioned as %+v, want the declared %q mode and no delta (InvokeGoober hard-coding the writable repo is the bug)", got, mode)
+			}
+			attempts, _ := fake.recorded()
+			if len(attempts) != 2 || attempts[1].WorkspaceDelta != deltaA {
+				t.Fatalf("consume pod carried %q over %d attempts, want seed's %s — a %q research stage must never enter the record", attempts[len(attempts)-1].WorkspaceDelta, len(attempts), deltaA, mode)
+			}
+			for _, ev := range deltaEvents(proj) {
+				if ev.Stage == "research" {
+					t.Fatalf("journal carries a runner.workspace.delta event for the %q research stage: %+v", mode, ev.Runner)
+				}
+			}
+		})
+	}
+	t.Run("self/default is the writable repo with the delta", func(t *testing.T) {
+		in, surrenders := build("agentic-self-default", "")
+		fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+		workspaces := publishing(t)
+		executeForProjection(t, in, &Activities{Goober: inv, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenders}, false)
+		got := requestFor(t, workspaces.provisioned(), "research")
+		if got.Mode != apiv1.WorkspaceRepo || got.WorkspaceDelta != deltaA {
+			t.Fatalf("research provisioned as %+v, want repo mode with seed's %s (the historical default, byte-identical)", got, deltaA)
+		}
+		attempts, _ := fake.recorded()
+		if len(attempts) != 2 || attempts[1].WorkspaceDelta != deltaB {
+			t.Fatalf("consume pod carried %q, want research's own %s", attempts[len(attempts)-1].WorkspaceDelta, deltaB)
+		}
+	})
+	t.Run("pod/repo-readonly", func(t *testing.T) {
+		in, surrenders := build("agentic-pod-readonly", apiv1.WorkspaceRepoReadOnly)
+		in.Placements = append(in.Placements, remotePin("research"))
+		putSurrendered(t, surrenders, in.RunID, "research", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
+		fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+		executeForProjection(t, in, &Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders}, false)
+		attempts, _ := fake.recorded()
+		if len(attempts) != 3 {
+			t.Fatalf("attempts = %d, want seed, research, consume", len(attempts))
+		}
+		if attempts[1].Workspace != string(apiv1.WorkspaceRepoReadOnly) || attempts[1].WorkspaceDelta != "" {
+			t.Fatalf("research pod = workspace %q delta %q, want repo-readonly and no delta", attempts[1].Workspace, attempts[1].WorkspaceDelta)
+		}
+		if attempts[2].WorkspaceDelta != deltaA {
+			t.Fatalf("consume pod carried %q, want seed's %s", attempts[2].WorkspaceDelta, deltaA)
+		}
+	})
+}
+
+// "unchanged" on the pod arm is the pod's REPORTED finding (dispatch-exec
+// checked the branch and surrendered WorkspaceDeltaUnchanged), never inferred
+// from an absent digest: a stage image that predates the field, or a pod
+// whose blob endpoint was absent, surrenders success with no digest and no
+// claim, and the journal records nothing about its branch rather than a
+// positive fact nothing verified.
+func TestPodArmJournalsUnchangedOnlyWhenThePodReportsIt(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}}, Start: "commit",
+		Tasks: []apiv1.Task{podTask("commit", "", nil)},
+	}
+	for _, tc := range []struct {
+		name       string
+		reported   bool
+		wantEvents int
+	}{
+		{"pod reports unchanged", true, 1},
+		{"pre-field stage image reports nothing", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := projectionInput("pod-unchanged-"+strings.ReplaceAll(tc.name, " ", "-"), spec)
+			in.Placements = []PinnedPlacement{remotePin("commit")}
+			surrenders := surrenderStore(t)
+			putSurrendered(t, surrenders, in.RunID, "commit", 1, dispatcher.SurrenderedResult{
+				Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, WorkspaceDeltaUnchanged: tc.reported,
+			})
+			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+			proj := executeForProjection(t, in, &Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders}, false)
+			events := deltaEvents(proj)
+			if len(events) != tc.wantEvents {
+				t.Fatalf("runner.workspace.delta events = %+v, want %d", events, tc.wantEvents)
+			}
+			if tc.reported && (events[0].Runner["action"] != string(journal.WorkspaceDeltaUnchanged) || events[0].Stage != "commit") {
+				t.Fatalf("event = %+v, want unchanged for commit", events[0])
+			}
+		})
+	}
+}
+
+// The engine's fakeWorkspaces refuses exactly the modes
+// workerhost.WorktreeWorkspaces refuses, so no engine test can pass by
+// threading a mode the real provisioner would reject (the seam the
+// repo-readonly gate regression hid behind). The same table runs through the
+// real provisioner in workerhost's TestProvisionAcceptsEveryDeclaredWorkspaceMode.
+func TestFakeWorkspacesMirrorTheProvisionersAcceptedModes(t *testing.T) {
+	workspaces := testWorkspaces(t)
+	for _, mode := range []apiv1.WorkspaceMode{"", apiv1.WorkspaceRepo, apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly} {
+		if _, err := workspaces.Provision(context.Background(), WorkspaceRequest{RunID: "r", Stage: "s", Mode: mode}); err != nil {
+			t.Errorf("Provision(%q) = %v, want the enum value accepted", mode, err)
+		}
+	}
+	if _, err := workspaces.Provision(context.Background(), WorkspaceRequest{RunID: "r", Stage: "s", Mode: "warp"}); err == nil {
+		t.Fatal("Provision(\"warp\") succeeded; the real provisioner refuses an unknown mode and the fake must too")
 	}
 }

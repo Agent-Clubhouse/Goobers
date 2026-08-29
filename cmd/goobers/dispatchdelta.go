@@ -109,11 +109,17 @@ func (g podGit) Output(ctx context.Context, dir string, args ...string) (string,
 }
 
 // publishedWorkspaceDelta is what a pod surrenders about the delta it
-// published: the digest the engine threads and the two SHAs it journals.
+// published: the digest the engine threads and the two SHAs it journals — or
+// Unchanged, the pod's own finding that its writable repo branch carries no
+// commits beyond base. Unchanged is reported, not left for the engine to
+// infer from an empty Digest, because an empty Digest is also what a scratch
+// stage or an older stage image surrenders, and neither of those has checked
+// the branch.
 type publishedWorkspaceDelta struct {
-	Digest string
-	Base   string
-	Tip    string
+	Digest    string
+	Base      string
+	Tip       string
+	Unchanged bool
 }
 
 // publishWorkspaceDelta bundles whatever this stage committed beyond the run's
@@ -147,7 +153,7 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (p
 		// wasteful, a skipped one loses work.
 		pf(stderr, "workspace delta: could not count commits on %q (%v); bundling anyway\n", branch, err)
 	} else if empty {
-		return publishedWorkspaceDelta{}, nil
+		return publishedWorkspaceDelta{Unchanged: true}, nil
 	}
 
 	client := podBlobClient()

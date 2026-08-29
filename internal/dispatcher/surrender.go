@@ -99,6 +99,15 @@ type SurrenderedResult struct {
 	// than by trusting the digest. Both empty whenever WorkspaceDelta is.
 	WorkspaceDeltaBase string `json:"workspaceDeltaBase,omitempty"`
 	WorkspaceDeltaTip  string `json:"workspaceDeltaTip,omitempty"`
+	// WorkspaceDeltaUnchanged reports that this stage ran on a WRITABLE repo
+	// workspace, succeeded, and the pod CHECKED that its branch carries no
+	// commits beyond base — so no bundle was published. It is a positive
+	// claim the pod makes, distinct from an absent WorkspaceDelta: a stage on
+	// a scratch or read-only workspace, a failed stage, or a stage image that
+	// predates this field all surrender neither, and the engine journals
+	// nothing about the branch rather than inferring "unchanged" from
+	// silence. Never set beside a non-empty WorkspaceDelta.
+	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
 }
 
 // ReadSurrenderedResult fetches and decodes one attempt's surrendered result.
