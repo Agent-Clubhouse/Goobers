@@ -110,6 +110,14 @@ type RunIdentity struct {
 	// RunControls pins the effective inherited safety budgets this run started
 	// with. Nil identifies a legacy run that predates run-control pinning.
 	RunControls *apiv1.RunControls `json:"runControls,omitempty"`
+	// Placements pins each stage's resolved execution placement at run start
+	// (decision 003 ruling 1): the daemon's runner writes the run-start solve's
+	// answer here so a resume restores the same pins. Nil — the only value any
+	// run.yaml written before this field existed can carry, and what every
+	// zero-declaration or local-mode instance still writes — means no stage
+	// was placed and every stage takes the self path. Non-normative, like
+	// RunControls beside it: never conformance surface. See placementpin.go.
+	Placements []PinnedPlacement `json:"placements,omitempty"`
 	// Trigger is what started the run.
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.

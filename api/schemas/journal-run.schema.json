@@ -93,6 +93,44 @@
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Resolved maximum total wall-clock age of the run; omitted when disabled." }
       }
     },
+    "placements": {
+      "description": "Per-stage execution placements pinned when the run started (decision 003): the run-start solve's answer, restored verbatim on resume. Omitted when no stage was placed, which is every run written before this field existed and every run on an instance that declares no runners.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage"],
+        "properties": {
+          "stage": { "type": "string", "minLength": 1, "description": "Stage the placement binds to." },
+          "self": { "type": "boolean", "description": "True when the stage resolved to the daemon's own host and executes in-process; omitted for a stage placed on a runner." },
+          "queue": { "type": "string", "description": "Dispatch task queue the placement routes onto; omitted for a self placement." },
+          "eligible": {
+            "type": "array",
+            "description": "Runners the run-start solve found eligible for the stage, in inventory order; dispatch consumes this set rather than re-deriving it.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "hostKind", "host"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1, "description": "Runners-inventory entry name." },
+                "os": { "type": "string", "description": "Operating system the runner claims." },
+                "hostKind": { "type": "string", "description": "Classification of host: self, image, or deployment." },
+                "host": { "type": "string", "description": "Raw host value: \"self\", an image reference, or a Deployment name." },
+                "cpu": { "type": "string", "description": "Runner CPU ceiling as a Kubernetes quantity; omitted when unbounded." },
+                "memory": { "type": "string", "description": "Runner memory ceiling as a Kubernetes quantity; omitted when unbounded." },
+                "disk": { "type": "string", "description": "Runner disk ceiling as a Kubernetes quantity; omitted when unbounded." },
+                "restrictions": { "type": "array", "items": { "type": "string", "description": "One isolation restriction the runner enforces." }, "description": "Isolation restrictions the runner enforces." }
+              }
+            }
+          },
+          "ledgerTouching": { "type": "boolean", "description": "True when the stage mutates the claim ledger, which excludes Windows-class runners." },
+          "cpu": { "type": "string", "description": "Stage CPU minimum as a Kubernetes quantity; omitted when undeclared." },
+          "memory": { "type": "string", "description": "Stage memory minimum as a Kubernetes quantity; omitted when undeclared." },
+          "disk": { "type": "string", "description": "Stage disk minimum as a Kubernetes quantity; omitted when undeclared." },
+          "restrictions": { "type": "array", "items": { "type": "string", "description": "One isolation restriction the stage requires." }, "description": "Isolation restrictions the stage requires." }
+        }
+      }
+    },
     "trigger": {
       "type": "object",
       "additionalProperties": false,

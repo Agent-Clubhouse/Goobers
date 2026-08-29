@@ -1,5 +1,10 @@
 package dispatcher
 
+import (
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+)
+
 // placement.go carries the pinned-placement contract: the run-start solve's
 // per-stage answer, snapshotted into the run's input (WF-016) and read as
 // pure data by whoever drives the run.
@@ -48,4 +53,53 @@ type PinnedPlacement struct {
 	Memory         string   `json:"memory,omitempty"`
 	Disk           string   `json:"disk,omitempty"`
 	Restrictions   []string `json:"restrictions,omitempty"`
+}
+
+// Journal is the run.yaml spelling of this placement (journal.PinnedPlacement,
+// placementpin.go): what the daemon's runner pins at Start and hands back to
+// the seam at dispatch. Field for field; the journal cannot import this
+// package, so the conversion lives on this side.
+func (p PinnedPlacement) Journal() journal.PinnedPlacement {
+	var eligible []journal.PinnedRunner
+	for _, e := range p.Eligible {
+		eligible = append(eligible, journal.PinnedRunner{
+			Name: e.Name, OS: e.OS, HostKind: string(e.HostKind), Host: e.Host,
+			CPU: e.CPU, Memory: e.Memory, Disk: e.Disk, Restrictions: e.Restrictions,
+		})
+	}
+	return journal.PinnedPlacement{
+		Stage: p.Stage, Self: p.Self, Queue: p.Queue, Eligible: eligible,
+		LedgerTouching: p.LedgerTouching, CPU: p.CPU, Memory: p.Memory, Disk: p.Disk,
+		Restrictions: p.Restrictions,
+	}
+}
+
+// PinnedPlacementFromJournal is Journal's inverse: the seam's daemon-side
+// implementation rebuilds the dispatch wire type from what run.yaml carries.
+func PinnedPlacementFromJournal(p journal.PinnedPlacement) PinnedPlacement {
+	var eligible []RunnerSpec
+	for _, e := range p.Eligible {
+		eligible = append(eligible, RunnerSpec{
+			Name: e.Name, OS: e.OS, HostKind: instance.RunnerHostKind(e.HostKind), Host: e.Host,
+			CPU: e.CPU, Memory: e.Memory, Disk: e.Disk, Restrictions: e.Restrictions,
+		})
+	}
+	return PinnedPlacement{
+		Stage: p.Stage, Self: p.Self, Queue: p.Queue, Eligible: eligible,
+		LedgerTouching: p.LedgerTouching, CPU: p.CPU, Memory: p.Memory, Disk: p.Disk,
+		Restrictions: p.Restrictions,
+	}
+}
+
+// PinnedPlacementsJournal converts a whole pinned list; nil in, nil out, so an
+// unplaced run's run.yaml keeps its exact bytes.
+func PinnedPlacementsJournal(placements []PinnedPlacement) []journal.PinnedPlacement {
+	if len(placements) == 0 {
+		return nil
+	}
+	out := make([]journal.PinnedPlacement, 0, len(placements))
+	for _, p := range placements {
+		out = append(out, p.Journal())
+	}
+	return out
 }

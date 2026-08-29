@@ -267,3 +267,33 @@ func TestBundleRunBranchRefusesUnknownBranch(t *testing.T) {
 		t.Fatalf("BundleRunBranch = %v, want a missing-branch refusal", err)
 	}
 }
+
+// TestBundleRunBranchNamesNothingToCarry: the two "nothing beyond base yet"
+// shapes a continuity publisher meets before a run's first commit — no run
+// branch in the mirror at all, and a run branch created at base with no
+// commit on it (git refuses an empty bundle) — are reported as the named
+// sentinels, distinct from every real fault.
+func TestBundleRunBranchNamesNothingToCarry(t *testing.T) {
+	ctx := context.Background()
+	f := newBundleFixture(t)
+	if _, err := f.manager.BundleRunBranch(ctx, f.origin, "goobers/wf/never", "main"); !errors.Is(err, ErrRunBranchAbsent) {
+		t.Fatalf("absent branch: %v, want ErrRunBranchAbsent", err)
+	}
+	if _, err := f.manager.BundleRunBranch(ctx, filepath.Join(t.TempDir(), "never-mirrored.git"), "goobers/wf/never", "main"); !errors.Is(err, ErrRunBranchAbsent) {
+		t.Fatalf("absent mirror: %v, want ErrRunBranchAbsent", err)
+	}
+	const branch = "goobers/wf/run-empty"
+	wt, err := f.manager.Create(ctx, CreateOptions{RepoURL: f.origin, RunID: "run-empty-stage", OwnerRunID: "run-empty", BaseRef: "main", Branch: branch})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := f.manager.BundleRunBranch(ctx, f.origin, branch, "main"); !errors.Is(err, ErrRunBranchUnchanged) {
+		t.Fatalf("branch at base: %v, want ErrRunBranchUnchanged", err)
+	}
+	if _, err := f.manager.BundleRunBranch(ctx, f.origin, branch, "main"); errors.Is(err, ErrRunBranchAbsent) {
+		t.Fatalf("branch at base reported absent: %v", err)
+	}
+}

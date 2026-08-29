@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,23 @@ import (
 
 	"github.com/goobers/goobers/internal/workspacedelta"
 )
+
+// ErrRunBranchAbsent is wrapped by BundleRunBranch when the managed mirror
+// does not hold the run branch — because the branch was never created, or
+// because the repository has never been mirrored here at all. Both mean the
+// same thing to a caller carrying continuity: there is nothing beyond base to
+// carry yet. The daemon runner's dispatch seam matches it to publish no delta
+// for the first writable stage of a run rather than treat "no work yet" as a
+// fault; every other BundleRunBranch error stays a fault.
+var ErrRunBranchAbsent = errors.New("run branch is absent from the managed working copy")
+
+// ErrRunBranchUnchanged is wrapped by BundleRunBranch when the run branch
+// exists but carries no commit beyond base — the shape every run has after
+// its first repo-workspace stage created the branch and committed nothing
+// (git refuses to create an empty bundle, so this is decided before git is
+// asked). Like ErrRunBranchAbsent it means "nothing to carry yet", never a
+// fault.
+var ErrRunBranchUnchanged = errors.New("run branch carries no commits beyond base")
 
 // bundle.go makes the managed mirror a CONTINUITY RECORD for mode 3 (#3803,
 // delivery decision 003 ruling 5): what a pod committed arrives here as a
@@ -45,7 +63,9 @@ func (mirrorGit) Output(ctx context.Context, dir string, args ...string) (string
 //
 // Requires the mirror to exist and to hold both refs: a run branch this
 // worker never created and a base it never fetched are both bugs in the
-// caller's ordering, not conditions to paper over with a clone.
+// caller's ordering, not conditions to paper over with a clone. A missing
+// mirror or branch is reported wrapping ErrRunBranchAbsent so a caller that
+// legitimately has nothing to carry yet can tell that apart from a fault.
 func (m *Manager) BundleRunBranch(ctx context.Context, repoURL, branch, base string) (workspacedelta.Bundle, error) {
 	if branch == "" || base == "" {
 		return workspacedelta.Bundle{}, fmt.Errorf("worktree: BundleRunBranch requires a branch and a base")
@@ -56,10 +76,17 @@ func (m *Manager) BundleRunBranch(ctx context.Context, repoURL, branch, base str
 	lock.Lock()
 	defer lock.Unlock()
 	if _, err := os.Stat(repoDir); err != nil {
-		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q: no managed working copy for %s: %w", branch, repoURL, err)
+		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q: no managed working copy for %s: %w (%w)", branch, repoURL, err, ErrRunBranchAbsent)
 	}
 	if !branchExists(ctx, repoDir, branch) {
-		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q: branch does not exist in the working copy for %s", branch, repoURL)
+		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q: branch does not exist in the working copy for %s: %w", branch, repoURL, ErrRunBranchAbsent)
+	}
+	behind, err := workspacedelta.IsAncestor(ctx, mirrorGit{}, repoDir, "refs/heads/"+branch, "refs/heads/"+base)
+	if err != nil {
+		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q: %w", branch, err)
+	}
+	if behind {
+		return workspacedelta.Bundle{}, fmt.Errorf("worktree: bundle run branch %q against %q: %w", branch, base, ErrRunBranchUnchanged)
 	}
 	b, err := workspacedelta.Create(ctx, mirrorGit{}, repoDir, "refs/heads/"+base, "refs/heads/"+branch)
 	if err != nil {

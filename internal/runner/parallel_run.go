@@ -531,6 +531,34 @@ func (r *Runner) runParallelBranch(
 				if attempt == 0 {
 					attempt = 1
 				}
+				// Adopt-or-await for a placed branch stage (decision 003
+				// ruling 6), exactly as resumeOwned does for the sequential
+				// walk: a settled or still-running pod attempt is adopted as
+				// this attempt's outcome and replayed; only a lost or failed
+				// one takes the interrupted path below.
+				if pin, routed := placementFor(in.Placements, state); routed {
+					class := boundary.AttemptClass
+					adopted, produced, ok, aerr := r.adoptPlacedAttempt(ctx, branchJournal, in, task, pin, attempt, class,
+						branchContextPointers(basePointers, result.pointers), result.lastResult, result.completed, nil,
+						workspaceBranch, &branchRecorded)
+					if aerr != nil {
+						result.status, result.err = journal.BranchFailed, fmt.Errorf("runner: resume placed stage %q attempt %d: %w", state, attempt, aerr)
+						return result
+					}
+					if ok {
+						replayTask = &adopted
+						result.pointers = append(result.pointers, produced...)
+						result.artifacts += artifactPointerCount(produced)
+						outputs := adopted.Outputs
+						if adopted.Status == apiv1.ResultFailure && task.ContinueOnError {
+							outputs = nil
+						}
+						if len(outputs) > 0 || len(produced) > 0 {
+							result.produced = true
+						}
+						break
+					}
+				}
 				errorDetail := &journal.ErrorDetail{Code: interruptedAttemptErrorCode, Message: "attempt was in flight when the runner was interrupted"}
 				runnerDetail := map[string]any{interruptedAttemptMarkerKey: true}
 				if task.Type == apiv1.TaskAgentic {

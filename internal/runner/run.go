@@ -19,6 +19,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bandit"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -588,6 +589,19 @@ type Config struct {
 	// replaces it (never merged); empty leaves every task's own requireLabels
 	// (or its absence) untouched.
 	BacklogQueryRequireLabels string
+	// StageDispatcher is the seam a stage pinned to a NON-self runner executes
+	// through (decision 003 ruling 1; dispatchseam.go). Optional — nil, the
+	// default and what every type-1/type-2 install and every one-shot
+	// `goobers run` has, means a run carrying a non-self pin fails closed with
+	// ErrStageDispatcherUnavailable before any stage executes; a stage with no
+	// pin or a self pin never consults it. Requires WorkspaceDeltas.
+	StageDispatcher StageDispatcher
+	// WorkspaceDeltas is the blob store the seam's pods share with the daemon:
+	// the run branch bundled from the mirror is put here before dispatch and
+	// the pod's surrendered bundle is read back from here at settle
+	// (decision 003 ruling 5). Required when StageDispatcher is set; otherwise
+	// unused.
+	WorkspaceDeltas blobstore.Store
 }
 
 func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
@@ -781,6 +795,9 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
 	}
+	if cfg.StageDispatcher != nil && cfg.WorkspaceDeltas == nil {
+		return nil, fmt.Errorf("runner: WorkspaceDeltas is required when StageDispatcher is set")
+	}
 	if cfg.Remediation == nil {
 		index, err := remediation.LoadIndex(cfg.RunsDir, nil)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -847,8 +864,18 @@ type StartInput struct {
 	// that declares no requirement behaves exactly as before. A resumed run
 	// leaves this nil — it already passed preflight at its original Start.
 	RequiredCapabilities []string
-	pinnedWorkspace      *worktree.Worktree
-	pinnedStage          *sync.Mutex
+	// Placements pins each stage's resolved execution placement (decision 003
+	// ruling 1): the same bootstrap.PinStagePlacements answer engine-start
+	// pins, handed in by the daemon's starter in run.yaml's spelling
+	// (dispatcher.PinnedPlacementsJournal) and written into run.yaml verbatim
+	// so a resume restores the same pins. A stage pinned non-self routes to
+	// Config.StageDispatcher after the runner's own input resolution; a stage
+	// with no pin, or a self pin, takes today's arms byte for byte. Nil — what
+	// every zero-declaration and local-mode instance passes — changes nothing,
+	// including the bytes of run.yaml.
+	Placements      []journal.PinnedPlacement
+	pinnedWorkspace *worktree.Worktree
+	pinnedStage     *sync.Mutex
 }
 
 // ToolchainVerifier verifies, on the executing host, that a run's declared
@@ -981,13 +1008,17 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	registrar, scrubber := journal.DefaultScrubber()
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
-		RunID:               in.RunID,
-		Workflow:            in.Machine.Def.Name,
-		WorkflowVersion:     in.Machine.Def.Version,
-		WorkflowDigest:      in.Machine.Digest(),
-		GooberDigest:        in.GooberDigest,
-		Gaggle:              in.Gaggle,
-		RunControls:         &pinnedControls,
+		RunID:           in.RunID,
+		Workflow:        in.Machine.Def.Name,
+		WorkflowVersion: in.Machine.Def.Version,
+		WorkflowDigest:  in.Machine.Digest(),
+		GooberDigest:    in.GooberDigest,
+		Gaggle:          in.Gaggle,
+		RunControls:     &pinnedControls,
+		// Pin the placements beside the controls (decision 003 ruling 1):
+		// nil in, nil out, so an unplaced run's run.yaml keeps its exact
+		// bytes.
+		Placements:          append([]journal.PinnedPlacement(nil), in.Placements...),
 		Trigger:             in.Trigger,
 		WorkspaceBranch:     in.WorkspaceBranch,
 		WorkspaceBranchSHA:  in.WorkspaceBranchSHA,
@@ -1025,11 +1056,29 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		// unsatisfied toolchain. A run with no declared requirement skips the
 		// preflight entirely (no behavior change), and a resumed run passes nil
 		// (it already cleared preflight at its original Start).
-		if len(in.RequiredCapabilities) > 0 {
-			if err := r.toolchains.Verify(ctx, in.RequiredCapabilities); err != nil {
+		//
+		// Once stages are PLACED (decision 003), only the tokens a stage that
+		// still executes on this host declares are verified here: a toolchain
+		// a pod-pinned stage needs lives in that pod's image, and probing the
+		// daemon host for it would fail a run over a stage the daemon never
+		// runs. With no pins the filter is the identity.
+		if required := selfPinnedCapabilities(in.RequiredCapabilities, in.Machine.Def.Spec.Tasks, in.Placements); len(required) > 0 {
+			if err := r.toolchains.Verify(ctx, required); err != nil {
 				span.Fail(err)
 				return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, toolchainPreflightState, 0, err)
 			}
+		}
+
+		// A pin that routes to the seam needs the seam. Refused BEFORE any
+		// stage executes — a lane's first stages are ledger claims, and
+		// claiming an item for a run that cannot reach its placed stage is
+		// exactly the silent-wrong-result shape this refusal turns loud
+		// (decision 003 ruling 7: fail closed with a named error, never fall
+		// through to the self arm).
+		if hasRoutedPlacement(in.Placements) && r.cfg.StageDispatcher == nil {
+			err := fmt.Errorf("%w: run %q pins a stage to a non-self runner", ErrStageDispatcherUnavailable, in.RunID)
+			span.Fail(err)
+			return r.failTerminal(ctx, in.RunID, jr, in.RepoRef, stageDispatchPreflightState, 0, err)
 		}
 
 		// #1380: fail fast when the local-ci stage's configured ciCommand names
@@ -4053,7 +4102,14 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		// this feature existed, and an unconditional per-attempt event would
 		// change every one of them. A journal that cannot be written is fatal
 		// (§2.6), same as stage.started above.
-		if r.recordsPlacement() {
+		//
+		// A stage whose pin routes to the dispatch seam is NOT recorded as
+		// self here: its placement is only known once the dispatcher reports
+		// which runner and pod served it, and settlePlacedAttempt journals
+		// that real provenance from the report (decision 003, "placement
+		// provenance in the dispatch result") — never a self event that
+		// would be false.
+		if _, routed := placementFor(in.Placements, t.Name); r.recordsPlacement() && !routed {
 			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
 				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
 				span.Fail(err)
@@ -4160,28 +4216,8 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 
-		result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
-		result = r.validateDependencyResult(jr, t.Name, result, upstream)
-		// Provenance flows with the data: what this stage produced is only as
-		// trustworthy as the weakest input it was admitted with. Downstream
-		// stages resolving inputsFrom grade against this, because Outputs are
-		// bare scalars that cannot carry a label of their own (TBH-4).
-		result.Integrity = producedIntegrity(t, in.Item, upstream,
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
-		outputs := result.Outputs
-		if result.Status == apiv1.ResultFailure && t.ContinueOnError {
-			outputs = nil
-		}
-		if err := jr.Append(journal.Event{
-			Type: journal.EventStageFinished, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-			Status: string(result.Status), Error: errorDetailFrom(result),
-			Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
-			// Carried so reconstructStageOutputs can restore each stage's grade
-			// on resume; without it a resumed run would fail inputsFrom
-			// admission that a live run admits (TBH-4).
-			Integrity: result.Integrity,
-		}); err != nil {
-			err = fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+		result, err := r.settleStageResult(jr, in, t, int(attempt), class, result, upstream, upstreamResult, completed, fanIn)
+		if err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
@@ -4202,6 +4238,40 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 	return apiv1.ResultEnvelope{}, nil, err
+}
+
+// settleStageResult is the tail of a successful dispatch: the attempt's
+// artifact integrity is normalized, its dependency claims validated, its
+// produced integrity graded, and its stage.finished journaled. Shared by
+// runTask's live path and resume's adoption of a dispatched attempt
+// (adoptPlacedAttempt) so an adopted outcome is journaled exactly as a live
+// one. The returned envelope is the settled result; on a journal write
+// failure the error is fatal to the run (§2.6) and the envelope is zero.
+func (r *Runner) settleStageResult(jr executionJournal, in StartInput, t apiv1.Task, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec) (apiv1.ResultEnvelope, error) {
+	result.Artifacts = normalizeArtifactIntegrity(t.Type, result.Artifacts)
+	result = r.validateDependencyResult(jr, t.Name, result, upstream)
+	// Provenance flows with the data: what this stage produced is only as
+	// trustworthy as the weakest input it was admitted with. Downstream
+	// stages resolving inputsFrom grade against this, because Outputs are
+	// bare scalars that cannot carry a label of their own (TBH-4).
+	result.Integrity = producedIntegrity(t, in.Item, upstream,
+		resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
+	outputs := result.Outputs
+	if result.Status == apiv1.ResultFailure && t.ContinueOnError {
+		outputs = nil
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: t.Name, Attempt: attempt, AttemptClass: class,
+		Status: string(result.Status), Error: errorDetailFrom(result),
+		Outputs: outputs, Artifacts: refsFrom(result.Artifacts),
+		// Carried so reconstructStageOutputs can restore each stage's grade
+		// on resume; without it a resumed run would fail inputsFrom
+		// admission that a live run admits (TBH-4).
+		Integrity: result.Integrity,
+	}); err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: journal stage.finished for %q: %w", t.Name, err)
+	}
+	return result, nil
 }
 
 func dispatchRetryFailureClass(err error) journal.AttemptClass {
@@ -4435,6 +4505,19 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
 	}
+	// Decision 003 ruling 1: a stage pinned to a non-self runner leaves here,
+	// AFTER the runner's own input resolution above and BEFORE any workspace
+	// is provisioned below. No pin, or a self pin, falls through to the arms
+	// exactly as before this branch existed.
+	if pin, routed := placementFor(in.Placements, t.Name); routed {
+		result, mutations, err = r.dispatchPlacedTask(ctx, jr, in, t, pin, taskInputs, taskLimits, upstream, upstreamResult, completed, fanIn, attempt, class, instructionAddendum, workspaceBranch, branchRecorded)
+		if configuredExperiment(t) {
+			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
+				return result, mutations, errors.Join(err, recordErr), nil
+			}
+		}
+		return result, mutations, err, nil
+	}
 	syncBase := t.Run != nil && t.Run.SyncBase
 	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, taskLimits, upstream, workspaceMode, syncBase, workspaceBranch)
 	if err != nil {
@@ -4551,26 +4634,8 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		}
 	}
 
-	for inputKey, outputKey := range t.InputsFrom {
-		if v, ok, branchRef, absent := resolveBranchInput(outputKey, in.Machine, completed, fanIn); branchRef {
-			if ok {
-				env.Inputs[inputKey] = v
-			} else if absent {
-				delete(env.Inputs, inputKey)
-			} else {
-				return apiv1.ResultEnvelope{}, nil, branchInputsFromError(t.Name, inputKey, outputKey), nil
-			}
-			continue
-		}
-		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
-		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
-		if !ok {
-			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
-		}
-		env.Inputs[inputKey] = v
-	}
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	if err := resolveDeclaredInputs(&env, t, in, upstreamResult, completed, fanIn); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err, nil
 	}
 
 	switch t.Type {
@@ -4680,6 +4745,35 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	default:
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
 	}
+}
+
+// resolveDeclaredInputs overlays the stage's inputsFrom bindings and, for a
+// fan-in join, the branch-completeness input onto env.Inputs — the last step
+// of the runner's own input resolution, shared by the self arms and the
+// dispatch seam so a placed stage sees exactly the inputs a self stage would.
+func resolveDeclaredInputs(env *apiv1.InvocationEnvelope, t apiv1.Task, in StartInput, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec) error {
+	for inputKey, outputKey := range t.InputsFrom {
+		if v, ok, branchRef, absent := resolveBranchInput(outputKey, in.Machine, completed, fanIn); branchRef {
+			if ok {
+				env.Inputs[inputKey] = v
+			} else if absent {
+				delete(env.Inputs, inputKey)
+			} else {
+				return branchInputsFromError(t.Name, inputKey, outputKey)
+			}
+			continue
+		}
+		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
+		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
+		if !ok {
+			return inputsFromError(t.Name, inputKey, outputKey, completed, qualified)
+		}
+		env.Inputs[inputKey] = v
+	}
+	if fanIn != nil && t.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
+	return nil
 }
 
 func preserveCommittedWorkOnInfraRetry(result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
@@ -4959,14 +5053,9 @@ const mutationsSidecarFile = "mutations.jsonl"
 // without importing cmd/goobers (same decoupling convention
 // internal/telemetry/rollup/mirror.go uses for the journal's own event
 // shape) — just enough to build a journal.ExternalRef plus an operation
-// annotation.
-type mutationFact struct {
-	Provider  string `json:"provider"`
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	URL       string `json:"url,omitempty"`
-	Operation string `json:"operation,omitempty"`
-}
+// annotation. An ALIAS of the exported MutationFact (dispatchseam.go), so
+// the seam's result and the sidecar reader share one type.
+type mutationFact = MutationFact
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,
 // if present. Absence is the overwhelmingly common case (most deterministic
@@ -5667,34 +5756,39 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		}
 	}
 
+	env := r.stageEnvelope(in, stageName, goal, taskInputs, capabilities, limits, upstream)
+	env.Workspace = workspace.path
+	env.AdditionalWorkspaces = additionalWorkspaces(workspace)
+	env.CheckoutCones = checkoutCones(workspace)
+	return env, workspace, nil
+}
+
+// stageEnvelope is the workspace-free core of buildEnvelope: everything an
+// invocation envelope carries that does not depend on a provisioned working
+// copy. buildEnvelope fills the workspace fields in for the self arms; the
+// dispatch seam sends this core as-is, because the pod provisions its own
+// workspace (decision 003 ruling 1, "before createStageWorkspace").
+func (r *Runner) stageEnvelope(in StartInput, stageName, goal string, taskInputs map[string]string, capabilities []string, limits apiv1.Limits, upstream []apiv1.ContextPointer) apiv1.InvocationEnvelope {
 	inputs := make(map[string]interface{}, len(taskInputs))
 	for k, v := range taskInputs {
 		inputs[k] = v
 	}
-	baseBranch := in.RepoRef.Branch
-	if baseBranch == "" {
-		baseBranch = "main"
+	return apiv1.InvocationEnvelope{
+		TaskID:          in.RunID + ":" + stageName,
+		WorkflowID:      in.Machine.Def.Name,
+		RunID:           in.RunID,
+		TriggerRef:      in.Trigger.Ref,
+		Gaggle:          in.Gaggle,
+		BranchNamespace: r.branchNamespaceFor(in.Gaggle),
+		BaseBranch:      baseBranchFor(in),
+		Goal:            goal,
+		RepoRef:         in.RepoRef.EnvelopeRef(),
+		Item:            in.Item,
+		ContextPointers: upstream,
+		Capabilities:    capabilities,
+		Limits:          limits,
+		Inputs:          inputs,
 	}
-	env := apiv1.InvocationEnvelope{
-		TaskID:               in.RunID + ":" + stageName,
-		WorkflowID:           in.Machine.Def.Name,
-		RunID:                in.RunID,
-		TriggerRef:           in.Trigger.Ref,
-		Gaggle:               in.Gaggle,
-		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
-		BaseBranch:           baseBranch,
-		Goal:                 goal,
-		Workspace:            workspace.path,
-		RepoRef:              in.RepoRef.EnvelopeRef(),
-		AdditionalWorkspaces: additionalWorkspaces(workspace),
-		CheckoutCones:        checkoutCones(workspace),
-		Item:                 in.Item,
-		ContextPointers:      upstream,
-		Capabilities:         capabilities,
-		Limits:               limits,
-		Inputs:               inputs,
-	}
-	return env, workspace, nil
 }
 
 // createStageWorkspace provisions this stage attempt's workspace. workspaceBranch

@@ -430,6 +430,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
+	// Restore the pinned placements exactly as written at Start (decision 003
+	// ruling 1, accept-and-pin): a resumed run routes every stage the way its
+	// original solve did, never re-solved against today's inventory. Nil for
+	// every run.yaml written before the field existed or by an unplaced run.
+	placements := append([]journal.PinnedPlacement(nil), id.Placements...)
 	resumeInput := StartInput{
 		RunID:              in.RunID,
 		Machine:            in.Machine,
@@ -440,6 +445,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		WorkspaceBranch:    id.WorkspaceBranch,
 		WorkspaceBranchSHA: id.WorkspaceBranchSHA,
 		ContextPointers:    append([]apiv1.ContextPointer(nil), id.ContextPointers...),
+		Placements:         placements,
 	}
 	ws := newWalkState(jr, resumeInput, registrar, "")
 	if id.ContinuedFromRunID != "" {
@@ -586,16 +592,97 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		startState = next
 	}
 
+	startIn := StartInput{
+		RunID:        in.RunID,
+		Machine:      in.Machine,
+		GooberDigest: in.GooberDigest,
+		Gaggle:       id.Gaggle,
+		Trigger:      id.Trigger,
+		RepoRef:      in.RepoRef,
+		Item:         item,
+		RunControls:  runControls,
+		Placements:   placements,
+		// RequiredCapabilities is intentionally nil on resume: a run only reaches
+		// here after it already started (and therefore already cleared the #735
+		// toolchain preflight in Start); re-verifying would probe the host again
+		// for a decision the original dispatch already made.
+	}
+	// A pin that routes to the seam needs the seam on resume too — a daemon
+	// rolled back after this run was pinned must refuse, never fall through
+	// to the self arm (decision 003 ruling 7).
+	if hasRoutedPlacement(placements) && r.cfg.StageDispatcher == nil {
+		return r.refuseResume(jr, in.RunID, "resume_refused_stage_dispatcher_unavailable",
+			fmt.Sprintf("run %q pins a stage to a non-self runner and this runner has no stage dispatcher: %v", in.RunID, ErrStageDispatcherUnavailable))
+	}
+
 	var resume *resumeContext
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
+		// replayFinished marks a task whose last attempt already SETTLED —
+		// cleanly before the crash (the third arm below), or, for a placed
+		// stage, in its pod while the daemon was down and adopted here
+		// (decision 003 ruling 6). Either way the walk must apply the
+		// transition a live run would have taken, never re-dispatch (#107).
+		replayFinished := false
+		replayResult := lastResult
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
-			resume = &resumeContext{
-				stage:                  startState,
-				attempt:                attempt,
-				class:                  startedAttemptClass(segment, startState, attempt),
-				committedWorkOnInfra:   infraFailedAttemptCommittedWork(segment, startState, attempt),
-				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
-				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
+			class := startedAttemptClass(segment, startState, attempt)
+			// Adopt-or-await for a placed stage: the pod outlives the daemon,
+			// so attempt N may have settled or may still be running. Its
+			// outcome is read from the seam; only a lost or failed attempt
+			// takes the interrupted path below.
+			if pin, routed := placementFor(placements, startState); routed {
+				upstreamPointers := ws.pointers
+				if ws.parallel != nil {
+					upstreamPointers = ws.parallel.currentPointers(ws.parallelRootPointers)
+				}
+				ws.in = startIn
+				adopted, produced, ok, aerr := r.adoptPlacedAttempt(ctx, jr, startIn, t, pin, attempt, class,
+					upstreamPointers, ws.lastResult, ws.completed, ws.fanIn, ws.workspaceBranch, &ws.branchRecorded)
+				if aerr != nil {
+					return Result{}, fmt.Errorf("runner: resume placed stage %q attempt %d: %w", startState, attempt, aerr)
+				}
+				if ok {
+					// Exactly stepTask's bookkeeping once runTask returns.
+					replayFinished = true
+					replayResult = adopted
+					ws.lastStage, ws.lastResult = t.Name, adopted
+					outputs := adopted.Outputs
+					if adopted.Status == apiv1.ResultFailure && t.ContinueOnError {
+						outputs = nil
+					}
+					if ws.parallel != nil {
+						ws.parallel.recordCurrent(outputs, produced)
+					} else {
+						ws.pointers = append(ws.pointers, produced...)
+					}
+					if adopted.Status == apiv1.ResultFailure && t.ContinueOnError {
+						ws.completed.clear(t.Name)
+					} else {
+						ws.completed.record(t.Name, outputs, adopted.Integrity)
+					}
+					ws.visitedStages[t.Name] = true
+					if adopted.Status != apiv1.ResultFailure || !t.ContinueOnError {
+						if branch := rebindWorkspaceBranch(t, adopted, r.branchNamespaceFor(id.Gaggle)); branch != "" {
+							ws.workspaceBranch = branch
+						}
+					}
+					// A pending human rerun of this stage is consumed by the
+					// adopted attempt, exactly as stepTask consumes it once
+					// runTask returns.
+					if rerun != nil && rerun.stage == t.Name {
+						rerun = nil
+					}
+				}
+			}
+			if !replayFinished {
+				resume = &resumeContext{
+					stage:                  startState,
+					attempt:                attempt,
+					class:                  class,
+					committedWorkOnInfra:   infraFailedAttemptCommittedWork(segment, startState, attempt),
+					policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+					infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
+				}
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
@@ -615,9 +702,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			// flight. Re-dispatching it now would silently re-run its side
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
+			replayFinished = true
+		}
+		if replayFinished {
 			replayedBranchOutcome := false
 			if ws.parallel != nil {
-				switch lastResult.Status {
+				switch replayResult.Status {
 				case apiv1.ResultFailure:
 					if !t.ContinueOnError {
 						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
@@ -634,7 +724,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 				}
 			}
 			if !replayedBranchOutcome {
-				next, res, advance, terr := r.taskOutcome(ctx, ws, taskTransition{t, lastResult})
+				next, res, advance, terr := r.taskOutcome(ctx, ws, taskTransition{t, replayResult})
 				if terr != nil {
 					return res, terr
 				}
@@ -644,20 +734,6 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 				startState = next
 			}
 		}
-	}
-	startIn := StartInput{
-		RunID:        in.RunID,
-		Machine:      in.Machine,
-		GooberDigest: in.GooberDigest,
-		Gaggle:       id.Gaggle,
-		Trigger:      id.Trigger,
-		RepoRef:      in.RepoRef,
-		Item:         item,
-		RunControls:  runControls,
-		// RequiredCapabilities is intentionally nil on resume: a run only reaches
-		// here after it already started (and therefore already cleared the #735
-		// toolchain preflight in Start); re-verifying would probe the host again
-		// for a decision the original dispatch already made.
 	}
 	ws.in = startIn
 	ws.state = startState

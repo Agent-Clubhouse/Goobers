@@ -255,6 +255,13 @@ github.com/goobers/goobers/internal/dispatcher.EgressTriple.Verdict # Pod-side s
 github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeTCP # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ResolveStageCredentials # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
+# Decision 003 step 6 (runner dispatch seam) ships the run.yaml <-> dispatch-wire placement
+# conversions ahead of their one production caller, step 7's cmd/goobers/daemondispatch.go
+# (the daemon's starter pins with PinnedPlacementsJournal; the seam implementation rebuilds
+# DispatchStageInput.Placement with PinnedPlacementFromJournal). Each is exercised by
+# TestPinnedPlacementJournalMirror; these entries go STALE and are deleted when step 7 lands.
+github.com/goobers/goobers/internal/dispatcher.PinnedPlacementFromJournal # run.yaml spelling -> dispatch wire type; consumed by step 7's daemon seam implementation.
+github.com/goobers/goobers/internal/dispatcher.PinnedPlacementsJournal # dispatch wire type -> run.yaml spelling for the daemon starter; consumed by step 7's trackedStarter.
 github.com/goobers/goobers/internal/runnercap.ParseRunnerClassPreimage # #3568 decodes the runner-class-restrictions annotation back to a restriction set (inverse of RunnerClassPreimage); exercised by the renderer round-trip tests, no in-binary caller yet — a diagnostic decode helper for operators/preflight.
 
 # internal/e2e (#3517, graduated from test/goobernetes): `goobers e2e verify`
