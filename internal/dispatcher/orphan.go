@@ -36,21 +36,38 @@ const (
 	// adopted by this sweep and left to finish.
 	RunStateLive
 	// RunStateTerminal means the sweep POSITIVELY established that no workflow
-	// is executing this attempt — Completed, Failed, or no such execution at
-	// all. The pod is disposed.
+	// is executing this attempt: the execution that owns the dispatch has
+	// closed, or there is no such execution at all. "No such execution" only
+	// counts when the id asked was the pod's stamped
+	// AnnotationOwningWorkflowID — NotFound for a COMPOSED id says nothing
+	// about the attempt, only that the guess was wrong. The pod is disposed.
 	RunStateTerminal
 )
 
 // PodAttempt is the attempt identity read back off one labeled pod: the
-// verbatim run ID and stage from the dispatcher's identity annotations plus
-// the attempt ordinal from its label. A resolver composes the engine's
-// per-attempt workflow id from these (engine.DispatchOneWorkflowID), which is
-// why they must be the exact dispatch-time strings and not the sanitized
-// label values.
+// workflow execution that owns the dispatch, plus the verbatim run ID and
+// stage from the dispatcher's identity annotations and the attempt ordinal
+// from its label.
+//
+// OwningWorkflowID is the field a resolver ASKS ABOUT; the rest identify the
+// attempt for humans and diagnostics. That split is deliberate and was not
+// always so. The first cut of this type carried run/stage/attempt only and
+// left the resolver to COMPOSE a workflow id out of them, which is sound for
+// a directly started run and wrong for a scheduled one — RunScheduled
+// rewrites the run's RunID to a sha256 prefix of the claim id, so every id
+// composed from the annotations names an execution that does not exist,
+// Temporal answers NotFound to all of them, and a resolver reading NotFound
+// as "settled" deletes the pod of a stage that is still running. On a delete
+// path an address that can be wrong is worse than no address at all, so the
+// driver is stamped at dispatch and described verbatim.
 type PodAttempt struct {
 	// Pod and Namespace name the pod being considered, for diagnostics.
 	Pod       string
 	Namespace string
+	// OwningWorkflowID is the Temporal workflow execution whose activity
+	// created this pod (AnnotationOwningWorkflowID), read back exactly as it
+	// was stamped. Never empty in a PodAttempt podAttempt returned true for.
+	OwningWorkflowID string
 	// RunID, Stage and Attempt are the attempt's verbatim identity. Attempt is
 	// an int to match Attempt.Number, the field it is read back from.
 	RunID   string
@@ -103,14 +120,15 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 		pod := &pods[i]
 		attempt, ok := podAttempt(pod)
 		if !ok {
-			// Selected but not addressable: no identity annotations, so no
-			// workflow id can be composed and no resolver can answer. Leave it
-			// (the deadline stamp reclaims it) and say so — a pod in this state
-			// means something stamped LabelOwner without going through
-			// stampIdentityAnnotations, which is a bug in this package.
+			// Selected but not addressable: no identity annotations, so there
+			// is no workflow execution to describe and no resolver can answer.
+			// Leave it (the deadline stamp reclaims it) and say so — a pod in
+			// this state means something stamped LabelOwner without going
+			// through stampIdentityAnnotations, or dispatched an attempt whose
+			// OwningWorkflowID was never set, both bugs on the create path.
 			errs = append(errs, fmt.Errorf(
-				"dispatcher: stage pod %s/%s carries no attempt identity (%s/%s); left in place",
-				pod.Namespace, pod.Name, AnnotationRunID, AnnotationStage))
+				"dispatcher: stage pod %s/%s carries no attempt identity (%s/%s/%s); left in place",
+				pod.Namespace, pod.Name, AnnotationOwningWorkflowID, AnnotationRunID, AnnotationStage))
 			continue
 		}
 		if runs.RunState(ctx, attempt) != RunStateTerminal {
@@ -131,14 +149,22 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 }
 
 // podAttempt reads one pod's attempt identity back off its metadata. The
-// verbatim run and stage come from the annotations (the labels are sanitized
-// and cannot address a workflow); the ordinal comes from LabelAttempt, which
-// is already exact. Any missing or unparseable piece makes the pod
-// unaddressable, and an unaddressable pod is never disposed.
+// owning workflow execution, the verbatim run and the stage come from the
+// annotations (the labels are sanitized and cannot address a workflow); the
+// ordinal comes from LabelAttempt, which is already exact. Any missing or
+// unparseable piece makes the pod unaddressable, and an unaddressable pod is
+// never disposed.
+//
+// AnnotationOwningWorkflowID is required, not optional: without it there is
+// no execution to describe, and the only remaining way to reach a verdict
+// would be to GUESS an id from the run and stage — the exact lossy address
+// this annotation replaced. Missing it therefore means "leave the pod", which
+// is the safe direction, and the deadline stamp still reclaims it.
 func podAttempt(pod *corev1.Pod) (PodAttempt, bool) {
+	owningWorkflowID := pod.Annotations[AnnotationOwningWorkflowID]
 	runID := pod.Annotations[AnnotationRunID]
 	stage := pod.Annotations[AnnotationStage]
-	if runID == "" || stage == "" {
+	if owningWorkflowID == "" || runID == "" || stage == "" {
 		return PodAttempt{}, false
 	}
 	number, err := strconv.Atoi(pod.Labels[LabelAttempt])
@@ -146,11 +172,12 @@ func podAttempt(pod *corev1.Pod) (PodAttempt, bool) {
 		return PodAttempt{}, false
 	}
 	return PodAttempt{
-		Pod:       pod.Name,
-		Namespace: pod.Namespace,
-		RunID:     runID,
-		Stage:     stage,
-		Attempt:   number,
+		Pod:              pod.Name,
+		Namespace:        pod.Namespace,
+		OwningWorkflowID: owningWorkflowID,
+		RunID:            runID,
+		Stage:            stage,
+		Attempt:          number,
 	}, true
 }
 

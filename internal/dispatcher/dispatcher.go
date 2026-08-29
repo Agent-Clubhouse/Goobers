@@ -246,6 +246,21 @@ type Attempt struct {
 	CPU    string
 	Memory string
 	Disk   string
+	// OwningWorkflowID is the id of the Temporal workflow execution driving
+	// this attempt — the caller's own execution, stamped on the pod as
+	// AnnotationOwningWorkflowID and describable VERBATIM by the orphan
+	// sweep.
+	//
+	// Distinct from two neighbours it is easy to confuse it with:
+	// Config.Owner / LabelOwner names the dispatcher PROCESS that created the
+	// pod (the sweep's scope), and Workflow above is the goobers workflow
+	// NAME from the DSL. This is a Temporal execution id, and it is the only
+	// field on the attempt that addresses one.
+	//
+	// Empty means the caller did not state a driver. The pod is then stamped
+	// without the annotation and the sweep leaves it alone forever rather
+	// than guessing an id — see stampIdentityAnnotations and podAttempt.
+	OwningWorkflowID string
 	// Restrictions is the stage's effective restriction requirement
 	// (declared ∪ mandates, as solved). It must be a subset of the resolved
 	// runner's enforced set; the dispatcher refuses the mismatch at create.

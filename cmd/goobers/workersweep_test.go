@@ -40,41 +40,87 @@ func (f *fakeSweepDescriber) DescribeWorkflowExecution(_ context.Context, workfl
 	}, nil
 }
 
+// sweepAttempt is the RUNNER-DRIVEN shape: DispatchOne owns the pod, so the
+// stamped driver happens to equal <run>/<stage>/<attempt>.
 func sweepAttempt() dispatcher.PodAttempt {
 	return dispatcher.PodAttempt{
 		Pod: "gbn-open-pr-run1-a2", Namespace: "gaggle-e2e",
-		RunID: "run-1", Stage: "open-pr", Attempt: 2,
+		OwningWorkflowID: engine.DispatchOneWorkflowID("run-1", "open-pr", 2),
+		RunID:            "run-1", Stage: "open-pr", Attempt: 2,
 	}
 }
 
-// A pod whose per-attempt DispatchOne workflow is still Running is ADOPTED:
-// the worker restarted underneath a live stage, and the pod is still writing.
-// This is the case decision 003 named when it rejected the fail-closed-toward-
-// deletion sweep.
+// scheduledSweepAttempt is the shape review 3 caught the first cut deleting
+// alive, and the reason the driver is stamped rather than composed.
+//
+// ClaimScheduled starts the run's child workflow as claimID+"-run" and
+// RunScheduled then rewrites the run's RunID to RunID(claimID), a sha256
+// prefix (internal/engine/liveness.go: "a hash describe can never find").
+// The pod therefore carries a run id that is NOT a workflow id, its stage is
+// dispatched by the run's own walk so no DispatchOne execution exists either,
+// and every id composable from this attempt answers NotFound.
+func scheduledSweepAttempt() dispatcher.PodAttempt {
+	claimID := "goobers-e2e-nightly-2026-08-29T03:00:00Z"
+	return dispatcher.PodAttempt{
+		Pod: "gbn-open-pr-e9791a88-a1", Namespace: "gaggle-e2e",
+		OwningWorkflowID: claimID + "-run",
+		RunID:            engine.RunID(claimID), Stage: "open-pr", Attempt: 1,
+	}
+}
+
+// A pod whose driving workflow is still Running is ADOPTED: the worker
+// restarted underneath a live stage, and the pod is still writing. This is the
+// case decision 003 named when it rejected the fail-closed-toward-deletion
+// sweep.
 func TestTemporalRunStatesAdoptsRunningAttempt(t *testing.T) {
-	attempt := sweepAttempt()
-	id := engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt))
-	describer := &fakeSweepDescriber{status: map[string]enumspb.WorkflowExecutionStatus{
-		id: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-	}}
-	if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateLive {
-		t.Fatalf("RunState = %v, want RunStateLive — a Running attempt must be adopted, not disposed", got)
+	for name, attempt := range map[string]dispatcher.PodAttempt{
+		"runner-driven (DispatchOne)": sweepAttempt(),
+		"engine walk (scheduled run)": scheduledSweepAttempt(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			describer := &fakeSweepDescriber{status: map[string]enumspb.WorkflowExecutionStatus{
+				attempt.OwningWorkflowID: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+			}}
+			if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateLive {
+				t.Fatalf("RunState = %v, want RunStateLive — a Running attempt must be adopted, not disposed", got)
+			}
+		})
 	}
 }
 
-// The engine-start shape: no DispatchOne workflow exists, but the run's own
-// Run workflow is executing and its walk owns this pod. Also adopted.
-func TestTemporalRunStatesAdoptsRunningEngineRun(t *testing.T) {
-	attempt := sweepAttempt()
+// The regression this rewrite exists for, stated as its own test rather than
+// left implicit in the one above: a LIVE scheduled run's stage pod.
+//
+// The describer knows only the run's real workflow. Every id the attempt's
+// run/stage/attempt can compose is absent from the table and answers NotFound,
+// so the resolver this replaced counted two NotFounds, called the attempt
+// settled, and had SweepOrphans delete a pod whose open-pr stage was still
+// executing. Asking the stamped driver is the whole difference.
+func TestTemporalRunStatesAdoptsLiveScheduledRunNoComposedIDCanFind(t *testing.T) {
+	attempt := scheduledSweepAttempt()
 	describer := &fakeSweepDescriber{status: map[string]enumspb.WorkflowExecutionStatus{
-		attempt.RunID: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		attempt.OwningWorkflowID: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 	}}
+	// Guard the fixture: if either composed id ever became findable, this test
+	// would pass without the driver being consulted at all.
+	for _, composed := range []string{
+		engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt)),
+		attempt.RunID,
+	} {
+		if _, found := describer.status[composed]; found {
+			t.Fatalf("composed id %q is findable in the fixture — the scheduled shape is precisely that it is not", composed)
+		}
+	}
 	if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateLive {
-		t.Fatalf("RunState = %v, want RunStateLive for a live engine-driven run", got)
+		t.Fatalf("RunState = %v for a LIVE scheduled run's stage pod, want RunStateLive — disposing it deletes an executing mutating stage, invisibly", got)
+	}
+	if len(describer.asked) != 1 || describer.asked[0] != attempt.OwningWorkflowID {
+		t.Fatalf("resolver asked %v, want exactly the stamped driver %q — every other id is a guess", describer.asked, attempt.OwningWorkflowID)
 	}
 }
 
-// Both identities settled — closed, or never existed — is the only disposal.
+// The driving workflow settled — closed, or no such execution — is the only
+// disposal.
 func TestTemporalRunStatesDisposesSettledAttempt(t *testing.T) {
 	for name, status := range map[string]enumspb.WorkflowExecutionStatus{
 		"completed": enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
@@ -83,20 +129,30 @@ func TestTemporalRunStatesDisposesSettledAttempt(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			attempt := sweepAttempt()
-			id := engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt))
 			describer := &fakeSweepDescriber{status: map[string]enumspb.WorkflowExecutionStatus{
-				id: status, attempt.RunID: status,
+				attempt.OwningWorkflowID: status,
 			}}
 			if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateTerminal {
 				t.Fatalf("RunState = %v, want RunStateTerminal for a %s attempt", got, name)
 			}
 		})
 	}
-	t.Run("no such workflow", func(t *testing.T) {
-		// Empty table: every describe answers NotFound, which is an ANSWER —
-		// nothing on the engine is addressable as this attempt.
-		if got := (temporalRunStates{client: &fakeSweepDescriber{}}).RunState(context.Background(), sweepAttempt()); got != dispatcher.RunStateTerminal {
-			t.Fatalf("RunState = %v, want RunStateTerminal when no workflow exists under either id", got)
+	// NotFound settles ONLY because the id asked is the pod's stamped driver —
+	// the execution whose activity created it. That is a real answer about this
+	// attempt: nothing is driving it.
+	//
+	// It is emphatically not the old "no such workflow" subtest, which fed an
+	// EMPTY table so that every COMPOSED id answered NotFound and asserted
+	// disposal — encoding the scheduled-run bug as intended behaviour. Here the
+	// table is empty for the driver itself, and no other id is consulted.
+	t.Run("no such workflow under the stamped driver", func(t *testing.T) {
+		attempt := sweepAttempt()
+		describer := &fakeSweepDescriber{}
+		if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateTerminal {
+			t.Fatalf("RunState = %v, want RunStateTerminal when the driving execution does not exist", got)
+		}
+		if len(describer.asked) != 1 || describer.asked[0] != attempt.OwningWorkflowID {
+			t.Fatalf("resolver asked %v, want exactly [%q]", describer.asked, attempt.OwningWorkflowID)
 		}
 	})
 }
@@ -105,11 +161,7 @@ func TestTemporalRunStatesDisposesSettledAttempt(t *testing.T) {
 // Never delete on uncertainty — the pod's activeDeadlineSeconds reclaims it.
 func TestTemporalRunStatesLeavesPodWhenTemporalUnreachable(t *testing.T) {
 	attempt := sweepAttempt()
-	id := engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt))
-	// The per-attempt id is unreachable; the run id answers NotFound. A sweep
-	// that counted NotFound alone would dispose a pod whose real owner it never
-	// managed to ask about.
-	describer := &fakeSweepDescriber{unavailable: map[string]bool{id: true}}
+	describer := &fakeSweepDescriber{unavailable: map[string]bool{attempt.OwningWorkflowID: true}}
 	if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateIndeterminate {
 		t.Fatalf("RunState = %v, want RunStateIndeterminate — an unreachable engine must never authorise a delete", got)
 	}
@@ -119,6 +171,22 @@ func TestTemporalRunStatesLeavesPodWhenTemporalUnreachable(t *testing.T) {
 func TestTemporalRunStatesLeavesPodWithoutClient(t *testing.T) {
 	if got := (temporalRunStates{}).RunState(context.Background(), sweepAttempt()); got != dispatcher.RunStateIndeterminate {
 		t.Fatalf("RunState = %v, want RunStateIndeterminate with no client", got)
+	}
+}
+
+// An attempt with no stamped driver is never disposed and is never described.
+// dispatcher.podAttempt already refuses such a pod, so this is the second of
+// two guards: describing "" would earn a NotFound that authorises a delete
+// backed by no evidence whatever.
+func TestTemporalRunStatesLeavesPodWithoutStampedDriver(t *testing.T) {
+	attempt := sweepAttempt()
+	attempt.OwningWorkflowID = ""
+	describer := &fakeSweepDescriber{}
+	if got := (temporalRunStates{client: describer}).RunState(context.Background(), attempt); got != dispatcher.RunStateIndeterminate {
+		t.Fatalf("RunState = %v, want RunStateIndeterminate for an attempt naming no driver", got)
+	}
+	if len(describer.asked) != 0 {
+		t.Fatalf("resolver described %v for an attempt with no driver; there is no id to ask about", describer.asked)
 	}
 }
 

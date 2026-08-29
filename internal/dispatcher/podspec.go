@@ -56,6 +56,23 @@ const (
 	AnnotationRunID = "goobers.dev/run-id"
 	// AnnotationStage is the attempt's stage name, unsanitized.
 	AnnotationStage = "goobers.dev/stage-name"
+	// AnnotationOwningWorkflowID is the Temporal workflow execution that owns
+	// the dispatch: the execution whose activity created this pod, and the
+	// only one whose liveness answers "is anything still driving this
+	// attempt?".
+	//
+	// It is stamped rather than DERIVED because the attempt's own identity
+	// cannot address its driver. A SCHEDULED run executes under
+	// claimID+"-run" while its RunID has been rewritten to a sha256 prefix of
+	// claimID (engine's RunScheduled; engine/liveness.go states the mapping),
+	// so an id composed from AnnotationRunID names no execution at all — and a
+	// sweep that reads "no such workflow" as "settled" would delete the pod of
+	// a live, possibly mutating, stage. Composing is a lossy address on a
+	// DELETE path; this is the verbatim one.
+	//
+	// Absent = unaddressable, not disposable: podAttempt refuses the pod and
+	// the sweep leaves it to activeDeadlineSeconds.
+	AnnotationOwningWorkflowID = "goobers.dev/owning-workflow-id"
 )
 
 // The pod environment contract: what a stage pod needs to reach the planes
@@ -669,11 +686,20 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 }
 
 // stampIdentityAnnotations records the attempt's verbatim run ID and stage
-// name (see AnnotationRunID). Both render paths call it, so a pod that the
+// name (see AnnotationRunID) and the workflow execution driving it (see
+// AnnotationOwningWorkflowID). Both render paths call it, so a pod that the
 // sweep can select is always a pod the sweep can address.
+//
+// An absent OwningWorkflowID stamps NOTHING rather than an empty value, for
+// the same reason ownerLabel stamps nothing: a value the sweep would then
+// have to special-case is a value it can get wrong, and podAttempt's
+// "annotation missing" arm already means exactly "leave this pod alone".
 func stampIdentityAnnotations(annotations map[string]string, attempt Attempt) {
 	annotations[AnnotationRunID] = attempt.RunID
 	annotations[AnnotationStage] = attempt.Stage
+	if attempt.OwningWorkflowID != "" {
+		annotations[AnnotationOwningWorkflowID] = attempt.OwningWorkflowID
+	}
 }
 
 // stampClassRestrictionsAnnotation records the human-readable preimage of the

@@ -41,6 +41,11 @@ func testAttempt() Attempt {
 		Memory:   "1Gi",
 		Disk:     "10Gi",
 		PodToken: "goobers-pod.tok",
+		// Deliberately NOT the run id and not composable from it: the fixture
+		// carries the SCHEDULED shape (ClaimScheduled's child, claimID+"-run",
+		// against a RunID the engine rewrote to a hash), because that is the
+		// shape a sweep composing ids from the run/stage/attempt gets wrong.
+		OwningWorkflowID: "goobers-e2e-nightly-2026-08-22T03:00:00Z-run",
 	}
 }
 
@@ -1103,6 +1108,18 @@ func TestRenderPodStampsOwnerAndVerbatimIdentity(t *testing.T) {
 	if got := pod.Annotations[AnnotationStage]; got != attempt.Stage {
 		t.Fatalf("%s = %q, want the verbatim stage %q", AnnotationStage, got, attempt.Stage)
 	}
+	if got := pod.Annotations[AnnotationOwningWorkflowID]; got != attempt.OwningWorkflowID {
+		t.Fatalf("%s = %q, want the verbatim driver %q", AnnotationOwningWorkflowID, got, attempt.OwningWorkflowID)
+	}
+	// The driver is not the run, and no rule turns one into the other. The
+	// fixture's owning id is the SCHEDULED shape (claimID+"-run" over a RunID
+	// the engine rewrote to a hash), so a sweep that composed an address out of
+	// the run and stage would describe an execution that does not exist, be
+	// told "no such workflow", read that as settled, and delete a live pod.
+	if strings.Contains(attempt.OwningWorkflowID, attempt.RunID) {
+		t.Fatalf("owning workflow %q contains the run id %q — pick a driver the run id cannot reconstruct, or this test asserts nothing",
+			attempt.OwningWorkflowID, attempt.RunID)
+	}
 	// The labels are lossy for exactly this identity, which is what makes the
 	// annotations load-bearing rather than redundant.
 	if pod.Labels[LabelRun] == attempt.RunID || pod.Labels[LabelStage] == attempt.Stage {
@@ -1146,8 +1163,27 @@ func TestRenderFromTemplateStampsOwnerAndVerbatimIdentity(t *testing.T) {
 	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
 		t.Fatalf("%s = %q on the template path", LabelOwner, got)
 	}
-	if pod.Annotations[AnnotationRunID] != attempt.RunID || pod.Annotations[AnnotationStage] != attempt.Stage {
+	if pod.Annotations[AnnotationRunID] != attempt.RunID || pod.Annotations[AnnotationStage] != attempt.Stage ||
+		pod.Annotations[AnnotationOwningWorkflowID] != attempt.OwningWorkflowID {
 		t.Fatalf("template-path pod carries no verbatim attempt identity: %v", pod.Annotations)
+	}
+}
+
+// An attempt dispatched with no stated driver stamps NO owning-workflow
+// annotation, which makes the pod unaddressable and therefore permanently
+// exempt from disposal (TestSweepOrphansLeavesUnaddressablePod). The
+// alternative — stamping "" — is an address the resolver would then describe,
+// and Temporal's "no such workflow" for the empty id would authorise a delete
+// on no evidence at all.
+func TestOwningWorkflowAnnotationAbsentWithoutDriver(t *testing.T) {
+	attempt := testAttempt()
+	attempt.OwningWorkflowID = ""
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	if got, ok := pod.Annotations[AnnotationOwningWorkflowID]; ok {
+		t.Fatalf("%s stamped as %q for an attempt with no driver — an empty address is worse than none", AnnotationOwningWorkflowID, got)
 	}
 }
 
@@ -1194,6 +1230,14 @@ func TestIdentityAnnotationsNonOverridable(t *testing.T) {
 	attempt.ExtraAnnotations = map[string]string{AnnotationRunID: "someone-elses-run"}
 	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
 		t.Fatalf("workflow input set %s and the render accepted it", AnnotationRunID)
+	}
+	attempt = testAttempt()
+	// The owning workflow id is the id a delete is authorised by. A stage that
+	// could set it could name a workflow it knows has COMPLETED and have its
+	// own live pod swept out from under a competitor's run.
+	attempt.ExtraAnnotations = map[string]string{AnnotationOwningWorkflowID: "some-completed-run"}
+	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
+		t.Fatalf("workflow input set %s and the render accepted it — a stage could point the sweep at a settled workflow", AnnotationOwningWorkflowID)
 	}
 	attempt = testAttempt()
 	attempt.ExtraLabels = map[string]string{LabelOwner: "goobers-worker-99"}

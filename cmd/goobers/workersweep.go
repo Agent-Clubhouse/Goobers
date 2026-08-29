@@ -37,7 +37,6 @@ import (
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
 )
 
 const (
@@ -85,38 +84,52 @@ const (
 	sweepSettled
 )
 
-// RunState resolves one labeled stage pod's attempt.
+// RunState resolves one labeled stage pod's attempt by describing the ONE
+// workflow execution that owns it: dispatcher.PodAttempt.OwningWorkflowID,
+// stamped on the pod at dispatch time by the workflow that drove it and read
+// back verbatim.
 //
-// TWO workflow identities can legitimately own a stage pod, because decision
-// 003 leaves two drivers in the tree:
+// Decision 003 leaves two drivers in the tree, and both stamp it:
 //
-//   - <runID>/<stage>/<attempt>, the per-attempt engine.DispatchOne workflow a
-//     daemon-driven (runner-driven) run starts for a placed stage;
-//   - <runID> itself, the engine's Run workflow, for an engine-start run whose
-//     walk dispatches the stage from inside the run.
+//   - engine.DispatchOne, for a daemon-driven (runner-driven) placed stage,
+//     stamps <runID>/<stage>/<attempt>, its own execution id;
+//   - the engine's Run walk stamps the run workflow's id — <runID> for a
+//     directly started run, and claimID+"-run" for a SCHEDULED one.
 //
-// The pod's labels do not say which, so both are asked. Live wins outright:
-// if EITHER is still executing, something may still be writing through this
-// pod and it is adopted. Disposal needs every id settled; anything
-// unresolved leaves the pod.
+// This asked both ids COMPOSED from the pod's annotations until review, which
+// is exactly wrong for the third shape. A scheduled run's pod carries
+// RunID(claimID) — a sha256 prefix RunScheduled rewrote in place of the run
+// id (internal/engine/liveness.go: "a hash describe can never find") — so
+// neither <runID>/<stage>/<attempt> nor <runID> names any execution, both
+// describes answer NotFound, and NotFound was counted as settled. The result
+// was not "delete on uncertainty" but delete on confident, WRONG certainty:
+// SweepOrphans deleting a live scheduled run's stage pod while its open-pr /
+// push-branch / merge-pr stage was still executing, which is the precise
+// failure the reversed direction exists to prevent. The engine's own
+// WorkflowLiveness never had the bug — it catches NotFound and falls through
+// to an open-workflow scan. Stamping the driver removes the guess instead of
+// widening it: one describe, no visibility scan, no hash to invert.
+//
+// NotFound is still an ANSWER here, and now legitimately: the id asked is the
+// exact execution whose activity created the pod, so "no such execution"
+// means nothing is driving the attempt. Anything that is not an answer —
+// transport failure, timeout, no client — leaves the pod.
 func (r temporalRunStates) RunState(ctx context.Context, attempt dispatcher.PodAttempt) dispatcher.RunState {
-	ids := []string{
-		engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt)),
-		attempt.RunID,
+	// Defence in depth: dispatcher.podAttempt already refuses a pod with no
+	// stamped driver, so this is unreachable through SweepOrphans. Asked
+	// directly, an empty id would describe "" and the NotFound that comes back
+	// would authorise a delete on no evidence at all.
+	if attempt.OwningWorkflowID == "" {
+		return dispatcher.RunStateIndeterminate
 	}
-	settled := 0
-	for _, id := range ids {
-		switch r.status(ctx, id) {
-		case sweepRunning:
-			return dispatcher.RunStateLive
-		case sweepSettled:
-			settled++
-		}
-	}
-	if settled == len(ids) {
+	switch r.status(ctx, attempt.OwningWorkflowID) {
+	case sweepRunning:
+		return dispatcher.RunStateLive
+	case sweepSettled:
 		return dispatcher.RunStateTerminal
+	default:
+		return dispatcher.RunStateIndeterminate
 	}
-	return dispatcher.RunStateIndeterminate
 }
 
 // status runs one bounded describe. It deliberately does NOT retry: the sweep
@@ -133,8 +146,12 @@ func (r temporalRunStates) status(ctx context.Context, workflowID string) sweepS
 	if err != nil {
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
-			// No execution under this id. That is an ANSWER, not a failure:
-			// nothing on the engine is addressable as this attempt.
+			// No execution under this id. That is an ANSWER, not a failure —
+			// but only because the caller asks about the pod's STAMPED owning
+			// execution. Describe is a mutable-state read, not a visibility
+			// query, so it is strongly consistent and cannot answer NotFound
+			// for an execution that has already scheduled the activity which
+			// created this pod.
 			return sweepSettled
 		}
 		return sweepUnresolved

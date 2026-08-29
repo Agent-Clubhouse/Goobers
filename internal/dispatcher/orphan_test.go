@@ -18,10 +18,16 @@ func (s stateTable) RunState(_ context.Context, attempt PodAttempt) RunState {
 }
 
 // seedStagePod renders and creates one dispatcher-labeled pod for run.
+//
+// The owning workflow id is run+"-run" rather than run itself: every pod in
+// this suite therefore carries a driver that CANNOT be reconstructed from the
+// run id, which is the scheduled-run shape and the one a composing resolver
+// mis-settles.
 func seedStagePod(t *testing.T, cfg Config, pods *fakePodAPI, run, name string) *corev1.Pod {
 	t.Helper()
 	attempt := testAttempt()
 	attempt.RunID = run
+	attempt.OwningWorkflowID = run + "-run"
 	pod, err := RenderPod(cfg, attempt, linuxRunner())
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
@@ -143,28 +149,39 @@ func TestSweepOrphansRequiresOwner(t *testing.T) {
 }
 
 // The identity annotations are what makes a selected pod ADDRESSABLE: the
-// labels are sanitized and cannot compose a workflow id. A pod without them
-// is left in place and named, never disposed on a guess.
+// labels are sanitized and cannot compose a workflow id. A pod missing ANY of
+// them is left in place and named, never disposed on a guess.
+//
+// AnnotationOwningWorkflowID is in this table for a stronger reason than the
+// other two. It names the one execution the resolver describes, so a pod
+// without it has no driver to ask about at all; the only alternative to
+// leaving it would be to compose an id out of the run and stage, which is the
+// lossy address this annotation exists to replace.
 func TestSweepOrphansLeavesUnaddressablePod(t *testing.T) {
-	pods := &fakePodAPI{}
-	pod := seedStagePod(t, testConfig(), pods, "run-a", "pod-a")
-	delete(pods.pods[pods.key(pod.Namespace, pod.Name)].Annotations, AnnotationRunID)
+	for _, annotation := range []string{AnnotationOwningWorkflowID, AnnotationRunID, AnnotationStage} {
+		t.Run(annotation, func(t *testing.T) {
+			pods := &fakePodAPI{}
+			pod := seedStagePod(t, testConfig(), pods, "run-a", "pod-a")
+			delete(pods.pods[pods.key(pod.Namespace, pod.Name)].Annotations, annotation)
 
-	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// alwaysTerminal says "settled" about whatever it is handed, including the
-	// zero attempt. So the ONLY thing keeping this pod alive is the sweep
-	// declining to ask about a pod it cannot address — which is the property
-	// under test. A resolver that answered from a table keyed by run id would
-	// have kept the pod for the wrong reason.
-	deleted, err := d.SweepOrphans(context.Background(), alwaysTerminal{})
-	if len(deleted) != 0 {
-		t.Fatalf("deleted %v — a pod whose attempt cannot be addressed must be left in place", deleted)
-	}
-	if err == nil || !strings.Contains(err.Error(), "pod-a") {
-		t.Fatalf("error %v does not name the unaddressable pod", err)
+			d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			// alwaysTerminal says "settled" about whatever it is handed,
+			// including the zero attempt. So the ONLY thing keeping this pod
+			// alive is the sweep declining to ask about a pod it cannot
+			// address — which is the property under test. A resolver that
+			// answered from a table keyed by run id would have kept the pod
+			// for the wrong reason.
+			deleted, err := d.SweepOrphans(context.Background(), alwaysTerminal{})
+			if len(deleted) != 0 {
+				t.Fatalf("deleted %v — a pod missing %s cannot be addressed and must be left in place", deleted, annotation)
+			}
+			if err == nil || !strings.Contains(err.Error(), "pod-a") {
+				t.Fatalf("error %v does not name the unaddressable pod", err)
+			}
+		})
 	}
 }
 
@@ -175,8 +192,8 @@ type alwaysTerminal struct{}
 func (alwaysTerminal) RunState(context.Context, PodAttempt) RunState { return RunStateTerminal }
 
 // The sweep hands the resolver the VERBATIM attempt identity, not the
-// sanitized label values: the resolver composes <run>/<stage>/<attempt> to ask
-// Temporal, and "run-2026-08-22-0001" does not survive sanitizeNameSegment.
+// sanitized label values: the resolver describes the owning workflow id, and
+// neither it nor "run-2026-08-22-0001" survives sanitizeNameSegment.
 func TestSweepOrphansPassesVerbatimAttemptIdentity(t *testing.T) {
 	pods := &fakePodAPI{}
 	attempt := testAttempt()
@@ -186,6 +203,11 @@ func TestSweepOrphansPassesVerbatimAttemptIdentity(t *testing.T) {
 	// address the wrong workflow in production.
 	attempt.RunID = "Run.2026_08_22.0001"
 	attempt.Stage = "run.unit_tests"
+	// And a driver that is neither the run id nor composable from it: the
+	// scheduled-run shape, whose RunID the engine rewrote to a hash. If the
+	// sweep ever went back to composing an id, this is the value it could not
+	// produce.
+	attempt.OwningWorkflowID = "Nightly.E2E-2026-08-22T03:00:00Z-run"
 	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
@@ -205,6 +227,10 @@ func TestSweepOrphansPassesVerbatimAttemptIdentity(t *testing.T) {
 		t.Fatalf("resolver saw %d attempts, want 1", len(seen))
 	}
 	got := seen[0]
+	if got.OwningWorkflowID != attempt.OwningWorkflowID {
+		t.Fatalf("resolver saw owning workflow %q, want the verbatim %q — the one id a delete is authorised by must never be reconstructed",
+			got.OwningWorkflowID, attempt.OwningWorkflowID)
+	}
 	if got.RunID != attempt.RunID || got.Stage != attempt.Stage || got.Attempt != attempt.Number {
 		t.Fatalf("resolver saw %+v, want the verbatim run %q / stage %q / attempt %d",
 			got, attempt.RunID, attempt.Stage, attempt.Number)
