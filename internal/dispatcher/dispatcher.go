@@ -96,6 +96,21 @@ type Config struct {
 	// WriteAPIBase is the daemon write API base URL stage pods emit journal
 	// events to and resolve credentials from (GOOBERS_DAEMON_API).
 	WriteAPIBase string
+	// EnvPassthrough is the instance's RunnerConfig.EnvPassthrough (#736): the
+	// operator-declared env var NAMES carried into a stage subprocess on top of
+	// procenv's built-in default-deny allowlist.
+	//
+	// It matters here only for a runner class enforcing env:default-deny
+	// (#3725): that class's pods filter their inherited container environment
+	// through the same allowlist the local executor uses, and an operator who
+	// declared a passthrough name expects it to reach a stage on EITHER
+	// substrate. Names only — the VALUES come from the pod's own image, not from
+	// the daemon's process, which is the asymmetry stageEnvironment()'s old
+	// "true parity needs the instance's envPassthrough threaded into the pod"
+	// note was describing.
+	//
+	// Unset leaves the pod on procenv's built-in list alone, which fails closed.
+	EnvPassthrough []string
 	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
