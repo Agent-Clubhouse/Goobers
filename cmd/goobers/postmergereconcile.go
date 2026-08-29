@@ -192,6 +192,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 		if len(keys) > limit {
 			keys = keys[:limit]
 		}
+		var reconcileErrs []error
 		for _, key := range keys {
 			entry := ledger.Entries[key]
 			report.Scanned++
@@ -217,6 +218,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("pr #%s: %w", entry.PullNumber, errors.Join(actionErrs...)))
 				continue
 			}
 			// ADO's post-merge path closes work items only. Do not checkpoint
@@ -232,9 +234,17 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			ledger.Entries[key] = entry
 			report.Reconciled++
 		}
-		return writePostMergeReconcileLedger(ledgerPath, ledger)
+		if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
+			return err
+		}
+		if len(reconcileErrs) > 0 {
+			return &postMergeReconcileProviderError{err: errors.Join(reconcileErrs...)}
+		}
+		return nil
 	})
 	if err != nil {
+		pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
+			report.Scanned, report.Reconciled, report.Pending, report.Expired)
 		return failProviderStage(stderr, "reconcile timed-out merge queue entries", err, "")
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
