@@ -16,14 +16,14 @@ const (
 type WorkspaceDeltaAction string
 
 const (
-	// WorkspaceDeltaPublished: the event's stage/attempt bundled base..tip
+	// WorkspaceDeltaPublished records that the event's stage/attempt bundled base..tip
 	// and put it in the blob plane under Digest.
 	WorkspaceDeltaPublished WorkspaceDeltaAction = "published"
-	// WorkspaceDeltaSelected: the event's stage (or gate) was handed
+	// WorkspaceDeltaSelected records that the event's stage (or gate) was handed
 	// Producer's Digest to continue from — the continuity selector's choice
 	// for this dispatch.
 	WorkspaceDeltaSelected WorkspaceDeltaAction = "selected"
-	// WorkspaceDeltaUnchanged: a writable-repo stage succeeded without
+	// WorkspaceDeltaUnchanged records that a writable-repo stage succeeded without
 	// moving its branch, so nothing was published; the record is unchanged.
 	WorkspaceDeltaUnchanged WorkspaceDeltaAction = "unchanged"
 )

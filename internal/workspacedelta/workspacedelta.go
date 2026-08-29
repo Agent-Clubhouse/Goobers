@@ -175,15 +175,15 @@ func Fetch(ctx context.Context, git Git, dir string, b Bundle) (string, error) {
 type Outcome int
 
 const (
-	// OutcomeCreate: the receiving ref does not exist; create it at the tip.
+	// OutcomeCreate means the receiving ref does not exist; create it at the tip.
 	OutcomeCreate Outcome = iota + 1
-	// OutcomeFastForward: the ref is an ancestor of (or equal to) the tip;
+	// OutcomeFastForward means the ref is an ancestor of (or equal to) the tip;
 	// move it there.
 	OutcomeFastForward
-	// OutcomeKeep: the tip is strictly behind the ref — the ref already
+	// OutcomeKeep means the tip is strictly behind the ref — the ref already
 	// carries everything the delta does. Leave it alone.
 	OutcomeKeep
-	// OutcomeBaseDrift: neither contains the other, but the ref is nothing
+	// OutcomeBaseDrift means neither contains the other, but the ref is nothing
 	// more than an advanced base. Apply the delta exactly as a fast-forward.
 	OutcomeBaseDrift
 )
