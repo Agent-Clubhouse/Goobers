@@ -2461,6 +2461,21 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	}
 	if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 		projected.Artifact = &metadata
+	} else if event.Ref != nil {
+		// An event that is not itself an artifact.recorded but REFERENCES one
+		// — gate.evaluated naming its verdict is the load-bearing case — still
+		// has to say which artifact, or a consumer of the projection cannot
+		// reach the content the event is about (#3880: apply-verdict and
+		// elect-lander read exactly this ref over the run-scoped read route).
+		//
+		// Resolved through the index rather than copied from the event, so it
+		// keeps both of the projection's properties: no journal-relative path
+		// crosses the boundary, and a redacted artifact resolves to the
+		// replacement digest rather than one that no longer exists.
+		if metadata, ok := artifacts.byDigest[artifacts.currentDigest(event.Ref.Digest)]; ok {
+			resolved := metadata.metadata
+			projected.Artifact = &resolved
+		}
 	}
 	projected.Name = event.Name
 	projected.ExternalRef = event.ExternalRef

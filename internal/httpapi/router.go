@@ -125,16 +125,21 @@ func IsPodPrincipal(principal Principal) bool {
 
 // podPlanePath reports whether path is one of the write routes a pod
 // principal may reach: the claims plane (its four mutations and its list
-// read, all POST), plus the credential plane's resolve route
+// read, all POST), the credential plane's resolve route
 // (distributed-state-and-coordination.md §11 — the plane exists FOR stage
-// pods). The journal plane is the third pod-reachable plane; it carries
-// a run-id segment and is matched structurally by journalPlanePath. The blob
-// plane is the fourth; it carries a digest segment and is matched
-// structurally by blobPlanePath. The surrender plane is the fifth; it
-// carries run/stage/attempt segments and is matched structurally by
-// surrenderPlanePath. Everything else (reads, triggers, HITL, interventions)
-// stays human-only: a stage pod has no business resolving escalations or
-// minting runs.
+// pods), and the cross-run journal plane's three purpose-built questions
+// (decision 005 R1 / finding 002 C4 — each answered by the daemon from data
+// the daemon derives, gaggle-scoped, never another run's journal). The
+// journal plane is the third pod-reachable plane; it carries a run-id segment
+// and is matched structurally by journalPlanePath. The blob plane is the
+// fourth; it carries a digest segment and is matched structurally by
+// blobPlanePath. The surrender plane is the fifth; it carries
+// run/stage/attempt segments and is matched structurally by
+// surrenderPlanePath. The run-scoped READ routes are the sixth (decision 005
+// R1 option 1); they carry a run-id segment and are matched structurally by
+// runReadPlanePath. Everything else (other reads, triggers, HITL,
+// interventions) stays human-only: a stage pod has no business resolving
+// escalations or minting runs.
 func podPlanePath(path string) bool {
 	switch path {
 	case apicontract.ClaimAcquirePath,
@@ -142,8 +147,44 @@ func podPlanePath(path string) bool {
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
 		apicontract.ClaimListPath,
-		apicontract.CredentialResolvePath:
+		apicontract.CredentialResolvePath,
+		apicontract.JournalRunPhasePath,
+		apicontract.JournalConflictTouchesPath,
+		apicontract.JournalUnpushedWorkPath:
 		return true
+	default:
+		return false
+	}
+}
+
+// runReadPlanePath reports whether path is one of the THREE run-scoped read
+// routes decision 005 ruling R1 (option 1) admits a pod principal to: its own
+// run's events, one of its own run's stages' attempts, and one of its own
+// run's artifacts by digest. Matched structurally because each carries a
+// run-id segment; WHICH run is enforced by the handlers (podRunContained),
+// which can see both the path run id and the principal — the same division
+// the journal-emit and surrender planes use.
+//
+// Deliberately NOT admitted: RunDetailPath (a run summary is a portal view,
+// and no converted reader needs it), RunTranscriptPath (raw agent transcripts
+// — outside the enumerated ruling, so refused), RunsPath (a list of every run
+// on the instance is not a same-run read at all), and RunRevealPath (a local
+// host action). Fail closed: the ruling enumerated three routes, so three is
+// what this admits.
+func runReadPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	segments := strings.Split(rest, "/")
+	switch len(segments) {
+	case 2:
+		return segments[0] != "" && segments[1] == "events"
+	case 3:
+		return segments[0] != "" && segments[1] == "artifacts" && segments[2] != ""
+	case 4:
+		run, stagesLiteral, stage, attemptsLiteral := segments[0], segments[1], segments[2], segments[3]
+		return run != "" && stagesLiteral == "stages" && stage != "" && attemptsLiteral == "attempts"
 	default:
 		return false
 	}
@@ -209,15 +250,16 @@ func surrenderPlanePath(path string) bool {
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
 // to the pod planes (claims + credential resolve + journal emit + blob
-// get/put + surrender put): their token proves "I am run X's stage pod",
-// which authorizes ledger operations, credential resolution, journal
-// emission, blob transfer, and result surrender for that run and nothing
-// else. Per-run containment (the request body's runId, or the path run id
-// for the journal and surrender planes, matching the pod's run) is enforced
-// by the plane handlers, which can see the request — the credential and blob
-// handlers additionally refuse human principals outright (DS9: those planes
-// serve stage pods only; the blob plane's digest carries no run to compare
-// against).
+// get/put + surrender put + the cross-run journal plane + their OWN run's
+// three read routes): their token proves "I am run X's stage pod", which
+// authorizes ledger operations, credential resolution, journal emission, blob
+// transfer, result surrender, and reads of run X's own scrubbed journal — and
+// nothing else. Per-run containment (the request body's runId, or the path
+// run id for the journal, surrender, and run-read routes, matching the pod's
+// run) is enforced by the plane handlers, which can see the request — the
+// credential and blob handlers additionally refuse human principals outright
+// (DS9: those planes serve stage pods only; the blob plane's digest carries
+// no run to compare against).
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -231,7 +273,13 @@ func RequireRoles() Authorizer {
 			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
 				return nil
 			}
-			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, and surrender planes", principal.Subject)
+			// Decision 005 R1 option 1: reads of the pod's own run's journal,
+			// GET only. A pod may never write through a read route, and the
+			// handler still decides WHICH run.
+			if runReadPlanePath(request.URL.Path) && request.Method == http.MethodGet {
+				return nil
+			}
+			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, and surrender planes and read its own run", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -323,6 +371,7 @@ type handlerConfig struct {
 	triggers            TriggerService
 	escalations         EscalationService
 	journal             JournalService
+	runJournal          RunJournalService
 	credentials         CredentialService
 	blobs               blobstore.Store
 	surrenders          SurrenderService
@@ -625,6 +674,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
+	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
 	registerSurrenderPlaneRoutes(router, config, errorLog)
 }
@@ -671,7 +721,11 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, run)
 	})
 	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
-		events, err := reader.RunEvents(request.Context(), request.PathValue("run"))
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "events") {
+			return
+		}
+		events, err := reader.RunEvents(request.Context(), run)
 		if err != nil {
 			writeReadError(w, errorLog, "read run events", err)
 			return
@@ -679,9 +733,13 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, events)
 	})
 	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "stage attempts") {
+			return
+		}
 		attempts, err := reader.StageAttempts(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			request.PathValue("stage"),
 		)
 		if err != nil {
@@ -691,9 +749,13 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, attempts)
 	})
 	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "artifacts") {
+			return
+		}
 		artifact, err := reader.Artifact(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			request.PathValue("digest"),
 		)
 		if err != nil {

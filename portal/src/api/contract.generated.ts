@@ -35,6 +35,9 @@ export const apiRoutes = {
   "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },
   "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
   "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
+  "journalRunPhase": { method: "POST", path: "/api/v1/journal/run-phase", actionClass: "workflow-execution" },
+  "journalConflictTouches": { method: "POST", path: "/api/v1/journal/conflict-touches", actionClass: "workflow-execution" },
+  "journalUnpushedWork": { method: "POST", path: "/api/v1/journal/unpushed-work", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

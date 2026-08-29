@@ -620,6 +620,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
