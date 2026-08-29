@@ -42,6 +42,24 @@ import (
 // "surrender confirmed but result absent" precisely.
 var ErrNoSurrender = errors.New("dispatcher: no surrendered result for attempt")
 
+// The two kit-fetch failure codes a stage pod can surrender BEFORE it has
+// anything else — no kit digest stamped on the pod, or a kit the blob plane
+// would not serve (cmd/goobers/dispatchagentic.go's first two returns).
+//
+// They live on the surrender contract rather than in the pod binary because
+// both ends read them: the pod writes them, and the engine classifies a
+// REVIEW attempt carrying either one as an infrastructure failure (#3888) —
+// both are substrate faults on the way to the reviewer, not the reviewer's
+// own outcome. Keeping the strings in one place is what stops the two sides
+// from drifting into a silently unclassified code.
+const (
+	// CodeAgenticKitMissing: the pod was created without a kit digest.
+	CodeAgenticKitMissing = "agentic_kit_missing"
+	// CodeAgenticKitUnavailable: the kit digest was stamped but the blob
+	// plane did not serve or did not verify it.
+	CodeAgenticKitUnavailable = "agentic_kit_unavailable"
+)
+
 // SurrenderPlane stores and serves surrendered result documents by attempt
 // identity.
 type SurrenderPlane interface {

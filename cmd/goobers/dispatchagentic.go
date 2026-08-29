@@ -35,13 +35,19 @@ import (
 func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest))
 	if digest == "" {
-		return stageOutcome{Result: failureEnvelope("agentic_kit_missing", "no agentic kit digest was stamped on this pod")}
+		// These first two refusals precede the kit, so they precede
+		// kit.IsReview() and the fail closure below: the pod cannot know
+		// whether it was dispatched as a review, and so cannot stamp the
+		// review-only Retryable class. The ENGINE knows (input.Review) and
+		// classifies both codes as infrastructure faults on its side
+		// (engine.reviewActivityResult, #3888).
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitMissing, "no agentic kit digest was stamped on this pod")}
 	}
 	kit, err := fetchAgenticKit(ctx, digest)
 	if err != nil {
 		// Fail closed and name the kit. A stage that proceeded without its kit
 		// would run with no instructions at all.
-		return stageOutcome{Result: failureEnvelope("agentic_kit_unavailable", err.Error())}
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
 	}
 	// fail shapes every refusal past this point. For a REVIEW the class
 	// matters in a way it does not for an invocation: a task's surrendered
