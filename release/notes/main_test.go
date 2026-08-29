@@ -169,13 +169,44 @@ func TestGenerateRecognizesBreakingChangeFooters(t *testing.T) {
 	}
 }
 
-func TestGenerateRejectsNonStableTagBeforeGit(t *testing.T) {
-	for _, tag := range []string{"", "1.2.3", "v1.2", "v1.2.3-rc.1", "v01.2.3"} {
+func TestGenerateRejectsInvalidTagBeforeGit(t *testing.T) {
+	for _, tag := range []string{"", "1.2.3", "v1.2", "v01.2.3", "v1.2.3-", "v1.2.3-01", "v1.2.3+build"} {
 		t.Run(tag, func(t *testing.T) {
 			if _, err := generate(tag, fakeGit{}, missingFile); err == nil {
 				t.Fatalf("generate(%q) should fail", tag)
 			}
 		})
+	}
+}
+
+func TestGenerateAcceptsPrereleaseTag(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v1.3.0-beta.2^{commit}"): {output: "release"},
+		command("rev-list", "--parents", "-n", "1", "v1.3.0-beta.2"):         {output: "release parent"},
+		command("tag", "--merged", "v1.3.0-beta.2^", "--sort=-version:refname", "--list", "v*"): {
+			output: "v1.3.0-beta.1\nv1.2.0",
+		},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.2.0..v1.3.0-beta.2"): {
+			output: "111111111111\x1ffeat: preview a feature\x1e",
+		},
+	}
+	readFile := func(path string) ([]byte, error) {
+		if filepath.ToSlash(path) != ".github/release-notes/v1.3.0-beta.2.md" {
+			t.Fatalf("read path = %q", path)
+		}
+		return []byte("A beta overview.\n"), nil
+	}
+
+	got, err := generate("v1.3.0-beta.2", git, readFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// previousTag must skip the pre-release candidate v1.3.0-beta.1 and
+	// anchor the changelog on the last stable tag, v1.2.0.
+	for _, want := range []string{"A beta overview.", "Changes since `v1.2.0`.", "- preview a feature (`1111111`)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notes missing %q:\n%s", want, got)
+		}
 	}
 }
 
