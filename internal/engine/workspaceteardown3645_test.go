@@ -150,9 +150,12 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 		}),
 	}
 
+	// InvokeGoober's arity is (env, workspaceBranch, workspaceDelta,
+	// workspace) since #3845; this call landed on main with the earlier
+	// two-argument shape and did not compile (main run 33265704847).
 	res, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
 		RunID: "run-5", TaskID: "run-5:implement",
-	}, "")
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("InvokeGoober = %v, want the stage's own success despite a teardown failure", err)
 	}
