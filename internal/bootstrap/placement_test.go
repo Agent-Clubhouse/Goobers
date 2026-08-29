@@ -8,6 +8,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
@@ -231,8 +232,8 @@ func findPin(t *testing.T, placements []engine.PinnedPlacement, stage string) en
 
 // A placed agentic gate is pinned BY NAME — its own pin, never ledger-touching
 // — and the task pins around it keep their own facts (decision 001 ruling 6).
-// The gate here declares a placement self satisfies, so it pins self: that is
-// the only gate pin the engine can honour today (see the hold test below).
+// The gate here declares a placement self satisfies, so it pins self (the
+// remote case is TestPinStagePlacementsPinsRemoteGate below).
 func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 	def := placementSpecV30(
 		[]apiv1.Task{
@@ -269,35 +270,46 @@ func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 	}
 }
 
-// HOLD until decision 001's engine half (rulings 7–8): engine.evaluateGate has
-// no placement arm, so a gate whose placement only a REMOTE runner satisfies
-// must refuse the start — naming the runner and queue it would have pinned to
-// — rather than manufacture a pin nothing reads and run the reviewer outside
-// its declared isolation. The same document with the restriction dropped
-// pins self (the test above), so the refusal is attributable to the
-// unsatisfiable-on-self placement alone. When evaluateGate honours a non-self
-// gate pin, this test flips to assert the remote pin (queue
-// goobers-dispatch.web.linux-agentic, the gate's cpu/memory/restrictions).
-func TestPinStagePlacementsRefusesRemoteGatePinUntilEngineHalf(t *testing.T) {
+// The engine half of decision 001 (rulings 7–8): a gate whose placement only
+// a REMOTE runner satisfies pins that runner exactly as a task would — the
+// pinned queue engine.evaluateGate routes ActDispatchStage to, the eligible
+// set, and the gate's own cpu/memory/restrictions — never ledger-touching.
+// This is the test that stood as #3848's HOLD (refusing the start with the
+// runner and queue named) until evaluateGate honoured a non-self gate pin;
+// the same document with the restriction dropped pins self (the test above).
+func TestPinStagePlacementsPinsRemoteGate(t *testing.T) {
 	def := placementSpecV30(
 		[]apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "reviewer", Goal: "implement", Next: "review"}},
 		[]apiv1.Gate{placedReviewGate("review", "")},
 	)
 	placements, err := PinStagePlacements(agenticConfig(), reviewerConfigSet(), "web", def)
-	if err == nil {
-		t.Fatalf("PinStagePlacements = %+v, want the start refused: a remote gate pin is not honoured at execution yet", placements)
+	if err != nil {
+		t.Fatalf("PinStagePlacements: %v (a remote gate pin is honoured by evaluateGate's dispatch arm; the #3848 refusal must be gone)", err)
 	}
-	for _, want := range []string{
-		`gate "review"`,
-		`runner "linux-agentic"`,
-		"queue goobers-dispatch.web.linux-agentic",
-		"not honoured at execution yet",
-		"rulings 7–8",
-		"outside its declared isolation",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal missing %q: %v", want, err)
-		}
+	review := findPin(t, placements, "review")
+	if review.Self {
+		t.Fatalf("review placement = %+v, want the REMOTE pin: the gate's restriction is one only linux-agentic satisfies", review)
+	}
+	if want := dispatcher.QueueName("web", "linux-agentic"); review.Queue != want {
+		t.Fatalf("review queue = %q, want %q (the pinned per-(gaggle × runner) queue evaluateGate dispatches on)", review.Queue, want)
+	}
+	if len(review.Eligible) != 1 || review.Eligible[0].Name != "linux-agentic" {
+		t.Fatalf("review eligible = %+v, want exactly linux-agentic", review.Eligible)
+	}
+	if review.CPU != "1000m" || review.Memory != "2Gi" {
+		t.Fatalf("review quantities = cpu %q memory %q, want the gate's own runsOn (ruling 5: never inherited)", review.CPU, review.Memory)
+	}
+	if len(review.Restrictions) == 0 {
+		t.Fatalf("review placement = %+v, want the gate's declared restriction carried to the dispatcher", review)
+	}
+	if review.LedgerTouching {
+		t.Fatal("a gate must never pin as ledger-touching")
+	}
+	// The task beside it keeps its own pin: a remote gate pin never leaks
+	// into the task rows (ruling 6's name keying, in the remote case).
+	implement := findPin(t, placements, "implement")
+	if !implement.Self || implement.LedgerTouching {
+		t.Fatalf("implement placement = %+v, want a plain self pin beside the placed gate", implement)
 	}
 }
 

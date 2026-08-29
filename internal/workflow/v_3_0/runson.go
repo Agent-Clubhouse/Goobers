@@ -144,34 +144,6 @@ func gateRunsOnProblems(def Definition) []string {
 	return problems
 }
 
-// gatePlacementWarnings is WF024: one warning per agentic gate that declares
-// runsOn, for as long as decision 001's engine/pod half (rulings 7–8:
-// evaluateGate through the dispatch seam, a review mode on the agentic kit,
-// the surrendered verdict) is unlanded. Today the block is compiled, solved
-// (RNR001/RNR003) and pinned by name, but engine.evaluateGate has no
-// placement arm: an agentic gate always runs ActReviewGoober in-process on
-// the workflow's own queue. Accepting a declared isolation set and running
-// the reviewer outside it silently would be the insecure half, so the two
-// start seams fail closed — a placement self cannot satisfy is refused
-// (checkpoint 3 for daemon-scheduled runs; bootstrap.PinStagePlacements for
-// engine-start) — and this warning tells the author so at validate time.
-//
-// REMOVE with the engine half: once evaluateGate honours a non-self gate
-// pin, this function and its WF024 code retire together with the
-// PinStagePlacements refusal.
-func gatePlacementWarnings(def Definition) []string {
-	var warnings []string
-	for _, gate := range def.Spec.Gates {
-		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.RunsOn == nil {
-			continue
-		}
-		warnings = append(warnings, fmt.Sprintf(
-			"gate %q declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet (decision 001 rulings 7–8, the engine/pod half, land separately) — the reviewer still evaluates in the daemon/control plane with that host's OS, network and envelope. A placement self satisfies pins self and evaluates in-process; one self cannot satisfy is refused at start (workflow.refused for daemon-scheduled runs, a named error for engine-start) rather than run outside its declared isolation",
-			gate.Name))
-	}
-	return warnings
-}
-
 // runsOnProblems reports structural problems in the declared runsOn blocks
 // (tasks and gates alike — runsOnStages): an os value outside the validated
 // enum, a malformed or non-positive quantity, a malformed capability token,
