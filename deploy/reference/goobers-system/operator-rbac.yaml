@@ -34,6 +34,12 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create"]
+  # Read-only: the reconcile resolves the authoritative config generation from
+  # the config-sync generation ConfigMap so it never mixes generations (#2444).
+  # config-sync owns writing it; the operator only reads.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
