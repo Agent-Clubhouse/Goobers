@@ -253,6 +253,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	ctx := webhookGate.Context()
 	var ready atomic.Bool
+	// Named subsystem readiness checks (#3806), surfaced on /readyz alongside
+	// the overall Ready gate above. Each flips exactly once, in startup
+	// order, as its own phase below completes; none of them gate anything —
+	// they are purely additive instrumentation describing WHY the daemon
+	// isn't ready yet. `ready` above remains the single source of truth both
+	// /api/v1/health.Ready and /readyz.Ready read, so the two surfaces can
+	// never disagree — by the time `ready` flips true (webhookGate.Start(),
+	// below), every one of these four has already flipped true too, in this
+	// same, sequential, error-returns-early function body.
+	var (
+		configLoaded    atomic.Bool // instance config + scheduler wiring validated
+		stateOpen       atomic.Bool // scheduler's run-tracking state reconciled from disk
+		resumeComplete  atomic.Bool // crash-resume of interrupted runs finished
+		sweepsStarted   atomic.Bool // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked atomic.Bool // scheduler's heartbeat ticked at least once (liveness grace)
+	)
 	stopDaemon := func() {
 		ready.Store(false)
 		webhookGate.Stop()
@@ -393,6 +409,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3806: instance config validated, definitions/scheduler wiring built.
+	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -628,6 +646,51 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// #3806: /healthz and /readyz are registered OUTSIDE the versioned router
+	// httpapi.NewHandler just built — no authenticate/authorize/admission/
+	// budget — so a kubelet probe reaches them with no credential regardless
+	// of api.auth (including this daemon's own DenyAllAuthenticator fallback
+	// for a non-loopback bind with no human authenticator configured, just
+	// above). Every other path keeps going through the versioned handler
+	// exactly as before; WrapWithProbes forwards authenticatedTransport() and
+	// shutdown() straight through so NewServer's SEC-043 gate below and
+	// apiHandler's own SSE-close lifecycle both keep working unchanged.
+	livenessCheck := func() bool {
+		if !schedulerTicked.Load() {
+			// Grace before the scheduler's first tick: a long legitimate
+			// crash-resume (resumeInterruptedRunsWithRunners, below —
+			// unbounded, scales with interrupted-run count) must not read as
+			// a wedged main loop. Liveness is deliberately decoupled from
+			// startup/resume completion — only a heartbeat that WAS
+			// established and then went stale reports unhealthy; readiness
+			// (below), not liveness, is what gates on startup actually
+			// finishing.
+			return true
+		}
+		lastTickAt, err := daemonstate.Read(lockPath)
+		if err != nil {
+			// The lock file this daemon itself holds is unreadable — treat as
+			// grace rather than failure; a transient stat error is not proof
+			// of a wedged main loop.
+			return true
+		}
+		return daemonstate.Evaluate(time.Now(), lastTickAt, livenessTimeout).Healthy
+	}
+	readinessCheck := func() httpapi.ReadinessStatus {
+		return httpapi.ReadinessStatus{
+			// The single Ready gate every authenticated caller already sees
+			// on /api/v1/health.Ready — never recomputed from Checks below,
+			// so the two surfaces cannot drift out of lockstep.
+			Ready: ready.Load(),
+			Checks: map[string]bool{
+				"configLoaded":   configLoaded.Load(),
+				"stateOpen":      stateOpen.Load(),
+				"resumeComplete": resumeComplete.Load(),
+				"sweepsStarted":  sweepsStarted.Load(),
+			},
+		}
+	}
+	handler = httpapi.WrapWithProbes(handler, livenessCheck, readinessCheck)
 	var apiServerOpts []httpapi.ServerOption
 	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
 		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
@@ -770,7 +833,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
 	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
-		return daemonstate.Refresh(lockPath, tickAt)
+		err := daemonstate.Refresh(lockPath, tickAt)
+		// #3806: /healthz's liveness grace ends once the scheduler has ticked
+		// at least once — set regardless of a Refresh error, since the tick
+		// itself (not the on-disk write) is what "has the main loop reached
+		// its steady-state loop" means.
+		schedulerTicked.Store(true)
+		return err
 	}))
 	sourceReconcileWake := make(chan struct{}, 1)
 	wakeSourceReconcile := func(context.Context) {
@@ -796,6 +865,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// #3806: the scheduler's run-tracking state has been reconciled from the
+	// run directories already on disk.
+	stateOpen.Store(true)
 	stalledRunTimeout, err := setup.RunConditions.StalledRunTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -917,6 +989,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
+	// #3806: crash-resume of every interrupted run finished (this is the
+	// startup phase whose duration is unbounded and scales with interrupted-
+	// run count, so a kubelet startupProbe against /readyz must wait this
+	// out with a generous failureThreshold, not a short initialDelay).
+	resumeComplete.Store(true)
 
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
@@ -1161,6 +1238,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
+	// #3806: the initial synchronous trigger/claim-admin/cancel/apply sweeps
+	// above already ran once, and every one of their periodic tickers is now
+	// live.
+	sweepsStarted.Store(true)
 
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})
