@@ -294,7 +294,7 @@ func bindFileIssuesCheck(root, digest string) error {
 	check, err := readDecompositionInput[fileIssuesCheckResult](root, providerInput("checkFile", fileIssuesCheckFileName), fileIssuesCheckFileName, checkStage, "/result")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("no file-issues --check result to bind to (%v): wire the %s stage's nominationsDigest output to the checkDigest input, set checkFile, or run where the run journal records the %s result", err, checkStage, checkStage)
+			return fmt.Errorf("no file-issues --check result to bind to (%w): wire the %s stage's nominationsDigest output to the checkDigest input, set checkFile, or run where the run journal records the %s result", err, checkStage, checkStage)
 		}
 		return fmt.Errorf("read nomination check: %w", err)
 	}
