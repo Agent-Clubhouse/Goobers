@@ -302,3 +302,57 @@ func TestPostRebindPodsCarryDeltaToEachOther(t *testing.T) {
 		t.Fatalf("published=%v selected=%v; want both journaled on the rebound branch: %+v", published, selected, deltaEvents(proj))
 	}
 }
+
+// The gate-shaped twin of TestPodDispatchCarriesTheReboundWorkspaceBranch
+// (decision 001 rulings 7–8 meets #392): a placed reviewer gate goes through
+// ActDispatchStage exactly as a placed task does, and DispatchStage's own
+// writable-repo gate is what has to keep the two arms from disagreeing —
+// there is no separate "is this a gate" branch in the stamping code, so this
+// pins that dispatchRemoteGate actually reaches it. The default agentic-gate
+// workspace is the writable repo (ReviewGoober's own reading of an unset
+// AgenticGate.Workspace); repo-readonly is the arm that must carry none, the
+// same as a read-only TASK.
+func TestPlacedGateCarriesTheReboundWorkspaceBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		workspace  apiv1.WorkspaceMode
+		wantBranch string
+	}{
+		{name: "default writable repo carries the rebound branch", workspace: "", wantBranch: reboundBranch},
+		{name: "declared repo-readonly carries none", workspace: apiv1.WorkspaceRepoReadOnly, wantBranch: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := placedGateSpec()
+			spec.Gates[0].Agentic.Workspace = tc.workspace
+			// selectedWorkspaceBranch only ever reads a DETERMINISTIC task's
+			// outputs (engine.go): "implement" becomes the rebinding stage, the
+			// same shape as "select" in TestPodDispatchCarriesTheReboundWorkspaceBranch,
+			// so the gate immediately after it is the run's first post-rebind
+			// dispatch.
+			spec.Tasks[0] = apiv1.Task{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "claim a PR",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "review",
+			}
+			in := projectionInput("placed-gate-branch-"+string(tc.workspace), spec)
+			in.DSLVersion = "3.0"
+			in.GateGooberCapabilities = map[string][]string{"reviewer": {"agent:model"}}
+			in.Placements = []PinnedPlacement{remoteGatePin()}
+			surrenders := surrenderStore(t)
+			putSurrendered(t, surrenders, in.RunID, "review", 1, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictPass}))
+			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+			executeForProjection(t, in, &Activities{
+				Goober: refusingReviewer(t), Det: &rebindingDeterministic{stage: "implement", branch: reboundBranch},
+				Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders,
+			}, false)
+
+			attempts, _ := fake.recorded()
+			if len(attempts) != 1 || attempts[0].Stage != "review" {
+				t.Fatalf("attempts = %+v, want exactly the gate's review attempt", attempts)
+			}
+			if got := attempts[0].WorkspaceBranch; got != tc.wantBranch {
+				t.Fatalf("review attempt WorkspaceBranch = %q, want %q — a placed gate must read the rebound branch on a writable workspace and none on repo-readonly, the same rule DispatchStage already applies to a task", got, tc.wantBranch)
+			}
+		})
+	}
+}
