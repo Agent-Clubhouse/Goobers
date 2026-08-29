@@ -88,10 +88,11 @@ func TestWorkspaceDeltaCarriesACommitBetweenTwoWorkspaces(t *testing.T) {
 	runGitT(t, podA, "commit", "-m", "the commit that must survive")
 	want := strings.TrimSpace(runGitOutputT(t, podA, "rev-parse", "HEAD"))
 
-	digest, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest := published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit — this is the bug, not the fix")
 	}
@@ -133,14 +134,40 @@ func TestWorkspaceDeltaRefusesNonWritableWorkspaces(t *testing.T) {
 	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly, ""} {
 		t.Run(string(mode)+"/none", func(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageWorkspace, string(mode))
-			digest, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			published, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			digest := published.Digest
 			if err != nil {
 				t.Fatalf("publishWorkspaceDelta(%q) = error %v; a non-writable workspace is ordinary, not a failure", mode, err)
 			}
 			if digest != "" {
 				t.Fatalf("publishWorkspaceDelta(%q) = %q, want no delta", mode, digest)
 			}
+			if published.Unchanged {
+				t.Fatalf("publishWorkspaceDelta(%q) claims Unchanged; a non-writable workspace has checked no branch and must claim nothing", mode)
+			}
 		})
+	}
+}
+
+// "Unchanged" is the pod's own finding — a writable repo branch it CHECKED
+// and found carrying nothing beyond base — surrendered explicitly so the
+// engine journals it as a fact rather than inferring it from an absent digest
+// (which is also what a scratch stage, or a stage image predating the field,
+// surrenders).
+func TestWorkspaceDeltaReportsUnchangedForACheckedWritableBranch(t *testing.T) {
+	origin := initBareOrigin(t)
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+	pod := filepath.Join(t.TempDir(), "pod")
+	runGitT(t, filepath.Dir(pod), "clone", "--branch", "main", origin, pod)
+	runGitT(t, pod, "checkout", "-b", "e2e/wf/run-unchanged")
+	published, err := publishWorkspaceDelta(context.Background(), pod, os.Stderr)
+	if err != nil {
+		t.Fatalf("publishWorkspaceDelta: %v", err)
+	}
+	if published.Digest != "" || !published.Unchanged {
+		t.Fatalf("publishWorkspaceDelta on a branch at base = %+v, want Unchanged and no digest", published)
 	}
 }
 
@@ -189,10 +216,11 @@ func publishDeltaFrom(t *testing.T, dir, branch, file, content string) (digest, 
 	runGitT(t, dir, "add", file)
 	runGitT(t, dir, "commit", "-m", "commit "+file)
 	head = strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
-	digest, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest = published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit")
 	}
@@ -422,7 +450,8 @@ func TestWorkspaceDeltaFailsLoudlyWhenTheBranchCannotBeDetermined(t *testing.T) 
 	// for every reason git might refuse the workspace.
 	notARepo := t.TempDir()
 
-	digest, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	digest := published.Digest
 	if err == nil {
 		t.Fatalf("publishWorkspaceDelta returned digest %q and no error; a writable repo workspace whose branch is undeterminable must fail rather than silently carry nothing", digest)
 	}
