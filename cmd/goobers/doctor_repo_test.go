@@ -166,11 +166,18 @@ func TestDoctorRepoJSONReport(t *testing.T) {
 }
 
 func TestDoctorRequiresExactlyOneMode(t *testing.T) {
-	code, _, stderr := runArgs(t, "doctor", "--k8s", "--repo")
-	if code != 2 {
-		t.Fatalf("code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr, "exactly one of --k8s or --repo") {
-		t.Fatalf("stderr = %q, want the exactly-one-mode message", stderr)
+	for _, args := range [][]string{
+		{"doctor"},
+		{"doctor", "--k8s", "--repo"},
+		{"doctor", "--av-exclusions", "--repo"},
+		{"doctor", "--av-exclusions", "--k8s"},
+	} {
+		code, _, stderr := runArgs(t, args...)
+		if code != 2 {
+			t.Fatalf("%v: code = %d, want 2", args, code)
+		}
+		if !strings.Contains(stderr, "exactly one of --k8s, --repo or --av-exclusions") {
+			t.Fatalf("%v: stderr = %q, want the exactly-one-mode message", args, stderr)
+		}
 	}
 }
