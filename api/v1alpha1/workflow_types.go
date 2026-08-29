@@ -597,6 +597,7 @@ const (
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
 // +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
+// +kubebuilder:validation:XValidation:rule="!has(self.runsOn) || self.evaluator == 'agentic'",message="runsOn is only valid for agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -626,6 +627,19 @@ type Gate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// RunsOn declares where an AGENTIC gate's reviewer executes (DSL 3.0,
+	// dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the identical
+	// placement block tasks carry, with the identical gaggle-floor merge and
+	// the derived harness:<reviewer goober's harness> tag. Optional — absent,
+	// the reviewer evaluates in the daemon/control plane exactly as before the
+	// field existed. Valid only when evaluator=agentic (automated and human
+	// gates are control-plane by definition, ruling 2), and a declared block
+	// must carry cpu AND memory (ruling 5: the gaggle floor has no quantities
+	// and a review is the most expensive stage class in a lane, so an
+	// inherited envelope would silently under-provision). Interpreters before
+	// 3.0 refuse the field; the compiler enforces that, not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.

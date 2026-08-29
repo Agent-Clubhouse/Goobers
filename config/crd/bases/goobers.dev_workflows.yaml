@@ -230,6 +230,68 @@ spec:
                       description: Name uniquely identifies this state within the
                         workflow.
                       type: string
+                    runsOn:
+                      description: |-
+                        RunsOn declares where an AGENTIC gate's reviewer executes (DSL 3.0,
+                        dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the identical
+                        placement block tasks carry, with the identical gaggle-floor merge and
+                        the derived harness:<reviewer goober's harness> tag. Optional — absent,
+                        the reviewer evaluates in the daemon/control plane exactly as before the
+                        field existed. Valid only when evaluator=agentic (automated and human
+                        gates are control-plane by definition, ruling 2), and a declared block
+                        must carry cpu AND memory (ruling 5: the gaggle floor has no quantities
+                        and a review is the most expensive stage class in a lane, so an
+                        inherited envelope would silently under-provision). Interpreters before
+                        3.0 refuse the field; the compiler enforces that, not the shared schema.
+                      properties:
+                        capabilities:
+                          description: |-
+                            Capabilities is the open toolchain tag set — DSL 2.0's
+                            requiredCapabilities moved, not re-invented (internal/runnercap grammar,
+                            exact set membership, no ranges). os=* tokens are rejected here (CAP004):
+                            the OS field above is the only platform vocabulary in a 3.0 document.
+                            MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+                          items:
+                            type: string
+                          maxItems: 32
+                          type: array
+                        cpu:
+                          description: |-
+                            CPU is the minimum CPU as a Kubernetes quantity string (e.g. "2000m").
+                            Minimums become pod resource requests in mode 3; limits come from the
+                            matched runner's ceiling, never from the stage. Advisory on local modes.
+                          type: string
+                        disk:
+                          description: Disk is the minimum disk as a Kubernetes quantity
+                            string (e.g. "20Gi").
+                          type: string
+                        memory:
+                          description: Memory is the minimum memory as a Kubernetes
+                            quantity string (e.g. "4Gi").
+                          type: string
+                        os:
+                          description: |-
+                            OS is the required operating system — a validated enum, never a free
+                            token (the #659 supersession). Empty means no OS requirement: placement
+                            policy prefers, and will wait bounded for, a Linux-class runner when the
+                            inventory has one.
+                          enum:
+                          - linux
+                          - windows
+                          - macOS
+                          type: string
+                        restrictions:
+                          description: |-
+                            Restrictions are isolation effects the matched runner must ENFORCE,
+                            drawn from the closed v1 effect list (decision record D7): network:none,
+                            network:allowlist, fs:readonly-except-workspace, tmp:ephemeral,
+                            env:default-deny. Unknown tokens are rejected with a suggestion (CAP005).
+                            MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+                          items:
+                            type: string
+                          maxItems: 8
+                          type: array
+                      type: object
                   required:
                   - branches
                   - evaluator
@@ -238,6 +300,8 @@ spec:
                   x-kubernetes-validations:
                   - message: maxRepasses is only valid for automated or agentic gates
                     rule: '!has(self.maxRepasses) || self.evaluator != ''human'''
+                  - message: runsOn is only valid for agentic gates
+                    rule: '!has(self.runsOn) || self.evaluator == ''agentic'''
                 type: array
               outboxMirrorPath:
                 description: |-

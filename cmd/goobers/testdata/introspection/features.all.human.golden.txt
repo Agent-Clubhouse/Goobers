@@ -253,6 +253,13 @@ gate.evaluator.human.onTimeout.remind              3.0          ga              
 gate.evaluator.human.timeout                       3.0          ga               preview          dev
 gate.maxRepasses                                   3.0          ga               preview          dev
 gate.name                                          3.0          ga               preview          dev
+gate.runsOn                                        3.0          ga               preview          v0.4.0
+gate.runsOn.capabilities                           3.0          ga               preview          v0.4.0
+gate.runsOn.cpu                                    3.0          ga               preview          v0.4.0
+gate.runsOn.disk                                   3.0          ga               preview          v0.4.0
+gate.runsOn.memory                                 3.0          ga               preview          v0.4.0
+gate.runsOn.os                                     3.0          ga               preview          v0.4.0
+gate.runsOn.restrictions                           3.0          ga               preview          v0.4.0
 goober.spec.capabilities                           3.0          ga               preview          dev
 goober.spec.conditionalPolicyActions               3.0          ga               preview          dev
 goober.spec.displayName                            3.0          ga               preview          dev
@@ -368,4 +375,4 @@ workflow.terminal.abort                            3.0          ga              
 workflow.terminal.complete                         3.0          ga               preview          dev
 workflow.terminal.escalate                         3.0          ga               preview          dev
 
-368 feature/version row(s)
+375 feature/version row(s)

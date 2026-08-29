@@ -52,9 +52,17 @@ func taskLedgerTouching(task apiv1.Task) bool {
 	return false
 }
 
-// PinStagePlacements resolves each task's execution placement for one
-// engine-started run of def and returns the pinned list for
+// PinStagePlacements resolves each placeable stage's execution placement —
+// every task, and every agentic gate that declares runsOn (decision 001) —
+// for one engine-started run of def and returns the pinned list for
 // engine.StartSpec.Placements.
+//
+// Pins are keyed by STAGE NAME: each solver row is looked up by
+// StageRequirement.Stage against the task and gate lists, never by position
+// into def.Spec.Tasks. The index coupling this replaced was the one place a
+// wrong refactor could silently attach a task's ledger/CPU facts to a gate
+// once gate rows followed task rows (decision 001 ruling 6). A gate is never
+// ledger-touching: only a task's PolicyActions can name a claims action.
 //
 // Zero-declaration invariance (architecture §11 item 1) is decided here, by
 // inventory shape alone: with no runners: block, or an inventory whose every
@@ -99,16 +107,32 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		specs[spec.Name] = spec
 	}
 
+	requirementFor := make(map[string]runnersolve.StageRequirement, len(requirements))
+	for _, requirement := range requirements {
+		requirementFor[requirement.Stage] = requirement
+	}
+	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		ledgerFor[task.Name] = taskLedgerTouching(task)
+	}
+	for _, gate := range def.Spec.Gates {
+		ledgerFor[gate.Name] = false
+	}
+
 	result := runnersolve.Solve(inventory, requirements)
 	placements := make([]engine.PinnedPlacement, 0, len(result.Stages))
-	for i, stage := range result.Stages {
+	for _, stage := range result.Stages {
 		if stage.Unsat != nil {
 			return nil, fmt.Errorf("workflow %q stage %q cannot place on the declared runners: inventory: %s", def.Name, stage.Stage, stage.Unsat.Diagnostic)
 		}
-		// Solve and StagePlacements both walk def.Spec.Tasks in order, so
-		// index i names the same task across all three.
-		req := requirements[i]
-		ledger := taskLedgerTouching(def.Spec.Tasks[i])
+		req, ok := requirementFor[stage.Stage]
+		if !ok {
+			return nil, fmt.Errorf("workflow %q: solver returned stage %q which the workflow's placement requirements do not name", def.Name, stage.Stage)
+		}
+		ledger, ok := ledgerFor[stage.Stage]
+		if !ok {
+			return nil, fmt.Errorf("workflow %q: placement requirement names stage %q which is neither a task nor a gate", def.Name, stage.Stage)
+		}
 		eligible := make([]dispatcher.RunnerSpec, 0, len(stage.Eligible))
 		for _, name := range stage.Eligible {
 			spec, ok := specs[name]

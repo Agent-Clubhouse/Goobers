@@ -666,3 +666,110 @@ func TestDaemonZeroDeclarationKeepsLegacyBehavior(t *testing.T) {
 		}
 	}
 }
+
+// placedGateV30WorkflowYAML is a 3.0 workflow whose only placement
+// requirement sits on an AGENTIC GATE (decision 001): the reviewer requires
+// windows, which the declared linux self runner cannot satisfy.
+const placedGateV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: win-build
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: run a no-op build
+      run:
+        command: ["true"]
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      runsOn:
+        os: windows
+        cpu: 1000m
+        memory: 2Gi
+      branches:
+        pass: ""
+        fail: "@abort"
+        needs-changes: build
+`
+
+// writeReviewerGoober adds the reviewer goober the placed gate names to the
+// deterministic demo (which drops the starter's agentic goober).
+func writeReviewerGoober(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "config", "gaggles", "example", "goobers", "reviewer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const goober = `apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: reviewer
+spec:
+  gaggle: example
+  role: reviewer
+  instructions: instructions.md
+  harness: copilot
+  capabilities: [agent:model]
+`
+	if err := os.WriteFile(filepath.Join(dir, "goober.yaml"), []byte(goober), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("# reviewer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestValidatePlacementCoversPlacedGate: checkpoint 1 solves a placed agentic
+// gate's requirement exactly as a task's (decision 001): RNR001 at error
+// severity on the declared inventory, attributed to the gate's own runsOn
+// block; the satisfiable variant is clean.
+func TestValidatePlacementCoversPlacedGate(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	writeReviewerGoober(t, root)
+	writeSecondWorkflow(t, root, placedGateV30WorkflowYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code = %d, want 1 (the gate cannot place on the declared inventory); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"ERROR RNR001 Workflow/win-build",
+		`stage "review" requires os "windows"`,
+		"capabilities [harness:copilot]",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+	// The finding is attributed to the GATE's own runsOn block (the JSON
+	// pointer rides the --json rendering only).
+	code, stdout, stderr = runArgs(t, "validate", "--json", root)
+	if code != 1 {
+		t.Fatalf("validate --json code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "/spec/gates/0/runsOn") {
+		t.Errorf("validate --json must attribute the finding to the gate's runsOn block:\n%s", stdout)
+	}
+
+	satisfiable := strings.Replace(placedGateV30WorkflowYAML, "os: windows", "os: linux", 1)
+	writeSecondWorkflow(t, root, satisfiable)
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("satisfiable validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF023") {
+		t.Errorf("satisfiable placed gate must produce no placement finding:\n%s", stdout)
+	}
+}

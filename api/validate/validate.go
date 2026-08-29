@@ -202,6 +202,7 @@ const (
 	errorOSTokenInV3              WarningCode = "CAP004"
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
+	errorGateRunsOn               WarningCode = "WF023"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -1913,6 +1914,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	}
 	for _, msg := range wf.CheckRunsOnPlacement(def, gaggleRunsOn) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// The gate-only runsOn rules (WF023, decision 001): runsOn on a
+	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
+	for _, msg := range wf.CheckGateRunsOn(def) {
+		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)

@@ -168,6 +168,13 @@ func CheckRepoHandoffs(def Definition) []string {
 	return repoHandoffProblems(def)
 }
 
+// CheckGateRunsOn reports the gate-only runsOn rules — WF023 (decision 001,
+// dsl-3.0.md §2 "Gates"): runsOn on a non-agentic gate, and an agentic gate
+// runsOn missing cpu or memory.
+func CheckGateRunsOn(def Definition) []string {
+	return gateRunsOnProblems(def)
+}
+
 // CheckReachability reports unreachable states and loops with no exit. It is a
 // no-op on a structurally broken graph (missing start, dangling transition):
 // those are reported field-by-field by the validator, and walking a broken graph

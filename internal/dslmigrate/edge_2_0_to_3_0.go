@@ -40,6 +40,12 @@ import (
 //     but has no migrator equivalent yet (#3516).
 //
 // Rule 1 (the dslVersion pin itself) is applied by Migrate around this edge.
+//
+// Gates are left as they are. A 2.0 gate carries no placement surface, and
+// the migrator cannot invent one: DSL 3.0's gates[].runsOn (decision 001) is
+// an author's opt-in that must name cpu and memory explicitly (WF023), so a
+// migrated agentic gate stays control-plane — exactly its 2.0 behaviour —
+// until an author declares the block.
 func applyNextToV3(source []byte, root *yaml.Node) (bool, []string, error) {
 	kind := ""
 	if kindNode, _ := mapValue(root, "kind"); kindNode != nil {

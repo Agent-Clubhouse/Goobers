@@ -323,3 +323,48 @@ spec:
 		t.Fatalf("gaggle still carries requiredCapabilities:\n%s", after)
 	}
 }
+
+// TestMigratedGatesCarryNoRunsOn pins the migrator's gate posture (decision
+// 001): `goobers fix --to 3.0` cannot invent a gate placement — gates[].runsOn
+// is an author opt-in that must name cpu and memory — so a migrated agentic
+// gate stays control-plane, exactly its 2.0 behaviour, with no note.
+func TestMigratedGatesCarryNoRunsOn(t *testing.T) {
+	const src = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: gated
+spec:
+  gaggle: g
+  triggers: [{type: backlog-item}]
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: implement
+      requiredCapabilities: [os=linux]
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic: {goober: reviewer}
+      branches: {pass: "", needs-changes: implement, fail: "@abort"}
+`
+	result := migrateToV3(t, src)
+	wf := decodeV3Workflow(t, result.After)
+	if len(wf.Spec.Gates) != 1 || wf.Spec.Gates[0].RunsOn != nil {
+		t.Fatalf("migrated gates = %+v, want the review gate with NO runsOn (the migrator never invents placement)", wf.Spec.Gates)
+	}
+	if taskByName(wf, "implement").RunsOn == nil {
+		t.Fatal("the task's requiredCapabilities must still migrate to runsOn (rule 3)")
+	}
+	for _, note := range result.Notes {
+		if strings.Contains(note, "gate") {
+			t.Fatalf("notes = %v, want no gate note", result.Notes)
+		}
+	}
+	if strings.Contains(result.After, "runsOn:\n        cpu") {
+		t.Fatalf("migrated document invents a gate envelope:\n%s", result.After)
+	}
+}

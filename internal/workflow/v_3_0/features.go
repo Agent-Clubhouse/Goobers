@@ -623,6 +623,16 @@ const (
 	featureGaggleRunsOnOS           FeatureID = "gaggle.spec.runsOn.os"
 	featureGaggleRunsOnCapabilities FeatureID = "gaggle.spec.runsOn.capabilities"
 	featureGaggleRunsOnRestrictions FeatureID = "gaggle.spec.runsOn.restrictions"
+	// Agentic-gate placement (Goobernetes-E2E-Core decision 001, #3798): the
+	// same runsOn block on gates[]. Registered GA-within-3.0 like the rest of
+	// the 3.0 surface — never as a VER002 preview feature (ruling 1).
+	featureGateRunsOn             FeatureID = "gate.runsOn"
+	featureGateRunsOnOS           FeatureID = "gate.runsOn.os"
+	featureGateRunsOnCPU          FeatureID = "gate.runsOn.cpu"
+	featureGateRunsOnMemory       FeatureID = "gate.runsOn.memory"
+	featureGateRunsOnDisk         FeatureID = "gate.runsOn.disk"
+	featureGateRunsOnCapabilities FeatureID = "gate.runsOn.capabilities"
+	featureGateRunsOnRestrictions FeatureID = "gate.runsOn.restrictions"
 )
 
 // The registry predates the first tagged release. Keep this historical value
@@ -830,6 +840,13 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunsOnOS,
 		featureGaggleRunsOnCapabilities,
 		featureGaggleRunsOnRestrictions,
+		featureGateRunsOn,
+		featureGateRunsOnOS,
+		featureGateRunsOnCPU,
+		featureGateRunsOnMemory,
+		featureGateRunsOnDisk,
+		featureGateRunsOnCapabilities,
+		featureGateRunsOnRestrictions,
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
@@ -896,6 +913,13 @@ var v30Introductions = map[FeatureID]string{
 	featureGaggleRunsOnOS:           "v0.4.0",
 	featureGaggleRunsOnCapabilities: "v0.4.0",
 	featureGaggleRunsOnRestrictions: "v0.4.0",
+	featureGateRunsOn:               "v0.4.0",
+	featureGateRunsOnOS:             "v0.4.0",
+	featureGateRunsOnCPU:            "v0.4.0",
+	featureGateRunsOnMemory:         "v0.4.0",
+	featureGateRunsOnDisk:           "v0.4.0",
+	featureGateRunsOnCapabilities:   "v0.4.0",
+	featureGateRunsOnRestrictions:   "v0.4.0",
 }
 
 // gaPromotions records features that entered the registry at preview in a
@@ -1529,6 +1553,30 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 	used.add(featureGateName, featureGateBranches)
 	if gate.MaxRepasses != 0 {
 		used.add(featureGateMaxRepasses)
+	}
+	// Collected evaluator-independently: a runsOn on a non-agentic gate is a
+	// compile error (WF023), and the registry records what the document
+	// USES, not what compiles.
+	if gate.RunsOn != nil {
+		used.add(featureGateRunsOn)
+		if gate.RunsOn.OS != "" {
+			used.add(featureGateRunsOnOS)
+		}
+		if gate.RunsOn.CPU != "" {
+			used.add(featureGateRunsOnCPU)
+		}
+		if gate.RunsOn.Memory != "" {
+			used.add(featureGateRunsOnMemory)
+		}
+		if gate.RunsOn.Disk != "" {
+			used.add(featureGateRunsOnDisk)
+		}
+		if gate.RunsOn.Capabilities != nil {
+			used.add(featureGateRunsOnCapabilities)
+		}
+		if gate.RunsOn.Restrictions != nil {
+			used.add(featureGateRunsOnRestrictions)
+		}
 	}
 	for outcome, target := range gate.Branches {
 		if outcome == BranchEscalate {
