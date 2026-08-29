@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -43,20 +44,49 @@ type ExporterKind string
 // Config controls tracer/meter setup and exporter selection. ExporterOTLP
 // requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
-	ServiceName        string
-	ServiceVersion     string
-	BuildCommit        string
-	Environment        string
-	Exporter           ExporterKind
-	OTLPEndpoint       string
-	OTLPInsecure       bool
-	OTLPHeaders        map[string]string
+	ServiceName    string
+	ServiceVersion string
+	BuildCommit    string
+	Environment    string
+	Exporter       ExporterKind
+	OTLPEndpoint   string
+	OTLPInsecure   bool
+	OTLPHeaders    map[string]string
+	// OTLPCAFile is an extra PEM root appended to the system trust pool
+	// (RootCAs). Empty means system trust only, the pre-#3804 behavior.
+	OTLPCAFile string
+	// OTLPServerName overrides SNI/verification. Empty uses the endpoint's
+	// own host.
+	OTLPServerName string
+	// OTLPCertFile and OTLPKeyFile present a client certificate for mTLS.
+	// Both or neither — instance.OTLPTLSConfig.Validate enforces the pairing
+	// before this Config is ever built.
+	OTLPCertFile       string
+	OTLPKeyFile        string
 	Stdout             io.Writer
 	SpanExporter       sdktrace.SpanExporter
 	Scrubber           journal.Scrubber
 	ResourceAttributes []attribute.KeyValue
 	Batch              bool
 }
+
+// ErrOTLPUnavailable is the sentinel New wraps into its returned error when
+// the configured OTLP exporter's TLS material could not be loaded (an
+// unreadable CA file, or an unparsable client certificate/key pair). Unlike
+// an unreachable endpoint — otlptracegrpc dials lazily, so a bad address
+// never fails New — a bad TLS path is detectable right now, at
+// construction, so it would otherwise introduce a NEW boot-fatal class: a
+// CA path typo becoming a daemon outage (the same shape #3804 exists to
+// avoid, ledger L-28).
+//
+// When New's error wraps ErrOTLPUnavailable, the returned *Client is still
+// valid: every OTHER exporter (notably SpanExporter, the local journal
+// export every process wires) is fully constructed and usable. A caller
+// that wants the process to stay up should check errors.Is(err,
+// ErrOTLPUnavailable), log the cause loudly (the daemon's convention is
+// instance-journal code telemetry_otlp_unavailable), and keep the returned
+// client rather than discarding it as a construction failure.
+var ErrOTLPUnavailable = errors.New("otlp exporter unavailable")
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
@@ -91,9 +121,16 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
 
+	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
+	// this function: err gets reused (:=) by later steps below, and the
+	// degrade signal must survive to the final return regardless.
 	exporters, err := spanExporters(ctx, cfg)
+	var otlpDegraded error
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, ErrOTLPUnavailable) {
+			return nil, err
+		}
+		otlpDegraded = err
 	}
 
 	spanLimits := sdktrace.NewSpanLimits()
@@ -132,7 +169,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
 	}
-	return client, nil
+	return client, otlpDegraded
 }
 
 // NewRunID returns a valid OpenTelemetry trace id for use as a Goobers run id.
@@ -317,9 +354,14 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		if cfg.OTLPInsecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
 		} else {
-			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(&tls.Config{
-				MinVersion: tls.VersionTLS12,
-			})))
+			tlsConfig, tlsErr := buildOTLPTLSConfig(cfg)
+			if tlsErr != nil {
+				// The exporter cannot be built, but exporters collected so
+				// far (cfg.SpanExporter's local journal export, if
+				// configured) are untouched — see ErrOTLPUnavailable's doc.
+				return exporters, fmt.Errorf("%w: %v", ErrOTLPUnavailable, tlsErr)
+			}
+			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
 		}
 		headers := make(map[string]string, len(cfg.OTLPHeaders))
 		for name, value := range cfg.OTLPHeaders {
@@ -335,6 +377,43 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
 	return append(exporters, exporter), nil
+}
+
+// buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: the
+// system trust pool (SystemCertPool already returns a defensive copy safe
+// to mutate — "clone" in #3804's design) plus an optional extra root, an
+// optional SNI/verification override, and an optional client certificate
+// for mTLS. MinVersion stays TLS 1.2, unchanged from the system-pool-only
+// path this extends.
+func buildOTLPTLSConfig(cfg Config) (*tls.Config, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if cfg.OTLPCAFile != "" {
+		pem, err := os.ReadFile(cfg.OTLPCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read ca file %q: %w", cfg.OTLPCAFile, err)
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca file %q: no certificates found", cfg.OTLPCAFile)
+		}
+	}
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    pool,
+	}
+	if cfg.OTLPServerName != "" {
+		tlsConfig.ServerName = cfg.OTLPServerName
+	}
+	if cfg.OTLPCertFile != "" || cfg.OTLPKeyFile != "" {
+		pair, err := tls.LoadX509KeyPair(cfg.OTLPCertFile, cfg.OTLPKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate %q/%q: %w", cfg.OTLPCertFile, cfg.OTLPKeyFile, err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{pair}
+	}
+	return tlsConfig, nil
 }
 
 func resourceAttrs(cfg Config) []attribute.KeyValue {

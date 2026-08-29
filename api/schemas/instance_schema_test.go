@@ -240,6 +240,20 @@ sandbox:
 workcopies:
   partialClone: true
 `},
+		{"telemetry otlp tls trusted collector (#3804)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  enabled: true
+  otlp:
+    endpoint: goobers-collector.goobers-system.svc.cluster.local:4317
+    tls:
+      caFile: /etc/goobers/otlp-ca.crt
+      serverName: goobers-collector.goobers-system.svc.cluster.local
+      certFile: /etc/goobers/otlp-client.crt
+      keyFile: /etc/goobers/otlp-client.key
+`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -441,6 +455,25 @@ runners:
     host: self
     restrictions: [network:proxy]
 `, "enum"},
+		{"otlp insecure true against a non-loopback endpoint (#3804 if/then)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: goobers-collector.goobers-system:4317
+    insecure: true
+`, "pattern"},
+		{"otlp tls block with an unknown property", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: collector.example.com:4317
+    tls:
+      trustAll: true
+`, "additionalProperties"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -453,6 +486,65 @@ runners:
 			}
 		})
 	}
+}
+
+// TestInstanceSchemaOTLPInsecureLoopbackShapes is the belt-and-braces half of
+// #3804: goobers validate (internal/instance.OTLPConfig.Validate,
+// TestLoadConfigRejectsInsecureNonLoopbackOTLP) is the actual enforcement,
+// but the published schema now encodes the same insecure -> loopback rule
+// via if/then so an editor or `goobers schema instance` catches the mistake
+// before a load ever runs. This pins that every shape the Go validator
+// accepts for insecure:true is also accepted here, and the shape it always
+// rejected is rejected here too.
+func TestInstanceSchemaOTLPInsecureLoopbackShapes(t *testing.T) {
+	schema := compileInstanceSchema(t)
+
+	accepted := []string{
+		"http://127.0.0.1:4317",
+		"127.0.0.1:4317",
+		"http://localhost:4317",
+		"localhost:4317",
+		"http://LOCALHOST:4317",
+	}
+	for _, endpoint := range accepted {
+		t.Run("accepts "+endpoint, func(t *testing.T) {
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: " + endpoint + "\n    insecure: true\n"
+			if err := validateInstanceYAML(t, schema, document); err != nil {
+				t.Fatalf("loopback insecure endpoint %q was rejected: %v", endpoint, err)
+			}
+		})
+	}
+
+	rejected := []string{
+		"http://goobers-collector.goobers-system:4317",
+		"goobers-collector.goobers-system:4317",
+		"http://collector.example.com:4317",
+	}
+	for _, endpoint := range rejected {
+		t.Run("rejects "+endpoint, func(t *testing.T) {
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: " + endpoint + "\n    insecure: true\n"
+			if err := validateInstanceYAML(t, schema, document); err == nil {
+				t.Fatalf("non-loopback insecure endpoint %q was accepted", endpoint)
+			}
+		})
+	}
+
+	// insecure absent (or false) leaves the endpoint unconstrained by this
+	// rule — a remote TLS endpoint with no insecure key is the documented
+	// default shape and must not trip the loopback pattern.
+	t.Run("insecure absent leaves remote endpoint unconstrained", func(t *testing.T) {
+		document := `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: collector.example.com:4317
+`
+		if err := validateInstanceYAML(t, schema, document); err != nil {
+			t.Fatalf("remote TLS endpoint with insecure absent was rejected: %v", err)
+		}
+	})
 }
 
 // The cold-start walkthroughs read instance.yaml guidance out of scattered

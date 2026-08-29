@@ -562,6 +562,82 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 }
 
+// TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial is #3804's decided
+// degrade behavior end to end, at the seam this issue actually threads
+// through — buildSchedulerSetup, not just telemetry.New in isolation: a
+// telemetry.otlp.tls.caFile that cannot be read must not fail daemon setup
+// (a CA path typo becoming a boot-fatal outage is exactly the ledger L-28
+// shape #3804 exists to avoid). Setup succeeds with a working, usable
+// Telemetry client, and the failure is recorded loudly — a
+// telemetry_otlp_unavailable EventError in the instance journal — rather
+// than swallowed.
+func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instanceYAMLPath := filepath.Join(root, "instance.yaml")
+	data, err := os.ReadFile(instanceYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingCAFile := filepath.Join(t.TempDir(), "missing-ca.crt")
+	body := strings.Replace(string(data), "telemetry: {}\n", "telemetry:\n"+
+		"  enabled: true\n"+
+		"  otlp:\n"+
+		"    endpoint: collector.invalid.example:4317\n"+
+		"    tls:\n"+
+		"      caFile: "+missingCAFile+"\n", 1)
+	if body == string(data) {
+		t.Fatalf("expected instance.yaml to contain \"telemetry: {}\", got %q", data)
+	}
+	if err := os.WriteFile(instanceYAMLPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup() = %v, want a bad otlp.tls.caFile to degrade rather than fail setup", err)
+	}
+	defer setup.Shutdown(context.Background())
+
+	if setup.Telemetry == nil {
+		t.Fatal("Telemetry == nil after an OTLP TLS degrade, want local-only telemetry still wired")
+	}
+	if setup.InstanceLog == nil {
+		t.Fatal("InstanceLog == nil, want it open to check for the degrade event")
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventError && events[i].Error != nil && events[i].Error.Code == "telemetry_otlp_unavailable" {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("instance log has no telemetry_otlp_unavailable event; events: %+v", events)
+	}
+	if !strings.Contains(found.Error.Message, missingCAFile) {
+		t.Fatalf("telemetry_otlp_unavailable message = %q, want it to name %q", found.Error.Message, missingCAFile)
+	}
+
+	// The degraded client still works locally: a span reaches the local
+	// (journal) exporter even though the collector export is unavailable.
+	_, span, err := setup.Telemetry.StartRun(context.Background(), telemetry.RunAttributes{
+		Gaggle: "example", WorkflowID: "wf", RunID: "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	if err := setup.Telemetry.FlushLocal(context.Background()); err != nil {
+		t.Fatalf("FlushLocal() on a degraded telemetry client = %v, want nil", err)
+	}
+}
+
 func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)

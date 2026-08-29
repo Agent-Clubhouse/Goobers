@@ -1771,6 +1771,141 @@ func TestOTLPConfigValidatesGRPCMetadataNames(t *testing.T) {
 	}
 }
 
+// TestOTLPConfigTLSValidate covers #3804's additive telemetry.otlp.tls
+// block. Every case is shape-only (config.go never reads a file at
+// validate time — see OTLPTLSConfig's doc comment): valid PEM contents are
+// never exercised here, only presence/pairing/whitespace/hostname shape.
+func TestOTLPConfigTLSValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     OTLPConfig
+		wantErr string
+	}{
+		{
+			name: "tls conflicts with insecure",
+			cfg: OTLPConfig{
+				Endpoint: "http://127.0.0.1:4317",
+				Insecure: true,
+				TLS:      &OTLPTLSConfig{CAFile: "/etc/goobers/otlp-ca.crt"},
+			},
+			wantErr: "tls configuration conflicts with insecure: true",
+		},
+		{
+			name: "tls without endpoint",
+			cfg: OTLPConfig{
+				TLS: &OTLPTLSConfig{CAFile: "/etc/goobers/otlp-ca.crt"},
+			},
+			wantErr: "endpoint is required",
+		},
+		{
+			name: "certFile without keyFile",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{CertFile: "/etc/goobers/otlp-client.crt"},
+			},
+			wantErr: "certFile and keyFile must both be set or both be empty",
+		},
+		{
+			name: "keyFile without certFile",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{KeyFile: "/etc/goobers/otlp-client.key"},
+			},
+			wantErr: "certFile and keyFile must both be set or both be empty",
+		},
+		{
+			name: "caFile with https accepted",
+			cfg: OTLPConfig{
+				Endpoint: "https://collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{CAFile: "/etc/goobers/otlp-ca.crt"},
+			},
+		},
+		{
+			name: "caFile with bare host:port accepted",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{CAFile: "/etc/goobers/otlp-ca.crt"},
+			},
+		},
+		{
+			name: "caFile plus client cert accepted (mTLS)",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS: &OTLPTLSConfig{
+					CAFile:   "/etc/goobers/otlp-ca.crt",
+					CertFile: "/etc/goobers/otlp-client.crt",
+					KeyFile:  "/etc/goobers/otlp-client.key",
+				},
+			},
+		},
+		{
+			name: "serverName override accepted",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{ServerName: "goobers-collector.goobers-system.svc.cluster.local"},
+			},
+		},
+		{
+			name: "caFile whitespace rejected",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{CAFile: " /etc/goobers/otlp-ca.crt"},
+			},
+			wantErr: "caFile must not contain leading or trailing whitespace",
+		},
+		{
+			name: "serverName whitespace rejected",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{ServerName: "collector.example.com "},
+			},
+			wantErr: "serverName must not contain leading or trailing whitespace",
+		},
+		{
+			name: "serverName with scheme rejected",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{ServerName: "https://collector.example.com"},
+			},
+			wantErr: "must be a bare hostname",
+		},
+		{
+			name: "serverName with port rejected",
+			cfg: OTLPConfig{
+				Endpoint: "collector.example.com:4317",
+				TLS:      &OTLPTLSConfig{ServerName: "collector.example.com:4317"},
+			},
+			wantErr: "must be a bare hostname",
+		},
+		{
+			// The exact reproduction from TestLoadConfigRejectsInsecureNonLoopbackOTLP,
+			// re-run through OTLPConfig.Validate directly (not LoadConfig) to prove
+			// adding tls support left validateOTLPEndpoint's off-loopback-insecure
+			// refusal untouched — same message, same trigger, no tls involved.
+			name: "insecure off-loopback still refused, unrelated to tls",
+			cfg: OTLPConfig{
+				Endpoint: "goobers-collector.goobers-system:4317",
+				Insecure: true,
+			},
+			wantErr: "insecure mode is allowed only for localhost or a loopback IP",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigFileTokenRef(t *testing.T) {
 	path := writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
