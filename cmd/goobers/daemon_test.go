@@ -608,9 +608,13 @@ func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
 	os.Stderr = stderrW
 	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
 	os.Stderr = origStderr
-	stderrW.Close()
+	if closeErr := stderrW.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
 	var stderrBuf bytes.Buffer
-	stderrBuf.ReadFrom(stderrR)
+	if _, readErr := stderrBuf.ReadFrom(stderrR); readErr != nil {
+		t.Fatal(readErr)
+	}
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup() = %v, want a bad otlp.tls.caFile to degrade rather than fail setup", err)
 	}
