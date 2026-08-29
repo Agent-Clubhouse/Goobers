@@ -21,7 +21,9 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -250,6 +252,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
 	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+		// A genuine syncBase base-merge conflict is classified exactly as the
+		// self arms classify it (#813, internal/engine/activities.go's
+		// RunDeterministic and internal/runner/run.go): a business failure
+		// `failure-class` routes into remediation, not a dispatch error that
+		// burns the implementation repass budget re-deriving the same
+		// rejected diff. Checked BEFORE the generic fail-closed branch below,
+		// which would otherwise swallow it as workspace_provision_failed/
+		// non-retryable and misroute the run regardless of placement.
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}
+		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that

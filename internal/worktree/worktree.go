@@ -105,6 +105,22 @@ func (e *BaseSyncConflictError) Unwrap() error {
 	return e.cause
 }
 
+// NewBaseSyncConflictError constructs a BaseSyncConflictError for a caller
+// outside this package that detects the same genuine content conflict by its
+// own means — the pod-side checkout (cmd/goobers/dispatchcheckout.go) runs
+// the merge directly with git rather than through Manager.Create, but a
+// conflict it hits is the identical business failure this type exists to
+// classify (#813), and cause is unexported so no other package can construct
+// one without this seam.
+func NewBaseSyncConflictError(branch, baseRef string, conflictingFiles []string, cause error) *BaseSyncConflictError {
+	return &BaseSyncConflictError{
+		Branch:           branch,
+		BaseRef:          baseRef,
+		ConflictingFiles: conflictingFiles,
+		cause:            cause,
+	}
+}
+
 // Worktree is a disposable, isolated working copy for one run, branched off
 // a Manager's managed working copy. Obtain one via Manager.Create and release
 // it via Remove.

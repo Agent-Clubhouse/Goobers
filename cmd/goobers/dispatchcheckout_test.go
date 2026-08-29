@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/testgit"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // `git clone <url> .` refuses a non-empty destination, so NOTHING the checkout
@@ -481,7 +482,22 @@ func TestCheckoutSyncBaseConflictFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatal("a conflicting base sync was accepted; the stage would run against a half-merged tree")
 	}
-	for _, want := range []string{"syncBase", "conflict.txt"} {
+	// Typed, not just a formatted string: dispatchexec.go's caller classifies
+	// this via errors.As into base_sync_conflict/Retryable (#813, matching the
+	// self arms' RunDeterministic/internal/runner/run.go), and a plain error
+	// here would silently regress that classification back to
+	// workspace_provision_failed/non-retryable.
+	var conflict *worktree.BaseSyncConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("error = %v (%T), want a *worktree.BaseSyncConflictError so dispatchexec.go classifies it as base_sync_conflict/Retryable rather than a generic dispatch failure", err, err)
+	}
+	if conflict.Branch != prBranch {
+		t.Errorf("conflict.Branch = %q, want %q", conflict.Branch, prBranch)
+	}
+	if conflict.BaseRef != "main" {
+		t.Errorf("conflict.BaseRef = %q, want %q", conflict.BaseRef, "main")
+	}
+	for _, want := range []string{"conflict.txt"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}

@@ -264,13 +264,33 @@ func syncWorkspaceBase(ctx context.Context, dir string, gitEnv []string, stderr 
 			// directory, and a workspace full of conflict markers is a far
 			// worse failure than the merge itself.
 			_ = runGit(ctx, dir, gitEnv, stderr, "merge", "--abort")
+			cause := errors.Join(err, inspectErr, resolveErr)
+			// A genuine, IDENTIFIED conflict (inspectErr nil, files non-empty)
+			// gets the typed error the self arms already special-case (#813,
+			// internal/engine/activities.go's RunDeterministic and
+			// internal/runner/run.go): a business failure the definition
+			// routes via `failure-class` (status-equals gate) into remediation,
+			// never a dispatch error that burns the implementation repass
+			// budget. Before this, a pod-placed syncBase stage that hit a real
+			// conflict surrendered a plain error, which dispatchexec.go's
+			// caller classified as workspace_provision_failed/non-retryable —
+			// failure-class then resolved OutcomeFail, not OutcomeInfra, and
+			// the run burned a repass re-deriving the identical rejected diff
+			// purely because the stage was pod- rather than worker-placed.
+			// Mirrors internal/worktree's baseSyncFailure: anything less
+			// diagnosed (couldn't even inspect which files collided) stays a
+			// plain error rather than mislabel a failure this code never
+			// confirmed was the conflict shape.
+			if inspectErr == nil && len(files) > 0 {
+				return worktree.NewBaseSyncConflictError(branch, base, files, cause)
+			}
 			// JOINED, not formatted with %v (internal/worktree's baseSyncFailure
 			// idiom): the merge failure is the cause a reader acts on, and the
 			// inspect/resolve failures are the reasons the message is thinner
 			// than it should be. Flattening those two to text would make an
 			// already-degraded diagnosis unmatchable by errors.Is.
 			return fmt.Errorf("syncBase: merge base %s into %s (conflicting files: %s): %w",
-				base, branch, strings.Join(files, ", "), errors.Join(err, inspectErr, resolveErr))
+				base, branch, strings.Join(files, ", "), cause)
 		}
 	}
 	pf(stderr, "workspace: synced base %s into %s\n", base, branch)
