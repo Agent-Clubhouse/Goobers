@@ -289,6 +289,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Memory:         input.Placement.Memory,
 		Disk:           input.Placement.Disk,
 		Restrictions:   input.Placement.Restrictions,
+		// The runner-capability requirement, for the Windows identity stamp
+		// (#3619) — distinct from the credential Capabilities set below.
+		RunsOnCapabilities: input.Placement.Capabilities,
 	}
 	if input.Run != nil {
 		attempt.Command = input.Run.Command
