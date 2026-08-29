@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -143,8 +144,12 @@ func TestFilterClaimAvailablePullRequestsSurfacesLedgerErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(schedulerDir, claimLedgerFileName), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := filterClaimAvailablePullRequests(
-		schedulerDir,
+	ledger, err := fileClaimLedger(instance.NewLayout(filepath.Dir(schedulerDir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = filterClaimAvailablePullRequests(
+		ledger,
 		"goobers",
 		"",
 		[]providers.PullRequestSummary{{Number: 1}},

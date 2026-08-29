@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -31,6 +33,7 @@ const (
 	claimLockOperationAPIRenew   = "api.claims.renew"
 	claimLockOperationAPIRelease = "api.claims.release"
 	claimLockOperationAPISettle  = "api.claims.settle"
+	claimLockOperationAPIList    = "api.claims.list"
 )
 
 // claimSettleOutcomes is the closed vocabulary for settle's outcome field.
@@ -164,9 +167,140 @@ func (s *daemonClaimService) Renew(_ context.Context, request httpapi.ClaimReque
 }
 
 // Release gives the item back mid-run. Releasing a claim not held is a
-// no-op, not an error — the ledger's own idempotency contract.
+// no-op, not an error — the ledger's own idempotency contract. With ItemID
+// empty it releases every claim the run holds (narrowed to the namespace
+// when one is given) — the plane's form of releaseClaimsForRun, contained
+// to the caller's own run exactly like the single-item shape.
 func (s *daemonClaimService) Release(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	if request.ItemID == "" {
+		return s.releaseAllForRun(request)
+	}
 	return s.release(claimLockOperationAPIRelease, request, nil)
+}
+
+func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	if (request.Gaggle == "") != (request.Provider == "") {
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+			"gaggle and provider must be given together for a release of every claim the run holds", nil)
+	}
+	var released []httpapi.ClaimEntry
+	err := s.withLedger(claimLockOperationAPIRelease, request, func(ledger *localscheduler.ClaimLedger) error {
+		for _, entry := range ledger.ForRunAll(request.RunID) {
+			if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
+				continue
+			}
+			if err := ledger.ReleaseEntry(entry, request.RunID); err != nil {
+				return err
+			}
+			released = append(released, claimEntryWire(entry))
+		}
+		return nil
+	})
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	return httpapi.ClaimResponse{Ok: true, Released: released}, nil
+}
+
+// List reads the ledger for the caller. A namespace listing includes the
+// ledger's legacy unscoped entries beside the namespace's own, because an
+// unresolved item-only claim is exclusive against every scoped claimant
+// (ClaimLedger.claim) — a lister that could not see it would select an item
+// acquire is going to refuse. History is the retained released set for the
+// same namespace, newest first, so the failure-streak deprioritization an
+// off-daemon backlog-query runs keeps its input.
+func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
+	if request.RunID == "" {
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "runId is required", nil)
+	}
+	switch request.Scope {
+	case httpapi.ClaimListScopeRun:
+	case httpapi.ClaimListScopeNamespace:
+		if request.Gaggle == "" || request.Provider == "" {
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+				"gaggle and provider are required for a namespace listing", nil)
+		}
+		if request.PodScoped && !s.runBelongsToGaggle(request.Gaggle, request.RunID) {
+			// Containment beyond the run id: a pod may read the namespace its
+			// run was admitted into and no other. The run's journal on this
+			// instance is the authority on which gaggle that is (the same
+			// lookup the credential plane's locateRun makes).
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusForbidden, "gaggle_mismatch",
+				"pod principal may only list the gaggle namespace its own run belongs to", nil)
+		}
+	default:
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "scope must be run or namespace", nil)
+	}
+	inNamespace := func(entry localscheduler.ClaimEntry) bool {
+		if entry.Gaggle == "" && entry.Provider == "" {
+			return true // legacy unscoped claims are exclusive against every namespace
+		}
+		return entry.Gaggle == request.Gaggle && entry.Provider == request.Provider
+	}
+	var response httpapi.ClaimListResponse
+	err := s.withLedger(claimLockOperationAPIList, httpapi.ClaimRequest{Gaggle: request.Gaggle, RunID: request.RunID}, func(ledger *localscheduler.ClaimLedger) error {
+		var entries, history []localscheduler.ClaimEntry
+		switch request.Scope {
+		case httpapi.ClaimListScopeRun:
+			entries = ledger.ForRunAll(request.RunID)
+			if request.IncludeHistory {
+				history = ledger.HistoryForRun(request.RunID)
+			}
+		case httpapi.ClaimListScopeNamespace:
+			for _, entry := range ledger.Snapshot() {
+				if inNamespace(entry) {
+					entries = append(entries, entry)
+				}
+			}
+			if request.IncludeHistory {
+				for _, entry := range ledger.HistorySnapshot() {
+					if inNamespace(entry) {
+						history = append(history, entry)
+					}
+				}
+			}
+		}
+		response.Entries = claimEntriesWire(entries)
+		response.History = claimEntriesWire(history)
+		return nil
+	})
+	return response, err
+}
+
+// runBelongsToGaggle reports whether runID's journal lives under gaggle's
+// runs directory on this instance — the run.yaml the daemon's live writer
+// creates at the run's first emit, which every pod plane call follows.
+func (s *daemonClaimService) runBelongsToGaggle(gaggle, runID string) bool {
+	if !apiv1.ValidRunID(runID) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
+	return err == nil
+}
+
+func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
+	return httpapi.ClaimEntry{
+		ItemID:     entry.ItemID,
+		Gaggle:     entry.Gaggle,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+		RunID:      entry.RunID,
+		Workflow:   entry.Workflow,
+		ClaimedAt:  entry.ClaimedAt,
+		ExpiresAt:  entry.ExpiresAt,
+		ReleasedAt: entry.ReleasedAt,
+	}
+}
+
+func claimEntriesWire(entries []localscheduler.ClaimEntry) []httpapi.ClaimEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	wire := make([]httpapi.ClaimEntry, 0, len(entries))
+	for _, entry := range entries {
+		wire = append(wire, claimEntryWire(entry))
+	}
+	return wire
 }
 
 // Settle is the exactly-once terminal release: the run concluded its work on

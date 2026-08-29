@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -85,17 +86,6 @@ const (
 	backlogFailureDeprioritizeThreshold = 3
 	backlogFailureWindow                = 7 * 24 * time.Hour
 )
-
-type backlogClaimLedger interface {
-	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	ForRunAll(runID string) []localscheduler.ClaimEntry
-	HistoryForItem(itemID string) []localscheduler.ClaimEntry
-}
-
-var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
-	return localscheduler.OpenClaimLedger(path, opts...)
-}
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
@@ -506,12 +496,21 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	persistResweepState := resweep.persist
 
 	if claim {
-		ledger, err := openBacklogClaimLedger(filepath.Join(env.layout.SchedulerDir(), claimLedgerFileName))
+		ledger, err := openStageClaimLedger(env.layout)
 		if err != nil {
 			pf(stderr, "error: open claim ledger: %v\n", err)
 			return 1
 		}
-		eligible = deprioritizeRepeatedFailures(env.layout, ledger, eligible, observedAt, env)
+		// One namespace read — current holders and released history — is the
+		// failure-streak input (the critic's terminalFailureStreak row: over
+		// the plane this is claims/list with history, so the deprioritization
+		// keeps its input off the daemon).
+		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.repo.Provider))
+		if err != nil {
+			pf(stderr, "error: read claim ledger: %v\n", err)
+			return 1
+		}
+		eligible = deprioritizeRepeatedFailures(env.layout, listing, eligible, observedAt, env)
 	}
 
 	if !claim {
@@ -548,7 +547,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 
 func deprioritizeRepeatedFailures(
 	layout instance.Layout,
-	ledger backlogClaimLedger,
+	claims claimsclient.Listing,
 	items []providers.WorkItem,
 	now time.Time,
 	env backlogQueryEnv,
@@ -559,7 +558,7 @@ func deprioritizeRepeatedFailures(
 	healthy := make([]providers.WorkItem, 0, len(items))
 	deprioritized := make([]providers.WorkItem, 0, len(items))
 	for _, item := range items {
-		streak := terminalFailureStreak(layout, ledger.HistoryForItem(item.ID), now)
+		streak := terminalFailureStreak(layout, claims.HistoryForItem(item.ID), now)
 		if streak >= backlogFailureDeprioritizeThreshold {
 			deprioritized = append(deprioritized, item)
 			env.debugf("deprioritized %s: %d consecutive terminal failures", item.ID, streak)
@@ -685,16 +684,21 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		return 1
 	}
 	defer func() { _ = instanceLog.Close() }()
+	ledger, err := openStageClaimLedger(l, localscheduler.WithInstanceLog(instanceLog))
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
 
 	session := backlogClaimSession{
 		env:              env,
 		instanceLog:      instanceLog,
+		ledger:           ledger,
 		eligible:         eligible,
 		observedRecords:  observedRecords,
 		remainingRecords: remainingRecords,
 		verifiedSkips:    verifiedSkips,
 		observedSkips:    observedSkips,
-		lockPath:         lockPath,
 		runID:            runID,
 		workflow:         workflow,
 		leaseDuration:    leaseDuration,
@@ -908,8 +912,11 @@ func reorderContestedBacklogItems(
 }
 
 type backlogClaimSession struct {
-	env                 backlogQueryEnv
-	instanceLog         *journal.InstanceLog
+	env         backlogQueryEnv
+	instanceLog *journal.InstanceLog
+	// ledger is the claim-ledger seam (claimledger.go): the instance's file
+	// under claims.lock on a self runner, the daemon's claims plane in a pod.
+	ledger              claimsclient.Ledger
 	eligible            []providers.WorkItem
 	observedRecords     map[string]blockedRecord
 	remainingRecords    map[string]blockedRecord
@@ -918,7 +925,6 @@ type backlogClaimSession struct {
 	claimed             []providers.WorkItem
 	newlyClaimed        []providers.WorkItem
 	preexistingClaimIDs map[string]struct{}
-	lockPath            string
 	runID               string
 	workflow            string
 	gaggle              string
@@ -932,7 +938,7 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 	malformedReadyItems := 0
 	for !session.claimSetPrepared || (len(session.claimed) < session.maxItems && session.nextClaimIndex < len(session.eligible)) {
 		firstNewClaim := len(session.claimed)
-		if err := session.acquire(); err != nil {
+		if err := session.acquire(ctx); err != nil {
 			pf(session.env.stderr, "error: %v\n", err)
 			return malformedReadyItems, 1
 		}
@@ -950,7 +956,7 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 				}
 				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
 					malformed := session.claimed[index]
-					if releaseErr := session.releaseLedger(malformed); releaseErr != nil {
+					if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
 						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
 						return malformedReadyItems, 1
 					}
@@ -971,11 +977,19 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 	return malformedReadyItems, 0
 }
 
-func (session *backlogClaimSession) acquire() error {
-	return withClaimLock(session.lockPath, claimLockOperationBacklogClaim, session.acquireLocked)
+// acquire is the claim transaction: the blocked-record reconcile and the
+// select-then-acquire loop inside one Locked section. On the file backend
+// that is the single claims.lock critical section it has always been; on
+// the plane the daemon serializes each acquire and the blocked-record
+// filter stays a stage-local read until the scheduler-state route lands
+// (finding 002 C2).
+func (session *backlogClaimSession) acquire(ctx context.Context) error {
+	return session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
+		return session.acquireLocked(ctx, tx)
+	})
 }
 
-func (session *backlogClaimSession) acquireLocked() error {
+func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger claimsclient.Ledger) error {
 	if !session.claimSetPrepared {
 		var err error
 		session.eligible, session.observedSkips, err = reconcileBlockedEligibilityLocked(
@@ -994,18 +1008,13 @@ func (session *backlogClaimSession) acquireLocked() error {
 		}
 		session.claimSetPrepared = true
 	}
-	ledger, err := openBacklogClaimLedger(
-		filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),
-		localscheduler.WithInstanceLog(session.instanceLog),
-	)
-	if err != nil {
-		return fmt.Errorf("open claim ledger: %w", err)
+	if err := session.rememberPreexistingClaims(ctx, ledger); err != nil {
+		return err
 	}
-	session.rememberPreexistingClaims(ledger)
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
-		ok, err := session.claimItem(ledger, item)
+		ok, err := session.claimItem(ctx, ledger, item)
 		if err != nil {
 			return err
 		}
@@ -1050,12 +1059,16 @@ func (session *backlogClaimSession) journalBlockedSkips() error {
 	return nil
 }
 
-func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClaimLedger) {
+func (session *backlogClaimSession) rememberPreexistingClaims(ctx context.Context, ledger claimsclient.Ledger) error {
 	if session.preexistingClaimIDs != nil {
-		return
+		return nil
+	}
+	entries, err := ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		return fmt.Errorf("read this run's claims: %w", err)
 	}
 	session.preexistingClaimIDs = make(map[string]struct{})
-	for _, entry := range ledger.ForRunAll(session.runID) {
+	for _, entry := range entries {
 		if session.gaggle == "" {
 			if entry.Gaggle == "" && entry.Provider == "" {
 				session.preexistingClaimIDs[entry.ItemID] = struct{}{}
@@ -1066,20 +1079,25 @@ func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClai
 			session.preexistingClaimIDs[entry.ExternalID] = struct{}{}
 		}
 	}
+	return nil
 }
 
-func (session *backlogClaimSession) claimItem(ledger backlogClaimLedger, item providers.WorkItem) (bool, error) {
-	var ok bool
-	var err error
+// claimKey addresses item in this session's namespace: legacy (unscoped)
+// when the stage runs ungaggled, scoped otherwise — the same split the
+// ledger's Claim/ClaimScoped pair expressed.
+func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclient.Key {
 	if session.gaggle == "" {
-		ok, _, err = ledger.Claim(item.ID, session.runID, session.workflow, session.leaseDuration)
-	} else {
-		ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-			Gaggle:     session.gaggle,
-			Provider:   string(session.env.repo.Provider),
-			ExternalID: item.ID,
-		}, session.runID, session.workflow, session.leaseDuration)
+		return claimsclient.Key{ExternalID: item.ID}
 	}
+	return claimsclient.Key{
+		Gaggle:     session.gaggle,
+		Provider:   string(session.env.repo.Provider),
+		ExternalID: item.ID,
+	}
+}
+
+func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, error) {
+	ok, _, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
 	if err != nil {
 		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
@@ -1102,7 +1120,7 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			continue
 		}
 
-		if err := session.releaseLedger(item); err != nil {
+		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
 		session.forgetNewClaim(item.ID)
@@ -1128,27 +1146,13 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 		ID:         item.ID,
 		RunID:      session.runID,
 	})
-	ledgerErr := session.releaseLedger(item)
+	ledgerErr := session.releaseLedger(ctx, item)
 	return errors.Join(providerErr, ledgerErr)
 }
 
-func (session *backlogClaimSession) releaseLedger(item providers.WorkItem) error {
-	return withClaimLock(session.lockPath, claimLockOperationBacklogRelease, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(session.instanceLog),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
-		if session.gaggle == "" {
-			return ledger.Release(item.ID, session.runID)
-		}
-		return ledger.ReleaseScoped(localscheduler.ClaimKey{
-			Gaggle:     session.gaggle,
-			Provider:   string(session.env.repo.Provider),
-			ExternalID: item.ID,
-		}, session.runID)
+func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem) error {
+	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID)
 	})
 }
 
@@ -2279,15 +2283,18 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		return 1
 	}
 
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
 	var released []string
 	var providerErr error
-	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	err = ledger.Locked(claimContext(), claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+		entries, lerr := tx.ForRunAll(claimContext(), runID)
 		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
+			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
-		entries := ledger.ForRunAll(runID)
 		if len(entries) == 0 {
 			return nil
 		}
@@ -2323,7 +2330,7 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 				return providerErr
 			}
-			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
+			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

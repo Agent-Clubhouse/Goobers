@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -141,7 +142,8 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	if ok, _, err := ledger.Claim("1", "run-1", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("claim item 1: ok=%v err=%v", ok, err)
 	}
-	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), ledger, "", "github", now)
+	claims := claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}
+	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), claims, "", "github", now)
 	if got := measureReadyPool(available, "goobers:ready", now).ReadyPoolDepth; got != 1 {
 		t.Fatalf("unclaimed ready depth = %d, want 1", got)
 	}

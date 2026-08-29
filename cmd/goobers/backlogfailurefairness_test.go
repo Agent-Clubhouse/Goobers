@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -51,12 +52,12 @@ func TestDeprioritizeRepeatedFailuresPreservesEventualClaimability(t *testing.T)
 	}
 
 	items := []providers.WorkItem{{ID: "1"}, {ID: "2"}}
-	got := deprioritizeRepeatedFailures(layout, ledger, items, now, backlogQueryEnv{})
+	got := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{})
 	if got[0].ID != "2" || got[1].ID != "1" {
 		t.Fatalf("order = %v, want healthy item before repeated failure", []string{got[0].ID, got[1].ID})
 	}
 
-	onlyFailed := deprioritizeRepeatedFailures(layout, ledger, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{})
+	onlyFailed := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{})
 	if len(onlyFailed) != 1 || onlyFailed[0].ID != "1" {
 		t.Fatalf("deprioritized item = %v, want it retained as claimable", onlyFailed)
 	}
