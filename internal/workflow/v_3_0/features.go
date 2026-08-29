@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -633,6 +634,17 @@ const (
 	featureGateRunsOnDisk         FeatureID = "gate.runsOn.disk"
 	featureGateRunsOnCapabilities FeatureID = "gate.runsOn.capabilities"
 	featureGateRunsOnRestrictions FeatureID = "gate.runsOn.restrictions"
+	// The one product-interpreted capability token (#3619,
+	// runnercap.CapabilityWindowsAdmin): a stage requiring
+	// privilege=windows-admin places only on a Windows runner class that
+	// provides it and runs as ContainerAdministrator. Every other
+	// runsOn.capabilities token is an inert exact-match tag, so the token that
+	// selects a distinct substrate behaviour carries its own FeatureID, the
+	// per-value precedent goober.spec.harness.* set — one per declaration
+	// site, like the rest of the runsOn surface.
+	featureTaskRunsOnWindowsAdmin   FeatureID = "task.runsOn.capabilities.privilege.windows-admin"
+	featureGateRunsOnWindowsAdmin   FeatureID = "gate.runsOn.capabilities.privilege.windows-admin"
+	featureGaggleRunsOnWindowsAdmin FeatureID = "gaggle.spec.runsOn.capabilities.privilege.windows-admin"
 )
 
 // The registry predates the first tagged release. Keep this historical value
@@ -847,6 +859,9 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGateRunsOnDisk,
 		featureGateRunsOnCapabilities,
 		featureGateRunsOnRestrictions,
+		featureTaskRunsOnWindowsAdmin,
+		featureGateRunsOnWindowsAdmin,
+		featureGaggleRunsOnWindowsAdmin,
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
@@ -920,6 +935,9 @@ var v30Introductions = map[FeatureID]string{
 	featureGateRunsOnDisk:           "v0.4.0",
 	featureGateRunsOnCapabilities:   "v0.4.0",
 	featureGateRunsOnRestrictions:   "v0.4.0",
+	featureTaskRunsOnWindowsAdmin:   "v0.4.0",
+	featureGateRunsOnWindowsAdmin:   "v0.4.0",
+	featureGaggleRunsOnWindowsAdmin: "v0.4.0",
 }
 
 // gaPromotions records features that entered the registry at preview in a
@@ -1184,6 +1202,9 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 		}
 		if spec.RunsOn.Capabilities != nil {
 			used.add(featureGaggleRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(spec.RunsOn.Capabilities) {
+				used.add(featureGaggleRunsOnWindowsAdmin)
+			}
 		}
 		if spec.RunsOn.Restrictions != nil {
 			used.add(featureGaggleRunsOnRestrictions)
@@ -1441,6 +1462,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		}
 		if task.RunsOn.Capabilities != nil {
 			used.add(featureTaskRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(task.RunsOn.Capabilities) {
+				used.add(featureTaskRunsOnWindowsAdmin)
+			}
 		}
 		if task.RunsOn.Restrictions != nil {
 			used.add(featureTaskRunsOnRestrictions)
@@ -1573,6 +1597,9 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 		}
 		if gate.RunsOn.Capabilities != nil {
 			used.add(featureGateRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(gate.RunsOn.Capabilities) {
+				used.add(featureGateRunsOnWindowsAdmin)
+			}
 		}
 		if gate.RunsOn.Restrictions != nil {
 			used.add(featureGateRunsOnRestrictions)
