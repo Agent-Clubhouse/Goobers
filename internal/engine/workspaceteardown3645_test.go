@@ -156,7 +156,7 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 	// unbranched, non-continuing stage.
 	res, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
 		RunID: "run-5", TaskID: "run-5:implement",
-	}, "", "", apiv1.WorkspaceRepo)
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("InvokeGoober = %v, want the stage's own success despite a teardown failure", err)
 	}

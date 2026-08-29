@@ -482,6 +482,96 @@ func TestValidateRunnersEntryBranches(t *testing.T) {
 				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Restrictions: KnownRunnerRestrictions()}}
 			},
 		},
+		// Restrictions doc D4 as corrected by #3619: a Windows runner may
+		// declare only what Windows can bind — tmp:ephemeral (the live
+		// windows-shell entry's declaration) and env:default-deny — and the
+		// three effects with no Windows binding are refused at load.
+		{
+			name: "windows runner may declare tmp:ephemeral and env:default-deny",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral, RunnerRestrictionEnvDefaultDeny},
+				}}
+			},
+		},
+		{
+			name: "windows runner declaring fs:readonly-except-workspace is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral, RunnerRestrictionFSReadonly},
+				}}
+			},
+			wantErr: `restrictions[1]: "fs:readonly-except-workspace" has no Windows binding`,
+		},
+		{
+			name: "windows runner declaring network:none is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionNetworkNone},
+				}}
+			},
+			wantErr: `"network:none" has no Windows binding`,
+		},
+		{
+			name: "windows self runner is held to the same declarable set",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "self", Host: "self",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionNetworkAllowlist},
+				}}
+			},
+			wantErr: `"network:allowlist" has no Windows binding`,
+		},
+		{
+			name: "linux runner keeps the whole closed list",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "lin", Host: "ghcr.io/example/lin:v1",
+					Provides:     RunnerProvides{OS: RunnerOSLinux},
+					Restrictions: KnownRunnerRestrictions(),
+				}}
+			},
+		},
+		// #3619: the privilege=windows-admin capability is a Windows
+		// container identity claim; accepted on a Windows runner, refused on
+		// any other OS and on an entry claiming no OS.
+		{
+			name: "windows runner may claim privilege=windows-admin",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win-admin", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows, Capabilities: []string{"dotnet@8", runnercap.CapabilityWindowsAdmin}},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral},
+				}}
+			},
+		},
+		{
+			name: "linux runner claiming privilege=windows-admin is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "lin", Host: "ghcr.io/example/lin:v1",
+					Provides: RunnerProvides{OS: RunnerOSLinux, Capabilities: []string{runnercap.CapabilityWindowsAdmin}},
+				}}
+			},
+			wantErr: `provides.capabilities claims "privilege=windows-admin", a Windows container identity (ContainerAdministrator), but provides.os is "linux"`,
+		},
+		{
+			name: "os-less runner claiming privilege=windows-admin is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "anon", Host: "self",
+					Provides: RunnerProvides{Capabilities: []string{runnercap.CapabilityWindowsAdmin}},
+				}}
+			},
+			wantErr: `but provides.os is ""`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
