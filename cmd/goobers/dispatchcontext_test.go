@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -17,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -48,10 +52,22 @@ func seedBlobPlane(t *testing.T, endpoint, name string, data []byte) apiv1.Conte
 	}
 }
 
-// buildPodAgenticExecutorForTest builds the executor with the SAME wiring the
-// pod uses — the pod's own recorder as the staging directory, and that same
-// directory as the contextResolver's root — so a test that resolves a pointer
-// through it is exercising the pod's seam rather than a rebuilt approximation.
+// buildPodAgenticExecutorForTest builds the executor through the POD'S OWN
+// input builder — podAgenticExecutorInput, the function buildPodAgenticExecutor
+// itself calls — rather than a hand-assembled agenticExecutorInput literal.
+//
+// That is the point of it. The bug being fixed was a staging-directory
+// DISAGREEMENT: context was materialized into one directory and the executor
+// read another. A test that rebuilds the input by hand asserts only that the
+// test's own two fields agree, and would stay green through a refactor that
+// reintroduced a constructor-local runs dir in production — measured: with an
+// `os.MkdirTemp` reassignment inserted into buildPodAgenticExecutor, the whole
+// cmd/goobers suite passed. Going through the production builder means RunsDir
+// and the recorder's Dir() are wired here by the same code that wires them in
+// the pod, so that reassignment now has one test that can see it.
+//
+// Only the harness registry (a fake adapter) and the resolver are substituted;
+// everything the staging root touches comes from the builder.
 func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(context.Context, harness.RunRequest) error) invoke.Goober {
 	t.Helper()
 	resolver, err := credentials.NewResolver(nil)
@@ -63,17 +79,34 @@ func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(conte
 		t.Fatal(err)
 	}
 	scrubberRegistry, scrubber := journal.DefaultScrubber()
-	exec, err := buildAgenticExecutor(agenticExecutorInput{
-		GooberName:       "coder",
-		Goobers:          map[string]apiv1.GooberSpec{"coder": {}},
-		Instructions:     map[string]string{"coder": "instructions"},
-		AdapterRegistry:  registry,
-		Resolver:         resolver,
-		SharedRegistry:   scrubberRegistry,
-		RunsDir:          runsDir,
-		ArtifactRecorder: podArtifactRecorder{stderr: os.Stderr, scrubber: scrubber, dir: runsDir},
-		SecretRegistrar:  scrubberRegistry,
+	input := podAgenticExecutorInput(podExecutorWiring{
+		Kit: &agentickit.Kit{
+			Envelope:     apiv1.InvocationEnvelope{Goober: "coder"},
+			Goobers:      map[string]apiv1.GooberSpec{"coder": {}},
+			Instructions: map[string]string{"coder": "instructions"},
+		},
+		RunsDir:         runsDir,
+		Stderr:          os.Stderr,
+		Scrubber:        scrubber,
+		Registry:        scrubberRegistry,
+		Resolver:        resolver,
+		AdapterRegistry: registry,
 	})
+	// The agreement itself, named rather than implied: the directory the caller
+	// materialized context into must be BOTH the contextResolver's root and the
+	// recorder's Dir(). buildAgenticExecutor type-asserts the recorder to
+	// interface{ Dir() string } and hands that to harness.NewContextResolver.
+	if input.RunsDir != runsDir {
+		t.Fatalf("executor RunsDir = %q, want the staging root %q that context was materialized into", input.RunsDir, runsDir)
+	}
+	direr, ok := input.ArtifactRecorder.(interface{ Dir() string })
+	if !ok {
+		t.Fatal("pod artifact recorder does not report a Dir(), so the contextResolver's root cannot be checked")
+	}
+	if direr.Dir() != runsDir {
+		t.Fatalf("artifact recorder Dir() = %q, want the staging root %q; the executor would read context from a directory nothing filled", direr.Dir(), runsDir)
+	}
+	exec, err := buildAgenticExecutor(input)
 	if err != nil {
 		t.Fatalf("buildAgenticExecutor: %v", err)
 	}
@@ -283,6 +316,117 @@ func TestRunAgenticStageMaterializesContextBeforeBuildingTheExecutor(t *testing.
 	}
 }
 
+// CONTAINMENT. materializePodContext WRITES FILES at paths a foreign envelope
+// chose, so a pointer whose path escapes the staging root must be refused
+// before anything is fetched — not written first and judged later.
+//
+// The pointer is untrusted input by construction: it reaches a pod over the
+// network, and the producer upstream of it is another pod whose surrendered
+// ResultEnvelope is decoded by a bare json.Unmarshal
+// (dispatcher.ReadSurrenderedResult) with no ArtifactPointer.Validate anywhere
+// on that path. Every OTHER declared-path call site in this repo goes through
+// the #120 containment primitive — ArtifactPointer.Resolve does, and
+// artifact-pointer.schema.json exists so "a foreign-authored envelope that
+// would escape the journal fails at validate time, not only at resolve time".
+// A fetch step that joined the raw path would put a NEW filesystem-write
+// primitive ahead of that check.
+//
+// ABLATED (both containment checks removed) this test reports the escape
+// itself: the blob's bytes land outside the staging root and
+// materializePodContext returns nil, so the stage then runs.
+func TestPodContextMaterializationRefusesAPointerThatEscapesTheStagingRoot(t *testing.T) {
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+
+	// The blob IS published, under the digest the pointer names: the refusal
+	// must come from the PATH, not from the plane failing to serve the bytes.
+	payload := []byte("#!/bin/sh\necho pwned\n")
+	seeded := seedBlobPlane(t, endpoint, "implement.artifact[0]", payload)
+
+	parent := t.TempDir()
+	runsDir := filepath.Join(parent, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	escaped := filepath.Join(parent, "escaped.sh")
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "traversal", path: "../escaped.sh"},
+		{name: "nested traversal", path: "artifacts/../../escaped.sh"},
+		{name: "absolute", path: escaped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := apiv1.InvocationEnvelope{
+				TaskID: "review",
+				ContextPointers: []apiv1.ContextPointer{{
+					Name:     "implement.artifact[0]",
+					Artifact: &apiv1.ArtifactPointer{Path: tc.path, Digest: seeded.Artifact.Digest, Size: seeded.Artifact.Size},
+				}},
+			}
+			gotErr := materializePodContext(context.Background(), runsDir, env, &strings.Builder{})
+			if gotErr == nil {
+				t.Fatal("an escaping context pointer was accepted; the stage would run on bytes written outside its staging root")
+			}
+			if !errors.Is(gotErr, errContextPointerRefused) {
+				t.Fatalf("error = %v, want one wrapping errContextPointerRefused", gotErr)
+			}
+			if !errors.Is(gotErr, apiv1.ErrPathEscape) {
+				t.Errorf("error = %v, want it to carry the contract's own ErrPathEscape", gotErr)
+			}
+			for _, want := range []string{"implement.artifact[0]", tc.path, "review"} {
+				if !strings.Contains(gotErr.Error(), want) {
+					t.Errorf("error %q does not name %q", gotErr.Error(), want)
+				}
+			}
+			// The property that actually matters: nothing was written.
+			if data, err := os.ReadFile(escaped); err == nil {
+				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q", len(data), escaped, data)
+			}
+		})
+	}
+}
+
+// A staging root this pod cannot READ is a node fault, and must not be reported
+// as a missing blob.
+//
+// A bare os.Stat cannot tell ENOENT from EACCES/ENOTDIR/ELOOP, so the check
+// this replaced named the blob plane — and blobs.Describe() as the place to
+// look — for a failure the blob plane does not have. The file's own errors
+// exist because "the plane being absent is a deployment fault, the blob being
+// absent is a run fault, and they are fixed in different places"; a local
+// filesystem fault is a third thing.
+//
+// Driven at the helper because the production path cannot reach this branch
+// today: MaterializeContext's own stat surfaces a non-ENOENT fault first, so
+// only a filesystem that changes between the fetch and the verification lands
+// here. That is exactly what a defensive branch is, and it still must not lie.
+func TestPodContextVerificationSeparatesALocalFaultFromAMissingBlob(t *testing.T) {
+	runsDir := t.TempDir()
+	// "artifacts" is a FILE, so resolving "artifacts/aa/bb" under it fails with
+	// ENOTDIR rather than ENOENT.
+	if err := os.WriteFile(filepath.Join(runsDir, "artifacts"), []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp := apiv1.ContextPointer{
+		Name:     "implement.artifact[0]",
+		Artifact: &apiv1.ArtifactPointer{Path: "artifacts/aa/bb", Digest: "sha256:" + strings.Repeat("a", 64)},
+	}
+	gotErr := verifyMaterializedPointer(runsDir, cp, "review", "blobstore")
+	if gotErr == nil {
+		t.Fatal("an unreadable staging root was accepted")
+	}
+	if errors.Is(gotErr, errContextBlobMissing) {
+		t.Fatalf("a local filesystem fault was reported as a missing blob, sending the operator to the wrong plane: %v", gotErr)
+	}
+	if !errors.Is(gotErr, errContextStagingUnreadable) {
+		t.Fatalf("error = %v, want one wrapping errContextStagingUnreadable", gotErr)
+	}
+}
+
 // A stage with no artifact-backed pointers must not need a blob plane at all:
 // every stage that has ever run on a pod is a start stage, and requiring an
 // endpoint for them would break the substrate to fix the substrate.
@@ -379,6 +523,160 @@ func TestPodStageArtifactPutIsBestEffortAndNoisy(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "blob plane") {
 		t.Fatalf("stderr does not report the failed write-through:\n%s", errOut.String())
+	}
+}
+
+// SIGTERM MUST NOT SILENTLY UNDO HALF A.
+//
+// recordStageArtifacts is called with the pod process's SIGNAL context
+// (runDispatchExec -> signals.SetupSignalContext). On pod deletion, eviction,
+// node drain or disposal that context is already cancelled — and a write-through
+// riding it fails instantly with "context canceled", is swallowed as
+// best-effort, and yet the derived pointers still ride the surrendered
+// envelope. The result is precisely the defect this change removes: a
+// surrendered pointer naming a digest the blob store was never told about, and
+// a downstream stage failing closed with errContextBlobMissing on a different
+// pod. The surrender PUT one frame up already refuses to ride that context for
+// the same reason.
+//
+// The cancelled context here stands in for that window. The journal emit is
+// expected to fail with it — that is the ordinary best-effort path — and the
+// assertion is on the BLOB: the artifact whose pointer is about to be
+// surrendered must be fetchable by another node.
+func TestPodStageArtifactWriteThroughOutlivesACancelledStageContext(t *testing.T) {
+	journalPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"applied":1}`))
+	}))
+	defer journalPlane.Close()
+	endpoint, _ := fakeBlobPlane(t)
+
+	t.Setenv(dispatcher.EnvDaemonAPI, journalPlane.URL)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvRunID, "run-sigterm")
+	t.Setenv(dispatcher.EnvStage, "implement")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	// Already cancelled: the pod caught SIGTERM before its artifacts were
+	// recorded.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	data := []byte("what implement decided, on a pod that is being evicted\n")
+	pointers := recordStageArtifacts(ctx, &strings.Builder{}, map[string][]byte{"decision.json": data})
+	if len(pointers) != 1 {
+		t.Fatalf("pointers = %+v, want exactly one", pointers)
+	}
+	reader := &dispatcher.BlobClient{BaseURL: endpoint, Token: "pod-token"}
+	stored, err := reader.Get(context.Background(), pointers[0].Digest)
+	if err != nil {
+		t.Fatalf("the blob plane holds nothing at %s (%v): SIGTERM truncated the write-through while the pointer still rides the surrendered envelope, so the next stage fails closed on a digest nothing ever published", pointers[0].Digest, err)
+	}
+	if string(stored) != string(data) {
+		t.Fatalf("blob at %s = %q, want %q", pointers[0].Digest, stored, data)
+	}
+}
+
+// A DROPPED WRITE-THROUGH MUST LEAVE EVIDENCE THAT OUTLIVES THE POD.
+//
+// The stderr line is not enough: it is the POD PROCESS's stderr, not the
+// captured stderr.log artifact (that one is the stage command's), so it reaches
+// no journal — and the pod is disposed right after surrender. Without a durable
+// record the operator's first symptom is a different stage on a different pod
+// refusing with errContextBlobMissing for a digest whose producer no longer
+// exists. Half B's fail-closed makes that a hard stop, so the producing stage
+// has to carry the evidence.
+//
+// The record rides the JOURNAL plane because the blob plane is the thing that
+// just failed, and the journal plane must be up regardless or the stage could
+// not surrender at all.
+func TestADroppedWriteThroughIsJournaledByTheProducingStage(t *testing.T) {
+	journalPlane, emittedOps := recordingJournalPlane(t)
+	brokenBlobs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer brokenBlobs.Close()
+
+	t.Setenv(dispatcher.EnvDaemonAPI, journalPlane)
+	t.Setenv(dispatcher.EnvBlobEndpoint, brokenBlobs.URL)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvRunID, "run-dropped")
+	t.Setenv(dispatcher.EnvStage, "implement")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	data := []byte("findings the next stage will be refused\n")
+	pointers := recordStageArtifacts(context.Background(), &strings.Builder{}, map[string][]byte{"findings.json": data})
+	if len(pointers) != 1 {
+		t.Fatalf("a failed blob PUT dropped the journal pointer: %+v", pointers)
+	}
+
+	var record string
+	var names []string
+	for _, op := range emittedOps() {
+		if op.Artifact == nil {
+			continue
+		}
+		names = append(names, op.Artifact.Name)
+		if strings.Contains(op.Artifact.Name, blobWriteThroughFailureArtifact) {
+			record = string(op.Artifact.Data)
+		}
+	}
+	if record == "" {
+		t.Fatalf("the journal carries no record of the dropped write-through, so the evidence dies with this pod; artifacts emitted: %v", names)
+	}
+	// The record has to name the artifact whose bytes are missing — the digest
+	// is what a downstream errContextBlobMissing refusal will quote.
+	for _, want := range []string{pointers[0].Digest, "findings.json", "implement"} {
+		if !strings.Contains(record, want) {
+			t.Errorf("the journaled write-through failure %q does not name %q, so it cannot be matched to the downstream refusal", record, want)
+		}
+	}
+}
+
+// recordingJournalPlane is a journal plane that keeps the ops it was handed, so
+// a test can assert on what was EMITTED rather than on the wire bytes —
+// ArtifactOp.Data is []byte and rides the JSON as base64, which no substring
+// check on the body would ever match.
+func recordingJournalPlane(t *testing.T) (string, func() []livejournal.Op) {
+	t.Helper()
+	var mu sync.Mutex
+	var ops []livejournal.Op
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req livejournal.EmitRequest
+		if err := json.Unmarshal(body, &req); err == nil {
+			mu.Lock()
+			ops = append(ops, req.Ops...)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"applied":1}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() []livejournal.Op {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]livejournal.Op(nil), ops...)
+	}
+}
+
+// A SUCCESSFUL batch must not journal a failure record: the artifact only
+// exists when there is something wrong, which is what makes it greppable.
+func TestASuccessfulWriteThroughJournalsNoFailureRecord(t *testing.T) {
+	journalPlane, emittedOps := recordingJournalPlane(t)
+	endpoint, _ := fakeBlobPlane(t)
+
+	t.Setenv(dispatcher.EnvDaemonAPI, journalPlane)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvRunID, "run-ok")
+	t.Setenv(dispatcher.EnvStage, "implement")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	recordStageArtifacts(context.Background(), &strings.Builder{}, map[string][]byte{"findings.json": []byte("ok\n")})
+	for _, op := range emittedOps() {
+		if op.Artifact != nil && strings.Contains(op.Artifact.Name, blobWriteThroughFailureArtifact) {
+			t.Fatalf("a healthy write-through journaled a failure record: %s", op.Artifact.Data)
+		}
 	}
 }
 
