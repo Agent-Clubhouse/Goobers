@@ -36,6 +36,27 @@ var newTerminalBranchDeleter = func(source providers.TokenSource) providers.Bran
 	return providers.NewGitHubProvider("", providers.WithTokenSource(source))
 }
 
+// newGiteaTerminalBranchDeleter is the Gitea arm of the branch-delete seam.
+var newGiteaTerminalBranchDeleter = func(baseURL string, source providers.TokenSource) providers.BranchDeleter {
+	return providers.NewGiteaProvider(baseURL, "", providers.WithGiteaTokenSource(source))
+}
+
+func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (providers.BranchDeleter, error) {
+	repo := terminalRepositoryRefForProject(cfg, project)
+	switch repo.Provider {
+	case providers.ProviderGitea:
+		baseURL, err := terminalGiteaBaseURLForProject(cfg, project)
+		if err != nil {
+			return nil, err
+		}
+		return newGiteaTerminalBranchDeleter(baseURL, source), nil
+	case providers.ProviderGitHub:
+		return newTerminalBranchDeleter(source), nil
+	default:
+		return nil, fmt.Errorf("terminal branch cleanup does not support repository provider %q", repo.Provider)
+	}
+}
+
 func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (runner.TerminalPreparer, error) {
 	// An instance with no configured repo (the credential-free demo, #587)
 	// never touches a branch by design — every one of its runs is
@@ -133,20 +154,16 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	if err != nil {
 		return nil, providers.RepositoryRef{}, fmt.Errorf("build terminal branch-delete credentials: %w", err)
 	}
-	repo := providers.RepositoryRef{
-		Provider: providers.ProviderGitHub,
-		Owner:    cfg.Repos[0].Owner,
-		Name:     cfg.Repos[0].Name,
-	}
-	if project.Owner != "" && project.Name != "" {
-		repo.Owner, repo.Name = project.Owner, project.Name
-	}
+	repo := terminalRepositoryRefForProject(cfg, project)
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		set, err := injector.Materialize(ctx, []string{string(capability.GitHubBranchDelete)})
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}
-		deleter := newTerminalBranchDeleter(set.For(string(capability.GitHubBranchDelete)))
+		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)))
+		if err != nil {
+			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
+		}
 		result, err := deleter.DeleteBranch(ctx, req)
 		return result, scrubTerminalError(registrar, err)
 	}

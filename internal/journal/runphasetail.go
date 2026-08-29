@@ -26,10 +26,10 @@ import (
 // with history that will never be running again.
 //
 // The decisive event is, by construction, at or near the END of the journal:
-// reconstructPhase scans backwards and stops at the first
-// run.finished / run.resumed / stage.rerun.requested / gate.overridden it
-// meets. A terminal run's run.finished is its last record. So the phase is
-// almost always decidable from the last few kilobytes.
+// reconstructPhase scans backwards and stops at the first run.finished,
+// run.resumed, stage.rerun.requested, gate.overridden, or executed terminal
+// gate it meets. A terminal run's decisive record is at the tail. So the phase
+// is almost always decidable from the last few kilobytes.
 //
 // # Why this is not a second, weaker source of truth
 //
@@ -209,6 +209,11 @@ func tailPhaseContext(ctx context.Context, path string) (phase RunPhase, decided
 // never examined, and a run whose only event is run.finished would read back as
 // still running.
 func decisivePhaseInChunkContext(ctx context.Context, buf []byte, atFileStart bool) (found bool, phase RunPhase, err error) {
+	var terminalGate *struct {
+		gate   string
+		branch int
+		phase  RunPhase
+	}
 	for len(buf) > 0 {
 		if err := ctx.Err(); err != nil {
 			return false, "", err
@@ -239,12 +244,41 @@ func decisivePhaseInChunkContext(ctx context.Context, buf []byte, atFileStart bo
 		if unmarshalErr := json.Unmarshal(line, &ev); unmarshalErr != nil {
 			return false, "", fmt.Errorf("journal: corrupt event at seq boundary: %w", unmarshalErr)
 		}
+		if terminalGate != nil {
+			if ev.Branch != terminalGate.branch {
+				continue
+			}
+			if ev.Gate != terminalGate.gate {
+				if ev.Type == EventGatePaused || ev.Type == EventGateStarted {
+					continue
+				}
+				return true, terminalGate.phase, nil
+			}
+			switch ev.Type {
+			case EventGateStarted, EventGateEvaluated:
+				return true, terminalGate.phase, nil
+			case EventGatePaused:
+				return true, PhaseRunning, nil
+			}
+			continue
+		}
 		switch ev.Type {
 		case EventStageRerunRequested, EventRunResumed, EventGateOverridden:
 			return true, PhaseRunning, nil
 		case EventRunFinished:
 			return true, phaseFromStatus(ev.Status), nil
+		case EventGateEvaluated:
+			if terminalPhase, terminal := phaseFromTerminalTarget(ev.Target); terminal {
+				terminalGate = &struct {
+					gate   string
+					branch int
+					phase  RunPhase
+				}{gate: ev.Gate, branch: ev.Branch, phase: terminalPhase}
+			}
 		}
+	}
+	if terminalGate != nil && atFileStart {
+		return true, terminalGate.phase, nil
 	}
 	return false, "", nil
 }

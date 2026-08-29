@@ -87,6 +87,15 @@ type transcriptCapture struct {
 	modelUsage   []telemetry.ModelUsage
 	truncated    bool
 	droppedBytes int64
+	// finalMessage is the raw content of the LAST assistant.message in the
+	// session log. Copilot does not always echo its final message to stdout
+	// under --silent --output-format=text with MCP tools attached: the answer
+	// lands in the session log, the harness's stdout capture stays empty, and
+	// readCopilotResponseCompletion reports "final response is not valid JSON"
+	// for a completion the model in fact produced correctly. Both attempts of a
+	// live pr-remediation run failed this way with well-formed JSON sitting in
+	// the log, discarding committed work twice per run.
+	finalMessage []byte
 	// mcpServersReported reports that the harness CLI emitted at least one
 	// per-server MCP connection report for this session, making
 	// mcpServerStatus authoritative for which registered servers actually
@@ -189,12 +198,17 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	if err != nil {
 		return transcriptCapture{}, false
 	}
+	var finalMessage []byte
+	if finalOutput != nil {
+		finalMessage = []byte(finalOutput.Content)
+	}
 	return transcriptCapture{
 		data:         data,
 		metrics:      metrics,
 		modelUsage:   modelUsage,
 		truncated:    dropped > 0,
 		droppedBytes: dropped,
+		finalMessage: finalMessage,
 	}, true
 }
 

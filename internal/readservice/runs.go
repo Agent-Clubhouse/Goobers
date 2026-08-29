@@ -1716,6 +1716,19 @@ func summarizeRunForStage(
 		}
 	}
 
+	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
+	// the summary fold responsible for presentation fields, but do not duplicate
+	// terminal-state semantics here: older runs may end at an executed terminal
+	// gate when cleanup fails before run.finished is appended.
+	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
+	if phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
+		phase = reconstructed
+		finishedAt = terminalGateTime(run.records, reconstructed)
+		if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+			currentStage = ""
+		}
+	}
+
 	if phase == journal.PhaseRunning {
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
@@ -1820,6 +1833,26 @@ func summarizeRunForStage(
 
 func operatorTrajectory(stage string, phase journal.RunPhase) string {
 	return readmodel.OperatorTrajectory(stage, phase)
+}
+
+func terminalGateTime(records []journal.EventRecord, phase journal.RunPhase) *time.Time {
+	wantTarget := ""
+	switch phase {
+	case journal.PhaseAborted:
+		wantTarget = journal.TargetAbort
+	case journal.PhaseEscalated:
+		wantTarget = journal.TargetEscalate
+	default:
+		return nil
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if event.Type == journal.EventGateEvaluated && event.Target == wantTarget {
+			finished := event.Time
+			return &finished
+		}
+	}
+	return nil
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {

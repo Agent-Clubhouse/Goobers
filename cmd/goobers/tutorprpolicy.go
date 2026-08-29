@@ -404,7 +404,7 @@ func tutorGitOutput(args ...string) ([]byte, error) {
 
 func classifyRemoteTutorChanges(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pullID, baseSHA, headSHA string,
 ) (tutorChangeClassification, error) {

@@ -133,6 +133,7 @@ func (c *statusTimeToFirstPRCache) Load(ctx context.Context) (telemetry.TimeToFi
 var (
 	loadStatusPRLabelCounts = queryStatusPRLabelCounts
 	newStatusGitHubProvider = providers.NewGitHubProvider
+	newStatusGiteaProvider  = providers.NewGiteaProvider
 )
 
 type statusPRLabelCountCache struct {
@@ -184,9 +185,25 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	if err != nil {
 		return statusPRLabelCounts{}, fmt.Errorf("resolve status token for %s: %w", ref, err)
 	}
-	prs, err := newStatusGitHubProvider(token).ListPullRequests(ctx, providers.ListPullRequestsRequest{
+	providerKind := providers.ProviderKind(repo.Provider)
+	if providerKind == "" {
+		providerKind = providers.ProviderGitHub
+	}
+	var provider providers.RepoProvider
+	switch providerKind {
+	case providers.ProviderGitHub:
+		provider = newStatusGitHubProvider(token)
+	case providers.ProviderGitea:
+		if repo.BaseURL == "" {
+			return statusPRLabelCounts{}, fmt.Errorf("gitea repo %s has no baseUrl configured", ref)
+		}
+		provider = newStatusGiteaProvider(repo.BaseURL, token)
+	default:
+		return statusPRLabelCounts{}, fmt.Errorf("open PR label counts do not support repository provider %q", providerKind)
+	}
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: providers.RepositoryRef{
-			Provider: providers.ProviderGitHub,
+			Provider: providerKind,
 			Owner:    repo.Owner,
 			Name:     repo.Name,
 		},

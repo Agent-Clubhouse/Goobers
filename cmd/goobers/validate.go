@@ -1149,6 +1149,20 @@ func repoUsesToken(repo instance.RepoRef) bool {
 	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
 }
 
+// giteaPreflightRootURL normalizes a Gitea repo's configured baseUrl into the
+// forge ROOT that git clone/ls-remote URLs hang off, applying the same
+// trailing-slash and "/api/v1" trimming NewGiteaProvider does when it derives
+// RootURL. An operator who (reasonably) writes the API endpoint as baseUrl
+// would otherwise get an ls-remote against <host>/api/v1/<owner>/<repo>.git and
+// a misleading "unreachable" diagnosis.
+func giteaPreflightRootURL(repo instance.RepoRef) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(repo.BaseURL), "/")
+	if trimmed == "" {
+		return "", fmt.Errorf("gitea repo %s/%s has no baseUrl configured", repo.Owner, repo.Name)
+	}
+	return strings.TrimSuffix(trimmed, "/api/v1"), nil
+}
+
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
 		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
@@ -1162,16 +1176,40 @@ func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token st
 			Name:     repo.Name,
 		})
 	}
-	if repo.Provider != "github" {
+	var url string
+	var env []string
+	switch repo.Provider {
+	case "gitea":
+		// Preflight the SAME endpoint and credential shape a real run uses:
+		// the clone URL derived from the configured forge root, authenticated
+		// by providers.GiteaGitAuthEnvironment. Gitea sends the token as the
+		// basic-auth USERNAME with an empty password, whereas gitAuthEnv (the
+		// GitHub arm below) sends "x-access-token:<token>" — so reusing the
+		// GitHub helper here would fail auth against a perfectly healthy
+		// forge and report the repo unreachable.
+		//
+		// Without this arm the preflight refused outright ("provider %q does
+		// not support repository preflight"), so `goobers validate
+		// --check-repos` failed REPO001 on every Gitea instance even though
+		// the repo was reachable and every other check passed.
+		root, err := giteaPreflightRootURL(repo)
+		if err != nil {
+			return err
+		}
+		url = fmt.Sprintf("%s/%s/%s.git", root, repo.Owner, repo.Name)
+		env = providers.GiteaGitAuthEnvironment(token, url, nil)
+	case "github":
+		url = fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+		env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
+	default:
 		return fmt.Errorf("provider %q does not support repository preflight", repo.Provider)
 	}
-	url := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
 	cmd := exec.Command("git",
 		"-c", "credential.helper=",
 		"-c", "credential.interactive=never",
 		"ls-remote", url,
 	)
-	cmd.Env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = env
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
