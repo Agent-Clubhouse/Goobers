@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -108,10 +109,22 @@ type DispatchStageResult struct {
 	Mutations      []MutationFact `json:"mutations,omitempty"`
 	MutationIssues []string       `json:"mutationIssues,omitempty"`
 	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
-	// committed (#3763), for the engine to hand to the next stage. Only a
-	// pod-dispatched stage produces one; a self-placed stage needs none,
-	// because its commits are already on the shared run branch.
+	// committed (#3763), for the engine's continuity record to hand to a
+	// later stage. A pod surrenders one; a self-placed stage on a writable
+	// repo workspace publishes one through its workspace's DeltaPublisher
+	// (#3803) — its commits are on this worker's mirror, which the next pod
+	// (or another worker) cannot see.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceDeltaBase / WorkspaceDeltaTip are the bundle's two commits,
+	// journaled beside the digest (runner.workspace.delta). Additive and
+	// omitempty so histories recorded before them decode unchanged.
+	WorkspaceDeltaBase string `json:"workspaceDeltaBase,omitempty"`
+	WorkspaceDeltaTip  string `json:"workspaceDeltaTip,omitempty"`
+	// WorkspaceDeltaUnchanged reports that a writable repo stage succeeded
+	// WITHOUT moving its branch, so there was nothing to publish — distinct
+	// from "could not publish" (an error) and from "not a repo stage" (no
+	// flag), and journaled explicitly so the record's silence is a fact.
+	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
 	// Placement is where this attempt actually ran, when it ran in a pod and
 	// the attempt SETTLED. Nil for every in-process arm (InvokeGoober,
 	// RunDeterministic, ReviewGoober): those execute on the host that is
@@ -274,9 +287,17 @@ func classifySeamError(err error) error {
 // is an error — the stage never dispatches with a partial envelope, which is
 // what previously made every capability-scoped credential fail closed the
 // moment a real executor was wired.
-func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (Workspace, error) {
+//
+// workspaceDelta is handed to the provisioner only for a writable repo mode:
+// a scratch or read-only workspace has no run branch to land it on, and a
+// read-only stage reads the pinned base by definition (the same gate the pod
+// arm applies in dispatchstage.go).
+func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
+	}
+	if !writableWorkspace(mode) {
+		workspaceDelta = ""
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
 		RunID:           env.RunID,
@@ -288,28 +309,82 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		RepoRef:         env.RepoRef,
 		Mode:            mode,
 		SyncBase:        syncBase,
+		WorkspaceDelta:  workspaceDelta,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
 	}
 	if ws == nil || ws.Path() == "" {
-		removeWorkspace(ctx, ws)
+		removeWorkspace(ctx, env.TaskID, ws)
 		return nil, fmt.Errorf("workspace provisioner returned no path for stage %q (the closed invocation schema requires workspace)", env.TaskID)
 	}
 	env.Workspace = ws.Path()
 	return ws, nil
 }
 
+// workspaceTeardownTimeout bounds one attempt's detached workspace cleanup
+// (#3645). Teardown runs detached from the attempt context, so nothing else
+// would ever cancel it: a git worktree removal wedged on a filesystem lock
+// would otherwise retain the worker's resources for the process's lifetime.
+// A variable so tests can shorten the bound; production never reassigns it.
+var workspaceTeardownTimeout = 2 * time.Minute
+
+// MetricWorkspaceTeardownFailure is the counter incremented once per stage
+// attempt whose workspace teardown failed or exceeded
+// workspaceTeardownTimeout. Locked or wedged worktrees accumulate on the
+// worker's disk, so this is the operator's signal to sweep them (#3645).
+const MetricWorkspaceTeardownFailure = "goobers_workspace_teardown_failure"
+
 // removeWorkspace tears one attempt's working copy down. Best-effort by
 // design: a teardown failure never overrides the stage's own result/error
-// (the local runner's additive removeErr contract, issue #136); until the
-// history→journal projection (#629) exists there is no journal to surface it
-// to. Detached from ctx so an already-expired attempt still cleans up.
-func removeWorkspace(ctx context.Context, ws Workspace) {
+// (the local runner's additive removeErr contract, issue #136). Detached from
+// ctx so an already-expired attempt still cleans up, but bounded by
+// workspaceTeardownTimeout and never silent: a failed or timed-out teardown
+// leaves a leaked working copy behind, so it is reported as an error log with
+// the stage and path that leaked plus a counter increment (#3645), rather
+// than being discarded.
+func removeWorkspace(ctx context.Context, taskID string, ws Workspace) {
 	if ws == nil {
 		return
 	}
-	_ = ws.Remove(context.WithoutCancel(ctx))
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceTeardownTimeout)
+	defer cancel()
+	// Remove runs on its own goroutine so an implementation that ignores
+	// cancellation still cannot pin the attempt past the bound; the abandoned
+	// goroutine finishes (or not) on its own, having been reported as leaked.
+	done := make(chan error, 1)
+	go func() { done <- ws.Remove(cleanupCtx) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-cleanupCtx.Done():
+		err = fmt.Errorf("workspace teardown exceeded %s: %w", workspaceTeardownTimeout, cleanupCtx.Err())
+	}
+	if err == nil {
+		return
+	}
+	reportWorkspaceTeardownFailure(ctx, taskID, ws.Path(), err)
+}
+
+// reportWorkspaceTeardownFailure emits the durable diagnostics for a leaked
+// workspace. Inside an activity it uses the worker's own logger and metrics
+// handler (so the failure lands in the worker's log/metrics pipeline
+// alongside the attempt it belongs to); outside one — engine unit tests, the
+// in-process paths — it falls back to the default slog logger rather than
+// panicking on the missing activity environment.
+func reportWorkspaceTeardownFailure(ctx context.Context, taskID, path string, err error) {
+	if activity.IsActivity(ctx) {
+		activity.GetMetricsHandler(ctx).Counter(MetricWorkspaceTeardownFailure).Inc(1)
+		activity.GetLogger(ctx).Error(
+			"workspace teardown failed; the working copy leaked and must be swept",
+			"stage", taskID, "workspace", path, "error", err.Error(),
+		)
+		return
+	}
+	slog.Error(
+		"workspace teardown failed; the working copy leaked and must be swept",
+		"stage", taskID, "workspace", path, "error", err.Error(),
+	)
 }
 
 // refuseLeakedEnvelope is the dispatch-side assertion of the #2931 canary,
@@ -343,41 +418,74 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 	return nil
 }
 
-// InvokeGoober executes an agentic task.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (stageActivityResult, error) {
+// InvokeGoober executes an agentic task in the workspace the task declares
+// (Task.Workspace; "" keeps the historical writable repo worktree), the same
+// mode the walk's continuity selector decided the delta from — so a stage
+// declaring repo-readonly is cut a detached read-only checkout, is handed no
+// delta, and can never publish a base-rooted bundle over its predecessor's
+// entry. This is the local runner's taskWorkspaceMode parity; before it the
+// engine hard-coded the writable repo here and honoured the declaration only
+// in the selector, which is two readings of one field.
+//
+// workspaceDelta (#3803) and workspace are TRAILING POSITIONAL arguments,
+// like workspaceBranch before them, rather than a struct replacing all of
+// them. The Go SDK decodes activity arguments positionally and zero-fills
+// parameters the recorded payload does not carry (converter.FromPayloads
+// stops at the shorter side), so an activity scheduled by the previous engine
+// build — an in-flight run at deploy — executes here with workspaceDelta ==
+// "" and workspace == "" and behaves exactly as it did, and a history
+// recorded with the two-argument shape replays under this code
+// (TestContinuityPreChangeHistoryReplays). A struct in the second position
+// would fail to decode those payloads.
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
 		return stageActivityResult{}, err
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	return a.scrubStageActivityResult(stageActivityResult{ResultEnvelope: res})
+	result := stageActivityResult{ResultEnvelope: res}
+	if err := publishWorkspaceDelta(ctx, ws, workspace, &result); err != nil {
+		return stageActivityResult{}, classifySeamError(err)
+	}
+	return a.scrubStageActivityResult(result)
 }
 
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
 // reviewer runs a real goober subprocess and therefore gets a repository
-// workspace (unlike an automated gate).
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (apiv1.Verdict, error) {
+// workspace (unlike an automated gate) — in the mode the gate declares
+// (AgenticGate.Workspace; "" keeps the historical writable repo worktree),
+// continuing from the delta the walk selected for it (#3803). A reviewer
+// never publishes: it returns a Verdict, not a stage result, and must not
+// commit. Both new arguments are trailing positionals for the replay reason
+// InvokeGoober documents.
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (apiv1.Verdict, error) {
 	if a.Goober == nil {
 		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
 		return apiv1.Verdict{}, err
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	verdict, err := a.Goober.Review(ctx, env)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
@@ -385,9 +493,13 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	return a.scrubVerdict(verdict)
 }
 
-// RunDeterministic executes a deterministic task in the workspace mode the
-// task's run block declares (repo by default, scratch on request).
-func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string) (stageActivityResult, error) {
+// RunDeterministic executes a deterministic task in the workspace mode
+// run.Workspace carries (repo by default, scratch on request). The walk
+// resolves the task's declared precedence into run.Workspace before
+// dispatch (Task.EffectiveWorkspace), so a task-level `workspace:` reaches
+// this provisioner too. workspaceDelta is a trailing positional for the
+// replay reason InvokeGoober documents.
+func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -399,7 +511,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if len(run.Command) == 0 && run.Script == "" {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command and script; refusing to execute (fail closed)", env.TaskID))
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase, workspaceBranch)
+	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase, workspaceBranch, workspaceDelta)
 	if err != nil {
 		var conflict *worktree.BaseSyncConflictError
 		if errors.As(err, &conflict) {
@@ -423,15 +535,47 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	mutations, issues := readMutationSidecar(ws.Path())
-	return a.scrubStageActivityResult(stageActivityResult{
-		ResultEnvelope: res, Mutations: mutations, MutationIssues: issues,
-	})
+	result := stageActivityResult{ResultEnvelope: res, Mutations: mutations, MutationIssues: issues}
+	if err := publishWorkspaceDelta(ctx, ws, run.Workspace, &result); err != nil {
+		return stageActivityResult{}, classifySeamError(err)
+	}
+	return a.scrubStageActivityResult(result)
+}
+
+// publishWorkspaceDelta is the self arm's PUBLISH half (#3803): after a stage
+// SUCCEEDED on a writable repo workspace, ask the workspace to bundle what
+// the stage committed and stamp the digest on the result for the walk's
+// continuity record. Only success publishes — a failed stage's half-finished
+// commits are not a base for the next stage, and the engine retries it from
+// the last good delta — and only a workspace that implements DeltaPublisher
+// can (scratch and test fakes do not, and publish nothing).
+//
+// A publish FAILURE fails the stage: the commits exist and nothing else will
+// carry them to a pod, so reporting success would strand exactly the diff
+// this mechanism protects — the same rule the pod's dispatch-exec applies.
+func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, result *stageActivityResult) error {
+	if result.Status != apiv1.ResultSuccess || !writableWorkspace(mode) {
+		return nil
+	}
+	publisher, ok := ws.(DeltaPublisher)
+	if !ok {
+		return nil
+	}
+	pub, err := publisher.PublishDelta(ctx)
+	if err != nil {
+		return fmt.Errorf("engine: stage committed work that could not be carried to the next stage: %w", err)
+	}
+	result.WorkspaceDelta = pub.Digest
+	result.WorkspaceDeltaBase = pub.Base
+	result.WorkspaceDeltaTip = pub.Tip
+	result.WorkspaceDeltaUnchanged = pub.Unchanged && pub.Digest == ""
+	return nil
 }
 
 func (a *Activities) scrubStageActivityResult(result stageActivityResult) (stageActivityResult, error) {

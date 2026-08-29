@@ -105,7 +105,7 @@ type DispatchStageInput struct {
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *string) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -212,7 +212,12 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 // retries a non-nil ACTIVITY error, and this synthesizes a clean (err ==
 // nil) ResultFailure on the first attempt — exactly the same shape a real
 // executor's ordinary command failure returns (shell.go's Run doc comment).
-func dispatchInstanceRootRefusal(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *string, reason string) (apiv1.ResultEnvelope, error) {
+// The delta out-param is threaded through unchanged so the refusal's synthetic
+// attempt reports the same "published nothing" publication any non-writable
+// stage does: a refused stage never ran, so it has no commits to hand on, and
+// the walk's continuity record must see an empty digest rather than inherit the
+// previous stage's by omission.
+func dispatchInstanceRootRefusal(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
 	return dispatchWithRetry(ctx, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
@@ -340,12 +345,12 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// well-behaved agent reports the absence rather than failing loudly.
 	//
 	// Run.Workspace takes precedence when both are set, matching the field's
-	// documented contract.
+	// documented contract — apiv1.EffectiveWorkspace is the one place that
+	// precedence is written, shared with the walk's continuity selector so
+	// the pod's workspace and the delta it is handed can never be decided
+	// from two different readings of one declaration.
 	needsRepoContext := false
-	workspace := input.Workspace
-	if input.Run != nil && input.Run.Workspace != "" {
-		workspace = input.Run.Workspace
-	}
+	workspace := apiv1.EffectiveWorkspace(input.Workspace, input.Run)
 	if workspace != "" {
 		attempt.Workspace = string(workspace)
 	}
@@ -456,11 +461,20 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
 	}
 	return a.scrubStageActivityResult(stageActivityResult{
-		ResultEnvelope: surrendered.Result,
-		Mutations:      surrenderedMutationFacts(surrendered.Mutations),
-		MutationIssues: surrendered.MutationIssues,
-		WorkspaceDelta: surrendered.WorkspaceDelta,
-		Placement:      placementProvenance(report),
+		ResultEnvelope:     surrendered.Result,
+		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
+		MutationIssues:     surrendered.MutationIssues,
+		WorkspaceDelta:     surrendered.WorkspaceDelta,
+		WorkspaceDeltaBase: surrendered.WorkspaceDeltaBase,
+		WorkspaceDeltaTip:  surrendered.WorkspaceDeltaTip,
+		// "Unchanged" is a positive claim about the branch — the pod checked
+		// and found no commits beyond base — so it is REPORTED by the pod
+		// (dispatch-exec, beside the digest it did not publish), never
+		// inferred here from an absent digest: a stage image that predates
+		// the field surrenders nothing about it and is journaled as nothing,
+		// not as a verified fact.
+		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
+		Placement:               placementProvenance(report),
 	})
 }
 

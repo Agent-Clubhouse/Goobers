@@ -44,13 +44,13 @@ const (
 // attempt's recorded failure type (ClassifyDispatchFailure). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-// deltaOut, when non-nil, receives the workspace delta digest the winning
-// attempt produced (#3763), so the caller can hand it to the next stage. It is
-// an out-param rather than a return value because only the pod arm produces
-// one: a self-placed stage's commits are already on the shared run branch, and
-// widening the return type would oblige every arm to answer a question only one
-// of them has.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *string) (apiv1.ResultEnvelope, error) {
+// deltaOut, when non-nil, receives the WINNING attempt's number and whatever
+// workspace delta it published (#3763, #3803), so the walk can append it to
+// the continuity record. It is an out-param rather than part of the returned
+// envelope because it is a fact about the attempt loop, not the stage's
+// result: a retried attempt's bundle describes a workspace that was thrown
+// away with its pod or worktree, and only the winner's may be carried.
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -113,8 +113,14 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 					// retried attempt's bundle describes a workspace that was
 					// thrown away with its pod, and building the next stage on
 					// it would resurrect abandoned work.
-					if deltaOut != nil && activityResult.WorkspaceDelta != "" {
-						*deltaOut = activityResult.WorkspaceDelta
+					if deltaOut != nil {
+						*deltaOut = deltaPublication{
+							Attempt:   int(attempt),
+							Digest:    activityResult.WorkspaceDelta,
+							Base:      activityResult.WorkspaceDeltaBase,
+							Tip:       activityResult.WorkspaceDeltaTip,
+							Unchanged: activityResult.WorkspaceDeltaUnchanged,
+						}
 					}
 					return res, nil
 				}
