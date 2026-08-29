@@ -18,8 +18,9 @@ capability of any kind** — your only output is a verdict, in either mode.
 - **`merge-review`'s `review` gate** (holistic mode, epic #357/#359): invoked
   with a SELECTED PR's identity (`selectedNumber`/`selectedHeadSha`/
   `selectedBaseSha`) and every OTHER open PR's touched files + state
-  (`siblings`) as your inputs — there is no single implementer's diff to
-  read here. Follow "Holistic mode" below instead.
+  (`siblings`) as your inputs. For a managed PR, the runner also attaches the
+  SELECTED PR's cumulative `base...HEAD` diff. Follow "Holistic mode" below
+  instead.
 
 ## What you do (single-diff mode)
 
@@ -63,10 +64,12 @@ capability of any kind** — your only output is a verdict, in either mode.
 You are invoked with the SELECTED PR's identity (`selectedNumber`,
 `selectedHeadSha`, `selectedBaseSha`) and every OTHER open goober-authored
 PR's state as `siblings` — each with its `number`, `url`, `draft` flag,
-`labels`, `checkState`, and `files` (the paths it touches). There is no
-single diff here; you are judging whether the SELECTED PR is ready to merge
-**given the whole open-PR set**, which the single-diff mode above can never
-see.
+`labels`, `checkState`, and `files` (the paths it touches). For a managed PR,
+resolve and review the attached cumulative `base...HEAD` diff for the SELECTED
+PR; never substitute only the tip commit's diff or commit message. You are
+judging both whether that complete diff is correct and whether the SELECTED PR
+is ready to merge **given the whole open-PR set**, which the single-diff mode
+above can never see.
 
 1. **Cross-PR file overlap (a sequencing situation, NOT a defect)** — each
    sibling now carries a deterministic `overlap` list: the files it changes

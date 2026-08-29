@@ -52,6 +52,30 @@ func runPhaseFixtures() []runPhaseFixture {
 		{name: "finished aborted", build: finish(PhaseAborted), want: PhaseAborted},
 		{name: "finished escalated", build: finish(PhaseEscalated), want: PhaseEscalated},
 		{
+			name: "executed abort gate without run finished",
+			build: func(t *testing.T, run *Run) {
+				mustAppend(t, run, Event{Type: EventGatePaused, Gate: "review"})
+				mustAppend(t, run, Event{Type: EventGateStarted, Gate: "review"})
+				mustAppend(t, run, Event{Type: EventGateEvaluated, Gate: "review", Target: TargetAbort})
+			},
+			want: PhaseAborted,
+		},
+		{
+			name: "bare escalation gate without run finished",
+			build: func(t *testing.T, run *Run) {
+				mustAppend(t, run, Event{Type: EventGateEvaluated, Gate: "review", Target: TargetEscalate})
+			},
+			want: PhaseEscalated,
+		},
+		{
+			name: "pending human abort decision remains running",
+			build: func(t *testing.T, run *Run) {
+				mustAppend(t, run, Event{Type: EventGatePaused, Gate: "approval"})
+				mustAppend(t, run, Event{Type: EventGateEvaluated, Gate: "approval", Target: TargetAbort})
+			},
+			want: PhaseRunning,
+		},
+		{
 			// The resurrection shape reconstructPhase exists for: a terminal run
 			// reopened by an operator is running again, and a scan that stopped at
 			// the first run.finished it met would miss it.
