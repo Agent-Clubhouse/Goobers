@@ -112,7 +112,15 @@ type scratchWorkspace string
 
 func (w scratchWorkspace) Path() string { return string(w) }
 
-func (w scratchWorkspace) Remove(context.Context) error { return os.RemoveAll(string(w)) }
+// Remove names the workspace that leaked when teardown fails: the engine
+// reports teardown failures as diagnostics rather than discarding them
+// (#3645), and "permission denied" without a path is not actionable.
+func (w scratchWorkspace) Remove(context.Context) error {
+	if err := os.RemoveAll(string(w)); err != nil {
+		return fmt.Errorf("workerhost: remove scratch workspace %q: %w", string(w), err)
+	}
+	return nil
+}
 
 type worktreeWorkspace struct {
 	wt *worktree.Worktree
@@ -121,5 +129,8 @@ type worktreeWorkspace struct {
 func (w *worktreeWorkspace) Path() string { return w.wt.Path }
 
 func (w *worktreeWorkspace) Remove(ctx context.Context) error {
-	return w.wt.Remove(ctx, worktree.RemoveOptions{})
+	if err := w.wt.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+		return fmt.Errorf("workerhost: remove worktree workspace %q: %w", w.wt.Path, err)
+	}
+	return nil
 }
