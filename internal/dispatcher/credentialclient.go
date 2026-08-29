@@ -43,9 +43,48 @@ type CredentialResolveClient struct {
 	Client *http.Client
 }
 
+// CredentialResolveRefusal is the credential plane's own answer to a resolve —
+// a non-200 status carrying the plane's diagnostic — as distinct from a
+// transport fault (a dial that never reached the plane, a timeout, an
+// unreadable body), which Resolve returns untyped. The split is what a pod
+// classifies a failed resolve by: a refusal the plane will repeat for every
+// pod of this stage (403 capability_undeclared, 409 gate_pin_missing, 400
+// invalid_request) is a configuration outcome, and spending a fresh pod on it
+// reproduces it; a plane that could not answer (503 credentials_unavailable,
+// any 5xx) may well answer the next pod.
+type CredentialResolveRefusal struct {
+	// Status is the HTTP status the plane answered with.
+	Status int
+	// Detail is the plane's (truncated) body — typically the JSON error
+	// naming the refused capability or the missing gate pin.
+	Detail string
+}
+
+func (e *CredentialResolveRefusal) Error() string {
+	return fmt.Sprintf("dispatcher: credential resolve refused (%d): %s", e.Status, e.Detail)
+}
+
+// Deterministic reports whether the plane would answer the same request the
+// same way again: a 4xx is the plane's judgement on the request itself —
+// the capability, the run, the pin — and a fresh pod sends the same request.
+// The two 4xx codes that by definition ask the client to try again (408
+// Request Timeout, 429 Too Many Requests) are the plane's state, not its
+// judgement, and stay transport-shaped.
+func (e *CredentialResolveRefusal) Deterministic() bool {
+	if e.Status == http.StatusRequestTimeout || e.Status == http.StatusTooManyRequests {
+		return false
+	}
+	return e.Status >= 400 && e.Status < 500
+}
+
 // Resolve returns the credentials the daemon grants this run's stage. An empty
 // capability list resolves to nothing WITHOUT calling the daemon: a stage that
 // declared no capabilities must not cause a credential request at all.
+//
+// A non-200 answer from the plane is returned as a *CredentialResolveRefusal;
+// every other failure — including a plane that could not be reached — is an
+// untyped error, so errors.As on the refusal type separates the plane's
+// judgement from the transport's.
 func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage string, capabilities []string) ([]MintedCredential, error) {
 	if len(capabilities) == 0 {
 		return nil, nil
@@ -95,7 +134,7 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 		if len(detail) > 400 {
 			detail = detail[:400] + "…"
 		}
-		return nil, fmt.Errorf("dispatcher: credential resolve refused (%d): %s", resp.StatusCode, detail)
+		return nil, &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
 		Credentials []MintedCredential `json:"credentials"`

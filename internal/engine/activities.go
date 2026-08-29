@@ -131,6 +131,18 @@ type DispatchStageResult struct {
 	// already recorded, so a provenance block there would say nothing. Nil
 	// also, and unavoidably, for a refused placement — see StagePlacement.
 	Placement *StagePlacement `json:"placement,omitempty"`
+	// Verdict is the reviewer's decision when the attempt was an agentic
+	// reviewer GATE dispatched to a pod (DispatchStageInput.Review; decision
+	// 001 rulings 7–8) — what ReviewGoober returns for the self arm, carried
+	// on the dispatch result because DispatchStage is the one activity every
+	// pod attempt returns through. Nil for every task attempt and for every
+	// in-process arm. Additive and omitempty: a history recorded before it
+	// existed decodes with a nil Verdict.
+	//
+	// DispatchStage populates it ONLY after re-validating the surrendered
+	// verdict (a non-empty Decision, the verdict schema): a non-nil Verdict
+	// here is one the engine may route on.
+	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
 }
 
 // StagePlacement is the substrate provenance of one pod-executed stage

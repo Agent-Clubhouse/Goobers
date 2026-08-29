@@ -584,3 +584,23 @@ func TestDispatchReportsTheStageImageItRendered(t *testing.T) {
 		}
 	})
 }
+
+// A review is a completion contract for a goober invocation (decision 001
+// rulings 7–8): an attempt marked Review without Agentic has no goober to
+// drive and no verdict to write, and is refused before a kit or a pod exists.
+func TestDispatchRefusesReviewWithoutAgentic(t *testing.T) {
+	pods := &fakePodAPI{}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	attempt := testAttempt()
+	attempt.Review = true
+	_, err = d.Dispatch(context.Background(), attempt, []RunnerSpec{linuxRunner()})
+	if err == nil || !strings.Contains(err.Error(), "marked review but not agentic") {
+		t.Fatalf("Dispatch = %v, want the review-without-goober refusal", err)
+	}
+	if len(pods.created) != 0 {
+		t.Fatalf("a refused review attempt created pods %v", pods.created)
+	}
+}
