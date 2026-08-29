@@ -729,11 +729,15 @@ Developer docs:
   View journal telemetry:   %s (` + "`goobers trace` / `goobers telemetry`" + `)
 `
 
-var stableReleaseVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+// releaseVersionPattern matches a real tagged release — stable
+// (vMAJOR.MINOR.PATCH) or pre-release (vMAJOR.MINOR.PATCH-beta.2 and
+// similar SemVer 2.0.0 suffixes) — as opposed to a "dev" or bare-commit
+// build, which has no tag to link docs against.
+var releaseVersionPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$`)
 
 func documentationURL(path string) string {
 	ref := "main"
-	if stableReleaseVersion.MatchString(version.Version) {
+	if releaseVersionPattern.MatchString(version.Version) {
 		ref = url.PathEscape(version.Version)
 	}
 	return fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/blob/%s/%s", ref, path)
