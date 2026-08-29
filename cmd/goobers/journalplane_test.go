@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -120,7 +121,7 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
 
-	writer, err := newLiveJournalWriter(layout, &instance.Config{}, set, nil, nil)
+	writer, err := newLiveJournalWriter(layout, &instance.Config{}, set, nil, nil, nil)
 	if err != nil || writer != nil {
 		t.Fatalf("writer without engine config = (%v, %v), want (nil, nil)", writer, err)
 	}
@@ -135,7 +136,7 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = watermarks.Close() })
 	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q"}}
-	writer, err = newLiveJournalWriter(layout, cfg, set, watermarks, nil)
+	writer, err = newLiveJournalWriter(layout, cfg, set, watermarks, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +161,125 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	}
 	if _, err := writer.Emit(context.Background(), liveOpenBatch("stray-run", "unknown", at)); err == nil {
 		t.Fatal("emit into an unconfigured gaggle was accepted")
+	}
+}
+
+// liveSpanBatch emits one pointer-only span op — the exact shape the engine
+// workflow produces at stageFinished for a stage result carrying a transcript
+// (internal/engine/journal.go's JournalSpanOp). The emitter never holds the
+// bytes; whether they can be adopted is entirely a question of what span
+// source the daemon wired into the writer.
+func liveSpanBatch(runID, gaggle, digest string, at time.Time) livejournal.EmitRequest {
+	return livejournal.EmitRequest{
+		RunID:  runID,
+		Gaggle: gaggle,
+		Ops: []livejournal.Op{{
+			Kind: livejournal.OpSpan,
+			Key:  runID + "|0|implement|1|1",
+			Time: at,
+			Span: &livejournal.SpanOp{
+				Stage: "implement", Attempt: 1, Name: "implement.transcript",
+				DataSchema: "goobers.dev/telemetry/genai-event/v1",
+				Ref:        journal.Ref{Digest: digest},
+			},
+		}},
+	}
+}
+
+// TestLiveJournalWriterAdoptsSpansFromTheDaemonBlobStore is the daemon-wiring
+// seam for #3805. livejournal's own tests already prove a writer holding a
+// SpanSource adopts a span; what was broken was that the daemon never handed
+// it one, so every pod-executed agentic stage recorded
+// error.code=span_unavailable in place of its transcript (measured on five
+// live runs).
+//
+// The test crosses the seam the bug crossed: it calls newLiveJournalWriter —
+// the daemon's own constructor — with a real blobstore.Dir, which is what
+// cmd/goobers/up.go now passes, and with nil, which is what it passed before.
+func TestLiveJournalWriterAdoptsSpansFromTheDaemonBlobStore(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
+	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q"}}
+
+	// The daemon's own blob store, at the layout path up.go constructs it
+	// from — and the store a stage pod PUTs its scrubbed transcript into over
+	// the blob plane before the workflow emits the pointer-only span op.
+	blobs, err := blobstore.NewDir(layout.BlobStoreDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := []byte(`{"event":"prompt","adapter":"copilot-cli"}`)
+	digest := journal.Digest(transcript)
+	if err := blobs.Put(context.Background(), digest, transcript); err != nil {
+		t.Fatalf("seed blob store: %v", err)
+	}
+
+	at := time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC)
+	runsDir := layout.ForGaggle("web").RunsDir()
+
+	writer, err := newLiveJournalWriter(layout, cfg, set, nil, nil, blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer == nil {
+		t.Fatal("engine-configured instance built no live journal writer")
+	}
+	const runID = "live-span-run"
+	if _, err := writer.Emit(context.Background(), liveOpenBatch(runID, "web", at)); err != nil {
+		t.Fatalf("emit opening batch: %v", err)
+	}
+	if _, err := writer.Emit(context.Background(), liveSpanBatch(runID, "web", digest, at.Add(time.Second))); err != nil {
+		t.Fatalf("emit span op: %v", err)
+	}
+	writer.Close()
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	span := events[len(events)-1]
+	if span.Type != journal.EventSpanRecorded || span.Ref == nil || span.Ref.Digest != digest {
+		t.Fatalf("daemon-wired writer did not adopt the span; last event = %+v", span)
+	}
+	got, err := rd.SpanBytes(*span.Ref)
+	if err != nil {
+		t.Fatalf("SpanBytes: %v", err)
+	}
+	if string(got) != string(transcript) {
+		t.Fatalf("adopted span bytes = %q, want %q", got, transcript)
+	}
+
+	// A daemon with no store still degrades softly rather than failing the
+	// emit — the pre-#3805 behaviour, and the posture an instance with no
+	// blob plane keeps.
+	bare, err := newLiveJournalWriter(layout, cfg, set, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bare.Close()
+	const bareRunID = "live-span-unwired-run"
+	if _, err := bare.Emit(context.Background(), liveOpenBatch(bareRunID, "web", at)); err != nil {
+		t.Fatalf("emit opening batch: %v", err)
+	}
+	if _, err := bare.Emit(context.Background(), liveSpanBatch(bareRunID, "web", digest, at.Add(time.Second))); err != nil {
+		t.Fatalf("emit span op without a source must not fail: %v", err)
+	}
+	bareRd, err := journal.OpenRead(filepath.Join(runsDir, bareRunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bareEvents, err := bareRd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	degraded := bareEvents[len(bareEvents)-1]
+	if degraded.Type != journal.EventError || degraded.Error == nil ||
+		degraded.Error.Code != livejournal.SpanUnavailableErrorCode {
+		t.Fatalf("writer with no span source did not degrade softly; last event = %+v", degraded)
 	}
 }
 

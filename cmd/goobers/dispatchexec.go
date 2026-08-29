@@ -833,9 +833,14 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // as an infrastructure fault. A REFUSING endpoint is instant (connection
 // refused); a DROPPING one — the NetworkPolicy shape this change's own evidence
 // plan tells operators to look for — is what needs the ceiling. Generous for
-// the payload (stream artifacts are capped at 32 KiB by boundedCapture) and far
-// below anything that would look like a hung pod.
-const blobWriteThroughBudget = 15 * time.Second
+// the payload (stream artifacts are capped at 32 KiB by boundedCapture, and a
+// span transcript by DefaultMaxTranscriptBytes) and far below anything that
+// would look like a hung pod.
+//
+// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
+// a hanging plane is the one failure mode this budget exists for, and a test
+// that had to wait the real 15s to observe it would never be written.
+var blobWriteThroughBudget = 15 * time.Second
 
 // stageBlobWriteThroughContext returns the context the write-through PUTs run
 // under, and it is DELIBERATELY NOT THE STAGE'S.
