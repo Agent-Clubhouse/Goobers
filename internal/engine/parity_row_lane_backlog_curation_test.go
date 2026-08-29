@@ -19,8 +19,25 @@ func init() {
 		// The spec and script are built lazily by Build because loading the
 		// lane needs *testing.T; see parityCase.Spec population in
 		// buildLaneCases.
-		Build: buildBacklogCurationLaneCase,
+		Build:   buildBacklogCurationLaneCase,
+		Premise: premiseBacklogCurationLane,
 	})
+}
+
+// premiseBacklogCurationLane is the baseline's anti-vacuity guard: the runner
+// walked EVERY stage the lane declares.
+//
+// assertParityHarnessIsNotVacuous only knows that some stage was dispatched and
+// that the journal spans run.started..run.finished — all of which a lane that
+// short-circuited after reconcile-backlog would satisfy, with both sides
+// agreeing about one stage and this row still reporting "the harness walks a
+// production lane end to end". Deriving the expectation from the lane's own
+// task list keeps that claim true across a legitimate lane edit.
+func premiseBacklogCurationLane(obs parityObservation) error {
+	if err := requireEveryTaskDispatched(obs.Runner, obs.Case.Spec); err != nil {
+		return errParityPremisef(obs.Case.Row, "%v — this row's whole claim is that the lane walks end to end", err)
+	}
+	return nil
 }
 
 // buildBacklogCurationLaneCase walks every stage of the shipped lane in its

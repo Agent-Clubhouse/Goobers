@@ -42,6 +42,7 @@ func init() {
 		// neither runner may apply it.
 		BacklogQueryRequireLabels: parityRequireLabels,
 		Build:                     buildImplementationLaneCase,
+		Premise:                   premiseImplementationLane,
 		Check:                     checkImplementationLane,
 	})
 }
@@ -58,12 +59,23 @@ func buildImplementationLaneCase(t *testing.T, c *parityCase) {
 	}
 }
 
+// premiseImplementationLane pins the DECLARED-WINS half on the runner: the
+// lane's own requireLabels reaches the envelope untouched even though a
+// conflicting gaggle default is configured. This row is green, so without the
+// premise a runner that stopped dispatching query-backlog at all — or a lane
+// that stopped declaring the value — would leave the row green and meaningless.
+func premiseImplementationLane(obs parityObservation) error {
+	if err := requireEnvelopeInput(obs.Runner, "query-backlog", "requireLabels", parityImplementationRequireLabels); err != nil {
+		return errParityPremisef(obs.Case.Row,
+			"%v — a declared requireLabels must win over the gaggle default, never be replaced by it", err)
+	}
+	return nil
+}
+
 func checkImplementationLane(obs parityObservation) error {
-	for _, side := range []paritySide{obs.Runner, obs.Engine} {
-		if err := requireEnvelopeInput(side, "query-backlog", "requireLabels", parityImplementationRequireLabels); err != nil {
-			return errParityRow(obs.Case.Row,
-				"%v — a declared requireLabels must win over the gaggle default, never be replaced by it", err)
-		}
+	if err := requireEnvelopeInput(obs.Engine, "query-backlog", "requireLabels", parityImplementationRequireLabels); err != nil {
+		return errParityRow(obs.Case.Row,
+			"%v — a declared requireLabels must win over the gaggle default, never be replaced by it", err)
 	}
 	return checkAllSurfaces(obs)
 }

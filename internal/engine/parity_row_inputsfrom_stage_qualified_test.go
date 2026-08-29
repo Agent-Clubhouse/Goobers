@@ -77,7 +77,8 @@ func init() {
 		// asymmetry is graded by diffParityWalkOutcome rather than declared
 		// here, so the port that lands stage-qualified resolution turns this
 		// row green without also having to unpick a stale fixture expectation.
-		Check: checkInputsFromStageQualified,
+		Premise: premiseInputsFromStageQualified,
+		Check:   checkInputsFromStageQualified,
 	})
 
 	registerParityRow(parityCase{
@@ -89,31 +90,52 @@ func init() {
 			"produce":   {succeed(map[string]interface{}{"selectedPr": "4242"})},
 			"intervene": {succeed(map[string]interface{}{"legacy.dotted.key": "preserved"})},
 		},
-		Check: checkInputsFromBareKey,
+		Premise: premiseInputsFromBareKey,
+		Check:   checkInputsFromBareKey,
 	})
 }
 
-// checkInputsFromStageQualified asserts the runner really does resolve the
-// non-adjacent reference (so the row is not vacuous) before diffing.
-func checkInputsFromStageQualified(obs parityObservation) error {
+// premiseInputsFromStageQualified asserts the runner really does resolve the
+// non-adjacent reference. Ungraded: this row is on parityExpectedFailures, so a
+// runner that lost #562 resolution would otherwise be reported as the known
+// engine gap rather than as the regression it is.
+func premiseInputsFromStageQualified(obs parityObservation) error {
 	if err := requireEnvelopeInput(obs.Runner, "consume", "resolved", "4242"); err != nil {
-		return errParityRow(obs.Case.Row,
+		return errParityPremisef(obs.Case.Row,
 			"%v — #562 stage-qualified resolution is the behaviour this row pins", err)
 	}
+	return nil
+}
+
+// checkInputsFromStageQualified is the divergence half: the engine resolves only
+// against the immediately preceding stage and fails the walk closed today.
+func checkInputsFromStageQualified(obs parityObservation) error {
 	if err := requireEnvelopeInput(obs.Engine, "consume", "resolved", "4242"); err != nil {
 		return errParityRow(obs.Case.Row, "%v", err)
 	}
 	return checkAllSurfaces(obs)
 }
 
-// checkInputsFromBareKey is the golden: a dotted key whose prefix is NOT a
-// stage stays a bare output key on both runners.
+// premiseInputsFromBareKey pins the runner half of the golden: an output
+// literally named "legacy.dotted.key", produced by the immediately preceding
+// stage, resolves as a bare key rather than being re-read as "<stage>.<key>".
+// That is the behaviour a careless stage-qualified port would break, so it is
+// the premise, not the diff.
+func premiseInputsFromBareKey(obs parityObservation) error {
+	if err := requireEnvelopeInput(obs.Runner, "consume", "resolved", "preserved"); err != nil {
+		return errParityPremisef(obs.Case.Row,
+			"%v — a legacy dotted output key must not be re-read as a stage reference", err)
+	}
+	return nil
+}
+
+// checkInputsFromBareKey is the golden's engine half: it must resolve the same
+// legacy dotted key the same way. This row is NOT on the expected-failure list
+// and must stay green.
 func checkInputsFromBareKey(obs parityObservation) error {
-	for _, side := range []paritySide{obs.Runner, obs.Engine} {
-		if err := requireEnvelopeInput(side, "consume", "resolved", "preserved"); err != nil {
-			return errParityRow(obs.Case.Row,
-				"%v — a legacy dotted output key must not be re-read as a stage reference", err)
-		}
+	if err := requireEnvelopeInput(obs.Engine, "consume", "resolved", "preserved"); err != nil {
+		return errParityRow(obs.Case.Row,
+			"%v — a legacy dotted output key must not be re-read as a stage reference", err)
 	}
 	return checkAllSurfaces(obs)
 }

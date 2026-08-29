@@ -43,6 +43,7 @@ func init() {
 		Build:                     buildBacklogQueryDefaultsCase,
 		BacklogQueryRequireLabels: parityRequireLabels,
 		BacklogQueryAssignedTo:    parityAssignedTo,
+		Premise:                   premiseBacklogQueryDefaults,
 		Check:                     checkBacklogQueryDefaults,
 	})
 }
@@ -59,19 +60,34 @@ func buildBacklogQueryDefaultsCase(t *testing.T, c *parityCase) {
 	}
 }
 
-// checkBacklogQueryDefaults asserts the defaulting on BOTH sides explicitly
-// before falling back to the whole-surface diff. Asserting the runner side too
-// is what stops the row from passing vacuously if the runner ever loses the
-// defaulting: a diff alone would then report "identical" for two equally wrong
-// envelopes.
+// premiseBacklogQueryDefaults asserts the RUNNER really applies the defaulting.
+// It runs ungraded, which is what stops the row from passing vacuously if the
+// runner ever loses it: a diff alone would report "identical" for two equally
+// wrong envelopes, and because this row is on parityExpectedFailures a graded
+// assertion would be downgraded to a log line. Emptying
+// Config.BacklogQueryRequireLabels left the whole suite green before this hook
+// existed.
+func premiseBacklogQueryDefaults(obs parityObservation) error {
+	if err := requireEnvelopeInput(obs.Runner, "query-backlog", "requireLabels", parityRequireLabels); err != nil {
+		return errParityPremisef(obs.Case.Row, "%v", err)
+	}
+	if err := requireEnvelopeInput(obs.Runner, "query-backlog", "assignedTo", parityAssignedTo); err != nil {
+		return errParityPremisef(obs.Case.Row, "%v", err)
+	}
+	return nil
+}
+
+// checkBacklogQueryDefaults is the DIVERGENCE half — the part
+// parityExpectedFailures may legitimately grade: the engine does not apply the
+// defaulting today. The explicit engine-side assertions come before the
+// whole-surface diff so the failure names the missing inputs rather than the
+// envelope divergence they cause.
 func checkBacklogQueryDefaults(obs parityObservation) error {
-	for _, side := range []paritySide{obs.Runner, obs.Engine} {
-		if err := requireEnvelopeInput(side, "query-backlog", "requireLabels", parityRequireLabels); err != nil {
-			return errParityRow(obs.Case.Row, "%v", err)
-		}
-		if err := requireEnvelopeInput(side, "query-backlog", "assignedTo", parityAssignedTo); err != nil {
-			return errParityRow(obs.Case.Row, "%v", err)
-		}
+	if err := requireEnvelopeInput(obs.Engine, "query-backlog", "requireLabels", parityRequireLabels); err != nil {
+		return errParityRow(obs.Case.Row, "%v", err)
+	}
+	if err := requireEnvelopeInput(obs.Engine, "query-backlog", "assignedTo", parityAssignedTo); err != nil {
+		return errParityRow(obs.Case.Row, "%v", err)
 	}
 	return checkAllSurfaces(obs)
 }

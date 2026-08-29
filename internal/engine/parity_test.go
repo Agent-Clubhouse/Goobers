@@ -34,6 +34,25 @@ package engine
 // That second direction is the whole point: a port that fixes a row must also
 // delete it from this list or CI goes red.
 //
+// PREMISE VS CHECK — WHY THEY ARE TWO HOOKS. Every row needs an anti-vacuity
+// assertion: the RUNNER side really does exhibit the behaviour the row exists
+// to compare, so the row cannot pass with both sides equally wrong. That
+// assertion must NOT be gradeable against parityExpectedFailures, and putting
+// it at the top of Check (the harness's first shape) made it exactly that:
+// a row on the expected-failure list swallowed its own premise failure into the
+// "expected failure, still open" arm, so deleting the runner behaviour the row
+// protects left this suite green. The premise is the reason to believe the
+// row's diff means anything, so it is graded like assertParityHarnessIsNotVacuous
+// — fatally, always — and only the DIVERGENCE is gradeable:
+//
+//   - Premise: does the runner still do the thing? Ungraded. Failing it is a
+//     harness/fixture bug and fails the suite outright, on the list or not.
+//   - Check:   do the two sides agree? Graded against parityExpectedFailures.
+//
+// Belt and braces: a premise assertion written inside Check by habit still
+// cannot be swallowed — errParityPremisef tags the error and gradeParityRow
+// re-raises anything carrying that tag (TestParityPremiseFailuresAreNotGradeable).
+//
 // SEAM FOR LATER PORTS. Each row lives in its own parity_row_<row>_test.go
 // file and registers itself with registerParityRow in an init function. To add
 // a failing-first case for a port:
@@ -42,9 +61,9 @@ package engine
 //     plan item that closes it (e.g. "E4-cached-verdict");
 //  2. create parity_row_<slug>_test.go with an init that calls
 //     registerParityRow, a Build (for a lane-derived fixture) or a literal
-//     Spec, and a Check that asserts the RUNNER side really exhibits the
-//     behaviour before diffing — otherwise the row can pass with both sides
-//     equally wrong;
+//     Spec, a Premise that asserts the RUNNER side really exhibits the
+//     behaviour, and (optionally) a Check for the divergence — Premise is
+//     MANDATORY and TestParityRowsDeclareAPremise enforces it;
 //  3. add one line to parityExpectedFailures with the reason and the plan
 //     item, and confirm the row logs "expected failure, still open";
 //  4. when the port lands, DELETE that line. CI fails if you do not.
@@ -161,8 +180,14 @@ type parityCase struct {
 	// Script is the per-stage scripted behaviour (scriptedExec, shared with
 	// the conformance harness).
 	Script map[string][]scriptedCall
-	// MaxRepasses is the run's repass budget on both sides.
-	MaxRepasses int
+	// RunControls is the run's already-resolved run-control policy, threaded
+	// through the SAME seam production uses on each side: runner.StartInput's
+	// RunControls field and engine.StartSpec's, which Registry.StartInputVersion
+	// pins into RunInput. Deliberately NOT runner.Config.MaxRepasses /
+	// RunInput.MaxRepasses — both are documented-deprecated compatibility
+	// fields, and a harness that pins policy through them proves nothing about
+	// the path a production run takes.
+	RunControls apiv1.RunControls
 	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the local
 	// runner's gaggle-identity defaults. The engine has no counterpart yet —
 	// that absence IS rowBacklogQueryDefaults.
@@ -171,9 +196,27 @@ type parityCase struct {
 	// UsesRepo marks a fixture whose stages take a repo workspace, so the
 	// local side needs the hermetic git fixture repo.
 	UsesRepo bool
-	// Check is the row's own assertion. It returns an error rather than
-	// calling t.Fatal so the expected-failure list can grade it. Nil means
-	// "the three default surfaces must match" (checkAllSurfaces).
+	// Premise is the row's ANTI-VACUITY assertion, and it is MANDATORY
+	// (TestParityRowsDeclareAPremise). It asserts that the RUNNER side really
+	// exhibits the behaviour this row exists to compare — "the local runner
+	// still reports NoWork for a step-1 no-work terminal", "the runner still
+	// defaults requireLabels onto this stage".
+	//
+	// It runs UNGRADED: a premise failure fails the test outright even for a
+	// row on parityExpectedFailures, exactly like
+	// assertParityHarnessIsNotVacuous. That is the whole point — a row whose
+	// premise has stopped holding is not "a known gap, still open", it is a
+	// fixture that has stopped testing anything, and the expected-failure list
+	// must never be able to absorb it.
+	Premise func(obs parityObservation) error
+	// Check is the row's DIVERGENCE assertion: do the two sides agree? It
+	// returns an error rather than calling t.Fatal because this is the one
+	// thing parityExpectedFailures may grade. Nil means "the default surfaces
+	// must match" (checkAllSurfaces).
+	//
+	// Do not put a runner-side premise assertion here — that is Premise's job,
+	// and a graded premise is the bug this split exists to prevent. If you do
+	// anyway, raise it with errParityPremisef so the grader re-raises it.
 	Check func(obs parityObservation) error
 }
 
@@ -213,6 +256,17 @@ func parityCases() []parityCase {
 // and a worker/pod walk. Everything else is normative — a difference is a
 // parity bug, not harness noise.
 //
+// The exclusion set is exhaustive and TESTED: every apiv1.InvocationEnvelope
+// field is either projected below or named in parityEnvelopeExcludedFields, and
+// TestParityEnvelopeComparesEveryEnvelopeField fails when a new envelope field
+// is neither. Without that second tripwire "everything else is normative" was
+// aspirational — eight fields (RunID, InstructionAddendum, RepoRef,
+// AdditionalWorkspaces, CheckoutCones, ParentPlatformPolicy, NestedAgentPolicy
+// and Limits) were silently dropped, Limits and the two nested-agent policies
+// most pointedly: they are the safety knobs R9 admits maxDurationSeconds on the
+// argument that the engine enforces it via StartToCloseTimeout, and this harness
+// is what is supposed to prove both sides pass the same value.
+//
 // Excluded, with the reason:
 //   - Workspace: an absolute path minted per attempt by each side's
 //     provisioner (runner: worktree.Manager; engine: the activity's
@@ -220,12 +274,16 @@ func parityCases() []parityCase {
 //   - Attempt: infra retries renumber attempts independently on each side;
 //     journal.ConformanceView excludes infra-retry attempts for the same
 //     reason. Dispatch ORDER is preserved by the slice itself.
+//   - AdditionalWorkspaces[i].Path: an absolute checkout path, excluded for
+//     exactly the Workspace reason. The reference repo's NAME is the part a
+//     stage's cross-repo context depends on, and it IS compared.
 //   - ContextPointers' Artifact.Path/Digest/Size: journal-relative locations
 //     and content digests of bytes each side wrote itself. The pointer NAME
 //     and Integrity grade are what a stage's admission and evidence depend
 //     on, and both are compared (ContextPointers below).
 type parityEnvelope struct {
 	Stage             string
+	RunID             string
 	WorkflowID        string
 	Goal              string
 	Goober            string
@@ -235,6 +293,10 @@ type parityEnvelope struct {
 	TriggerRef        string
 	OwnershipBoundary string
 	MinimumIntegrity  apiv1.Integrity
+	// InstructionAddendum is operator-supplied one-off instruction text. It is
+	// empty for every ordinary invocation, so a side that started injecting it
+	// is a divergence worth failing on.
+	InstructionAddendum string
 	// Inputs is a stable encoding of the stage's resolved inputs (declared
 	// Inputs, then inputsFrom overlays, then runner-side defaulting). This is
 	// the field most parity rows turn on.
@@ -246,6 +308,40 @@ type parityEnvelope struct {
 	ContextPointers string
 	// Item encodes the backlog item's normative identity, empty when absent.
 	Item string
+	// RepoRef is the target repo as it rides the wire (RepoRef.EnvelopeRef),
+	// JSON-encoded. A stage that is handed the wrong repo, owner or base
+	// branch is the bluntest parity bug there is.
+	RepoRef string
+	// AdditionalWorkspaces encodes the read-only reference-repo checkouts by
+	// NAME, in order (paths excluded — see above).
+	AdditionalWorkspaces string
+	// CheckoutCones encodes the sparse-checkout cones per workspace (#649),
+	// key-sorted. A side that materializes a different slice of the tree hands
+	// its stage a different repo.
+	CheckoutCones string
+	// Limits is the stage's execution bound (duration/tokens/cost),
+	// JSON-encoded. R9 refuses maxTokens/maxCostUSD at run start and admits
+	// maxDurationSeconds precisely BECAUSE the engine enforces it through the
+	// stage activity's StartToCloseTimeout — so the two sides passing the same
+	// Limits is the evidence that admission rests on.
+	Limits string
+	// ParentPlatformPolicy and NestedAgentPolicy are the runner-authored child
+	// authority for agentic stages, JSON-encoded. They are carried in the
+	// envelope exactly so an adapter cannot infer nested-agent authority from
+	// prompt text; a side that drops or widens them is a privilege divergence.
+	ParentPlatformPolicy string
+	NestedAgentPolicy    string
+}
+
+// parityEnvelopeExcludedFields names every apiv1.InvocationEnvelope field this
+// projection deliberately does NOT compare, with the reason recorded in
+// parityEnvelope's doc comment above.
+// TestParityEnvelopeComparesEveryEnvelopeField asserts this set plus the
+// projected fields covers the envelope exactly, so a new envelope field cannot
+// join the exclusion set by being forgotten.
+var parityEnvelopeExcludedFields = map[string]string{
+	"Workspace": "absolute path minted per attempt by each side's provisioner; never the same string",
+	"Attempt":   "infra retries renumber attempts independently on each side; dispatch order is the slice's",
 }
 
 // String prints EVERY compared field. A projection that compares a field it
@@ -253,11 +349,15 @@ type parityEnvelope struct {
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
-		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q",
-		e.Stage, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
-		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity,
-		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item)
+	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
+		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
+		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
+		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
+		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
+		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
+		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
+		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
+		e.ParentPlatformPolicy, e.NestedAgentPolicy)
 }
 
 // stageOf extracts the stage name from an envelope TaskID ("<runID>:<stage>"),
@@ -268,22 +368,60 @@ func stageOf(taskID string) string {
 
 func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 	return parityEnvelope{
-		Stage:             stageOf(env.TaskID),
-		WorkflowID:        env.WorkflowID,
-		Goal:              env.Goal,
-		Goober:            env.Goober,
-		Gaggle:            env.Gaggle,
-		BranchNamespace:   env.BranchNamespace,
-		BaseBranch:        env.BaseBranch,
-		TriggerRef:        env.TriggerRef,
-		OwnershipBoundary: env.OwnershipBoundary,
-		MinimumIntegrity:  env.MinimumIntegrity,
-		Inputs:            encodeParityInputs(env.Inputs),
-		Capabilities:      strings.Join(env.Capabilities, ","),
-		PolicyActions:     strings.Join(env.PolicyActions, ","),
-		ContextPointers:   encodeParityPointers(env.ContextPointers),
-		Item:              encodeParityItem(env.Item),
+		Stage:                stageOf(env.TaskID),
+		RunID:                env.RunID,
+		WorkflowID:           env.WorkflowID,
+		Goal:                 env.Goal,
+		Goober:               env.Goober,
+		Gaggle:               env.Gaggle,
+		BranchNamespace:      env.BranchNamespace,
+		BaseBranch:           env.BaseBranch,
+		TriggerRef:           env.TriggerRef,
+		OwnershipBoundary:    env.OwnershipBoundary,
+		MinimumIntegrity:     env.MinimumIntegrity,
+		InstructionAddendum:  env.InstructionAddendum,
+		Inputs:               encodeParityInputs(env.Inputs),
+		Capabilities:         strings.Join(env.Capabilities, ","),
+		PolicyActions:        strings.Join(env.PolicyActions, ","),
+		ContextPointers:      encodeParityPointers(env.ContextPointers),
+		Item:                 encodeParityItem(env.Item),
+		RepoRef:              encodeParityJSON(env.RepoRef),
+		AdditionalWorkspaces: encodeParityAdditionalWorkspaces(env.AdditionalWorkspaces),
+		CheckoutCones:        encodeParityJSON(env.CheckoutCones),
+		Limits:               encodeParityJSON(env.Limits),
+		ParentPlatformPolicy: encodeParityJSON(env.ParentPlatformPolicy),
+		NestedAgentPolicy:    encodeParityJSON(env.NestedAgentPolicy),
 	}
+}
+
+// encodeParityJSON renders a structured envelope field as canonical JSON: the
+// struct's own field order, map keys sorted by encoding/json, so the encoding is
+// stable across sides and runs. It is used for the fields whose Go types are not
+// comparable with == (maps, pointers) or are clearer read as JSON in a failure
+// message than as %v.
+func encodeParityJSON(v interface{}) string {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		// Deliberately not fatal: this is a projection helper with no *testing.T,
+		// and a marshal failure must still produce a value that DIFFERS from a
+		// clean encoding rather than silently comparing equal to one.
+		return fmt.Sprintf("<unencodable %T: %v>", v, err)
+	}
+	return string(encoded)
+}
+
+// encodeParityAdditionalWorkspaces renders the read-only reference-repo
+// checkouts by name, in order. Path is excluded for the same reason Workspace
+// is: it is an absolute path each side's provisioner mints for itself.
+func encodeParityAdditionalWorkspaces(workspaces []apiv1.AdditionalWorkspace) string {
+	if len(workspaces) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(workspaces))
+	for _, w := range workspaces {
+		names = append(names, w.Name)
+	}
+	return strings.Join(names, ",")
 }
 
 // encodeParityInputs renders resolved inputs as a stable, key-sorted string.
@@ -506,8 +644,12 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		NewAgentic: func(goober string, _ runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
 			return exec.boundTo(goober), nil
 		},
-		Automated:                 gate.NewAutomatedEvaluator(),
-		MaxRepasses:               c.MaxRepasses,
+		Automated: gate.NewAutomatedEvaluator(),
+		// Config.MaxRepasses is deprecated in favour of per-run
+		// StartInput.RunControls (run.go:414) and is deliberately NOT set: the
+		// run's policy is pinned below through the field production dispatch
+		// uses, so this harness compares the live seam rather than a
+		// compatibility one.
 		Worktrees:                 wtMgr,
 		RunsDir:                   runsDir,
 		ScratchDir:                filepath.Join(instanceRoot, "scratch"),
@@ -528,11 +670,12 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		t.Fatalf("compile fixture for row %s: %v", c.Row, err)
 	}
 	res, startErr := r.Start(context.Background(), runner.StartInput{
-		RunID:   runID,
-		Machine: machine,
-		Gaggle:  c.Spec.Gaggle,
-		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-		RepoRef: parityRepoRef,
+		RunID:       runID,
+		Machine:     machine,
+		Gaggle:      c.Spec.Gaggle,
+		Trigger:     journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef:     parityRepoRef,
+		RunControls: c.RunControls,
 	})
 	side := paritySide{
 		Name:      "runner",
@@ -557,22 +700,41 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 // runParityEngineSide walks the same fixture through the engine in Temporal's
 // test environment and projects its history into a journal (#629), exactly as
 // the conformance harness does.
+// parityEngineRunInput builds the engine side's RunInput the way PRODUCTION
+// builds it: register the fixture in a Registry and pin it through
+// StartInputVersion, rather than hand-filling the struct.
+//
+// Going through the registry is the point, not ceremony. StartInputVersion is
+// where preview-feature acknowledgement is pinned, where RunControls is pinned,
+// and where this PR's own R9 refusal lives — a hand-built RunInput routes around
+// all three, so a future parity row for a lane declaring spec.parallels would
+// have WALKED here while production refuses it at start. Building through the
+// registry means the compared engine path is the started path.
+func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
+	t.Helper()
+	reg := NewRegistryWithPreviewFeatures(true)
+	version, err := reg.RegisterDefinition(parityDefinition(c))
+	if err != nil {
+		t.Fatalf("register fixture for row %s: %v", c.Row, err)
+	}
+	in, err := reg.StartInputVersion(parityWorkflowName, version, StartSpec{
+		RunID:           runID,
+		Gaggle:          c.Spec.Gaggle,
+		RepoRef:         parityRepoRef,
+		TriggerKind:     string(journal.TriggerManual),
+		BranchNamespace: parityBranchNamespace,
+		RunControls:     c.RunControls,
+	})
+	if err != nil {
+		t.Fatalf("pin start input for row %s: %v", c.Row, err)
+	}
+	return in
+}
+
 func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
 	t.Helper()
 	exec := newRecordingExec(c.Script)
-	in := RunInput{
-		RunID:                  runID,
-		Gaggle:                 c.Spec.Gaggle,
-		WorkflowName:           parityWorkflowName,
-		Version:                1,
-		DSLVersion:             c.DSLVersion,
-		PreviewFeaturesEnabled: boolPointer(true),
-		Spec:                   c.Spec,
-		RepoRef:                parityRepoRef,
-		TriggerKind:            string(journal.TriggerManual),
-		MaxRepasses:            c.MaxRepasses,
-		BranchNamespace:        parityBranchNamespace,
-	}
+	in := parityEngineRunInput(t, c, runID)
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
@@ -765,9 +927,66 @@ func assertParityHarnessIsNotVacuous(t *testing.T, side paritySide) {
 
 // --- the suite --------------------------------------------------------------
 
+// errParityPremise tags an ANTI-VACUITY failure — "the runner side no longer
+// exhibits the behaviour this row exists to compare" — as ungradeable.
+//
+// The tag exists because the premise and the divergence are both reported as a
+// plain error, and only the divergence may be graded against
+// parityExpectedFailures. A row's Premise hook is raised through
+// errParityPremisef, and gradeParityRow re-raises anything carrying this tag
+// even when the row is on the expected-failure list, so a premise assertion
+// written inside Check by habit still cannot be swallowed.
+var errParityPremise = errors.New("parity premise no longer holds")
+
+// errParityPremisef builds a tagged premise failure naming the row.
+func errParityPremisef(row parityRow, format string, args ...any) error {
+	return fmt.Errorf("row %s: %w: %w", row, errParityPremise, fmt.Errorf(format, args...))
+}
+
+// parityGrade is how one row's outcome is classified against
+// parityExpectedFailures.
+type parityGrade int
+
+const (
+	// parityGradeAgreed: the two sides agree and the row is not on the list.
+	parityGradeAgreed parityGrade = iota
+	// parityGradeRegression: the row diverges and is NOT on the list.
+	parityGradeRegression
+	// parityGradeStaleExpectation: the row agrees but IS still on the list —
+	// the port landed and its entry must be deleted.
+	parityGradeStaleExpectation
+	// parityGradeExpectedFailure: the row diverges and is on the list.
+	parityGradeExpectedFailure
+	// parityGradeVacuous: the row's own premise failed. NEVER gradeable — the
+	// fixture has stopped exercising the behaviour, which the expected-failure
+	// list must not be able to absorb.
+	parityGradeVacuous
+)
+
+// gradeParityRow classifies a row's check outcome. It is a pure function of
+// (error, on-the-list) so the grading policy itself is unit-testable —
+// TestParityPremiseFailuresAreNotGradeable is the test the mustFix this split
+// answers would have failed.
+func gradeParityRow(err error, expected bool) parityGrade {
+	switch {
+	case errors.Is(err, errParityPremise):
+		// Checked FIRST and independently of `expected`: a vacuous fixture is
+		// never a "known gap, still open".
+		return parityGradeVacuous
+	case err != nil && !expected:
+		return parityGradeRegression
+	case err == nil && expected:
+		return parityGradeStaleExpectation
+	case err != nil:
+		return parityGradeExpectedFailure
+	default:
+		return parityGradeAgreed
+	}
+}
+
 // TestParityRunnerVsEngine is the harness. Each registered row runs the same
-// fixture through both runners and is graded against parityExpectedFailures in
-// both directions.
+// fixture through both runners, has its ungraded premise checked, and is then
+// graded against parityExpectedFailures in both directions.
 func TestParityRunnerVsEngine(t *testing.T) {
 	cases := parityCases()
 	if len(cases) == 0 {
@@ -785,24 +1004,100 @@ func TestParityRunnerVsEngine(t *testing.T) {
 			assertParityHarnessIsNotVacuous(t, obs.Runner)
 			assertParityHarnessIsNotVacuous(t, obs.Engine)
 
-			err := checkParityCase(obs)
-			reason, expected := parityExpectedFailures[c.Row]
 			lane := c.Lane
 			if lane == "" {
 				lane = "synthetic fixture"
 			}
-			switch {
-			case err != nil && !expected:
+
+			// The premise runs BEFORE the graded check and fails outright. A
+			// row that has stopped exercising its behaviour proves nothing, on
+			// the expected-failure list or not.
+			if c.Premise == nil {
+				t.Fatalf("parity row %s (%s) declares no Premise — every row must assert that the runner "+
+					"side still exhibits the behaviour it compares, or the row can pass with both sides equally wrong", c.Row, lane)
+			}
+			if err := c.Premise(obs); err != nil {
+				t.Fatalf("parity row %s (%s): the fixture no longer exercises the behaviour this row pins.\n"+
+					"This is NOT gradeable against parityExpectedFailures: a vacuous row is a harness bug, "+
+					"not a known gap.\n%v", c.Row, lane, err)
+			}
+
+			err := checkParityCase(obs)
+			reason, expected := parityExpectedFailures[c.Row]
+			switch gradeParityRow(err, expected) {
+			case parityGradeVacuous:
+				t.Fatalf("parity row %s (%s) reported a PREMISE failure from its Check.\n"+
+					"A premise assertion belongs in Premise, where it runs ungraded; it is re-raised here "+
+					"rather than graded against parityExpectedFailures.\n%v", c.Row, lane, err)
+			case parityGradeRegression:
 				t.Fatalf("parity row %s (%s) FAILED and is not on the expected-failure list.\n"+
 					"Either the port regressed, or this is a newly discovered inventory gap that needs a row in "+
 					"findings/002 before it is added to parityExpectedFailures.\n%v", c.Row, lane, err)
-			case err == nil && expected:
+			case parityGradeStaleExpectation:
 				t.Fatalf("parity row %s (%s) now PASSES but is still on the expected-failure list.\n"+
 					"The port that closed it must ALSO delete its parityExpectedFailures entry.\nStale entry: %s", c.Row, lane, reason)
-			case err != nil && expected:
+			case parityGradeExpectedFailure:
 				t.Logf("parity row %s (%s): expected failure, still open.\nreason: %s\ndiff: %v", c.Row, lane, reason, err)
 			}
 		})
+	}
+}
+
+// TestParityPremiseFailuresAreNotGradeable is the regression test for the hole
+// this harness shipped with: a row's own anti-vacuity assertion returned a plain
+// error, the grader ran every error through parityExpectedFailures, and so the
+// premise was inert for exactly the rows it exists to protect — deleting the
+// runner behaviour a listed row pins left the suite green.
+//
+// It pins the policy, not one row: a premise-tagged error is ungradeable in
+// BOTH directions, and an ordinary divergence still grades normally.
+func TestParityPremiseFailuresAreNotGradeable(t *testing.T) {
+	premise := errParityPremisef(rowRunResultNoWork, "runner did not report NoWork (%s)", "noWork=false")
+	divergence := errors.New("stage envelopes diverge at dispatch 1")
+
+	for _, expected := range []bool{true, false} {
+		if got := gradeParityRow(premise, expected); got != parityGradeVacuous {
+			t.Errorf("a premise failure with expected=%t graded %v, want parityGradeVacuous — "+
+				"the expected-failure list must never absorb a vacuous fixture", expected, got)
+		}
+		// A premise failure wrapped further up (an errParityRow around it, say)
+		// must still be recognised: the grader classifies with errors.Is.
+		wrapped := fmt.Errorf("row %s: %w", rowRunResultNoWork, premise)
+		if got := gradeParityRow(wrapped, expected); got != parityGradeVacuous {
+			t.Errorf("a WRAPPED premise failure with expected=%t graded %v, want parityGradeVacuous", expected, got)
+		}
+	}
+
+	if got := gradeParityRow(divergence, true); got != parityGradeExpectedFailure {
+		t.Errorf("an ordinary divergence on the list graded %v, want parityGradeExpectedFailure", got)
+	}
+	if got := gradeParityRow(divergence, false); got != parityGradeRegression {
+		t.Errorf("an ordinary divergence off the list graded %v, want parityGradeRegression", got)
+	}
+	if got := gradeParityRow(nil, true); got != parityGradeStaleExpectation {
+		t.Errorf("a passing row still on the list graded %v, want parityGradeStaleExpectation", got)
+	}
+	if got := gradeParityRow(nil, false); got != parityGradeAgreed {
+		t.Errorf("a passing row off the list graded %v, want parityGradeAgreed", got)
+	}
+
+	// The tagged error must still READ as the row's own failure: the grader
+	// prints it verbatim.
+	if !strings.Contains(premise.Error(), string(rowRunResultNoWork)) || !strings.Contains(premise.Error(), "noWork=false") {
+		t.Errorf("premise failure loses the row id or the observed value: %v", premise)
+	}
+}
+
+// TestParityRowsDeclareAPremise makes the anti-vacuity assertion structural
+// rather than a convention a future port can forget. A row without one can pass
+// with both sides equally wrong — and for a row on parityExpectedFailures, which
+// is failing-first by design, nothing else would ever notice.
+func TestParityRowsDeclareAPremise(t *testing.T) {
+	for _, c := range parityCases() {
+		if c.Premise == nil {
+			t.Errorf("parity row %s (%s) declares no Premise; see the recipe at the top of parity_test.go — "+
+				"assert that the RUNNER side still exhibits the behaviour before the row's diff is believed", c.Row, c.Name)
+		}
 	}
 }
 
@@ -900,17 +1195,22 @@ func TestParityTerminalDiffNamesBothSides(t *testing.T) {
 func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Every field set to a value that appears nowhere else in the rendering.
 	full := parityEnvelope{
-		Stage: "s-stage", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
+		Stage: "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
 		Gaggle: "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
-		MinimumIntegrity: apiv1.Integrity("s-integrity"),
-		Inputs:           "s-inputs", Capabilities: "s-caps", PolicyActions: "s-policy",
+		MinimumIntegrity:    apiv1.Integrity("s-integrity"),
+		InstructionAddendum: "s-addendum",
+		Inputs:              "s-inputs", Capabilities: "s-caps", PolicyActions: "s-policy",
 		ContextPointers: "s-pointers", Item: "s-item",
+		RepoRef: "s-reporef", AdditionalWorkspaces: "s-additional", CheckoutCones: "s-cones",
+		Limits: "s-limits", ParentPlatformPolicy: "s-parentpolicy", NestedAgentPolicy: "s-nestedpolicy",
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
-		"s-stage", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
-		"s-trigger", "s-ownership", "s-integrity", "s-inputs", "s-caps", "s-policy", "s-pointers", "s-item",
+		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
+		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
+		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
+		"s-parentpolicy", "s-nestedpolicy",
 	} {
 		if !strings.Contains(rendered, sentinel) {
 			t.Errorf("parityEnvelope.String() omits a compared field (%s):\n%s", sentinel, rendered)
@@ -919,8 +1219,59 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 15; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 23; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
+	}
+}
+
+// TestParityEnvelopeComparesEveryEnvelopeField is the tripwire the projection
+// was missing. TestParityEnvelopeStringPrintsEveryComparedField guards
+// parityEnvelope's OWN field count, which says nothing about the type it
+// projects — so a new apiv1.InvocationEnvelope field joined the silent-exclusion
+// set with no test firing, and eight already had.
+//
+// This test asserts the partition is total and deliberate: every envelope field
+// is either projected by projectParityEnvelope or listed, with a reason, in
+// parityEnvelopeExcludedFields. Adding a field to the envelope fails here until
+// someone decides which side of the line it falls on.
+func TestParityEnvelopeComparesEveryEnvelopeField(t *testing.T) {
+	// Fields whose envelope name differs from the parityEnvelope field that
+	// carries them.
+	renamed := map[string]string{
+		"TaskID": "Stage", // projected as the stage name via stageOf
+	}
+	projected := map[string]bool{}
+	projectedType := reflect.TypeOf(parityEnvelope{})
+	for i := 0; i < projectedType.NumField(); i++ {
+		projected[projectedType.Field(i).Name] = true
+	}
+
+	envelopeType := reflect.TypeOf(apiv1.InvocationEnvelope{})
+	for i := 0; i < envelopeType.NumField(); i++ {
+		name := envelopeType.Field(i).Name
+		carrier := name
+		if alias, ok := renamed[name]; ok {
+			carrier = alias
+		}
+		_, excluded := parityEnvelopeExcludedFields[name]
+		if projected[carrier] == excluded {
+			if excluded {
+				t.Errorf("apiv1.InvocationEnvelope.%s is BOTH projected and listed as excluded — "+
+					"parityEnvelopeExcludedFields must name only fields the projection drops", name)
+				continue
+			}
+			t.Errorf("apiv1.InvocationEnvelope.%s is neither compared by projectParityEnvelope nor named in "+
+				"parityEnvelopeExcludedFields.\nThe harness header claims everything outside that list is normative, so "+
+				"either project the field or record why it cannot agree between a local worktree and a worker workspace.", name)
+		}
+	}
+
+	// And the exclusion list may not name a field the envelope no longer has:
+	// a stale exclusion silently re-opens the hole it documented.
+	for name := range parityEnvelopeExcludedFields {
+		if _, ok := envelopeType.FieldByName(name); !ok {
+			t.Errorf("parityEnvelopeExcludedFields names %q, which apiv1.InvocationEnvelope no longer declares — delete the entry", name)
+		}
 	}
 }
 
@@ -953,10 +1304,17 @@ func TestParityWalkOutcomeDiffNamesTheFailingSide(t *testing.T) {
 	}
 }
 
-// TestParityRowIDsAreDocumented guards the join key with finding 002: every
-// registered row id must carry the inventory-row shape (a plan item or P0
-// prefix and a descriptive slug), so a reader can find the row it pins.
-func TestParityRowIDsAreDocumented(t *testing.T) {
+// TestParityRowIDsAreWellFormed checks the SHAPE of the join key with finding
+// 002: a plan-item-or-P0 prefix and a descriptive slug, so a reader can find the
+// inventory row an id pins.
+//
+// Named for what it does. It was TestParityRowIDsAreDocumented, which promised
+// more than it delivers — nothing here reads the inventory, so "Explosion-foo"
+// passes. Genuinely enforcing the join would mean reading
+// findings/002-pivot-plan-parity-inventory.md, which lives in the review tree
+// and not in this repo, so it is not available to CI; the honest fix is the
+// accurate name.
+func TestParityRowIDsAreWellFormed(t *testing.T) {
 	for _, c := range parityCases() {
 		prefix, rest, ok := strings.Cut(string(c.Row), "-")
 		if !ok || rest == "" {
@@ -978,21 +1336,81 @@ func errParityRow(row parityRow, format string, args ...any) error {
 	return fmt.Errorf("row %s: %w", row, fmt.Errorf(format, args...))
 }
 
-// requireEnvelopeInput is the assertion most input-defaulting rows need: the
-// named stage's envelope, on the named side, must carry input key=value.
+// requireEnvelopeInput is the assertion most input-defaulting rows need: EVERY
+// envelope the named side dispatched for the named stage must carry input
+// key=value, and it must have dispatched the stage at least once.
+//
+// "Every", not "the first". The helper originally returned on the first
+// matching envelope, which reads as "this stage's envelope carries X" but means
+// "its first dispatch did" — and a stage is dispatched more than once as soon as
+// a row exercises a retry or a repass re-entry, which is exactly where defaulting
+// is most likely to be applied on the way in and lost on the way back round.
+// Asserting every dispatch costs nothing today (no row repasses yet) and keeps
+// the helper honest when one does.
 func requireEnvelopeInput(side paritySide, stage, key, want string) error {
+	dispatches := 0
 	for _, env := range side.Envelopes {
 		if env.Stage != stage {
 			continue
 		}
-		if strings.Contains(env.Inputs, fmt.Sprintf("%s=%q", key, want)) {
-			return nil
+		dispatches++
+		if !strings.Contains(env.Inputs, fmt.Sprintf("%s=%q", key, want)) {
+			return fmt.Errorf("%s envelope for stage %q (dispatch %d) lacks input %s=%q; inputs were: %s",
+				side.Name, stage, dispatches, key, want, env.Inputs)
 		}
-		return fmt.Errorf("%s envelope for stage %q lacks input %s=%q; inputs were: %s",
-			side.Name, stage, key, want, env.Inputs)
+	}
+	if dispatches > 0 {
+		return nil
 	}
 	if side.Err != nil {
 		return fmt.Errorf("%s never dispatched stage %q; its walk ended with: %w", side.Name, stage, side.Err)
 	}
 	return fmt.Errorf("%s never dispatched stage %q", side.Name, stage)
+}
+
+// requireEveryTaskDispatched asserts the side dispatched every task the fixture
+// declares. It is the whole-lane premise: derived from the spec rather than a
+// hard-coded stage list, so a lane that legitimately reorders or renames its
+// stages still asserts "the walk reached all of them", while a lane that
+// short-circuits after its first stage — leaving both sides agreeing about
+// almost nothing — fails.
+func requireEveryTaskDispatched(side paritySide, spec apiv1.WorkflowSpec) error {
+	dispatched := map[string]int{}
+	for _, env := range side.Envelopes {
+		dispatched[env.Stage]++
+	}
+	missing := make([]string, 0, len(spec.Tasks))
+	for _, task := range spec.Tasks {
+		if dispatched[task.Name] == 0 {
+			missing = append(missing, task.Name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s never dispatched %d of the lane's %d stage(s): %s (it dispatched %d envelope(s))",
+			side.Name, len(missing), len(spec.Tasks), strings.Join(missing, ", "), len(side.Envelopes))
+	}
+	return nil
+}
+
+// requireStagesDispatched asserts the side dispatched exactly the named stages,
+// in order. It is the anti-vacuity premise for a whole-lane row, where "the
+// fixture still walks the lane" is the entire claim: assertParityHarnessIsNotVacuous
+// only knows that SOME stage ran, so a lane that silently stopped short after its
+// first stage would otherwise have both sides agreeing about very little.
+func requireStagesDispatched(side paritySide, stages []string) error {
+	got := make([]string, 0, len(side.Envelopes))
+	for _, env := range side.Envelopes {
+		got = append(got, env.Stage)
+	}
+	if len(got) != len(stages) {
+		return fmt.Errorf("%s dispatched %d stage(s) [%s], want %d [%s]",
+			side.Name, len(got), strings.Join(got, " "), len(stages), strings.Join(stages, " "))
+	}
+	for i := range stages {
+		if got[i] != stages[i] {
+			return fmt.Errorf("%s dispatch %d was stage %q, want %q; full order was [%s]",
+				side.Name, i+1, got[i], stages[i], strings.Join(got, " "))
+		}
+	}
+	return nil
 }

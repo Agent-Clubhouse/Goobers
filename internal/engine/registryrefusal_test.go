@@ -117,6 +117,56 @@ func TestStartInputRefusesShippedParallels(t *testing.T) {
 	}
 }
 
+// TestRefusalMessageReadsAsOneSentence pins the string an operator actually
+// reads off `goobers engine-start --workflow quality-sprint` — the far-side
+// evidence this refusal exists to produce.
+//
+// It is a real assertion because the message was doubled: the sentinels each
+// began "engine: " and UnsupportedFeaturesError prefixes "engine: refuse to
+// start workflow %q: ", so the refusal read
+//
+//	engine: refuse to start workflow "quality-sprint": declares spec.parallels: engine: spec.parallels ...
+//
+// Counting the prefix rather than matching the whole string keeps this test
+// about the defect (a doubled prefix) instead of freezing the wording.
+func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
+	lane := loadProductionLane(t, "goobers", "quality-sprint")
+	r := NewRegistryWithPreviewFeatures(true)
+	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
+		t.Fatalf("RegisterDefinition: %v", err)
+	}
+	_, err := r.StartInput(lane.Name, StartSpec{RunID: "run-1", Gaggle: "goobers"})
+	if err == nil {
+		t.Fatal("StartInput admitted the shipped parallels lane")
+	}
+	msg := err.Error()
+	if got := strings.Count(msg, "engine:"); got != 1 {
+		t.Errorf("refusal says %q %d times, want exactly once (the wrapper owns the prefix; the sentinels must not repeat it):\n%s",
+			"engine:", got, msg)
+	}
+	if !strings.HasPrefix(msg, `engine: refuse to start workflow "quality-sprint": `) {
+		t.Errorf("refusal does not open by naming the refused workflow:\n%s", msg)
+	}
+	// The DSL path is said once, by the sentinel — not once by the wrapper and
+	// again by the sentinel it wraps.
+	if got := strings.Count(msg, "spec.parallels"); got != 1 {
+		t.Errorf("refusal names %q %d times, want exactly once:\n%s", "spec.parallels", got, msg)
+	}
+	t.Logf("operator-facing refusal: %s", msg)
+	// Each sentinel must still read as a whole sentence standalone, which is
+	// how an errors.Is caller that prints the sentinel sees it.
+	for _, sentinel := range []error{
+		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrUsageLimitsUnsupported, ErrOutboxUnsupported,
+	} {
+		if strings.Contains(sentinel.Error(), "engine:") {
+			t.Errorf("sentinel %q carries its own \"engine:\" prefix, which doubles when wrapped", sentinel)
+		}
+		if !strings.Contains(sentinel.Error(), "engine walk") {
+			t.Errorf("sentinel %q does not say what it is unimplemented ON", sentinel)
+		}
+	}
+}
+
 // TestStartInputRefusalReportsEveryDeclaration pins the multi-refusal shape: a
 // definition declaring several R9 features is refused once, with all of them
 // named and each reachable through errors.Is, so an operator sees the whole

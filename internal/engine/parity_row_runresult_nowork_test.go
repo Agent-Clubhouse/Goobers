@@ -35,11 +35,11 @@ import (
 
 func init() {
 	registerParityRow(parityCase{
-		Row:   rowRunResultNoWork,
-		Name:  "no-work at step 1 sets the terminal NoWork accounting",
-		Lane:  "backlog-curation.yaml",
-		Build: buildRunResultNoWorkCase,
-		Check: checkRunResultNoWork,
+		Row:     rowRunResultNoWork,
+		Name:    "no-work at step 1 sets the terminal NoWork accounting",
+		Lane:    "backlog-curation.yaml",
+		Build:   buildRunResultNoWorkCase,
+		Premise: premiseRunResultNoWork,
 	})
 }
 
@@ -54,15 +54,21 @@ func buildRunResultNoWorkCase(t *testing.T, c *parityCase) {
 	}
 }
 
-// checkRunResultNoWork pins the runner's own accounting before diffing, so the
-// row cannot pass by both sides reporting false.
-func checkRunResultNoWork(obs parityObservation) error {
+// premiseRunResultNoWork pins the runner's own accounting, so the row cannot
+// pass by both sides reporting false.
+//
+// It is the row's PREMISE, not the head of its Check, and that distinction is
+// the whole reason this row is credible: the row is on parityExpectedFailures,
+// so a graded assertion here would be swallowed into the "expected failure,
+// still open" arm — deleting `res.NoWork = steps == 1` from the local runner
+// left this suite green, printing this very sentence as it went.
+func premiseRunResultNoWork(obs parityObservation) error {
 	if !obs.Runner.Terminal.NoWork {
-		return errParityRow(obs.Case.Row,
+		return errParityPremisef(obs.Case.Row,
 			"runner did not report NoWork for a step-1 no-work terminal (%s) — the fixture no longer exercises #233",
 			obs.Runner.Terminal)
 	}
-	return checkAllSurfaces(obs)
+	return nil
 }
 
 func init() {
@@ -72,11 +78,11 @@ func init() {
 	// (both sides report false) — keeping it separate means the port that
 	// closes the positive half cannot regress the negative one unnoticed.
 	registerParityRow(parityCase{
-		Row:   rowRunResultNoWorkLateStage,
-		Name:  "no-work after step 1 leaves the NoWork accounting clear",
-		Lane:  "backlog-curation.yaml",
-		Build: buildRunResultNoWorkLateCase,
-		Check: checkRunResultNoWorkLate,
+		Row:     rowRunResultNoWorkLateStage,
+		Name:    "no-work after step 1 leaves the NoWork accounting clear",
+		Lane:    "backlog-curation.yaml",
+		Build:   buildRunResultNoWorkLateCase,
+		Premise: premiseRunResultNoWorkLate,
 	})
 }
 
@@ -93,10 +99,20 @@ func buildRunResultNoWorkLateCase(t *testing.T, c *parityCase) {
 	}
 }
 
-func checkRunResultNoWorkLate(obs parityObservation) error {
+// premiseRunResultNoWorkLate is the negative half's anti-vacuity guard: this row
+// is GREEN because both sides report false, so "the runner really reached a
+// late-stage no-work and reported false" is precisely what has to hold for the
+// green to mean anything.
+func premiseRunResultNoWorkLate(obs parityObservation) error {
 	if obs.Runner.Terminal.NoWork {
-		return errParityRow(obs.Case.Row,
+		return errParityPremisef(obs.Case.Row,
 			"runner reported NoWork for a no-work at step 3 (%s) — #233 scopes it to step 1", obs.Runner.Terminal)
 	}
-	return checkAllSurfaces(obs)
+	// The stage that reports no-work must actually be reached: a walk that
+	// stopped earlier would report false for the wrong reason and this row
+	// would be green on a fixture that never tested the boundary.
+	if err := requireStagesDispatched(obs.Runner, []string{"reconcile-backlog", "implementation-feedback", "sample-ready-pool"}); err != nil {
+		return errParityPremisef(obs.Case.Row, "%v — the late no-work boundary is never reached", err)
+	}
+	return nil
 }

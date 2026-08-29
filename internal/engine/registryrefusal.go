@@ -26,32 +26,44 @@ import (
 // quality-sprint.yaml declares parallels today). Refusing at start scopes the
 // blast radius to the run that would actually have been walked wrongly, which
 // is the same per-lane containment ruling 4 mandates for the interim.
+// The sentinels carry NO "engine: " prefix of their own. UnsupportedFeaturesError
+// already opens with "engine: refuse to start workflow %q: ", and a prefix on
+// both produced the doubled reading an operator sees off `goobers engine-start`:
+//
+//	engine: refuse to start workflow "quality-sprint": declares spec.parallels: engine: spec.parallels ...
+//
+// Each sentence below therefore reads correctly standalone (errors.Is callers
+// printing the sentinel) and wrapped (the refusal an operator actually reads).
 var (
 	// ErrExperimentUnsupported refuses task.experiment (bandit arm assignment
 	// and observation recording: internal/runner/run.go's AssignAndRecord /
 	// recordBanditResult arms).
-	ErrExperimentUnsupported = errors.New("engine: task.experiment (bandit arm assignment) is not implemented on the engine walk")
+	ErrExperimentUnsupported = errors.New("task.experiment (bandit arm assignment) is not implemented on the engine walk")
 	// ErrUsageLimitsUnsupported refuses task.limits.maxTokens /
 	// task.limits.maxCostUSD (the local runner's cumulative
 	// enforceStageBudget). MaxDurationSeconds is NOT refused — the engine
 	// enforces it through the stage activity's StartToCloseTimeout.
-	ErrUsageLimitsUnsupported = errors.New("engine: task.limits.maxTokens/maxCostUSD (cumulative agentic usage budgets) are not implemented on the engine walk")
+	ErrUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD (cumulative agentic usage budgets) are not implemented on the engine walk")
 	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
 	// workspace-relative export, #1552).
-	ErrOutboxUnsupported = errors.New("engine: task.outbox (workspace file export) is not implemented on the engine walk")
+	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
 	// ErrParallelsUnsupported refuses spec.parallels (internal/runner's
 	// parallel_run.go fan-out/fan-in, @join branches and branch-qualified
 	// inputs).
-	ErrParallelsUnsupported = errors.New("engine: spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
+	ErrParallelsUnsupported = errors.New("spec.parallels (fan-out/fan-in branches) are not implemented on the engine walk")
 )
 
-// UnsupportedFeatureError names one refused declaration: which workflow,
-// which stage (empty for a spec-level declaration), which DSL path, and the
-// sentinel it refuses. It wraps the sentinel so callers classify with
-// errors.Is instead of string matching.
+// UnsupportedFeatureError names one refused declaration: which stage (empty for
+// a spec-level declaration), which DSL path, and the sentinel it refuses. It
+// wraps the sentinel so callers classify with errors.Is instead of string
+// matching.
+//
+// It deliberately carries no Workflow field: the workflow name is the enclosing
+// UnsupportedFeaturesError's, which is what prints it and what errors.As reaches
+// for the run-level question ("which workflow was refused"). A per-refusal copy
+// was set on construction and read by nothing — a field a reader would assume
+// was load-bearing.
 type UnsupportedFeatureError struct {
-	// Workflow is the definition's registered name.
-	Workflow string
 	// Stage is the declaring task's name; empty for a spec-level declaration.
 	Stage string
 	// Feature is the DSL path of the refused declaration, e.g.
@@ -61,11 +73,16 @@ type UnsupportedFeatureError struct {
 	Err error
 }
 
+// Error names WHERE the refused declaration is and lets the sentinel say what
+// it is. The sentinel already opens with the DSL path, so repeating Feature here
+// only produced "declares spec.parallels: spec.parallels (fan-out/fan-in
+// branches) are not implemented…". Feature remains the structured field an
+// errors.As caller keys on; it is just not said twice in one sentence.
 func (e *UnsupportedFeatureError) Error() string {
 	if e.Stage != "" {
-		return fmt.Sprintf("stage %q declares %s: %v", e.Stage, e.Feature, e.Err)
+		return fmt.Sprintf("stage %q: %v", e.Stage, e.Err)
 	}
-	return fmt.Sprintf("declares %s: %v", e.Feature, e.Err)
+	return e.Err.Error()
 }
 
 // Unwrap exposes the sentinel to errors.Is.
@@ -105,20 +122,20 @@ func (e *UnsupportedFeaturesError) Unwrap() []error {
 // order (spec-level first, then tasks in declaration order, then the per-task
 // feature order below). It reports ALL of them rather than the first so an
 // operator fixing a definition sees the whole set in one refusal.
-func unsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
+func unsupportedEngineFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureError {
 	var out []*UnsupportedFeatureError
 	if len(spec.Parallels) > 0 {
-		out = append(out, &UnsupportedFeatureError{Workflow: name, Feature: "spec.parallels", Err: ErrParallelsUnsupported})
+		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
 	}
 	for _, t := range spec.Tasks {
 		if t.Experiment != nil {
-			out = append(out, &UnsupportedFeatureError{Workflow: name, Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
+			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}
 		if t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) {
-			out = append(out, &UnsupportedFeatureError{Workflow: name, Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrUsageLimitsUnsupported})
+			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrUsageLimitsUnsupported})
 		}
 		if len(t.Outbox) > 0 {
-			out = append(out, &UnsupportedFeatureError{Workflow: name, Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
+			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
 		}
 	}
 	return out
@@ -127,7 +144,7 @@ func unsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) []*Unsuppor
 // refuseUnsupportedEngineFeatures returns the run-start refusal for spec, or
 // nil when the definition declares no R9 feature.
 func refuseUnsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) error {
-	refusals := unsupportedEngineFeatures(name, spec)
+	refusals := unsupportedEngineFeatures(spec)
 	if len(refusals) == 0 {
 		return nil
 	}
