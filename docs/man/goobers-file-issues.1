@@ -23,9 +23,12 @@ vet diagnostic, a golangci-lint issue (linter + file + line) or a go
 test failure (package + test) — that the deterministic signalsStage's
 stdout artifact of THIS run contains byte for byte, as parsed by this
 stage from the run journal; plus riskClass low, type:bug, one package,
-no load-bearing path, no needs-human trigger, no prior issue with the
-same key. autoApprove=deterministic-only opts in (default never) and
-the label is added with the github:issues:approve credential only.
+no load-bearing path, no needs-human trigger, and no open or recently
+closed nominated issue naming the same finding (a body marker the
+filer computes from the finding, not the model's dedupeKey), nor an
+earlier nomination of the same artifact naming it. autoApprove=
+deterministic-only (exactly; default never) opts in and the label is
+added with the github:issues:approve credential only.
 Everything else files unapproved with the reasons in the result. On a
 stage pod the run journal is unreachable, so nothing is approved.
 

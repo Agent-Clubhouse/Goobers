@@ -93,7 +93,8 @@ const (
 // events, each under its fixed section header. Unknown sections are ignored.
 func ParseSignals(stdout []byte) *Findings {
 	f := &Findings{byKey: map[string]Finding{}, Counts: map[Tool]int{}}
-	sections, err := splitSections(stdout)
+	sections, problems, err := splitSections(stdout)
+	f.Problems = append(f.Problems, problems...)
 	if err != nil {
 		f.Problems = append(f.Problems, "stdout could not be read to the end: "+err.Error())
 	}
@@ -134,11 +135,17 @@ func ParseSignals(stdout []byte) *Findings {
 }
 
 // splitSections cuts stdout at its section headers and returns each named
-// section's body (the text between its header and the next). A line the
-// scanner cannot buffer ends the scan; what was read stands and the error
-// is reported as a parse problem.
-func splitSections(stdout []byte) (map[string]string, error) {
+// section's body (the text between its header and the next). The stage
+// prints every header exactly once, so the first section of a name is the
+// tool's; a later line that looks like the same header is text a tool
+// echoed (the trailing section prints failing tests' raw output, which a
+// test can shape into a bare header line) and must not replace it: the
+// repeat is recorded as a problem and the text after it is discarded up to
+// the next header. A line the scanner cannot buffer ends the scan; what was
+// read stands and the error is reported as a parse problem.
+func splitSections(stdout []byte) (map[string]string, []string, error) {
 	sections := map[string]string{}
+	var problems []string
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	current := ""
@@ -153,6 +160,11 @@ func splitSections(stdout []byte) (map[string]string, error) {
 		line := scanner.Text()
 		if m := sectionHeader.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
 			flush()
+			if _, seen := sections[m[1]]; seen {
+				problems = append(problems, fmt.Sprintf("%s: the section header appears again after its section ended (tool-echoed text?); only the first section is read", m[1]))
+				current = ""
+				continue
+			}
 			current = m[1]
 			continue
 		}
@@ -162,7 +174,13 @@ func splitSections(stdout []byte) (map[string]string, error) {
 		}
 	}
 	flush()
-	return sections, scanner.Err()
+	return sections, problems, scanner.Err()
+}
+
+// findingOf is the finding a pointer of kind finding names — the exact
+// tuple the tool output is matched against and the finding marker hashes.
+func findingOf(e Evidence) Finding {
+	return Finding{Tool: e.Tool, Rule: e.Rule, Path: e.Path, Line: e.Line, Package: e.Package, Test: e.Test}
 }
 
 // parseLint decodes the golangci-lint JSON document at the head of its
@@ -212,7 +230,6 @@ func (f *Findings) Match(e Evidence) (Finding, bool) {
 	if f == nil || e.Kind != EvidenceFinding {
 		return Finding{}, false
 	}
-	want := Finding{Tool: e.Tool, Rule: e.Rule, Path: e.Path, Line: e.Line, Package: e.Package, Test: e.Test}
-	got, ok := f.byKey[want.key()]
+	got, ok := f.byKey[findingOf(e).key()]
 	return got, ok
 }

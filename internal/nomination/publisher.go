@@ -242,10 +242,18 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 		return Plan{}, fmt.Errorf("list flake-watch issues: %w", err)
 	}
 	byKey := make(map[string][]providers.WorkItem, len(nominated))
+	byFinding := make(map[string][]providers.WorkItem)
 	for _, item := range nominated {
 		if hash, ok := ParseKeyMarker(item.Body); ok {
 			byKey[hash] = append(byKey[hash], item)
 		}
+		for _, hash := range ParseFindingMarkers(item.Body) {
+			byFinding[hash] = append(byFinding[hash], item)
+		}
+	}
+	artifactKeys := make(map[string]bool, len(artifact.Nominations))
+	for _, n := range artifact.Nominations {
+		artifactKeys[KeyHash(n.DedupeKey)] = true
 	}
 	byFingerprint := make(map[string]providers.WorkItem, len(flakes))
 	for _, item := range flakes {
@@ -304,7 +312,6 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 			}
 			continue
 		}
-		cand.ApprovalUnmet = p.approvalUnmet(cand)
 		admitted = append(admitted, cand)
 	}
 	sort.SliceStable(admitted, func(i, j int) bool {
@@ -313,14 +320,47 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 		}
 		return admitted[i].Nomination.Key < admitted[j].Nomination.Key
 	})
+	// The approval bounds are evaluated in filing order, after the budget
+	// cut: a finding is claimed by the first filed candidate that names it,
+	// so two nominations sharing one finding approve at most one — the same
+	// rule the finding markers on prior issues enforce across runs.
+	priors := priorFindings{cutoff: cutoff, byFinding: byFinding, artifactKeys: artifactKeys, claimed: map[string]string{}}
 	for i, cand := range admitted {
-		if i < p.Policy.MaxPerRun {
-			plan.File = append(plan.File, cand)
-		} else {
+		if i >= p.Policy.MaxPerRun {
 			plan.Overflow = append(plan.Overflow, cand.Nomination.Key)
+			continue
 		}
+		cand.ApprovalUnmet = p.approvalUnmet(cand, priors)
+		priors.claim(cand.Nomination)
+		plan.File = append(plan.File, cand)
 	}
 	return plan, nil
+}
+
+// priorFindings is what the duplicate bound is checked against: the prior
+// nominated issues carrying each finding marker (open, or closed inside the
+// dedupe window — the bounded listing sees nothing else), the keys of the
+// artifact being filed (so this run's own filings of it are told apart from
+// every other issue), and the findings the candidates already filed in this
+// scan have claimed.
+type priorFindings struct {
+	cutoff       time.Time
+	byFinding    map[string][]providers.WorkItem
+	artifactKeys map[string]bool
+	claimed      map[string]string
+}
+
+// claim records every finding a filed candidate names, first filer wins.
+func (pf priorFindings) claim(n Nomination) {
+	for _, e := range n.Evidence {
+		if e.Kind != EvidenceFinding {
+			continue
+		}
+		hash := FindingHash(findingOf(e))
+		if _, taken := pf.claimed[hash]; !taken {
+			pf.claimed[hash] = n.Key
+		}
+	}
 }
 
 // listNominated bounds the dedupe listing so an attempt's cost does not grow
@@ -501,12 +541,16 @@ func (p Publisher) matchFindings(n Nomination) ([]Finding, int) {
 // approvalUnmet evaluates the deterministic approval bounds and names every
 // one the candidate fails: a confirmed tool finding (decision 004 §1), then
 // the mechanical bounds the brief states (§2) — riskClass low, type:bug, one
-// package, no load-bearing path, no needs-human trigger. The last §2 bound,
-// no open or windowed-closed duplicate, holds by construction: Scan
-// suppresses such candidates before this is evaluated, so an admitted
-// candidate has none. The opt-in and the approve credential are checked at
-// filing time (file), so a --check reports what the write would approve.
-func (p Publisher) approvalUnmet(cand Candidate) []string {
+// package, no load-bearing path, no needs-human trigger, and no open or
+// windowed-closed duplicate. The duplicate bound is keyed on the finding,
+// not on the model's dedupeKey: the dedupe scan suppresses a repeated key
+// before this runs, but a prior nominated issue that names the same
+// confirmed finding under another key (an issue carrying its finding
+// marker), or an earlier candidate of this scan that names it, is the same
+// defect, and only one issue per finding may be approved. The opt-in and the
+// approve credential are checked at filing time (file), so a --check reports
+// what the write would approve.
+func (p Publisher) approvalUnmet(cand Candidate, priors priorFindings) []string {
 	n := cand.Nomination
 	var unmet []string
 	switch {
@@ -539,6 +583,7 @@ func (p Publisher) approvalUnmet(cand Candidate) []string {
 	}
 	if len(cand.Findings) > 0 {
 		unmet = append(unmet, fixSurfaceUnmet(n, cand.Findings)...)
+		unmet = append(unmet, p.duplicateFindingUnmet(cand.Findings, priors)...)
 	}
 	if n.RequiresHumanReview {
 		unmet = append(unmet, "the source finding requires human review")
@@ -546,23 +591,67 @@ func (p Publisher) approvalUnmet(cand Candidate) []string {
 	return unmet
 }
 
+// duplicateFindingUnmet names, for every confirmed finding, the prior issue
+// or the earlier candidate of this scan that already names it. An issue this
+// run filed for a nomination of this artifact is not a prior: it is the
+// candidate's own retry read-back, or a sibling the claim order already
+// decided.
+func (p Publisher) duplicateFindingUnmet(findings []Finding, priors priorFindings) []string {
+	var unmet []string
+	for _, f := range findings {
+		hash := FindingHash(f)
+		if key, claimed := priors.claimed[hash]; claimed {
+			unmet = append(unmet, fmt.Sprintf("nomination %q of this artifact already names finding %s (at most one issue per finding is approved)", key, f))
+			continue
+		}
+		for _, prior := range sortedByID(priors.byFinding[hash]) {
+			if filedByRunForKeys(prior.Body, p.RunID, priors.artifactKeys) {
+				continue
+			}
+			switch {
+			case prior.State != "closed":
+				unmet = append(unmet, fmt.Sprintf("open issue #%s already names finding %s", prior.ID, f))
+			case p.Policy.DedupeWindow > 0 && prior.UpdatedAt != nil && !prior.UpdatedAt.Before(priors.cutoff):
+				unmet = append(unmet, fmt.Sprintf("issue #%s naming finding %s closed inside the dedupe window", prior.ID, f))
+			default:
+				continue
+			}
+			break
+		}
+	}
+	return unmet
+}
+
+// modulePath is the Go module the collect-repo-signals stage runs the tools
+// over — the repository the filer's bounds (loadBearingPaths) are written
+// for. A go test finding names its package by import path; its
+// repository-relative directory, the fix surface, is the import path with
+// the module path stripped. A package outside the module has no directory
+// in the repository and no fix surface here.
+const modulePath = "github.com/goobers/goobers"
+
 // fixSurfaceUnmet checks the "one bounded fix surface" bound: every confirmed
 // finding lies in one package, every source pointer lies in that package,
 // and none of it is load-bearing. A vet or lint finding's package is its
-// file's directory; a test finding's package is its import path, which a
-// source pointer's directory must be a suffix of.
+// file's directory; a test finding's package is its import path resolved
+// to the repository directory it names, which a source pointer's directory
+// must equal.
 func fixSurfaceUnmet(n Nomination, findings []Finding) []string {
 	var unmet []string
 	surface := ""
 	for _, f := range findings {
-		pkg := findingPackage(f)
+		pkg, ok := findingPackageDir(f)
+		if !ok {
+			unmet = append(unmet, fmt.Sprintf("finding %s names package %q outside module %s, which has no fix surface in this repository", f, f.Package, modulePath))
+			continue
+		}
 		switch {
 		case surface == "":
 			surface = pkg
 		case pkg != surface:
 			unmet = append(unmet, fmt.Sprintf("the confirmed findings span more than one package (%s, %s)", surface, pkg))
 		}
-		if findingTouchesLoadBearing(f) {
+		if packageDirTouchesLoadBearing(f, pkg) {
 			unmet = append(unmet, fmt.Sprintf("finding %s touches a load-bearing path", f))
 		}
 	}
@@ -570,7 +659,7 @@ func fixSurfaceUnmet(n Nomination, findings []Finding) []string {
 		if e.Kind != EvidenceSource {
 			continue
 		}
-		if !inPackage(e.Path, surface) {
+		if surface != "" && path.Dir(e.Path) != surface {
 			unmet = append(unmet, fmt.Sprintf("source evidence %q is outside the finding's package %q", e.Path, surface))
 		}
 		if touchesLoadBearing(e.Path) {
@@ -580,36 +669,44 @@ func fixSurfaceUnmet(n Nomination, findings []Finding) []string {
 	return slices.Compact(unmet)
 }
 
-func findingPackage(f Finding) string {
-	if f.Tool == ToolTest {
-		return f.Package
+// findingPackageDir is the repository-relative directory a finding's fix
+// surface is: the file's directory for vet and lint, the import path with
+// the module path stripped for a test finding (false when the import path
+// is not in the module).
+func findingPackageDir(f Finding) (string, bool) {
+	if f.Tool != ToolTest {
+		return path.Dir(f.Path), true
 	}
-	return path.Dir(f.Path)
+	return packageDir(f.Package)
 }
 
-// inPackage reports whether a source path's directory is the package: equal
-// to a directory surface, or a suffix of an import-path surface.
-func inPackage(source, surface string) bool {
-	dir := path.Dir(source)
-	if dir == surface {
-		return true
+// packageDir resolves an import path to its directory in the repository:
+// the module root is ".", and anything not under the module has none.
+func packageDir(importPath string) (string, bool) {
+	switch {
+	case importPath == modulePath:
+		return ".", true
+	case strings.HasPrefix(importPath, modulePath+"/"):
+		dir := strings.TrimPrefix(importPath, modulePath+"/")
+		return dir, path.Clean(dir) == dir && dir != "." && dir != ".." && !strings.HasPrefix(dir, "../")
+	default:
+		return "", false
 	}
-	return dir != "." && strings.HasSuffix(surface, "/"+dir)
 }
 
-func findingTouchesLoadBearing(f Finding) bool {
+// packageDirTouchesLoadBearing reports whether a finding's fix surface is
+// load-bearing: a vet or lint finding's file is; a test finding's whole
+// package directory is, when the directory lies in a load-bearing envelope
+// or a load-bearing entry lies inside it.
+func packageDirTouchesLoadBearing(f Finding, dir string) bool {
 	if f.Tool != ToolTest {
 		return touchesLoadBearing(f.Path)
 	}
-	// A test finding's fix surface is its whole package directory, which is
-	// load-bearing when a load-bearing entry lies in or above it: the entry's
-	// directory is a suffix of, or a segment run inside, the import path.
+	if touchesLoadBearing(dir) {
+		return true
+	}
 	for _, entry := range loadBearingPaths {
-		dir := strings.TrimSuffix(entry, "/")
-		if !strings.HasSuffix(entry, "/") {
-			dir = path.Dir(entry)
-		}
-		if strings.HasSuffix(f.Package, "/"+dir) || strings.Contains(f.Package, "/"+dir+"/") {
+		if dir == "." || strings.HasPrefix(entry, dir+"/") {
 			return true
 		}
 	}
@@ -685,6 +782,20 @@ func IssueBody(keyHash, runID string, producer Producer, n Nomination, needsHuma
 		fmt.Fprintf(&b, "\nFor the human: %s\n", strings.TrimSpace(n.RiskReason))
 	}
 	fmt.Fprintf(&b, "\nNominated by run `%s` (stage `%s`, attempt %d).\n\n%s", runID, producer.Stage, producer.Attempt, FiledMarker(keyHash, runID))
+	// One finding marker per finding pointer, computed from the pointer's
+	// exact tuple: the identity the duplicate approval bound is keyed on in
+	// later runs. A model-authored field cannot carry one (control text).
+	seen := map[string]bool{}
+	for _, e := range n.Evidence {
+		if e.Kind != EvidenceFinding {
+			continue
+		}
+		hash := FindingHash(findingOf(e))
+		if !seen[hash] {
+			seen[hash] = true
+			b.WriteString("\n" + FindingMarker(hash))
+		}
+	}
 	return b.String()
 }
 

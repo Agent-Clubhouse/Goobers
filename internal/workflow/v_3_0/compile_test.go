@@ -2185,6 +2185,11 @@ func TestFileIssuesPolicyActions(t *testing.T) {
 		{name: "autoApprove deterministic-only input with whitespace", inputs: map[string]string{"autoApprove": " deterministic-only "}, want: approves},
 		{name: "autoApprove never input", inputs: map[string]string{"autoApprove": "never"}, want: writes},
 		{name: "autoApprove unknown value prescribes nothing extra", inputs: map[string]string{"autoApprove": "low-risk-only"}, want: writes},
+		// The table is exact, not case-folded, and so is the CLI's vocabulary
+		// (TestFileIssuesLabelPolicy): a spelling that prescribes nothing here
+		// is a usage error there, so no spelling opts in without approve-issue.
+		{name: "autoApprove with another spelling prescribes nothing extra", inputs: map[string]string{"autoApprove": "Deterministic-Only"}, want: writes},
+		{name: "autoApprove upper-cased prescribes nothing extra", inputs: map[string]string{"autoApprove": "DETERMINISTIC-ONLY"}, want: writes},
 		{name: "autoApprove bound dynamically fails closed", inputsFrom: map[string]string{"autoApprove": "mode"}, want: approves},
 		{name: "check wins over the approve input", args: []string{"--check"}, inputs: map[string]string{"autoApprove": "deterministic-only"}, want: ""},
 		{name: "no approve flag exists", args: []string{"--auto-approve"}, want: writes},
@@ -2259,6 +2264,15 @@ func TestFileIssuesPolicyActions(t *testing.T) {
 	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("autoApprove: never should compile without the approve action or capability: %v", err)
 	}
+	// A spelling the table does not know compiles without approve-issue —
+	// which is safe only because `goobers file-issues` refuses it at runtime
+	// (its vocabulary is exact), so admission and runtime agree on the one
+	// literal that approves.
+	spec.Tasks[0].Inputs["autoApprove"] = "Deterministic-Only"
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("an unknown autoApprove spelling should prescribe nothing at admission (the CLI refuses it): %v", err)
+	}
+	spec.Tasks[0].Inputs["autoApprove"] = "never"
 	spec.Tasks[0].Run.Command = []string{"goobers", "file-issues", "--check"}
 	spec.Tasks[0].PolicyActions = nil
 	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesRead)}

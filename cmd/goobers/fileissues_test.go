@@ -523,15 +523,147 @@ func TestFileIssuesLabelPolicy(t *testing.T) {
 			t.Fatal("a usage error filed an issue")
 		}
 	})
-	t.Run("autoApprove vocabulary is closed", func(t *testing.T) {
+	// The vocabulary is closed AND exact: the admission policy table
+	// prescribes approve-issue for the literal "deterministic-only" only, so
+	// a spelling the table does not know must be a usage error here, never a
+	// case-folded opt-in that approves on a stage that declared no
+	// approve-issue action (TestFileIssuesPolicyActions pins the table side).
+	for _, mode := range []string{"low-risk-only", "Deterministic-Only", "DETERMINISTIC-ONLY", "Never", "deterministic_only"} {
+		t.Run("autoApprove vocabulary is closed: "+mode, func(t *testing.T) {
+			f := newFileIssuesFixture(t)
+			f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+			t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_APPROVE", "approve-token")
+			f.writeArtifact(confirmed("mode"))
+			t.Setenv(executor.InputEnvVar("autoApprove"), mode)
+			if code, _, stderr := f.run(); code != 1 || !strings.Contains(stderr, "autoApprove input must be never or deterministic-only") {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if f.issueCount() != 0 {
+				t.Fatal("an unknown autoApprove mode filed an issue")
+			}
+		})
+	}
+}
+
+// findingMarkerFor is the finding marker the publisher renders for a
+// finding pointer: keyed on the pointer's exact tuple.
+func findingMarkerFor(e nomination.Evidence) string {
+	return nomination.FindingMarker(nomination.FindingHash(nomination.Finding{Tool: e.Tool, Rule: e.Rule, Path: e.Path, Line: e.Line, Package: e.Package, Test: e.Test}))
+}
+
+// TestFileIssuesApprovesAtMostOneIssuePerFinding pins that the "no open or
+// windowed-closed duplicate" bound (decision 004 §2) is keyed on the
+// finding the tool reported, not on the dedupeKey the model wrote: two
+// nominations naming one confirmed finding under two keys both file, but
+// only the first approves; a prior nominated issue carrying the finding's
+// marker (open at any age, or closed inside the dedupe window) makes a
+// re-nomination under a new key file unapproved, naming the prior issue;
+// a retry changes nothing.
+func TestFileIssuesApprovesAtMostOneIssuePerFinding(t *testing.T) {
+	vetFinding := "vet internal/worktree/manager.go:88 result of (*os.File).Close call not used"
+	t.Run("two nominations of one artifact", func(t *testing.T) {
 		f := newFileIssuesFixture(t)
-		f.writeArtifact(lowRisk("mode"))
-		t.Setenv(executor.InputEnvVar("autoApprove"), "low-risk-only")
-		if code, _, stderr := f.run(); code != 1 || !strings.Contains(stderr, "autoApprove input must be never or deterministic-only") {
-			t.Fatalf("code = %d, stderr = %q", code, stderr)
+		f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+		f.enableAutoApprove(true)
+		first, second := confirmed("a-first"), confirmed("b-second")
+		if first.DedupeKey == second.DedupeKey {
+			t.Fatal("the two nominations must carry different dedupeKeys")
 		}
-		if f.issueCount() != 0 {
-			t.Fatal("an unknown autoApprove mode filed an issue")
+		f.writeArtifact(second, first)
+
+		check := f.mustCheck(filepath.Join(t.TempDir(), fileIssuesCheckFileName))
+		if check.FiledCount != 2 || check.ApprovableCount != 1 {
+			t.Fatalf("check = %+v; want 2 to file, 1 approvable", check)
+		}
+		result := f.mustRun()
+		if result.Created != 2 || result.Filed != 2 || result.Approved != 1 || result.Unapproved != 1 {
+			t.Fatalf("result = %+v; want both filed and exactly one approved", result)
+		}
+		if result.Issues[0].Key != "a-first" || !result.Issues[0].Approved || len(result.Issues[0].ApprovalUnmet) != 0 {
+			t.Fatalf("first issue = %+v; want a-first approved", result.Issues[0])
+		}
+		want := `nomination "a-first" of this artifact already names finding ` + vetFinding
+		if result.Issues[1].Key != "b-second" || result.Issues[1].Approved || !strings.Contains(strings.Join(result.Issues[1].ApprovalUnmet, "\n"), want) {
+			t.Fatalf("second issue = %+v; want b-second unapproved with %q", result.Issues[1], want)
+		}
+		for i, issue := range result.Issues {
+			number := f.issueNumber(issue.IssueID)
+			if !strings.Contains(f.issueBody(number), findingMarkerFor(fileIssuesVetFinding)) {
+				t.Fatalf("issue %d body carries no finding marker:\n%s", i, f.issueBody(number))
+			}
+		}
+		secondNumber := f.issueNumber(result.Issues[1].IssueID)
+		if f.server.issueHasLabel(secondNumber, providers.LabelApproved) {
+			t.Fatalf("the duplicate carries goobers:approved: %v", f.server.issueLabels(secondNumber))
+		}
+		for _, event := range f.server.labelEvents(secondNumber) {
+			if strings.Contains(event, "approve-token") {
+				t.Fatalf("the approve credential touched the duplicate: %q", event)
+			}
+		}
+		retried := f.mustRun()
+		if retried.Created != 0 || retried.Filed != 2 || retried.Approved != 1 || retried.Issues[0].Key != "a-first" || !retried.Issues[0].Approved || retried.Issues[1].Approved {
+			t.Fatalf("retry = %+v; want the same outcome and nothing new", retried)
+		}
+		if f.issueCount() != 2 {
+			t.Fatalf("issues = %d, want 2", f.issueCount())
+		}
+	})
+	t.Run("a prior issue naming the finding under another key", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			closed   bool
+			age      time.Duration
+			approved bool
+			want     string
+		}{
+			{name: "open, however old", age: 400 * 24 * time.Hour, want: "open issue #10 already names finding " + vetFinding},
+			{name: "closed inside the dedupe window", closed: true, age: 5 * 24 * time.Hour, want: "issue #10 naming finding " + vetFinding + " closed inside the dedupe window"},
+			{name: "closed outside the dedupe window", closed: true, age: 40 * 24 * time.Hour, approved: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newFileIssuesFixture(t)
+				f.recordSignals(fileIssuesTestRunID, fileIssuesTestSignals)
+				f.enableAutoApprove(true)
+				prior := confirmed("old-spelling")
+				f.seedFiledIssue(10, "run-old", prior, "goobers", fileIssuesTestPartLbl, providers.LabelNominated)
+				if tc.closed {
+					f.server.closeIssue(10)
+				}
+				f.server.setIssueUpdatedAt(10, time.Now().Add(-tc.age))
+				renamed := confirmed("new-spelling")
+				if renamed.DedupeKey == prior.DedupeKey {
+					t.Fatal("the re-nomination must carry a different dedupeKey")
+				}
+				f.writeArtifact(renamed)
+
+				result := f.mustRun()
+				if result.Created != 1 || result.Filed != 1 || len(result.Issues) != 1 {
+					t.Fatalf("result = %+v; want the re-nomination filed under its new key", result)
+				}
+				issue := result.Issues[0]
+				number := f.issueNumber(issue.IssueID)
+				if tc.approved {
+					if !issue.Approved || result.Approved != 1 || !f.server.issueHasLabel(number, providers.LabelApproved) {
+						t.Fatalf("issue = %+v; want approved once the prior closed outside the window", issue)
+					}
+					return
+				}
+				if issue.Approved || result.Approved != 0 || !strings.Contains(strings.Join(issue.ApprovalUnmet, "\n"), tc.want) {
+					t.Fatalf("issue = %+v; want unapproved with %q", issue, tc.want)
+				}
+				if f.server.issueHasLabel(number, providers.LabelApproved) || f.server.issueHasLabel(10, providers.LabelApproved) {
+					t.Fatal("goobers:approved was applied")
+				}
+				for _, n := range []int{number, 10} {
+					for _, event := range f.server.labelEvents(n) {
+						if strings.Contains(event, "approve-token") {
+							t.Fatalf("the approve credential touched #%d: %q", n, event)
+						}
+					}
+				}
+			})
 		}
 	})
 }
@@ -598,6 +730,9 @@ func TestFileIssuesApprovesAConfirmedFinding(t *testing.T) {
 			}
 			if !strings.Contains(f.issueBody(number), "- finding: "+string(n.Evidence[0].Tool)+" `") {
 				t.Fatalf("body does not render the finding pointer:\n%s", f.issueBody(number))
+			}
+			if !strings.Contains(f.issueBody(number), findingMarkerFor(n.Evidence[0])) {
+				t.Fatalf("body does not carry the finding marker:\n%s", f.issueBody(number))
 			}
 			data, err := os.ReadFile(filepath.Join(f.workspace, mutationsSidecarFile))
 			if err != nil {
@@ -684,6 +819,11 @@ func TestFileIssuesApprovalBounds(t *testing.T) {
 		{"findings in two packages", func(_ *fileIssuesFixture, n *nomination.Nomination) {
 			n.Evidence = append(n.Evidence, fileIssuesTestFinding)
 		}, "the confirmed findings span more than one package"},
+		{"source evidence in a same-named directory elsewhere", func(_ *fileIssuesFixture, n *nomination.Nomination) {
+			// A test finding's package is resolved to its repository
+			// directory (internal/runner); a top-level runner/ is not it.
+			n.Evidence = []nomination.Evidence{fileIssuesTestFinding, {Kind: nomination.EvidenceSource, Path: "runner/run.go", Line: 1}}
+		}, `source evidence "runner/run.go" is outside the finding's package "internal/runner"`},
 		{"the source finding requires human review", func(_ *fileIssuesFixture, n *nomination.Nomination) { n.RequiresHumanReview = true }, "requires human review"},
 		{"autoApprove never", func(f *fileIssuesFixture, _ *nomination.Nomination) {
 			f.t.Setenv(executor.InputEnvVar("autoApprove"), "never")

@@ -33,9 +33,12 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"test failure (package + test) — that the deterministic signalsStage's\n" +
 	"stdout artifact of THIS run contains byte for byte, as parsed by this\n" +
 	"stage from the run journal; plus riskClass low, type:bug, one package,\n" +
-	"no load-bearing path, no needs-human trigger, no prior issue with the\n" +
-	"same key. autoApprove=deterministic-only opts in (default never) and\n" +
-	"the label is added with the github:issues:approve credential only.\n" +
+	"no load-bearing path, no needs-human trigger, and no open or recently\n" +
+	"closed nominated issue naming the same finding (a body marker the\n" +
+	"filer computes from the finding, not the model's dedupeKey), nor an\n" +
+	"earlier nomination of the same artifact naming it. autoApprove=\n" +
+	"deterministic-only (exactly; default never) opts in and the label is\n" +
+	"added with the github:issues:approve credential only.\n" +
 	"Everything else files unapproved with the reasons in the result. On a\n" +
 	"stage pod the run journal is unreachable, so nothing is approved.\n\n" +
 	"With --check, only validate the artifact and run the read-only dedupe\n" +
@@ -395,12 +398,17 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 		return nomination.Policy{}, fmt.Errorf("dedupeWindowDays input must be a non-negative integer, got %q", providerInput("dedupeWindowDays", "21"))
 	}
 	policy.DedupeWindow = time.Duration(days) * 24 * time.Hour
-	switch mode := strings.ToLower(strings.TrimSpace(providerInput("autoApprove", "never"))); mode {
+	// The vocabulary is exact, not case-folded: the workflow policy table
+	// (internal/workflow/*/policy_actions.go) prescribes approve-issue for
+	// the literal "deterministic-only" only, so any other spelling must be
+	// refused here rather than accepted as the opt-in — otherwise a lane
+	// could approve without having declared approve-issue at admission.
+	switch mode := strings.TrimSpace(providerInput("autoApprove", "never")); mode {
 	case "", "never":
 	case "deterministic-only":
 		policy.AutoApprove = true
 	default:
-		return nomination.Policy{}, fmt.Errorf("autoApprove input must be never or deterministic-only, got %q", mode)
+		return nomination.Policy{}, fmt.Errorf("autoApprove input must be never or deterministic-only (exactly), got %q", mode)
 	}
 	return policy, nil
 }

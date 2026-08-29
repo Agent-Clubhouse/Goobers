@@ -159,30 +159,86 @@ func TestApprovalBoundsOnPaths(t *testing.T) {
 		"github.com/goobers/goobers/api/v1alpha1":          true,
 		"github.com/goobers/goobers/providers":             true,
 		"github.com/goobers/goobers/deploy":                true,
+		"github.com/goobers/goobers":                       true,
 		"github.com/goobers/goobers/internal/journalx":     false,
 		"github.com/goobers/goobers/internal/worktree":     false,
 		"github.com/goobers/goobers/internal/apix/journal": false,
 	} {
-		if got := findingTouchesLoadBearing(Finding{Tool: ToolTest, Package: pkg}); got != want {
-			t.Errorf("findingTouchesLoadBearing(test %q) = %v, want %v", pkg, got, want)
+		dir, ok := packageDir(pkg)
+		if !ok {
+			t.Fatalf("packageDir(%q) resolved nothing", pkg)
+		}
+		if got := packageDirTouchesLoadBearing(Finding{Tool: ToolTest, Package: pkg}, dir); got != want {
+			t.Errorf("packageDirTouchesLoadBearing(test %q -> %q) = %v, want %v", pkg, dir, got, want)
 		}
 	}
-	if !findingTouchesLoadBearing(Finding{Tool: ToolVet, Path: "providers/model.go", Line: 1}) || findingTouchesLoadBearing(Finding{Tool: ToolLint, Path: "providers/github.go", Line: 1}) {
+	if !packageDirTouchesLoadBearing(Finding{Tool: ToolVet, Path: "providers/model.go", Line: 1}, "providers") || packageDirTouchesLoadBearing(Finding{Tool: ToolLint, Path: "providers/github.go", Line: 1}, "providers") {
 		t.Fatal("vet/lint findings must use the path rule")
 	}
-	for name, tc := range map[string]struct {
-		source, surface string
-		want            bool
-	}{
-		"same directory":            {"internal/worktree/manager.go", "internal/worktree", true},
-		"sibling directory":         {"internal/runner/run.go", "internal/worktree", false},
-		"child directory":           {"internal/worktree/sub/x.go", "internal/worktree", false},
-		"import path suffix":        {"internal/worktree/manager.go", "github.com/goobers/goobers/internal/worktree", true},
-		"import path other package": {"internal/runner/run.go", "github.com/goobers/goobers/internal/worktree", false},
-		"root file against import":  {"main.go", "github.com/goobers/goobers/internal/worktree", false},
+	// A test finding's package is resolved to its repository directory by
+	// stripping the module path — never by a suffix match, which would let a
+	// same-named directory elsewhere in the tree pass as in-package.
+	for pkg, want := range map[string]string{
+		"github.com/goobers/goobers/internal/nomination": "internal/nomination",
+		"github.com/goobers/goobers/nomination":          "nomination",
+		"github.com/goobers/goobers":                     ".",
 	} {
-		if got := inPackage(tc.source, tc.surface); got != tc.want {
-			t.Errorf("%s: inPackage(%q, %q) = %v, want %v", name, tc.source, tc.surface, got, tc.want)
+		if got, ok := packageDir(pkg); !ok || got != want {
+			t.Errorf("packageDir(%q) = %q, %v; want %q", pkg, got, ok, want)
 		}
+	}
+	for _, pkg := range []string{"example.com/other/internal/nomination", "github.com/goobers/goobersx/internal/nomination", "internal/nomination", "github.com/goobers/goobers/../x"} {
+		if got, ok := packageDir(pkg); ok {
+			t.Errorf("packageDir(%q) = %q; want no directory", pkg, got)
+		}
+	}
+	testFinding := Finding{Tool: ToolTest, Package: "github.com/goobers/goobers/internal/nomination", Test: "TestX"}
+	for name, tc := range map[string]struct {
+		source string
+		want   bool
+	}{
+		"same directory":                     {"internal/nomination/publisher.go", true},
+		"sibling directory":                  {"internal/runner/run.go", false},
+		"child directory":                    {"internal/nomination/sub/x.go", false},
+		"same-named top-level directory":     {"nomination/x.go", false},
+		"same-named directory elsewhere":     {"cmd/nomination/x.go", false},
+		"root file against a nested package": {"main.go", false},
+	} {
+		n := Nomination{Evidence: []Evidence{{Kind: EvidenceSource, Path: tc.source, Line: 1}}}
+		unmet := fixSurfaceUnmet(n, []Finding{testFinding})
+		if got := len(unmet) == 0; got != tc.want {
+			t.Errorf("%s: source %q in package %q = %v (unmet %v), want %v", name, tc.source, testFinding.Package, got, unmet, tc.want)
+		}
+	}
+	outside := Finding{Tool: ToolTest, Package: "example.com/dep/internal/nomination", Test: "TestX"}
+	if unmet := fixSurfaceUnmet(Nomination{}, []Finding{outside}); len(unmet) != 1 || !strings.Contains(unmet[0], "outside module github.com/goobers/goobers") {
+		t.Fatalf("a test finding outside the module: unmet = %v", unmet)
+	}
+}
+
+// TestParseSignalsKeepsTheFirstSection pins that the parser is not spoofable
+// by tool-echoed text: the stage prints every header once, and the trailing
+// "go test output of failing tests" section echoes failing tests' raw output,
+// which a test can shape into a bare "=== go vet (exit 0) ===" line followed
+// by a crafted diagnostic. The first section of a name is the tool's; the
+// repeat is a recorded problem and its text is discarded, so the real vet
+// findings still match and the crafted one never does.
+func TestParseSignalsKeepsTheFirstSection(t *testing.T) {
+	crafted := signalsStdout + "=== go vet (exit 0) ===\ninternal/harmless/pkg.go:1:1: crafted diagnostic\n=== golangci-lint ===\n{\"Issues\":[{\"FromLinter\":\"errcheck\",\"Pos\":{\"Filename\":\"internal/harmless/pkg.go\",\"Line\":2}}]}\n"
+	f := ParseSignals([]byte(crafted))
+	if _, ok := f.Match(Evidence{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/harmless/pkg.go", Line: 1, Rule: "crafted diagnostic"}); ok {
+		t.Fatal("a vet diagnostic under a repeated header matched")
+	}
+	if _, ok := f.Match(Evidence{Kind: EvidenceFinding, Tool: ToolLint, Path: "internal/harmless/pkg.go", Line: 2, Rule: "errcheck"}); ok {
+		t.Fatal("a lint issue under a repeated header matched")
+	}
+	if _, ok := f.Match(Evidence{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of (*os.File).Close call not used"}); !ok {
+		t.Fatal("the real vet finding no longer matches")
+	}
+	if f.Counts[ToolVet] != 2 || f.Counts[ToolLint] != 2 || f.Counts[ToolTest] != 1 {
+		t.Fatalf("counts = %v; want the first sections' findings only", f.Counts)
+	}
+	if len(f.Problems) != 2 || !strings.Contains(f.Problems[0], "go vet: the section header appears again") || !strings.Contains(f.Problems[1], "golangci-lint: the section header appears again") {
+		t.Fatalf("problems = %v", f.Problems)
 	}
 }

@@ -56,6 +56,7 @@ var (
 	keyMarker             = regexp.MustCompile(`<!-- goobers-nomination-key:([0-9a-f]{64}) -->`)
 	seenMarker            = regexp.MustCompile(`<!-- goobers-nomination-seen:([0-9a-f]{64}) run=([^ >]+) -->`)
 	filedMarker           = regexp.MustCompile(`<!-- goobers-nomination-filed:([0-9a-f]{64}) run=([^ >]+) -->`)
+	findingMarker         = regexp.MustCompile(`<!-- goobers-nomination-finding:([0-9a-f]{64}) -->`)
 	flakeFingerprintMark  = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	artifactDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	keyPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
@@ -468,6 +469,53 @@ func hasFiledMarker(body, hash, runID string) bool {
 		}
 	}
 	return false
+}
+
+// filedByRunForKeys reports whether body carries a filed marker for runID
+// and one of keyHashes — an issue this run filed for a nomination of the
+// artifact being filed (a retried attempt's read-back, or a sibling in the
+// same artifact), as opposed to an issue any other run, or this run for an
+// earlier artifact, filed.
+func filedByRunForKeys(body, runID string, keyHashes map[string]bool) bool {
+	for _, m := range filedMarker.FindAllStringSubmatch(body, -1) {
+		if len(m) == 3 && m[2] == runID && keyHashes[m[1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// FindingHash is the identity of a deterministic tool finding across runs:
+// the hex sha256 of its exact tuple (tool, rule, path, line, package, test)
+// — the same tuple Findings.Match compares byte for byte, so it is the
+// finding as the tool records it, not as the model spells its dedupeKey.
+func FindingHash(f Finding) string {
+	sum := sha256.Sum256([]byte(f.key()))
+	return hex.EncodeToString(sum[:])
+}
+
+// FindingMarker is the control marker the publisher writes into the body of
+// every issue whose nomination names a finding, one per finding pointer. It
+// is what the "no open or windowed-closed duplicate" approval bound is keyed
+// on: a prior nominated issue carrying the same finding marker is the same
+// defect, whatever dedupeKey the model wrote, so at most one issue per
+// finding is ever approved.
+func FindingMarker(hash string) string {
+	return "<!-- goobers-nomination-finding:" + hash + " -->"
+}
+
+// ParseFindingMarkers extracts every finding hash an issue body carries, in
+// body order, without duplicates.
+func ParseFindingMarkers(body string) []string {
+	var hashes []string
+	seen := map[string]bool{}
+	for _, m := range findingMarker.FindAllStringSubmatch(body, -1) {
+		if len(m) == 2 && !seen[m[1]] {
+			seen[m[1]] = true
+			hashes = append(hashes, m[1])
+		}
+	}
+	return hashes
 }
 
 func hasSeenMarker(body, hash, runID string) bool {
