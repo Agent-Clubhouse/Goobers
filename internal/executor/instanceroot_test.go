@@ -17,7 +17,7 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// --- kind-based refusals: Run.Kind != shell ---
 		{name: "ci-poll kind", cmd: []string{"goobers", "ci-poll"}, kind: "ci-poll", want: true},
 		{name: "external-telemetry kind", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: true},
-		{name: "explicit shell kind", cmd: []string{"goobers", "backlog-dedupe"}, kind: "shell", want: false},
+		{name: "explicit shell kind falls through to command", cmd: []string{"goobers", "push-branch"}, kind: "shell", want: false},
 		{name: "empty kind falls through to command", cmd: []string{"make", "ci"}, kind: "", want: false},
 
 		// --- unconditional ledger/journal/telemetry commands ---
@@ -33,23 +33,34 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "gather-implement-context", cmd: []string{"goobers", "gather-implement-context"}, want: true},
 		{name: "issue-close-out", cmd: []string{"goobers", "issue-close-out"}, want: true},
 		{name: "telemetry-query", cmd: []string{"goobers", "telemetry-query", "--window", "24h"}, want: true},
+		{name: "backlog-dedupe", cmd: []string{"goobers", "backlog-dedupe"}, want: true},
+		{name: "gather-pr-context", cmd: []string{"goobers", "gather-pr-context"}, want: true},
+		{name: "gather-ci-failures", cmd: []string{"goobers", "gather-ci-failures"}, want: true},
+		{name: "gather-issue-context", cmd: []string{"goobers", "gather-issue-context"}, want: true},
+		{name: "gather-sibling-context", cmd: []string{"goobers", "gather-sibling-context", "--no-verdict-cache"}, want: true},
+		{name: "resolve-review-threads", cmd: []string{"goobers", "resolve-review-threads"}, want: true},
+		{name: "select-source", cmd: []string{"goobers", "select-source"}, want: true},
+		{name: "publish-batch", cmd: []string{"goobers", "publish-batch"}, want: true},
+		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},
+		{name: "post-merge", cmd: []string{"goobers", "post-merge"}, want: true},
+		{name: "reconcile-branches", cmd: []string{"goobers", "reconcile-branches"}, want: true},
+		{name: "validate-plan", cmd: []string{"goobers", "validate-plan"}, want: true},
+		{name: "gate-removal-guard", cmd: []string{"goobers", "gate-removal-guard"}, want: true},
 
 		// --- flag-gated commands ---
 		{name: "backlog-query --claim", cmd: []string{"goobers", "backlog-query", "--claim"}, want: true},
 		{name: "backlog-query --release", cmd: []string{"goobers", "backlog-query", "--release"}, want: true},
 		{name: "backlog-query --reconcile", cmd: []string{"goobers", "backlog-query", "--reconcile"}, want: true},
 		{name: "backlog-query --debug --claim", cmd: []string{"goobers", "backlog-query", "--debug", "--claim"}, want: true},
-		{name: "backlog-query bare is read-only", cmd: []string{"goobers", "backlog-query"}, want: false},
+		{name: "backlog-query bare reaches the scan lock", cmd: []string{"goobers", "backlog-query"}, want: true},
+		{name: "backlog-query --debug alone reaches the scan lock", cmd: []string{"goobers", "backlog-query", "--debug"}, want: true},
 		{name: "backlog-query --read-only", cmd: []string{"goobers", "backlog-query", "--read-only"}, want: false},
-		{name: "backlog-query --debug alone", cmd: []string{"goobers", "backlog-query", "--debug"}, want: false},
 		{name: "backlog-health --feedback", cmd: []string{"goobers", "backlog-health", "--feedback"}, want: true},
 		{name: "backlog-health bare is read-only", cmd: []string{"goobers", "backlog-health"}, want: false},
 
 		// --- unrelated / provider-only commands stay dispatchable ---
-		{name: "backlog-dedupe", cmd: []string{"goobers", "backlog-dedupe"}, want: false},
 		{name: "push-branch", cmd: []string{"goobers", "push-branch"}, want: false},
 		{name: "open-pr", cmd: []string{"goobers", "open-pr"}, want: false},
-		{name: "publish-batch --claim is a different command", cmd: []string{"goobers", "publish-batch", "--claim"}, want: false},
 		{name: "make ci is not a goobers CLI stage", cmd: []string{"make", "ci"}, want: false},
 		{name: "empty command", cmd: nil, want: false},
 		{name: "goobers with no subcommand", cmd: []string{"goobers"}, want: false},

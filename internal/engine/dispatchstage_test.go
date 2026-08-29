@@ -653,6 +653,69 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	}
 }
 
+// TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch: the same
+// refusal when the kind is resolved DYNAMICALLY via inputsFrom rather than
+// declared statically in Task.Inputs — a supported shape
+// (internal/workflow/v_3_0/timeoutcoherence.go explicitly treats
+// task.InputsFrom[boundedwait.InputKind] as legal but unprovable
+// statically). The task's static Run.Command names an ordinary known
+// built-in (docs-churn) — a dynamic-only kind fails 3.0 compile's own
+// isShellStage check if the command isn't a known subcommand, since that
+// check does not special-case inputsFrom either — so this reproduces
+// exactly the shape decision 003 warns about: a stage that reads as an
+// ordinary shell command at admission time but resolves to a built-in kind
+// with no pod-side path at run time. dispatchRemoteTask must read the
+// resolved value out of env.Inputs (which runTask overlays from inputsFrom
+// before routing), not the task's static Inputs alone — otherwise a
+// dynamically-resolved ci-poll/external-telemetry kind sails past this
+// guard, a pod is created, and only the pod-entrypoint backstop catches it.
+func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "resolve-kind",
+		Tasks: []apiv1.Task{
+			{Name: "resolve-kind", Type: apiv1.TaskDeterministic, Goal: "resolve the downstream stage's kind",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "await-ci"},
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:        &apiv1.DeterministicRun{Command: []string{"goobers", "docs-churn"}, Workspace: apiv1.WorkspaceScratch},
+				InputsFrom: map[string]string{"kind": "resolvedKind"}},
+		},
+	}
+	in := runInput("mode-three-instance-root-dynamic-kind", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{"resolvedKind": "ci-poll"},
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q (a kind resolved dynamically via inputsFrom must be refused exactly like a statically-declared one)", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "ci-poll") {
+		t.Fatalf("failure message = %q, want it to name the dynamically-resolved kind", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("a dynamically-resolved kind=ci-poll stage must never reach the dispatcher")
+	}
+}
+
 // remotePlacementFor is the whole of the workflow's routing decision: pure
 // data from RunInput, no solve, no config, no I/O.
 func TestRemotePlacementFor(t *testing.T) {

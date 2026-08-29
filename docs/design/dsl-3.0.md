@@ -313,6 +313,7 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | RNR002 | Error | Runner has a non-self `host` but the instance declares no `engine:` |
 | RNR003 | Error iff `runners:` declared; else Warning | A stage quantity minimum exceeds every runner's declared ceiling |
 | RNR004 | Warning (always) | Local mode: resource minimums advisory — the `self` ceiling cannot cover a stage minimum |
+| RNR005 | Warning (always) | A 3.0 stage's resolved eligible runner set excludes every self entry, but its command or built-in kind needs the daemon's instance root (decision 003 ruling 3) |
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |

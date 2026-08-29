@@ -163,7 +163,15 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		// over a placement the substrate cannot yet honour. No activity is
 		// executed, so ActDispatchStage's dispatcher is never reached and no
 		// pod is ever created.
-		if kind := t.Inputs["kind"]; executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
+		//
+		// Read from env.Inputs, not t.Inputs: a stage may declare its kind
+		// dynamically via inputsFrom (internal/workflow/v_3_0/timeoutcoherence.go
+		// treats task.InputsFrom[boundedwait.InputKind] as legal-but-unprovable
+		// statically), and runTask has already resolved that overlay into
+		// env.Inputs immediately before routing here — t.Inputs alone would
+		// miss a dynamically-resolved ci-poll/external-telemetry kind and let
+		// a pod be created for it.
+		if kind := resolvedKindInput(env); executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
 			return dispatchInstanceRootRefusal(ctx, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
@@ -175,6 +183,17 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		result.Integrity = produced
 		return result, err
 	}, deltaOut)
+}
+
+// resolvedKindInput reads the stage's resolved executor.InputKind ("kind")
+// input from env.Inputs — the fully-resolved input map runTask builds by
+// overlaying any inputsFrom onto the static declaration (engine.go) — rather
+// than the task's static Inputs alone, so a dynamically-resolved kind is
+// visible to the instance-root refusal exactly as it will be to the shell
+// executor at actual run time (executor.stringInput reads the same map).
+func resolvedKindInput(env apiv1.InvocationEnvelope) string {
+	kind, _ := env.Inputs[executor.InputKind].(string)
+	return strings.TrimSpace(kind)
 }
 
 // instanceRootRefusalReason names the command (or stage kind) and why, for

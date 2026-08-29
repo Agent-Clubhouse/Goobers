@@ -159,7 +159,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// true in a pod today, since the dispatcher never stamps it) rather than
 	// "this is a pod": once a plane client lands and a pod gets a scoped
 	// root, this stops firing on its own, no dispatchexec.go change needed.
-	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar("kind"))) &&
+	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) &&
 		strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
 		return failureEnvelope(executor.StageRequiresInstanceRootCode, fmt.Sprintf(
 			"stage command %v requires the daemon's instance root (%s is unset in this pod); this should have been refused before dispatch",
