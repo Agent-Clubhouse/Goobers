@@ -81,8 +81,8 @@ func TestSelectFailsClosed(t *testing.T) {
 			if selected != test.selected {
 				t.Fatalf("selected = %v, want %v", selected, test.selected)
 			}
-			if selected && client.Gaggle() != "core" {
-				t.Fatalf("gaggle = %q", client.Gaggle())
+			if selected && client.cfg.Gaggle != "core" {
+				t.Fatalf("gaggle = %q", client.cfg.Gaggle)
 			}
 		})
 	}

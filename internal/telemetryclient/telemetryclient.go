@@ -152,9 +152,6 @@ func NewHTTP(cfg Config) (*HTTP, error) {
 	return &HTTP{cfg: cfg}, nil
 }
 
-// Gaggle reports the gaggle every read through this backend is scoped by.
-func (h *HTTP) Gaggle() string { return h.cfg.Gaggle }
-
 // Select chooses the telemetry read backend for a stage process from its
 // environment. It reports selected=false when no endpoint is configured — the
 // caller then reads its own instance-local rollup, exactly as before — and
