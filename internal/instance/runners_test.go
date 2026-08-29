@@ -443,6 +443,26 @@ func TestValidateRunnersEntryBranches(t *testing.T) {
 			},
 		},
 		{
+			name: "windows claim block on a windows runner is accepted",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{OS: RunnerOSWindows, Windows: &RunnerWindowsClaims{AVExclusionsVerified: true}}}}
+			},
+		},
+		{
+			name: "windows claim block on a non-windows runner is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{OS: RunnerOSLinux, Windows: &RunnerWindowsClaims{AVExclusionsVerified: true}}}}
+			},
+			wantErr: `provides.windows is declared but provides.os is "linux"`,
+		},
+		{
+			name: "windows claim block on a runner with no os is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{Windows: &RunnerWindowsClaims{}}}}
+			},
+			wantErr: `provides.windows is declared but provides.os is ""`,
+		},
+		{
 			name: "unknown restriction is refused naming the closed list",
 			mutate: func(c *Config) {
 				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Restrictions: []RunnerRestriction{"network:proxy"}}}
