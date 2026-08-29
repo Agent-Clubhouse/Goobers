@@ -82,18 +82,25 @@ func compactSchedulerRetention(
 
 	if db != nil && instanceLog != nil {
 		var compaction journal.InstanceEventsCompaction
+		compacted := false
 		err := db.MaintainSchedulerRetention(ctx, instanceLog.Dir(), cutoff, func() error {
 			result, err := instanceLog.Compact(cutoff, budgetCutoff)
 			if err != nil {
 				return err
 			}
 			compaction = result
+			compacted = true
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		reportCleanup(compaction)
+		// Only a compaction that actually ran carries a verdict about stale
+		// generations. Reporting the zero value when the closure never fired
+		// would clear a real consecutive-failure streak with no evidence.
+		if compacted {
+			reportCleanup(compaction)
+		}
 		return nil
 	}
 	if db != nil {
