@@ -1052,3 +1052,119 @@ func TestModeThreeNamesNoCheckoutCapabilityForScratch(t *testing.T) {
 		t.Fatalf("named checkout capability %q for a scratch workspace, which clones nothing", got)
 	}
 }
+
+// TestStagePlacementAccompaniesSettledAttemptsOnly pins the contract
+// StagePlacement's doc now states, because that doc is what the step-6 runner
+// will code against and a comment cannot fail.
+//
+// Two halves, and the second is the one that was previously mis-documented:
+//
+//   - a SETTLED attempt (success, or ErrStageFailed with surrender confirmed)
+//     carries provenance with ALL FIVE fields populated — so a caller may read
+//     Pod/Image/PodStartedAt without a nil-ish branch;
+//   - an attempt refused BEFORE its pod existed carries none at all, even
+//     though the dispatcher's report already names the runner and the image.
+//     DispatchStage discards that report. The evidence that survives is the
+//     classified error's text, so the runner and the skew subject are asserted
+//     there instead — that is what §11 acceptance 6 has to be journalled from
+//     for a refused placement.
+func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
+	settled := func(t *testing.T, dispatchErr error, phase corev1.PodPhase) *StagePlacement {
+		t.Helper()
+		store := surrenderStore(t)
+		queuedAt := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
+		fake := &fakeStageDispatcher{
+			report: dispatcher.Report{
+				Runner: "win-ci", Pod: "goobers-run-settled-build-1", Image: "ghcr.io/example/win:v1",
+				Phase: phase, SurrenderConfirmed: true, Disposed: true,
+				QueuedAt: queuedAt, PodStartedAt: queuedAt.Add(11 * time.Second),
+			},
+			err: dispatchErr,
+		}
+		putSurrendered(t, store, "run-settled", "build", 1, dispatcher.SurrenderedResult{
+			Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "settled"},
+		})
+		a := &Activities{Dispatcher: fake, Surrenders: store}
+		result, err := a.DispatchStage(context.Background(), dispatchInput("run-settled", "build", 1))
+		if err != nil {
+			t.Fatalf("DispatchStage on a settled attempt: %v", err)
+		}
+		if result.Placement == nil {
+			t.Fatal("settled attempt returned no placement provenance")
+		}
+		return result.Placement
+	}
+
+	for _, tc := range []struct {
+		name        string
+		dispatchErr error
+		phase       corev1.PodPhase
+	}{
+		{name: "success", phase: corev1.PodSucceeded},
+		{name: "stage failed with surrender confirmed", phase: corev1.PodFailed,
+			dispatchErr: fmt.Errorf("%w (run run-settled stage build attempt 1, pod p)", dispatcher.ErrStageFailed)},
+	} {
+		t.Run("settled: "+tc.name+" populates every field", func(t *testing.T) {
+			got := settled(t, tc.dispatchErr, tc.phase)
+			// Field by field rather than a DeepEqual against a want: the
+			// claim under test is "no field is ever zero", and a struct
+			// comparison would still pass if the contract later grew a
+			// sixth field nobody populated.
+			if got.Runner == "" || got.Pod == "" || got.Image == "" ||
+				got.QueuedAt.IsZero() || got.PodStartedAt.IsZero() {
+				t.Fatalf("placement = %+v; a settled attempt must populate runner, pod, image, queuedAt and podStartedAt — "+
+					"StagePlacement's doc tells the driver it may read all five without a partial-block branch", got)
+			}
+		})
+	}
+
+	// The three refusals §11 acceptance 6 most wants journalled, each raised
+	// where Dispatch raises it: before CreatePod, with a report that already
+	// carries Runner (and, for skew, the image).
+	for _, tc := range []struct {
+		name        string
+		err         error
+		report      dispatcher.Report
+		wantInError []string
+	}{
+		{
+			name:        "capacity wait",
+			err:         fmt.Errorf("dispatcher: capacity wait for runner %q timed out", "win-ci"),
+			report:      dispatcher.Report{Runner: "win-ci", QueuedAt: time.Now().UTC()},
+			wantInError: []string{"win-ci"},
+		},
+		{
+			name:        "decision-009 skew refusal",
+			err:         &dispatcher.SkewError{Image: "ghcr.io/example/win:v1", Reason: "tag is not this dispatcher's commit"},
+			report:      dispatcher.Report{Runner: "win-ci", QueuedAt: time.Now().UTC()},
+			wantInError: []string{"ghcr.io/example/win:v1"},
+		},
+		{
+			name:        "agentic kit publish",
+			err:         fmt.Errorf("dispatcher: publish agentic kit for run run-refused stage build attempt 1: blob plane unavailable"),
+			report:      dispatcher.Report{},
+			wantInError: []string{"publish agentic kit"},
+		},
+	} {
+		t.Run("refused before the pod existed: "+tc.name, func(t *testing.T) {
+			fake := &fakeStageDispatcher{report: tc.report, err: tc.err}
+			a := &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}
+			result, err := a.DispatchStage(context.Background(), dispatchInput("run-refused", "build", 1))
+			if err == nil {
+				t.Fatal("DispatchStage returned no error for a refused placement")
+			}
+			if result.Placement != nil {
+				t.Fatalf("placement = %+v, want nil: DispatchStage discards the report on an unsettled "+
+					"dispatcher error, so provenance cannot accompany a refusal", result.Placement)
+			}
+			// Not a gap left silent: the runner (and the skew subject) reach
+			// the driver in the classified error's message, which is the
+			// evidence a refused placement is journalled from.
+			for _, want := range tc.wantInError {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("classified error %q does not name %q; a refused placement's only provenance is this text", err, want)
+				}
+			}
+		})
+	}
+}

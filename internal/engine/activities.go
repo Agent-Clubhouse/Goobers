@@ -105,17 +105,18 @@ type DispatchStageResult struct {
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
-	Mutations      []mutationFact `json:"mutations,omitempty"`
+	Mutations      []MutationFact `json:"mutations,omitempty"`
 	MutationIssues []string       `json:"mutationIssues,omitempty"`
 	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
 	// committed (#3763), for the engine to hand to the next stage. Only a
 	// pod-dispatched stage produces one; a self-placed stage needs none,
 	// because its commits are already on the shared run branch.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
-	// Placement is where this attempt actually ran, when it ran in a pod.
-	// Nil for every in-process arm (InvokeGoober, RunDeterministic,
-	// ReviewGoober): those execute on the host that is already recorded, so a
-	// provenance block there would say nothing.
+	// Placement is where this attempt actually ran, when it ran in a pod and
+	// the attempt SETTLED. Nil for every in-process arm (InvokeGoober,
+	// RunDeterministic, ReviewGoober): those execute on the host that is
+	// already recorded, so a provenance block there would say nothing. Nil
+	// also, and unavoidably, for a refused placement — see StagePlacement.
 	Placement *StagePlacement `json:"placement,omitempty"`
 }
 
@@ -130,13 +131,40 @@ type DispatchStageResult struct {
 // second — which runner served the stage, which pod carried it, which image
 // that pod actually ran, and how long the attempt waited for capacity.
 //
-// Every field is omitzero: a Local (self) resolution never reaches here, and
-// an attempt that failed before its pod existed carries the runner name alone.
+// SETTLED ATTEMPTS ONLY, and every field is then populated. This is a property
+// of the seam, not a coincidence, so read it as the contract:
+// DispatchStage builds provenance at exactly one return — the one that carries
+// a surrendered envelope — and every dispatcher error that left surrender
+// unconfirmed is returned as a classified error with the report DISCARDED
+// (dispatchstage.go, the SurrenderConfirmed guard). A settled outcome in turn
+// requires CreatePod to have already succeeded, and Dispatch stamps Runner and
+// QueuedAt before it renders, Image off the rendered spec, and Pod and
+// PodStartedAt immediately after the create. So a non-nil *StagePlacement
+// always names all five. Do NOT write a branch for a partially populated
+// block: it is unreachable, and code that handles it is untested code that
+// will rot.
+//
+// The corollary is the honest cost of this shape, and a caller journalling
+// §11 acceptance 6 has to know it: the placement failures an operator most
+// wants to see — a capacity wait that timed out, a decision-009 skew refusal,
+// an agentic kit that would not publish — deliver NO provenance block at all.
+// What crosses instead is the classified error, whose message names the runner
+// ("capacity wait for runner %q", "probe capacity for runner %q") and, for a
+// skew refusal, the exact image ("version-skew refusal for image %q"). That is
+// text, not fields, and it is deliberately all this step ships: carrying a
+// report onto the failure means putting it in the ApplicationError details,
+// where slot 0 already belongs to the infrastructure retry-at instant
+// (classifySeamError / infrastructureRetryDelay), so it is a wire-contract
+// change that belongs with the runner branch that would consume it (step 6),
+// not with the export.
+//
+// Every field is nevertheless omitzero, for decoding tolerance rather than to
+// describe a live state: a block recorded by some other or older producer
+// still round-trips.
 type StagePlacement struct {
 	// Runner is the inventory entry SelectRunner resolved for the attempt.
 	Runner string `json:"runner,omitzero"`
-	// Pod is the created pod's name, empty when the attempt failed before
-	// the pod was created (capacity wait, skew refusal, kit publish).
+	// Pod is the created pod's name.
 	Pod string `json:"pod,omitzero"`
 	// Image is the image the stage container actually ran — the decision-009
 	// skew subject, read back from the rendered pod rather than from the
@@ -145,8 +173,7 @@ type StagePlacement struct {
 	Image string `json:"image,omitzero"`
 	// QueuedAt and PodStartedAt bound the attempt's wait for capacity:
 	// QueuedAt is stamped when the dispatcher accepted the attempt,
-	// PodStartedAt when the pod was created. PodStartedAt is zero for an
-	// attempt that never got a pod.
+	// PodStartedAt when the pod was created.
 	QueuedAt     time.Time `json:"queuedAt,omitzero"`
 	PodStartedAt time.Time `json:"podStartedAt,omitzero"`
 }
@@ -156,13 +183,25 @@ type StagePlacement struct {
 // could drift from the one recorded in history.
 type stageActivityResult = DispatchStageResult
 
-type mutationFact struct {
+// MutationFact is one external effect a stage reported committing — the D5
+// mutation record the driver journals for open-pr / merge-pr / push-branch.
+//
+// EXPORTED alongside DispatchStageResult, and for the same reason: the point
+// of this contract is that a caller outside internal/engine can NAME what it
+// decodes into, and a result whose element type is unnameable defeats that for
+// the one field the runner must journal. mutationFact stays as an alias, so no
+// second type exists and the recorded JSON is untouched.
+type MutationFact struct {
 	Provider  string `json:"provider"`
 	Kind      string `json:"kind"`
 	ID        string `json:"id"`
 	URL       string `json:"url,omitempty"`
 	Operation string `json:"operation,omitempty"`
 }
+
+// mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
+// same reason stageActivityResult is one.
+type mutationFact = MutationFact
 
 type scheduleReconcileActivityInput struct {
 	Namespace     string

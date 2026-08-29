@@ -17,6 +17,7 @@ import (
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	temporalworker "go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -25,6 +26,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -212,6 +214,195 @@ func TestDispatchOne(t *testing.T) {
 			t.Fatalf("control Reconcile error = %v, want %v — with the memo the reconciler DOES attempt the dispatch workflow", err, ErrUnprojectable)
 		}
 	})
+
+	// Ruling 6's restart safety is the strongest claim this workflow makes, so
+	// it is exercised rather than asserted in prose: the property is that a
+	// second start of the SAME attempt id does not dispatch a second time.
+	//
+	// The observable shape is worth pinning too, because it is not the one the
+	// wording suggests. REJECT_DUPLICATE does NOT surface as an
+	// already-started error to the client here — ExecuteWorkflow returns a nil
+	// error and a handle to the ORIGINAL execution. A step-6/7 runner written
+	// against the natural reading ("a duplicate start errors, so an error
+	// means the attempt is lost") would mishandle exactly the restart case
+	// ruling 6 exists to cover; the correct code is simply to .Get() the
+	// handle it is given, which is what this asserts is possible.
+	t.Run("a duplicate start settles the original execution instead of re-dispatching", func(t *testing.T) {
+		again, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			ID:                    dispatchOneWorkflowID,
+			TaskQueue:             workflowQueue,
+			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		}, DispatchOne, in)
+		if err != nil {
+			t.Fatalf("re-starting a settled attempt id returned %v; the runner must be able to re-issue the start and read the original outcome", err)
+		}
+		if again.GetRunID() != run.GetRunID() {
+			t.Fatalf("duplicate start produced execution %q, want the original %q — a fresh execution would re-run a settled, possibly MUTATING stage",
+				again.GetRunID(), run.GetRunID())
+		}
+		var settled DispatchStageResult
+		if err := again.Get(ctx, &settled); err != nil {
+			t.Fatalf("Get on the handle a duplicate start returned: %v", err)
+		}
+		if settled.Summary != "built in a pod for the daemon" {
+			t.Fatalf("duplicate start settled to %+v, want the original attempt's result", settled.ResultEnvelope)
+		}
+		if calls := fake.calls.Load(); calls != 1 {
+			t.Fatalf("dispatcher calls = %d after a duplicate start, want 1 — double execution must be impossible", calls)
+		}
+	})
+
+	// The dedupe key is the WorkflowID; every downstream reader (pod name,
+	// surrender key, journalled attempt) uses the PAYLOAD. Nothing but this
+	// guard makes the two the same attempt, so an id/payload disagreement must
+	// refuse before any pod exists.
+	t.Run("refuses a start whose id is not the attempt in its payload", func(t *testing.T) {
+		before := fake.calls.Load()
+		skewed, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+			// Attempt 2's identity, attempt 1's payload: a fresh,
+			// non-duplicate execution that would re-dispatch a settled attempt.
+			ID:                    DispatchOneWorkflowID("run-dispatch-one", "build", 2),
+			TaskQueue:             workflowQueue,
+			WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		}, DispatchOne, in)
+		if err != nil {
+			t.Fatalf("start mismatched DispatchOne: %v", err)
+		}
+		err = skewed.Get(ctx, nil)
+		if err == nil {
+			t.Fatal("DispatchOne accepted an id that names a different attempt than its payload")
+		}
+		if !strings.Contains(err.Error(), "run-dispatch-one/build/1") {
+			t.Fatalf("refusal %q does not name the attempt the payload describes", err)
+		}
+		if calls := fake.calls.Load(); calls != before {
+			t.Fatalf("dispatcher calls = %d, want %d — the refusal must precede the dispatch, not follow it", calls, before)
+		}
+		// Policy, not infrastructure: a malformed request must not spend the
+		// driver's infra budget on retries that can only re-refuse.
+		class, cerr := ClassifyDispatchFailure(err)
+		if cerr != nil || class != journal.AttemptPolicy {
+			t.Fatalf("ClassifyDispatchFailure(identity refusal) = %q, %v; want %q", class, cerr, journal.AttemptPolicy)
+		}
+	})
+}
+
+// TestDispatchOneFailuresClassifyAsTheActivitysDo is the D15 anti-drift
+// acceptance for exporting ClassifyDispatchFailure.
+//
+// The stated rationale for the export is that "the daemon's runner blocks on a
+// DispatchOne workflow and gets back the SAME error shapes this reads", and
+// DispatchOne returns the activity error BARE with the comment that "wrapping
+// would hide the *temporal.ApplicationError type that classification reads".
+// Both were claims about a real client's error, and every other
+// ClassifyDispatchFailure test feeds hand-built errors — so adding an
+// fmt.Errorf wrap in DispatchOne, the exact mistake that comment warns
+// against, would break the runner's budget arithmetic in step 6 with nothing
+// failing. This runs the error through a real workflow and a real client
+// instead: WorkflowExecutionError -> ActivityError -> ApplicationError, then
+// classified.
+func TestDispatchOneFailuresClassifyAsTheActivitysDo(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("start Temporal dev server: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("stop Temporal dev server: %v", err)
+		}
+	})
+
+	const workflowQueue = "dispatch-one-classify-workflow"
+	temporalClient := server.Client()
+	workflowWorker := temporalworker.New(temporalClient, workflowQueue, temporalworker.Options{})
+	RegisterWith(workflowWorker, &Activities{Workspaces: testWorkspaces(t)})
+	if err := workflowWorker.Start(); err != nil {
+		t.Fatalf("start workflow-queue worker: %v", err)
+	}
+	t.Cleanup(workflowWorker.Stop)
+
+	for _, tc := range []struct {
+		name string
+		// runner names the per-case pinned dispatch queue, so each case's
+		// failure is served by a worker wired to its own dispatcher.
+		runner      string
+		runID       string
+		dispatchErr error
+		want        journal.AttemptClass
+	}{
+		{
+			// Anything unclassified by the seam is infrastructure
+			// (classifyDispatchError), and an infra-classed retry must not
+			// cost the policy budget.
+			name: "a dispatcher fault is infrastructure", runner: "infra-ci", runID: "run-dispatch-classify-infra",
+			dispatchErr: errors.New("dispatcher: create pod gaggle-web/goobers-x: connection refused"),
+			want:        journal.AttemptInfra,
+		},
+		{
+			// A seam refusal is the policy class — the same rule the local
+			// runner applies, so the two drivers spend the same budget.
+			name: "a seam refusal is policy", runner: "policy-ci", runID: "run-dispatch-classify-policy",
+			dispatchErr: &dispatcher.SkewError{Image: "ghcr.io/example/win:v1", Reason: "tag is not this dispatcher's commit"},
+			want:        journal.AttemptPolicy,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queue := dispatcher.QueueName("web", tc.runner)
+			fake := &fakeStageDispatcher{err: tc.dispatchErr}
+			dispatchWorker := temporalworker.New(temporalClient, queue, temporalworker.Options{})
+			RegisterWith(dispatchWorker, &Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+			if err := dispatchWorker.Start(); err != nil {
+				t.Fatalf("start dispatch-queue worker: %v", err)
+			}
+			t.Cleanup(dispatchWorker.Stop)
+
+			in := dispatchInput(tc.runID, "build", 1)
+			in.Placement.Queue = queue
+			in.Run = &apiv1.DeterministicRun{Command: []string{"build.cmd"}, Workspace: apiv1.WorkspaceScratch}
+
+			run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+				ID:                    DispatchOneWorkflowID(tc.runID, "build", 1),
+				TaskQueue:             workflowQueue,
+				WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+			}, DispatchOne, in)
+			if err != nil {
+				t.Fatalf("start DispatchOne: %v", err)
+			}
+			workflowErr := run.Get(ctx, nil)
+			if workflowErr == nil {
+				t.Fatal("DispatchOne succeeded on a failing dispatch")
+			}
+			// The claim under test: the client's error still carries the
+			// activity's typed *temporal.ApplicationError, so the SHARED
+			// classifier reads it. Assert the type is reachable before the
+			// class, so a wrap that hid it fails here with the reason.
+			var appErr *temporal.ApplicationError
+			if !errors.As(workflowErr, &appErr) {
+				t.Fatalf("workflow error %v carries no *temporal.ApplicationError; DispatchOne must return the activity error bare", workflowErr)
+			}
+			class, cerr := ClassifyDispatchFailure(workflowErr)
+			if cerr != nil {
+				t.Fatalf("ClassifyDispatchFailure over a real DispatchOne failure: %v", cerr)
+			}
+			if class != tc.want {
+				t.Fatalf("class = %q (application error type %q), want %q — the runner and the engine must spend the same budget on the same failure",
+					class, appErr.Type(), tc.want)
+			}
+			// stageActivityOptions pins RetryPolicy{MaximumAttempts: 1}, and
+			// it has to hold through DispatchOne: the split policy/infra
+			// budget lives in the DRIVER, so a Temporal-side retry here would
+			// silently double-dispatch under one journalled attempt.
+			if calls := fake.calls.Load(); calls != 1 {
+				t.Fatalf("dispatcher calls = %d, want exactly 1 — the retry budget belongs to the driver, not to this workflow", calls)
+			}
+		})
+	}
 }
 
 // awaitClosedExecution returns the visibility record for workflowID once it is

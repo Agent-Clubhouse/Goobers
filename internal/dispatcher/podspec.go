@@ -492,7 +492,8 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		spec.Tolerations = append(spec.Tolerations, windowsTolerations()...)
 	}
 
-	stage := &spec.Containers[0]
+	// Non-nil: the empty-container template was refused above.
+	stage := stageContainerIn(spec.Containers)
 	// Command/Args are dispatcher-owned in the template path too (#3699):
 	// the disposal gate's surrender requirement applies uniformly to every
 	// host kind, so whatever ENTRYPOINT/CMD the template's image declares is
@@ -544,13 +545,39 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}, nil
 }
 
+// stageContainerIn resolves the stage container within a rendered or templated
+// pod spec's container list: the FIRST one, nil when there is none.
+//
+// This is DI-9's "a template controls sidecars/volumes/node selectors, not
+// which container is the stage" rule, and it lives in one function because it
+// is one rule. Both render paths honour it — RenderPod builds a pod with
+// exactly one container, RenderFromTemplate takes the template's first
+// container as the stage container — and the skew check and the report's image
+// stamp then read the same container the render wrote to, by construction
+// rather than by three sites agreeing. Index 0 rather than a name lookup: a
+// consumer template whose first container is not called "stage" would
+// otherwise silently resolve to nothing.
+//
+// Decision 002 Q2 / architecture §12 open point 2 names this first-container
+// rule as an UNCLOSED architecture point. Routing every reader through here
+// keeps the number of sites a future ruling has to change at one.
+func stageContainerIn(containers []corev1.Container) *corev1.Container {
+	if len(containers) == 0 {
+		return nil
+	}
+	return &containers[0]
+}
+
 // templateStageImage returns the template's stage-container image for the
 // skew check ("" when unreadable; the render itself re-validates shape).
 func templateStageImage(deployment *appsv1.Deployment) string {
-	if deployment == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
+	if deployment == nil {
 		return ""
 	}
-	return deployment.Spec.Template.Spec.Containers[0].Image
+	if stage := stageContainerIn(deployment.Spec.Template.Spec.Containers); stage != nil {
+		return stage.Image
+	}
+	return ""
 }
 
 // refuseOverrides is the §3 refuse-to-create for workflow/gaggle/stage input:

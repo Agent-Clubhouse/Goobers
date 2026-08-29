@@ -591,10 +591,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	if err != nil {
 		return report, err
 	}
-	// Stamped from the rendered spec BEFORE the create call, so a create
-	// failure still reports which image was about to run — that is exactly
-	// the case where an operator needs to know (a skew-passing tag whose pull
-	// or admission then fails).
+	// Stamped from the rendered spec BEFORE the create call, so an IN-PROCESS
+	// caller that inspects the returned report after a create failure still
+	// sees which image was about to run.
+	//
+	// Scope note, because the comment used to over-promise: this does NOT
+	// reach the engine's callers. engine.DispatchStage discards the report on
+	// every error that left surrender unconfirmed, so the only reports whose
+	// Image crosses that activity boundary are settled ones, which by
+	// definition already created their pod (see engine.StagePlacement). The
+	// stamp stays here regardless: it costs nothing, it is the honest ordering
+	// for a direct caller, and it is what a future failure-carrying seam would
+	// read.
 	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {
@@ -651,16 +659,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 }
 
 // stageContainerImage reads the stage container's image off a rendered pod.
-// Both render paths put the stage container FIRST — RenderPod builds the pod
-// with exactly one container, RenderFromTemplate takes the template's first
-// container as the stage container (DI-9) — so index 0 is the single rule that
-// covers both rather than a name lookup that would silently return "" for a
-// consumer template whose first container is not called "stage".
 func stageContainerImage(pod *corev1.Pod) string {
-	if pod == nil || len(pod.Spec.Containers) == 0 {
+	if pod == nil {
 		return ""
 	}
-	return pod.Spec.Containers[0].Image
+	if stage := stageContainerIn(pod.Spec.Containers); stage != nil {
+		return stage.Image
+	}
+	return ""
 }
 
 // renderFor renders the fresh pod for the resolved runner's host kind:
