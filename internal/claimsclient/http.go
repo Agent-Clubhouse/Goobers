@@ -262,7 +262,7 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	}, &response); err != nil {
 		return Listing{}, err
 	}
-	return Listing{Entries: response.Entries, History: response.History}, nil
+	return Listing(response), nil
 }
 
 // MergeLock implements Ledger as a polled lease on the synthetic merge-lock

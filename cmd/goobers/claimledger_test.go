@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/providers"
 )
 
 // claimsPlane is the daemon's REAL claims plane: podauth in front of a
@@ -465,5 +466,114 @@ func TestBacklogDedupeReadsClaimsOverThePlane(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "scheduler", claimLedgerFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the stage's local root grew a claims.json (err = %v); the plane must be the only ledger a pod touches", err)
+	}
+}
+
+// TestBacklogReconcileReservationOverThePlane pins the --reconcile /
+// --feedback reservation's plane shape (finding 002 C1 + the critic's
+// containment row): over the plane the reservation is taken under the run's
+// OWN id — the only id the bearer may act as — and an item the run already
+// holds is reported not-reservable, exactly as the synthesized reservation
+// id was refused by the run's own claim on the file path.
+func TestBacklogReconcileReservationOverThePlane(t *testing.T) {
+	plane := newClaimsPlane(t)
+	token := plane.admitRun(t, "goobers", "curation-run")
+	daemonLedger, err := localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "5"}
+	if ok, _, err := daemonLedger.ClaimScoped(held, "curation-run", "backlog-curation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed held item: ok=%v err=%v", ok, err)
+	}
+	stampClaimsPlaneEnv(t, plane, "curation-run", token)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	podRoot := instance.NewLayout(t.TempDir())
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+
+	if _, acquired, err := reserveBacklogClaimReconciliation(podRoot, repo, "5", time.Now); err != nil || acquired {
+		t.Fatalf("reserving an item the run itself holds: acquired=%v err=%v; want not reservable", acquired, err)
+	}
+	reservation, acquired, err := reserveBacklogClaimReconciliation(podRoot, repo, "6", time.Now)
+	if err != nil || !acquired {
+		t.Fatalf("reserve 6: acquired=%v err=%v", acquired, err)
+	}
+	if reservation.runID != "curation-run" {
+		t.Fatalf("reservation run id = %q, want the run's own id over the plane", reservation.runID)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := reopened.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "6"}); !ok || entry.RunID != "curation-run" {
+		t.Fatalf("daemon ledger entry for 6 = %+v, %v; want held by curation-run", entry, ok)
+	}
+	if err := releaseBacklogClaimReconciliation(podRoot, *reservation); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "6"}); ok {
+		t.Fatal("reservation for 6 was not released on the daemon")
+	}
+	if _, ok := reopened.LookupScoped(held); !ok {
+		t.Fatal("the run's own claim on 5 was released by the reconcile pass")
+	}
+	if _, err := os.Stat(filepath.Join(podRoot.SchedulerDir(), claimLedgerFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the pod root grew a claims.json (err = %v)", err)
+	}
+}
+
+// TestPullRequestClaimsOverThePlane pins the pr-claim family's plane shape:
+// claimPullRequestInOrder leases on the daemon, claimedPullRequestNumber
+// reads the lease back from it, and pr-claim --release surrenders it —
+// with no instance log and no ledger file on the pod's own root.
+func TestPullRequestClaimsOverThePlane(t *testing.T) {
+	plane := newClaimsPlane(t)
+	token := plane.admitRun(t, "goobers", "run-1")
+	daemonLedger, err := localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := daemonLedger.ClaimScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: pullRequestClaimKey(77)}, "run-0", "pr-remediation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed contended PR: ok=%v err=%v", ok, err)
+	}
+	stampClaimsPlaneEnv(t, plane, "run-1", token)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	podRoot := t.TempDir()
+
+	selected, err := claimPullRequestInOrder(podRoot, []providers.PullRequestSummary{{Number: 77}, {Number: 78}}, "run-1", "pr-remediation", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.Number != 78 {
+		t.Fatalf("selected = %+v, want 78 (77 is held by run-0 on the daemon)", selected)
+	}
+	number, ok, err := claimedPullRequestNumber(podRoot)
+	if err != nil || !ok || number != 78 {
+		t.Fatalf("claimedPullRequestNumber = %d, %v, %v", number, ok, err)
+	}
+	available, err := stageClaimAvailablePullRequests(podRoot, "run-1", []providers.PullRequestSummary{{Number: 77}, {Number: 78}, {Number: 79}}, time.Now())
+	if err != nil || len(available) != 2 || available[0].Number != 78 || available[1].Number != 79 {
+		t.Fatalf("claim-available PRs = %+v, %v; want 78 (ours) and 79 (free)", available, err)
+	}
+	if err := releasePRRemediationClaim(podRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := claimedPullRequestNumber(podRoot); err != nil || ok {
+		t.Fatalf("after release: claimed = %v, err = %v", ok, err)
+	}
+	reopened, err := localscheduler.OpenClaimLedger(filepath.Join(plane.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := reopened.ForRunAll("run-0"); len(held) != 1 {
+		t.Fatalf("run-0's claim on the daemon = %+v, want untouched", held)
+	}
+	if _, err := os.Stat(filepath.Join(podRoot, "scheduler")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the pod root grew a scheduler dir (err = %v); the plane must be the only ledger and log a pod touches", err)
 	}
 }
