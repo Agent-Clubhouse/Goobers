@@ -89,6 +89,9 @@ _goobers_completion()
         engine-start)
             flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal"
             ;;
+        engine-queues)
+            flags+=" --temporal-hostport --temporal-namespace --task-queue --timeout --json"
+            ;;
         engine-project)
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;

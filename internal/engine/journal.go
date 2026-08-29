@@ -428,13 +428,27 @@ func (r *runJournal) gatePaused(ctx workflow.Context, gate string) {
 	r.append(ctx, journal.Event{Type: journal.EventGatePaused, Gate: gate})
 }
 
-// gateStarted mirrors internal/gate's recordStart durable pre-dispatch marker.
-func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt int) {
-	r.append(ctx, journal.Event{
+// gateStarted mirrors internal/gate's recordStart durable pre-dispatch
+// marker. podAttempt is the pod dispatch this marker precedes — the gate's
+// gateDispatches ordinal (gatePodAttempt; see gates.go for the two counters'
+// full contract) that the dispatch arm's evaluateWithInfraRetry call is about
+// to claim — and 0 for the self arm, which never dispatches a pod. Passed 0
+// rather than the eventual attempt count on an infra retry: this marker is
+// journaled once, before the retry loop starts, so it can only attribute the
+// FIRST pod attempt an evaluation will try; a retry's own later attempt
+// number is visible on the surrendered result and the pod it names, not
+// re-journaled here. The key is omitted from Runner rather than journaled as
+// 0, so a self-arm gate.started reads exactly as it always has.
+func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt, podAttempt int) {
+	ev := journal.Event{
 		Type:   journal.EventGateStarted,
 		Gate:   gate,
 		Runner: map[string]any{"repassAttempt": repassAttempt},
-	})
+	}
+	if podAttempt > 0 {
+		ev.Runner["podAttempt"] = podAttempt
+	}
+	r.append(ctx, ev)
 }
 
 // evaluatorRetry mirrors internal/gate's recordEvaluatorRetry (#765).

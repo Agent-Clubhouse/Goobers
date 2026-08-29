@@ -236,7 +236,16 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
 			return 2
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot)
+		// The dispatcher's owner identity: this worker's hostname, which
+		// in-cluster is its pod name. It is stamped on every stage pod and is
+		// the scope the orphan sweep below sweeps within, so a sibling
+		// worker's in-flight pods are outside every sweep by construction.
+		owner, oerr := os.Hostname()
+		if oerr != nil {
+			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
+			return 1
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot, owner)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -244,8 +253,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		queues = mergeQueues(queues, dispatch.Queues)
-		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s; dispatch queues %s\n",
-			*dispatchNamespace, strings.Join(dispatch.Queues, ", "))
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
+			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
+		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
+		// anything: reclaim the stage pods this same owner left behind when it
+		// last stopped, asking the engine about each one. A pod whose attempt
+		// is still executing is adopted (left running, its surrender still
+		// lands); only a settled attempt's pod is disposed. Never fatal — see
+		// sweepWorkerStageOrphans.
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
 	host, err := workerhost.New(workerhost.Config{

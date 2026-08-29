@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -51,10 +52,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// (engine.reviewActivityResult). A verdict failure stays policy-classed
 	// and fails the run; a harness failure carries the harness's own class
 	// (see the review arm below), as the self arm's ReviewGoober does.
-	fail := func(code, message string) stageOutcome {
-		envelope := failureEnvelope(code, message)
+	fail := func(code string, err error) stageOutcome {
+		envelope := failureEnvelope(code, err.Error())
 		if kit.IsReview() && reviewSubstrateFailure(code) {
-			envelope.Error.Retryable = true
+			envelope.Error.Retryable = substrateRetryable(err)
 		}
 		return stageOutcome{Result: envelope}
 	}
@@ -70,11 +71,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// it, and resolving twice would mint two credentials for one stage.
 	minted, err := resolveStageCredentials(ctx)
 	if err != nil {
-		return fail("credential_resolve_failed", err.Error())
+		return fail("credential_resolve_failed", err)
 	}
 	workspace, err := os.Getwd()
 	if err != nil {
-		return fail("workspace_provision_failed", fmt.Sprintf("resolve workspace: %v", err))
+		return fail("workspace_provision_failed", fmt.Errorf("resolve workspace: %w", err))
 	}
 	// The checkout may use a credential the AGENT never receives (#3770): it
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
@@ -82,10 +83,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// stage actually declared.
 	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
 	if checkoutErr != nil {
-		return fail("credential_resolve_failed", checkoutErr.Error())
+		return fail("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
-		return fail("workspace_provision_failed", err.Error())
+		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
@@ -97,14 +98,14 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// alone knows about cannot be filled from out here.
 	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
 	if err != nil {
-		return fail("workspace_provision_failed", fmt.Sprintf("create runs dir: %v", err))
+		return fail("workspace_provision_failed", fmt.Errorf("create runs dir: %w", err))
 	}
 
 	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
 	// See dispatchcontext.go: without this every artifact-backed pointer fails
 	// to resolve, because a pod's staging root starts empty.
 	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
-		return fail("context_materialize_failed", err.Error())
+		return fail("context_materialize_failed", err)
 	}
 
 	if kit.IsReview() {
@@ -124,7 +125,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
 			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
 		if derr != nil {
-			return fail("reviewer_diff_failed", derr.Error())
+			return fail("reviewer_diff_failed", derr)
 		}
 		if pointer != nil {
 			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
@@ -133,7 +134,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 
 	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
-		return fail("agentic_executor_unavailable", err.Error())
+		return fail("agentic_executor_unavailable", err)
 	}
 
 	if kit.IsReview() {
@@ -154,7 +155,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 			// class would fail the run where the worker would retry. A
 			// verdict the schema refused, or a harness that would not run,
 			// carries no marker and stays the review's own outcome.
-			outcome := fail("agentic_review_failed", err.Error())
+			outcome := fail("agentic_review_failed", err)
 			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
 			return outcome
 		}
@@ -166,7 +167,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
-		return fail("agentic_invocation_failed", err.Error())
+		return fail("agentic_invocation_failed", err)
 	}
 	return stageOutcome{Result: result}
 }
@@ -185,6 +186,27 @@ func reviewSubstrateFailure(code string) bool {
 		return true
 	}
 	return false
+}
+
+// substrateRetryable narrows reviewSubstrateFailure's Retryable stamp to what
+// the failure actually is, rather than marking every substrate code
+// unconditionally retryable. A *dispatcher.CredentialResolveRefusal is the
+// credential plane's own judgement on THIS request (403
+// capability_undeclared, 409 gate_pin_missing, and the like) — deterministic,
+// so a fresh pod asks the plane the same question and gets the same refusal,
+// and spending a retry on it is pointless: Retryable is false. Everything
+// else this function sees — a dial error or a 5xx the plane never got to
+// answer, a checkout or context-materialize fault that never asked the plane
+// anything, a pod-local harness-construction fault (agentic_executor_
+// unavailable's own errors never wrap a plane response at all) — is
+// transport- or infra-shaped, exactly what a fresh pod's retry exists to
+// ride out, so it keeps the historical Retryable=true.
+func substrateRetryable(err error) bool {
+	var refusal *dispatcher.CredentialResolveRefusal
+	if errors.As(err, &refusal) {
+		return !refusal.Deterministic()
+	}
+	return true
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the

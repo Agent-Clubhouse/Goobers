@@ -104,6 +104,33 @@ func gateEvaluatedEvents(proj JournalProjection) []journal.Event {
 	return out
 }
 
+func gateStartedEvents(proj JournalProjection) []journal.Event {
+	var out []journal.Event
+	for _, op := range proj.Ops {
+		if op.Kind == opAppend && op.Event != nil && op.Event.Type == journal.EventGateStarted {
+			out = append(out, *op.Event)
+		}
+	}
+	return out
+}
+
+// runnerInt reads an int-valued Runner entry. The projection query round-trips
+// through the test environment's data converter (the same JSON path
+// production queries take), so an int Runner value comes back as float64;
+// accepting both keeps this test honest about that without asserting on it.
+func runnerInt(t *testing.T, v any) int {
+	t.Helper()
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	default:
+		t.Fatalf("Runner value %v is %T, want int or float64", v, v)
+		return 0
+	}
+}
+
 func artifactOp(proj JournalProjection, name string) *JournalArtifactOp {
 	for _, op := range proj.Ops {
 		if op.Kind == opArtifact && op.Artifact != nil && op.Artifact.Name == name {
@@ -173,6 +200,14 @@ func TestPlacedAgenticGateEvaluatesThroughDispatchActivity(t *testing.T) {
 		if req.Stage == "review" {
 			t.Fatalf("a worker-side workspace was provisioned for the placed gate (%+v); the reviewer must run in its pod only", req)
 		}
+	}
+
+	started := gateStartedEvents(proj)
+	if len(started) != 1 || started[0].Gate != "review" {
+		t.Fatalf("gate.started = %+v, want exactly one, for review", started)
+	}
+	if got := runnerInt(t, started[0].Runner["podAttempt"]); got != 1 {
+		t.Fatalf("gate.started Runner[podAttempt] = %v, want 1: a placed gate's readiness marker must name which pod dispatch it precedes, so a journal reader can attribute the marker to the pod that answers it", started[0].Runner["podAttempt"])
 	}
 
 	evaluated := gateEvaluatedEvents(proj)
@@ -288,12 +323,19 @@ func TestUnpinnedAndSelfPinnedGatesKeepTheReviewGooberArm(t *testing.T) {
 		}}
 		fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 		workspaces := testWorkspaces(t)
-		executeForProjection(t, in, &Activities{Goober: reviewer, Det: det, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenderStore(t)}, false)
+		proj := executeForProjection(t, in, &Activities{Goober: reviewer, Det: det, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenderStore(t)}, false)
 		if fake.calls.Load() != 0 {
 			t.Fatalf("dispatcher called %d times for a gate with placements %+v; the in-process arm must not dispatch", fake.calls.Load(), placements)
 		}
 		if seen.TaskID == "" {
 			t.Fatal("ActReviewGoober never ran")
+		}
+		started := gateStartedEvents(proj)
+		if len(started) != 1 {
+			t.Fatalf("gate.started = %+v, want exactly one", started)
+		}
+		if _, ok := started[0].Runner["podAttempt"]; ok {
+			t.Fatalf("gate.started Runner = %+v, want no podAttempt key: the in-process arm never dispatches a pod", started[0].Runner)
 		}
 		// The workspace path is stamped by the provisioner per attempt (a
 		// fresh temp dir each run) and is the one field that legitimately
@@ -610,6 +652,17 @@ func TestRepassedPlacedGateDispatchesUnderAFreshAttempt(t *testing.T) {
 	}
 	if fmt.Sprint(gateNumbers) != "[1 2]" {
 		t.Fatalf("gate pod attempts = %v, want [1 2]: a repeated number would surrender against the earlier verdict", gateNumbers)
+	}
+	started := gateStartedEvents(proj)
+	if len(started) != 2 {
+		t.Fatalf("gate.started = %+v, want two: one readiness marker per evaluation", started)
+	}
+	var startedPodAttempts []int
+	for _, ev := range started {
+		startedPodAttempts = append(startedPodAttempts, runnerInt(t, ev.Runner["podAttempt"]))
+	}
+	if fmt.Sprint(startedPodAttempts) != "[1 2]" {
+		t.Fatalf("gate.started podAttempts = %v, want [1 2], matching the actual dispatch numbers %v", startedPodAttempts, gateNumbers)
 	}
 	if fmt.Sprint(gateDeltas) != fmt.Sprint([]string{deltaA, deltaB}) {
 		t.Fatalf("gate deltas = %v, want [%s %s]: each evaluation reviews the implement pass before it", gateDeltas, deltaA, deltaB)
