@@ -454,6 +454,9 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	if err := recordPostMergeTimeout(root, repo, "359", time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("record queue timeout: %v", err)
 	}
+	// reconcile-post-merge writes its provider-stage result file relative to
+	// the working directory, so this must not run in the package directory.
+	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
 	if code != 0 {
