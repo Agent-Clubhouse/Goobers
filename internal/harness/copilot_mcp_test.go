@@ -279,6 +279,39 @@ func TestPrepareCopilotMCPRefusesToTraverseAWorkspaceSymlink(t *testing.T) {
 	}
 }
 
+// TestPrepareCopilotMCPKeepsTheWorkspaceSpelling pins that the scoped
+// runtime root — and so the COPILOT_HOME and config path handed to the
+// subprocess — stays under the workspace root the caller passed rather than
+// the canonicalized root safepath resolves through. Where the workspace is
+// reached through a symlink (macOS's /var, a Windows short path), a
+// canonicalized prefix would name a location the caller's sandbox policy
+// never described.
+func TestPrepareCopilotMCPKeepsTheWorkspaceSpelling(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("prepareCopilotMCP: %v", err)
+	}
+	runtimeRoot := filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
+	var home string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "COPILOT_HOME="); ok {
+			home = value
+		}
+	}
+	if !strings.HasPrefix(home, runtimeRoot+string(filepath.Separator)) {
+		t.Fatalf("COPILOT_HOME = %q, want under %q", home, runtimeRoot)
+	}
+}
+
 func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
 	invoked := false
 	adapter := &CopilotAdapter{

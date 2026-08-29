@@ -48,6 +48,12 @@ type copilotMCPServer struct {
 // directory, whose name no repository content can predict or pre-plant, so
 // those creates need no further resolution — but they still use os.Mkdir
 // rather than os.MkdirAll so a single component is all any of them creates.
+// The root is then re-derived from the caller's own workspace spelling:
+// COPILOT_HOME and the generated config path are handed to the subprocess,
+// and where the workspace is reached through a symlink (macOS's
+// /var -> /private/var, a Windows 8.3 short path) the canonicalized form
+// safepath returns would name a location outside the workspace the sandbox
+// policy and the caller describe.
 func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
 	if len(req.MCPServers) == 0 {
 		return env, nil
@@ -56,10 +62,11 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
 	}
 
-	runtimeRoot, err := safepath.MkdirLeaf(req.Workspace, filepath.FromSlash(copilotMCPRuntimeSubdir), 0o700)
-	if err != nil {
+	runtimeSubdir := filepath.FromSlash(copilotMCPRuntimeSubdir)
+	if _, err := safepath.MkdirLeaf(req.Workspace, runtimeSubdir, 0o700); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime root: %w", err)
 	}
+	runtimeRoot := filepath.Join(req.Workspace, runtimeSubdir)
 	base, err := os.MkdirTemp(runtimeRoot, copilotMCPRuntimePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime: %w", err)

@@ -52,14 +52,24 @@ type copilotConfinement struct {
 // rather than os.MkdirAll, which would happily follow a symlink planted at
 // .goobers/sandbox or at any not-yet-existing intermediate component of it
 // (#2413).
+//
+// The directories are recorded under the workspace spelling the caller
+// passed, not the canonicalized one safepath returns: these paths are handed
+// to the confined subprocess (COPILOT_HOME, TMPDIR, --log-dir) alongside a
+// sandbox policy written in terms of that same workspace root, and on a
+// platform where the workspace is reached through a symlink (macOS's
+// /var -> /private/var, a Windows 8.3 short path) a canonicalized prefix
+// would describe the CLI's runtime state as living somewhere the policy
+// never named. The create still happens through the resolved path, so the
+// no-follow guarantee is unaffected.
 func prepareCopilotConfinement(workspace string) (*copilotConfinement, error) {
 	base := filepath.FromSlash(sandboxRuntimeSubdir)
 	mkdir := func(name string) (string, error) {
-		dir, err := safepath.MkdirLeaf(workspace, filepath.Join(base, name), 0o700)
-		if err != nil {
+		rel := filepath.Join(base, name)
+		if _, err := safepath.MkdirLeaf(workspace, rel, 0o700); err != nil {
 			return "", fmt.Errorf("create sandbox runtime directory: %w", err)
 		}
-		return dir, nil
+		return filepath.Join(workspace, rel), nil
 	}
 	c := &copilotConfinement{}
 	var err error
