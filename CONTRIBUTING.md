@@ -247,7 +247,10 @@ forbidden.
 Registry entries retain every lifecycle transition in `Feature.History`; the
 current `Level` and `SinceVersion` must match the final transition. Use
 `vMAJOR.MINOR.PATCH` release versions (`dev` is reserved for the initial
-pre-release baseline). The compatibility guard compares the current registry
+pre-release baseline). This is the feature-registry's own lineage, distinct
+from git release tags: it advances only on a stable tag, never on a SemVer
+pre-release tag (`v1.2.3-beta.2` and similar — see `docs/guides/releases.md`
+for those). The compatibility guard compares the current registry
 with the feature registry executed from the latest canonical SemVer tag
 advertised by `origin`. A removal is valid only when that tagged build already
 marks the feature deprecated; adding deprecated and removed history in one
