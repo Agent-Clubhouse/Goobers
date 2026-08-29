@@ -1,8 +1,9 @@
 package v30
 
 import (
+	"flag"
 	"fmt"
-	"slices"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,35 +102,25 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 		"reconcile": {"claim-backlog-items", "close-issue"},
 		"release":   {"release-backlog-claim"},
 	},
-	"file-issues": {
-		"auto-approve": {"approve-issue"},
-	},
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
 	},
 }
 
+// readOnlyCommandArguments names, per command, the boolean flag that turns
+// the command into a read-only pass prescribing no policy action. Every
+// command listed here must make that flag win over every other flag it
+// defines (a `--check` that still writes would be a policy hole), and
+// booleanCommandArgument parses only that one flag: any other flag beside it
+// fails the parse and the command is treated as a write.
 var readOnlyCommandArguments = map[string]string{
 	"file-issues":         "check",
 	"respond-to-findings": "check",
 }
 
 var commandArgumentPolicyActionInputs = map[string]map[string]string{
-	"file-issues": {
-		"auto-approve": "autoApprove",
-	},
 	"reconcile-branches": {
 		"delete": "deleteBranches",
-	},
-}
-
-// commandArgumentPolicyActionInputValues names the non-boolean input values
-// that enable an argument-bound policy action, for inputs whose vocabulary is
-// a mode rather than a bool: file-issues' autoApprove is never|low-risk-only,
-// and only the latter prescribes approve-issue.
-var commandArgumentPolicyActionInputValues = map[string]map[string][]string{
-	"file-issues": {
-		"auto-approve": {"low-risk-only"},
 	},
 }
 
@@ -311,8 +302,6 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 			if raw, ok := task.Inputs[inputName]; ok && !dynamic {
 				if parsed, err := strconv.ParseBool(raw); err == nil {
 					defaultEnabled = parsed
-				} else if slices.Contains(commandArgumentPolicyActionInputValues[command][name], strings.TrimSpace(raw)) {
-					defaultEnabled = true
 				}
 			}
 		}
@@ -346,33 +335,11 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	return actions
 }
 
-// booleanCommandArgument reports whether the leading flags of args enable
-// the boolean flag name — the same shape flag.FlagSet parses (a later
-// --name=false overrides, a positional argument or "--" ends the flags) —
-// while tolerating other flags the command defines, so a read-only flag is
-// still recognised beside them (`file-issues --check --auto-approve`).
 func booleanCommandArgument(args []string, name string) bool {
-	enabled := false
-	for _, arg := range args {
-		if arg == "--" || arg == "-" || !strings.HasPrefix(arg, "-") {
-			break
-		}
-		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-")
-		flagName, value, hasValue := strings.Cut(trimmed, "=")
-		if flagName != name {
-			continue
-		}
-		if !hasValue {
-			enabled = true
-			continue
-		}
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			return false
-		}
-		enabled = parsed
-	}
-	return enabled
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	enabled := flags.Bool(name, false, "")
+	return flags.Parse(args) == nil && *enabled
 }
 
 func isCurationBacklogClaim(task apiv1.Task) bool {

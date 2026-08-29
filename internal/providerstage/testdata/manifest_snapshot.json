@@ -128,13 +128,6 @@
         "unlessFlags": [
           "check"
         ]
-      },
-      {
-        "capability": "github:issues:approve",
-        "consequence": "the approve capability-scoped credential is not injected, so every nomination files unapproved at runtime",
-        "anyFlags": [
-          "auto-approve"
-        ]
       }
     ]
   },

@@ -8,8 +8,9 @@
 // goobers.dev/nominations/v1 artifact; `goobers file-issues --check`
 // validates it and runs the read-only dedupe scan; `goobers file-issues`
 // creates the issues. The model proposes area/type labels and evidence; every
-// goobers:* label, the dedupe decision, the budget and the approval decision
-// belong to the publisher.
+// goobers:* label, the dedupe decision and the budget belong to the publisher.
+// The publisher never applies goobers:approved: that is the SEC-047 trust
+// decision and a maintainer supplies it (see Policy).
 package nomination
 
 import (
@@ -20,6 +21,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/goobers/goobers/providers"
 )
 
 // SchemaV1 is the only nominations artifact schema this build reads.
@@ -32,21 +35,32 @@ const SchemaV1 = "goobers.dev/nominations/v1"
 const FlakeLabel = "ci:flake"
 
 // controlMarkerPrefix is the prefix of every HTML-comment marker goobers
-// stage code parses out of an issue body (nomination keys, flake
-// fingerprints, decomposition records). A model-authored field containing it
-// could forge a dedupe key or a flake fingerprint, so validation rejects it.
+// stage code parses out of an issue body (nomination keys, filed-by and seen
+// markers, flake fingerprints, decomposition records). A model-authored field
+// containing it could forge a dedupe key, a flake fingerprint, or another
+// run's ownership of an issue, so validation rejects it.
 const controlMarkerPrefix = "<!-- goobers-"
+
+// rejectedControlText is every piece of control text goobers parses out of
+// an issue body: the HTML-comment markers above and the provider's run-id
+// footer, which GitHubProvider.CreateWorkItem treats as proof that a run
+// already created the issue — a nomination body carrying a sibling's footer
+// would collapse two nominations onto one issue. Every model-authored string
+// the publisher renders into a body or comment is checked against it.
+var rejectedControlText = []string{controlMarkerPrefix, providers.RunIDFooterPrefix}
 
 var (
 	keyMarker             = regexp.MustCompile(`<!-- goobers-nomination-key:([0-9a-f]{64}) -->`)
 	seenMarker            = regexp.MustCompile(`<!-- goobers-nomination-seen:([0-9a-f]{64}) run=([^ >]+) -->`)
+	filedMarker           = regexp.MustCompile(`<!-- goobers-nomination-filed:([0-9a-f]{64}) run=([^ >]+) -->`)
 	flakeFingerprintMark  = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
 	artifactDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	keyPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 )
 
-// RiskClass is the finder's risk assessment of one nomination. Only RiskLow
-// can ever be auto-approved; RiskHuman always files as goobers:needs-human.
+// RiskClass is the finder's risk assessment of one nomination. It is rendered
+// into the issue for the maintainer who decides on approval; RiskHuman always
+// files as goobers:needs-human.
 type RiskClass string
 
 // Risk classes.
@@ -61,7 +75,9 @@ type EvidenceKind string
 
 // Evidence kinds. A journal pointer names a run event; an artifact pointer
 // names a stage artifact by path and content digest; a source pointer names a
-// source location. Only the first two can be verified by the publisher.
+// source location. The kind orders the filing budget (artifact > journal >
+// source); none of them is verified by the publisher — they are pointers for
+// the maintainer, not proof.
 const (
 	EvidenceJournal  EvidenceKind = "journal"
 	EvidenceArtifact EvidenceKind = "artifact"
@@ -111,7 +127,10 @@ type Producer struct {
 	Attempt int    `json:"attempt"`
 }
 
-// Artifact is the goobers.dev/nominations/v1 artifact.
+// Artifact is the goobers.dev/nominations/v1 artifact. RunID must name the
+// run the finder ran in (its GOOBERS_RUN_ID): Validate refuses any other
+// value, so an issue's provenance and the retry read-back both key on the
+// stage's own run id, never on a model-authored one.
 type Artifact struct {
 	Schema      string       `json:"schema"`
 	RunID       string       `json:"runId"`
@@ -126,10 +145,11 @@ type ValidationResult struct {
 	SchemaInvalid bool
 }
 
-// Validate checks every closed-artifact rule. It accumulates findings rather
-// than failing on the first, except for an unsupported schema, which is the
-// one fail-fast case: the rest of the shape cannot be trusted.
-func Validate(artifact Artifact) ValidationResult {
+// Validate checks every closed-artifact rule against the run the stage runs
+// in (runID, the stage's GOOBERS_RUN_ID). It accumulates findings rather than
+// failing on the first, except for an unsupported schema, which is the one
+// fail-fast case: the rest of the shape cannot be trusted.
+func Validate(artifact Artifact, runID string) ValidationResult {
 	if artifact.Schema != SchemaV1 {
 		return ValidationResult{
 			Errors:        []string{fmt.Sprintf("unsupported or malformed nominations schema %q (want %q)", artifact.Schema, SchemaV1)},
@@ -137,11 +157,18 @@ func Validate(artifact Artifact) ValidationResult {
 		}
 	}
 	var errs []string
-	if strings.TrimSpace(artifact.RunID) == "" {
+	switch {
+	case strings.TrimSpace(artifact.RunID) == "":
 		errs = append(errs, "artifact names no runId")
+	case artifact.RunID != runID:
+		// Mirrors decomposition's selection binding: the artifact must be the
+		// one this run's finder produced, not one carried in from elsewhere.
+		errs = append(errs, fmt.Sprintf("artifact names run %q but this stage runs as %q", artifact.RunID, runID))
 	}
 	if strings.TrimSpace(artifact.Producer.Stage) == "" {
 		errs = append(errs, "artifact names no producer stage")
+	} else if text, found := containsControlText(artifact.Producer.Stage); found {
+		errs = append(errs, fmt.Sprintf("artifact producer stage contains goobers control text %q", text))
 	}
 	keys := make(map[string]bool, len(artifact.Nominations))
 	dedupeKeys := make(map[string]string, len(artifact.Nominations))
@@ -191,11 +218,26 @@ func validateNomination(where string, n Nomination, dedupeKeys map[string]string
 	default:
 		errs = append(errs, fmt.Sprintf("%s has riskClass %q (want low, standard, or human)", where, n.RiskClass))
 	}
-	for _, field := range []struct{ name, value string }{
+	// Every model-authored string the publisher renders verbatim into an
+	// issue body or comment is checked, not only the prose fields: an
+	// evidence path or a test name is body text too.
+	rendered := []struct{ name, value string }{
 		{"title", n.Title}, {"body", n.Body}, {"riskReason", n.RiskReason}, {"dedupeKey", n.DedupeKey},
-	} {
-		if strings.Contains(field.value, controlMarkerPrefix) {
-			errs = append(errs, fmt.Sprintf("%s %s contains a goobers control marker (%q), which could forge a dedupe key or flake fingerprint", where, field.name, controlMarkerPrefix))
+	}
+	for i, e := range n.Evidence {
+		rendered = append(rendered,
+			struct{ name, value string }{fmt.Sprintf("evidence %d path", i), e.Path},
+			struct{ name, value string }{fmt.Sprintf("evidence %d runId", i), e.RunID})
+	}
+	if n.TestFailure != nil {
+		rendered = append(rendered,
+			struct{ name, value string }{"testFailure package", n.TestFailure.Package},
+			struct{ name, value string }{"testFailure test", n.TestFailure.Test},
+			struct{ name, value string }{"testFailure signature", n.TestFailure.Signature})
+	}
+	for _, field := range rendered {
+		if text, found := containsControlText(field.value); found {
+			errs = append(errs, fmt.Sprintf("%s %s contains goobers control text %q, which could forge a dedupe key, a flake fingerprint, an issue's filing run, or a create idempotency footer", where, field.name, text))
 		}
 	}
 	errs = append(errs, validateLabels(where, n.Labels)...)
@@ -213,6 +255,17 @@ func validateNomination(where string, n Nomination, dedupeKeys map[string]string
 	return errs
 }
 
+// containsControlText reports the first piece of rejectedControlText a
+// model-authored value carries.
+func containsControlText(value string) (string, bool) {
+	for _, text := range rejectedControlText {
+		if strings.Contains(value, text) {
+			return text, true
+		}
+	}
+	return "", false
+}
+
 // validateLabels enforces the same rule decomposition enforces on child
 // labels (internal/decomposition/plan.go's disallowedChildLabelPrefixes): the
 // model may propose area:* and type:* labels and nothing else. Exactly one
@@ -227,7 +280,12 @@ func validateLabels(where string, labels []string) []string {
 			continue
 		}
 		seen[label] = true
+		text, control := containsControlText(label)
 		switch {
+		case control:
+			// Checked before the allowlisted prefixes so a "type:<!-- goobers-"
+			// label is refused rather than counted as the type label.
+			errs = append(errs, fmt.Sprintf("%s label %q contains goobers control text %q", where, label, text))
 		case strings.HasPrefix(label, "goobers:"), strings.HasPrefix(label, "goobers/status:"):
 			errs = append(errs, fmt.Sprintf("%s requests publisher-owned label %q", where, label))
 		case label == FlakeLabel:
@@ -236,8 +294,6 @@ func validateLabels(where string, labels []string) []string {
 			types++
 		case strings.HasPrefix(label, "area:"):
 			areas++
-		case strings.Contains(label, controlMarkerPrefix):
-			errs = append(errs, fmt.Sprintf("%s label %q contains a goobers control marker", where, label))
 		default:
 			errs = append(errs, fmt.Sprintf("%s requests non-allowlisted label %q (only area:* and type:* may be proposed)", where, label))
 		}
@@ -337,6 +393,23 @@ func ParseFlakeFingerprint(body string) (string, bool) {
 // publisher appends to an open duplicate, once per (key, run).
 func SeenMarker(hash, runID string) string {
 	return "<!-- goobers-nomination-seen:" + hash + " run=" + runID + " -->"
+}
+
+// FiledMarker is the ownership marker the publisher writes into every issue
+// body it creates: the run that filed the key. It is what a retried attempt
+// reads back to find the issue it already created, so it is a control marker
+// (rejected in every model-authored field) and never plain body text.
+func FiledMarker(hash, runID string) string {
+	return "<!-- goobers-nomination-filed:" + hash + " run=" + runID + " -->"
+}
+
+func hasFiledMarker(body, hash, runID string) bool {
+	for _, m := range filedMarker.FindAllStringSubmatch(body, -1) {
+		if len(m) == 3 && m[1] == hash && m[2] == runID {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSeenMarker(body, hash, runID string) bool {

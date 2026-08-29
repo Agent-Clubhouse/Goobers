@@ -455,7 +455,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"file-issues": {
 		{name: "check", desc: "Validate and scan without creating issues"},
-		{name: "auto-approve", desc: "Approve low-risk nominations that clear every precondition"},
 	},
 	"mcp-io": {
 		{name: "config", takesArg: true, desc: "MCP server configuration path"},

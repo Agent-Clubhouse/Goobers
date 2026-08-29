@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,15 +11,13 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/nomination"
 	"github.com/goobers/goobers/providers"
 )
 
-const fileIssuesHelp = "Usage: goobers file-issues [--check] [--auto-approve] [path]\n\n" +
+const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"file-issues is the nomination workflows' deterministic issue filer —\n" +
 	"TBH-1 #2251's first slice, built on the decomposition binding (a typed\n" +
 	"goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher\n" +
@@ -29,15 +25,19 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [--auto-approve] [p
 	"and evidence; this stage dedupes by body marker against every issue\n" +
 	"carrying the nominated label, excludes anything flake-watch already\n" +
 	"fingerprints, enforces maxPerRun, and creates issues with a retry-safe\n" +
-	"idempotency key.\n\n" +
+	"idempotency key. It never applies goobers:approved: that is the SEC-047\n" +
+	"trust decision and a maintainer supplies it.\n\n" +
 	"With --check, only validate the artifact and run the read-only dedupe\n" +
-	"scan (github:issues:read); nothing is created. --auto-approve (or the\n" +
-	"autoApprove=low-risk-only input) applies goobers:approved with the\n" +
-	"github:issues:approve credential, and only to low-risk nominations that\n" +
-	"clear every precondition; the default never approves.\n\n" +
-	"Inputs: nominationsFile (nominations.json), partitionLabel (required),\n" +
-	"maxPerRun (3), dedupeWindowDays (21), backlogLabel (goobers),\n" +
-	"nominatedLabel, autoApprove (never), resultFile (filed-nominations.json).\n" +
+	"scan (github:issues:read); nothing is created. The write path must be\n" +
+	"bound to a --check that marked this artifact valid: wire the check\n" +
+	"stage's nominationsDigest output to the checkDigest input (inputsFrom),\n" +
+	"or point checkFile at its result, or run on a self runner where the\n" +
+	"checkStage's recorded result is in the run journal.\n\n" +
+	"Inputs: nominationsFile (nominations.json), producerStage (triage),\n" +
+	"backlogLabel (required), partitionLabel (required), maxPerRun (3),\n" +
+	"dedupeWindowDays (21), nominatedLabel, checkDigest, checkFile\n" +
+	"(nomination-check.json), checkStage (validate-nominations),\n" +
+	"resultFile (filed-nominations.json).\n" +
 	"Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.\n"
 
 const (
@@ -47,7 +47,10 @@ const (
 )
 
 // fileIssuesCheckResult is `file-issues --check`'s result file; its keys are
-// the stage outputs an automated gate routes on.
+// the stage outputs an automated gate routes on. NominationsDigest is set
+// only when Valid, so a write stage bound through the checkDigest input
+// (inputsFrom: nominationsDigest) is bound to a check that marked the
+// artifact valid — an invalid check carries no digest to bind to.
 type fileIssuesCheckResult struct {
 	Valid             bool                     `json:"valid"`
 	NominationsDigest string                   `json:"nominationsDigest"`
@@ -65,7 +68,6 @@ type fileIssuesResult struct {
 	NominationsDigest string                   `json:"nominationsDigest"`
 	Created           int                      `json:"created"`
 	Filed             int                      `json:"filed"`
-	Approved          int                      `json:"approved"`
 	Suppressed        int                      `json:"suppressed"`
 	Overflow          int                      `json:"overflow"`
 	Refused           int                      `json:"refused"`
@@ -81,7 +83,6 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "file-issues")
 	checkOnly := fs.Bool("check", false, "validate the artifact and run the read-only dedupe scan without creating issues")
-	autoApproveFlag := fs.Bool("auto-approve", false, "apply goobers:approved to low-risk nominations that clear every precondition")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -107,7 +108,7 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read nominations artifact: %v\n", err)
 		return 1
 	}
-	validation := nomination.Validate(artifact)
+	validation := nomination.Validate(artifact, runID)
 	digest := ""
 	if validation.Valid {
 		if digest, err = nomination.Digest(artifact); err != nil {
@@ -125,7 +126,7 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	policy, err := fileIssuesPolicy(*autoApproveFlag)
+	policy, err := fileIssuesPolicy()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -161,19 +162,6 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		publisher.Provider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		if policy.AutoApprove {
-			// The approve label is applied by the capability's own credential
-			// — never the write token — so the far-side label-event ledger
-			// names the approving identity. A missing credential is a
-			// precondition failure, not a crash: everything files unapproved.
-			approveToken, err := providerToken(capability.GitHubIssuesApprove)
-			if err != nil {
-				pf(stderr, "warning: auto-approve requested but %v; filing every nomination unapproved\n", err)
-			} else {
-				publisher.Approver = newCachedGitHubProvider(root, approveToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-			}
-		}
-		publisher.Verifier = newStageEvidenceVerifier(root)
 	}
 
 	ctx, cancel := providerCommandContext()
@@ -204,7 +192,6 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		NominationsDigest: result.Digest,
 		Created:           created,
 		Filed:             len(result.Filed),
-		Approved:          result.Approved(),
 		Suppressed:        len(result.Suppressed),
 		Overflow:          len(result.Overflow),
 		Refused:           len(result.Refused),
@@ -222,8 +209,8 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "filed %d nomination(s) (%d created, %d approved), suppressed %d, %d over budget, %d refused\n",
-		len(result.Filed), created, result.Approved(), len(result.Suppressed), len(result.Overflow), len(result.Refused))
+	pf(stdout, "filed %d nomination(s) (%d created), suppressed %d, %d over budget, %d refused\n",
+		len(result.Filed), created, len(result.Suppressed), len(result.Overflow), len(result.Refused))
 	return 0
 }
 
@@ -255,15 +242,19 @@ func writeFileIssuesCheck(stdout, stderr io.Writer, resultFile string, result fi
 	return 0
 }
 
-// fileIssuesPolicy reads the publisher policy from stage inputs. The
-// partition label has no default: it is the instance's claim partition and
-// an issue filed without it is invisible to this instance's own curation.
-func fileIssuesPolicy(autoApproveFlag bool) (nomination.Policy, error) {
+// fileIssuesPolicy reads the publisher policy from stage inputs. The backlog
+// and partition labels have no defaults: they are the instance's backlog
+// label and claim partition, and an issue filed without either is invisible
+// to this instance's own curation — the same reason backlog-assignment takes
+// its trust label as an explicit input rather than a literal.
+func fileIssuesPolicy() (nomination.Policy, error) {
 	policy := nomination.Policy{
-		BacklogLabel:   providerInput("backlogLabel", "goobers"),
-		PartitionLabel: providerInput("partitionLabel", ""),
+		BacklogLabel:   strings.TrimSpace(providerInput("backlogLabel", "")),
+		PartitionLabel: strings.TrimSpace(providerInput("partitionLabel", "")),
 		NominatedLabel: providerInput("nominatedLabel", providers.LabelNominated),
-		AutoApprove:    autoApproveFlag,
+	}
+	if policy.BacklogLabel == "" {
+		return nomination.Policy{}, errors.New("backlogLabel input is required (the instance's backlog label, the one backlog-query's requireLabels demands)")
 	}
 	if policy.PartitionLabel == "" {
 		return nomination.Policy{}, errors.New("partitionLabel input is required (the instance's claim partition label, e.g. the label backlog-query's requireLabels demands)")
@@ -278,27 +269,32 @@ func fileIssuesPolicy(autoApproveFlag bool) (nomination.Policy, error) {
 		return nomination.Policy{}, fmt.Errorf("dedupeWindowDays input must be a non-negative integer, got %q", providerInput("dedupeWindowDays", "21"))
 	}
 	policy.DedupeWindow = time.Duration(days) * 24 * time.Hour
-	if !policy.AutoApprove {
-		switch mode := strings.ToLower(strings.TrimSpace(providerInput("autoApprove", "never"))); mode {
-		case "", "never", "false":
-		case "low-risk-only", "true":
-			policy.AutoApprove = true
-		default:
-			return nomination.Policy{}, fmt.Errorf("autoApprove input must be never or low-risk-only, got %q", mode)
-		}
-	}
 	return policy, nil
 }
 
-// bindFileIssuesCheck mirrors publish-batch's plan binding: when a
-// `file-issues --check` result is reachable, the write must be over the
-// artifact it marked valid. Absence is allowed (standalone use) because the
-// write path validates the artifact itself.
+// bindFileIssuesCheck binds the write to a `file-issues --check` that marked
+// this exact artifact valid, and fails closed when no check is reachable —
+// the same rule publish-batch applies to its plan validation. The binding is
+// read from, in order: the checkDigest input (the check stage's
+// nominationsDigest output carried by inputsFrom — the runner-agnostic
+// shape, the only one a stage pod can use); the checkFile result on disk;
+// the checkStage's result recorded in the run journal (a self runner).
 func bindFileIssuesCheck(root, digest string) error {
-	check, err := readDecompositionInput[fileIssuesCheckResult](root, providerInput("checkFile", fileIssuesCheckFileName), fileIssuesCheckFileName, providerInput("checkStage", "validate-nominations"), "/result")
+	if bound, present := os.LookupEnv(executor.InputEnvVar("checkDigest")); present {
+		switch strings.TrimSpace(bound) {
+		case "":
+			return errors.New("refusing to file nominations that file-issues --check did not mark valid (checkDigest input is empty)")
+		case digest:
+			return nil
+		default:
+			return errors.New("nominations do not match the artifact file-issues --check marked valid (checkDigest input)")
+		}
+	}
+	checkStage := providerInput("checkStage", "validate-nominations")
+	check, err := readDecompositionInput[fileIssuesCheckResult](root, providerInput("checkFile", fileIssuesCheckFileName), fileIssuesCheckFileName, checkStage, "/result")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return fmt.Errorf("no file-issues --check result to bind to (%v): wire the %s stage's nominationsDigest output to the checkDigest input, set checkFile, or run where the run journal records the %s result", err, checkStage, checkStage)
 		}
 		return fmt.Errorf("read nomination check: %w", err)
 	}
@@ -309,62 +305,4 @@ func bindFileIssuesCheck(root, digest string) error {
 		return errors.New("nominations do not match the artifact file-issues --check marked valid")
 	}
 	return nil
-}
-
-// stageEvidenceVerifier checks evidence against what this process can
-// observe: run journals under the instance root (a self runner) and stage
-// artifacts materialized into the working directory (any runner). On a
-// stage pod the journal is unreachable, so only artifact digests verify.
-type stageEvidenceVerifier struct {
-	layout    instance.Layout
-	workspace string
-	journals  map[string]map[uint64]bool
-}
-
-func newStageEvidenceVerifier(root string) *stageEvidenceVerifier {
-	workspace, err := os.Getwd()
-	if err != nil {
-		workspace = "."
-	}
-	return &stageEvidenceVerifier{layout: layoutFor(root), workspace: workspace, journals: map[string]map[uint64]bool{}}
-}
-
-func (v *stageEvidenceVerifier) VerifyJournal(runID string, seq uint64) bool {
-	if !apiv1.ValidRunID(runID) || seq == 0 {
-		return false
-	}
-	seqs, cached := v.journals[runID]
-	if !cached {
-		seqs = map[uint64]bool{}
-		v.journals[runID] = seqs
-		dir, err := runDirFor(v.layout, runID)
-		if err != nil {
-			return false
-		}
-		reader, err := journal.OpenReadOnly(dir)
-		if err != nil {
-			return false
-		}
-		events, err := reader.Events()
-		if err != nil {
-			return false
-		}
-		for _, event := range events {
-			seqs[event.Seq] = true
-		}
-	}
-	return seqs[seq]
-}
-
-func (v *stageEvidenceVerifier) VerifyArtifact(path, digest string) bool {
-	full, err := apiv1.ResolveContainedPath(v.workspace, path)
-	if err != nil {
-		return false
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return false
-	}
-	sum := sha256.Sum256(data)
-	return "sha256:"+hex.EncodeToString(sum[:]) == digest
 }

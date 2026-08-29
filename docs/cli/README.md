@@ -1422,7 +1422,7 @@ $ goobers features --used
 file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
 
 ~~~text
-Usage: goobers file-issues [--check] [--auto-approve] [path]
+Usage: goobers file-issues [--check] [path]
 
 file-issues is the nomination workflows' deterministic issue filer —
 TBH-1 #2251's first slice, built on the decomposition binding (a typed
@@ -1431,17 +1431,21 @@ that owns every goobers:* label). The finder proposes area/type labels
 and evidence; this stage dedupes by body marker against every issue
 carrying the nominated label, excludes anything flake-watch already
 fingerprints, enforces maxPerRun, and creates issues with a retry-safe
-idempotency key.
+idempotency key. It never applies goobers:approved: that is the SEC-047
+trust decision and a maintainer supplies it.
 
 With --check, only validate the artifact and run the read-only dedupe
-scan (github:issues:read); nothing is created. --auto-approve (or the
-autoApprove=low-risk-only input) applies goobers:approved with the
-github:issues:approve credential, and only to low-risk nominations that
-clear every precondition; the default never approves.
+scan (github:issues:read); nothing is created. The write path must be
+bound to a --check that marked this artifact valid: wire the check
+stage's nominationsDigest output to the checkDigest input (inputsFrom),
+or point checkFile at its result, or run on a self runner where the
+checkStage's recorded result is in the run journal.
 
-Inputs: nominationsFile (nominations.json), partitionLabel (required),
-maxPerRun (3), dedupeWindowDays (21), backlogLabel (goobers),
-nominatedLabel, autoApprove (never), resultFile (filed-nominations.json).
+Inputs: nominationsFile (nominations.json), producerStage (triage),
+backlogLabel (required), partitionLabel (required), maxPerRun (3),
+dedupeWindowDays (21), nominatedLabel, checkDigest, checkFile
+(nomination-check.json), checkStage (validate-nominations),
+resultFile (filed-nominations.json).
 Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 ~~~
 

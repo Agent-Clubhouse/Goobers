@@ -216,7 +216,7 @@ _goobers_completion()
             flags+=(--claim --debug --release --read-only --reconcile)
             ;;
         file-issues)
-            flags+=(--check --auto-approve)
+            flags+=(--check)
             ;;
         reconcile-branches)
             flags+=(--delete --max --min-age --after)

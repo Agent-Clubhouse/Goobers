@@ -136,6 +136,9 @@ type fakeGitHubServer struct {
 	checkStateRequests int
 	issueListRequests  int
 	issueListPageSizes []int
+	// issueListQueries records every GET /issues query string so a test can
+	// pin the shape of a listing (state, labels, since) and not only its count.
+	issueListQueries   []string
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
@@ -582,10 +585,22 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issueListRequests++
+	s.issueListQueries = append(s.issueListQueries, r.URL.RawQuery)
 	q := r.URL.Query()
 	var wantLabels []string
 	if lq := q.Get("labels"); lq != "" {
 		wantLabels = strings.Split(lq, ",")
+	}
+	// `since` filters on updated_at, as api.github.com does: an issue updated
+	// before it is not listed, whatever its state.
+	var since time.Time
+	if raw := q.Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "bad since", http.StatusUnprocessableEntity)
+			return
+		}
+		since = parsed
 	}
 	// Model api.github.com's real list behavior rather than an idealized one
 	// (#532): the issues list defaults to NEWEST-first (sort=created,
@@ -607,6 +622,9 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 			continue
 		}
 		if !hasAllLabels(issue.labels, wantLabels) {
+			continue
+		}
+		if !since.IsZero() && issue.updatedAt.Before(since) {
 			continue
 		}
 		matched = append(matched, issueJSON(issue))

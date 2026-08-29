@@ -3,9 +3,9 @@ package nomination
 import (
 	"context"
 	"fmt"
-	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,30 +24,19 @@ type Provider interface {
 	CreateWorkItemComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
 }
 
-// Approver is the surface that applies goobers:approved. It is a separate
-// value from Provider because it must be authenticated by the
-// github:issues:approve credential — never the write credential — so the
-// label-event ledger on the far side names the approving identity.
-type Approver interface {
-	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
-	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
-}
-
-// EvidenceVerifier checks evidence pointers against what the publisher can
-// itself observe: a run journal event and a stage artifact's content digest.
-// A model assertion is never evidence; only a verified pointer counts toward
-// auto-approval.
-type EvidenceVerifier interface {
-	VerifyJournal(runID string, seq uint64) bool
-	VerifyArtifact(path, digest string) bool
-}
-
 // Policy is the publisher's deterministic label and budget policy, sourced
 // from stage inputs — never from the artifact.
+//
+// The publisher never applies goobers:approved. That label is the SEC-047
+// trust decision (docs/requirements/security.md): a maintainer supplies it,
+// exactly as the nominate stage of docs/design/test-suite-quality-workflow.md
+// leaves nominated issues unapproved. Every precondition a filer could check
+// is written by the finder's own model, so a filer-side approval would mint
+// the trust label from inputs the nominating model controls end to end.
 type Policy struct {
-	// BacklogLabel (`goobers`) and PartitionLabel (the instance's claim
-	// partition, e.g. goobers:cloud) are applied to every filed issue so it
-	// is visible to this instance's own curation.
+	// BacklogLabel (the instance's backlog label) and PartitionLabel (its
+	// claim partition, e.g. goobers:cloud) are applied to every filed issue so
+	// it is visible to this instance's own curation.
 	BacklogLabel   string
 	PartitionLabel string
 	// NominatedLabel marks every filed issue and keys the dedupe scan.
@@ -57,9 +46,6 @@ type Policy struct {
 	// DedupeWindow applies only to CLOSED matches: an open match always
 	// suppresses, regardless of age.
 	DedupeWindow time.Duration
-	// AutoApprove opts the stage into applying goobers:approved to low-risk
-	// nominations that clear every precondition. Default off.
-	AutoApprove bool
 }
 
 func (p Policy) validate() error {
@@ -82,16 +68,13 @@ func (p Policy) validate() error {
 // Publisher files nominations.
 type Publisher struct {
 	Provider Provider
-	// Approver is nil when the github:issues:approve credential did not
-	// resolve; then no nomination is auto-approved.
-	Approver Approver
-	// Verifier is nil when nothing is verifiable (no journal, no workspace);
-	// then no nomination is auto-approved.
-	Verifier EvidenceVerifier
 	Repo     providers.RepositoryRef
-	RunID    string
-	Policy   Policy
-	Now      func() time.Time
+	// RunID is the stage's own run id (GOOBERS_RUN_ID). The artifact must
+	// name the same run; it is what every marker, footer and provenance line
+	// carries.
+	RunID  string
+	Policy Policy
+	Now    func() time.Time
 }
 
 // Suppression records one nomination the dedupe scan kept out.
@@ -108,15 +91,13 @@ type Candidate struct {
 	// Strength orders the budget: 3 artifact-backed, 2 journal-backed, 1
 	// source-location-only.
 	Strength int
-	// PriorIssues are issues that carried the same key at any age; any prior
-	// issue blocks auto-approval even when the window admits a re-file.
-	PriorIssues []string
 	// OpenDuplicate is the open issue that suppressed this candidate, when
 	// one did (such candidates are in Plan.Suppressed, not Plan.File).
 	OpenDuplicate string
 	// OwnedIssue is the issue this run already filed for the key (a retried
-	// attempt found it in the dedupe listing), so filing reads it back
-	// instead of creating — no reliance on the provider's search index.
+	// attempt found its filed marker in the dedupe listing), so filing reads
+	// it back instead of creating — no reliance on the provider's search
+	// index.
 	OwnedIssue string
 }
 
@@ -136,13 +117,11 @@ type Plan struct {
 
 // FiledIssue records one issue the publisher created or, on retry, found.
 type FiledIssue struct {
-	Key           string   `json:"key"`
-	IssueID       string   `json:"issueId"`
-	URL           string   `json:"url,omitempty"`
-	Labels        []string `json:"labels"`
-	Approved      bool     `json:"approved"`
-	ApprovalUnmet []string `json:"approvalUnmet,omitempty"`
-	Reused        bool     `json:"reused,omitempty"`
+	Key     string   `json:"key"`
+	IssueID string   `json:"issueId"`
+	URL     string   `json:"url,omitempty"`
+	Labels  []string `json:"labels"`
+	Reused  bool     `json:"reused,omitempty"`
 }
 
 // Refusal records an issue the publisher declined to label.
@@ -162,17 +141,6 @@ type Result struct {
 	Annotated  []string
 }
 
-// Approved counts filed issues that carry goobers:approved.
-func (r Result) Approved() int {
-	n := 0
-	for _, f := range r.Filed {
-		if f.Approved {
-			n++
-		}
-	}
-	return n
-}
-
 func (p Publisher) now() time.Time {
 	if p.Now != nil {
 		return p.Now()
@@ -187,26 +155,29 @@ func (p Publisher) check(artifact Artifact) (string, error) {
 	if err := p.Policy.validate(); err != nil {
 		return "", err
 	}
-	if v := Validate(artifact); !v.Valid {
+	if v := Validate(artifact, p.RunID); !v.Valid {
 		return "", fmt.Errorf("nominations artifact is invalid: %s", strings.Join(v.Errors, "; "))
 	}
 	return Digest(artifact)
 }
 
 // Scan runs the deterministic dedupe and budget pass without mutating
-// anything: it lists every issue carrying the nominated label (state=all)
-// and every flake-watch issue, and decides what Publish would file.
+// anything: it lists the issues carrying the nominated label that can still
+// suppress a candidate — every open one, and the closed ones updated inside
+// the dedupe window — plus every flake-watch issue, and decides what Publish
+// would file.
 func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 	digest, err := p.check(artifact)
 	if err != nil {
 		return Plan{}, err
 	}
-	nominated, err := p.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: p.Repo, State: "all", Labels: []string{p.Policy.NominatedLabel},
-	})
+	cutoff := p.now().Add(-p.Policy.DedupeWindow)
+	nominated, err := p.listNominated(ctx, cutoff)
 	if err != nil {
-		return Plan{}, fmt.Errorf("list nominated issues: %w", err)
+		return Plan{}, err
 	}
+	// Flake-watch's own ledger (test/flakewatch) lists state=all: a closed
+	// flake issue still owns its fingerprint, so this arm is not windowed.
 	flakes, err := p.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: p.Repo, State: "all", Labels: []string{FlakeLabel},
 	})
@@ -234,7 +205,6 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 		plan.existingIDs[item.ID] = true
 	}
 	var admitted []Candidate
-	cutoff := p.now().Add(-p.Policy.DedupeWindow)
 	for _, n := range artifact.Nominations {
 		cand := Candidate{Nomination: n, KeyHash: KeyHash(n.DedupeKey), Strength: evidenceStrength(n)}
 		if n.TestFailure != nil {
@@ -249,16 +219,15 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 		}
 		var suppressed *Suppression
 		for _, prior := range sortedByID(byKey[cand.KeyHash]) {
-			if filedByRun(prior.Body, p.RunID) {
+			if hasFiledMarker(prior.Body, cand.KeyHash, p.RunID) {
 				// This run already filed it (a retried attempt): not a
-				// duplicate and not a prior — filing reads it back and
-				// makes its label set whole.
+				// duplicate — filing reads it back and makes its label set
+				// whole.
 				if cand.OwnedIssue == "" {
 					cand.OwnedIssue = prior.ID
 				}
 				continue
 			}
-			cand.PriorIssues = append(cand.PriorIssues, prior.ID)
 			if suppressed != nil {
 				continue
 			}
@@ -293,6 +262,30 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 		}
 	}
 	return plan, nil
+}
+
+// listNominated bounds the dedupe listing so an attempt's cost does not grow
+// with every nominated issue the repository has ever accumulated: the open
+// arm is unbounded because an open match suppresses at any age, and the
+// closed arm is windowed by UpdatedSince because a closed match outside the
+// dedupe window never changes the outcome (a zero window skips it entirely).
+func (p Publisher) listNominated(ctx context.Context, cutoff time.Time) ([]providers.WorkItem, error) {
+	open, err := p.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: p.Repo, State: "open", Labels: []string{p.Policy.NominatedLabel},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list open nominated issues: %w", err)
+	}
+	if p.Policy.DedupeWindow <= 0 {
+		return open, nil
+	}
+	closed, err := p.Provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: p.Repo, State: "closed", Labels: []string{p.Policy.NominatedLabel}, UpdatedSince: &cutoff,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list nominated issues closed inside the dedupe window: %w", err)
+	}
+	return append(open, closed...), nil
 }
 
 // Publish files the scan's admitted candidates. Every create carries
@@ -351,7 +344,7 @@ func (p Publisher) file(ctx context.Context, artifact Artifact, cand Candidate, 
 		item, err = p.Provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 			Repository: p.Repo,
 			Title:      n.Title,
-			Body:       IssueBody(artifact, cand.KeyHash, n, needsHuman),
+			Body:       IssueBody(cand.KeyHash, p.RunID, artifact.Producer, n, needsHuman),
 			Labels:     labels,
 			RunID:      CreateRunID(cand.KeyHash, p.RunID),
 		})
@@ -376,27 +369,14 @@ func (p Publisher) file(ctx context.Context, artifact Artifact, cand Candidate, 
 			return FiledIssue{}, nil, fmt.Errorf("label issue #%s for nomination %q: %w", item.ID, n.Key, err)
 		}
 	}
-	filed := FiledIssue{Key: n.Key, IssueID: item.ID, URL: item.URL, Reused: reused}
-	filed.ApprovalUnmet = p.approvalUnmet(cand)
-	if len(filed.ApprovalUnmet) == 0 {
-		if !item.HasLabel(providers.LabelApproved) {
-			item, err = p.Approver.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository: p.Repo, ID: item.ID, ExpectedRevision: item.Revision, AddLabels: []string{providers.LabelApproved},
-			})
-			if err != nil {
-				return FiledIssue{}, nil, fmt.Errorf("approve issue #%s for nomination %q: %w", item.ID, n.Key, err)
-			}
-		}
-		filed.Approved = true
-	}
-	filed.Labels = append([]string(nil), item.Labels...)
-	return filed, nil, nil
+	return FiledIssue{Key: n.Key, IssueID: item.ID, URL: item.URL, Reused: reused, Labels: append([]string(nil), item.Labels...)}, nil, nil
 }
 
 // baseLabels is the closed set the publisher applies: backlog, partition and
 // nominated markers, the validated area/type labels, and needs-human when the
-// finder or its source finding asked for a human. Readiness, priority, claim
-// and partition-sibling labels are never in this set — curation owns them.
+// finder or its source finding asked for a human. Approval, readiness,
+// priority, claim and partition-sibling labels are never in this set — a
+// maintainer owns the trust decision and curation owns the rest.
 func (p Publisher) baseLabels(n Nomination, needsHuman bool) []string {
 	labels := []string{p.Policy.BacklogLabel, p.Policy.PartitionLabel, p.Policy.NominatedLabel}
 	labels = append(labels, n.Labels...)
@@ -404,82 +384,6 @@ func (p Publisher) baseLabels(n Nomination, needsHuman bool) []string {
 		labels = append(labels, providers.LabelNeedsHuman)
 	}
 	return labels
-}
-
-// loadBearingPaths are envelopes a change cannot touch and still be
-// auto-approved: the API and schemas, design docs, CI workflows, deployment,
-// the provider model, and the journal.
-var loadBearingPaths = []string{"api/", "docs/design/", ".github/workflows/", "deploy/", "internal/journal/", "providers/model.go"}
-
-// approvalUnmet evaluates the eight auto-approval preconditions and names
-// every one that fails. An empty result means goobers:approved is applied.
-func (p Publisher) approvalUnmet(cand Candidate) []string {
-	n := cand.Nomination
-	var unmet []string
-	if n.RiskClass != RiskLow {
-		unmet = append(unmet, fmt.Sprintf("riskClass is %q, not low", n.RiskClass))
-	}
-	if !p.Policy.AutoApprove {
-		unmet = append(unmet, "autoApprove is not enabled on this stage")
-	}
-	if p.Approver == nil {
-		unmet = append(unmet, "the github:issues:approve credential did not resolve")
-	}
-	if !p.verifiedEvidence(n) {
-		unmet = append(unmet, "no evidence pointer could be verified against a run journal or a stage artifact digest")
-	}
-	dirs := map[string]bool{}
-	for _, e := range n.Evidence {
-		if e.Kind == EvidenceSource {
-			dirs[path.Dir(e.Path)] = true
-		}
-	}
-	if len(dirs) != 1 {
-		unmet = append(unmet, fmt.Sprintf("source evidence must name exactly one directory, names %d", len(dirs)))
-	}
-	for _, e := range n.Evidence {
-		if e.Kind == EvidenceSource && touchesLoadBearing(e.Path) {
-			unmet = append(unmet, fmt.Sprintf("source evidence touches load-bearing path %q", e.Path))
-			break
-		}
-	}
-	if n.RequiresHumanReview {
-		unmet = append(unmet, "the source finding requires human review")
-	} else if slices.Contains(n.Labels, "type:feature") {
-		unmet = append(unmet, "a type:feature nomination proposes new behaviour, which needs a human")
-	}
-	if len(cand.PriorIssues) > 0 {
-		unmet = append(unmet, fmt.Sprintf("a prior issue carried the same nomination key: #%s", strings.Join(cand.PriorIssues, ", #")))
-	}
-	return unmet
-}
-
-func (p Publisher) verifiedEvidence(n Nomination) bool {
-	if p.Verifier == nil {
-		return false
-	}
-	for _, e := range n.Evidence {
-		switch e.Kind {
-		case EvidenceJournal:
-			if p.Verifier.VerifyJournal(e.RunID, e.Seq) {
-				return true
-			}
-		case EvidenceArtifact:
-			if p.Verifier.VerifyArtifact(e.Path, e.Digest) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func touchesLoadBearing(p string) bool {
-	for _, prefix := range loadBearingPaths {
-		if p == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (p Publisher) annotateOpenDuplicate(ctx context.Context, cand Candidate) (bool, error) {
@@ -501,8 +405,10 @@ func (p Publisher) annotateOpenDuplicate(ctx context.Context, cand Candidate) (b
 }
 
 // IssueBody renders the body the publisher writes: the key marker first,
-// then the nomination, its evidence, its risk, and the producing run.
-func IssueBody(artifact Artifact, keyHash string, n Nomination, needsHuman bool) string {
+// then the nomination, its evidence, its risk, and the filing run — as a
+// human-readable line and as the filed marker a retried attempt reads back.
+// runID is the publisher's own run, never a value from the artifact.
+func IssueBody(keyHash, runID string, producer Producer, n Nomination, needsHuman bool) string {
 	var b strings.Builder
 	b.WriteString(KeyMarker(keyHash))
 	b.WriteString("\n\n")
@@ -529,8 +435,7 @@ func IssueBody(artifact Artifact, keyHash string, n Nomination, needsHuman bool)
 	if needsHuman {
 		fmt.Fprintf(&b, "\nFor the human: %s\n", strings.TrimSpace(n.RiskReason))
 	}
-	b.WriteString("\n" + filedByRunLine(artifact.RunID))
-	fmt.Fprintf(&b, " (stage `%s`, attempt %d).", artifact.Producer.Stage, artifact.Producer.Attempt)
+	fmt.Fprintf(&b, "\nNominated by run `%s` (stage `%s`, attempt %d).\n\n%s", runID, producer.Stage, producer.Attempt, FiledMarker(keyHash, runID))
 	return b.String()
 }
 
@@ -538,14 +443,6 @@ func IssueBody(artifact Artifact, keyHash string, n Nomination, needsHuman bool)
 // stamps into every create, keyed by nomination and run.
 func CreateRunID(keyHash, runID string) string {
 	return "nomination-" + keyHash + "-" + runID
-}
-
-func filedByRunLine(runID string) string {
-	return "Nominated by run `" + runID + "`"
-}
-
-func filedByRun(body, runID string) bool {
-	return strings.Contains(body, filedByRunLine(runID)+" (")
 }
 
 func evidenceStrength(n Nomination) int {
@@ -571,8 +468,19 @@ func missingLabels(have, want []string) []string {
 	return missing
 }
 
+// sortedByID orders prior issues earliest-first by their numeric id (GitHub
+// issue numbers), falling back to a string compare for a non-numeric id, so
+// "the earliest prior issue" names #9 before #10 — that ordering picks the
+// owned issue a retry reads back and the issue a suppression reason names.
 func sortedByID(items []providers.WorkItem) []providers.WorkItem {
 	out := append([]providers.WorkItem(nil), items...)
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.SliceStable(out, func(i, j int) bool {
+		a, aErr := strconv.Atoi(out[i].ID)
+		b, bErr := strconv.Atoi(out[j].ID)
+		if aErr == nil && bErr == nil {
+			return a < b
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }

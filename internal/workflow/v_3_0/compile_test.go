@@ -2157,33 +2157,36 @@ func TestAdmissionSkippedWithoutGoobers(t *testing.T) {
 
 // TestFileIssuesPolicyActions pins the admission contract for the nomination
 // filer (#2251): the write path prescribes the issue-write actions, --check
-// prescribes none, and the approve action is prescribed only when the stage
-// opts into auto-approval by flag or by the autoApprove=low-risk-only input.
+// prescribes none, and approve-issue is never prescribed — the publisher
+// never applies goobers:approved, the SEC-047 trust decision a maintainer
+// supplies. It also pins the readOnlyCommandArguments edge: the read-only
+// flag is parsed alone, so any other flag beside it makes the command a
+// write again rather than silently read-only.
 func TestFileIssuesPolicyActions(t *testing.T) {
+	const writes = "create-issue,label-issue,comment-on-issue"
 	cases := []struct {
-		name   string
-		args   []string
-		inputs map[string]string
-		want   string
+		name string
+		args []string
+		want string
 	}{
-		{name: "write path", want: "create-issue,label-issue,comment-on-issue"},
+		{name: "write path", want: writes},
 		{name: "check is read-only", args: []string{"--check"}, want: ""},
-		{name: "check with auto-approve is still read-only", args: []string{"--check", "--auto-approve"}, want: ""},
-		{name: "auto-approve flag", args: []string{"--auto-approve"}, want: "create-issue,label-issue,comment-on-issue,approve-issue"},
-		{name: "autoApprove low-risk-only input", inputs: map[string]string{"autoApprove": "low-risk-only"}, want: "create-issue,label-issue,comment-on-issue,approve-issue"},
-		{name: "autoApprove never input", inputs: map[string]string{"autoApprove": "never"}, want: "create-issue,label-issue,comment-on-issue"},
-		{name: "flag overrides never input", args: []string{"--auto-approve"}, inputs: map[string]string{"autoApprove": "never"}, want: "create-issue,label-issue,comment-on-issue,approve-issue"},
+		{name: "check with a path is read-only", args: []string{"--check", "."}, want: ""},
+		{name: "check=false is a write", args: []string{"--check=false"}, want: writes},
+		{name: "an unknown flag beside check is a write", args: []string{"--check", "--max", "3"}, want: writes},
+		{name: "a separate-value flag before check hides it", args: []string{"--max", "3", "--check"}, want: writes},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			task := apiv1.Task{
-				Run:    &apiv1.DeterministicRun{Command: append([]string{"goobers", "file-issues"}, tc.args...)},
-				Inputs: tc.inputs,
-			}
+			task := apiv1.Task{Run: &apiv1.DeterministicRun{Command: append([]string{"goobers", "file-issues"}, tc.args...)}}
 			if got := strings.Join(prescribedCommandPolicyActions(task), ","); got != tc.want {
 				t.Fatalf("policy actions = %q, want %q", got, tc.want)
 			}
 		})
+	}
+	// The other read-only entry is unchanged by file-issues' registration.
+	if got := prescribedCommandPolicyActions(apiv1.Task{Run: &apiv1.DeterministicRun{Command: []string{"goobers", "respond-to-findings", "--check"}}}); len(got) != 0 {
+		t.Fatalf("respond-to-findings --check prescribes %v, want none", got)
 	}
 
 	spec := apiv1.WorkflowSpec{
@@ -2194,22 +2197,24 @@ func TestFileIssuesPolicyActions(t *testing.T) {
 			Type:         apiv1.TaskDeterministic,
 			Goal:         "file validated nominations as issues",
 			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "file-issues"}},
-			Inputs:       map[string]string{"autoApprove": "low-risk-only", "partitionLabel": "goobers:cloud"},
+			Inputs:       map[string]string{"backlogLabel": "goobers", "partitionLabel": "goobers:cloud"},
 			Capabilities: []string{string(capability.GitHubIssuesWrite)},
 		}},
 	}
 	_, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec})
 	for _, want := range []string{
 		`command "goobers file-issues" prescribes policy action "create-issue"`,
-		`prescribes policy action "approve-issue"`,
-		`policy action "approve-issue" requires capability "github:issues:approve"`,
+		`prescribes policy action "label-issue"`,
+		`prescribes policy action "comment-on-issue"`,
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Compile error = %v, want containing %q", err, want)
 		}
 	}
-	spec.Tasks[0].PolicyActions = []string{"create-issue", "label-issue", "comment-on-issue", "approve-issue"}
-	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubIssuesApprove))
+	if strings.Contains(err.Error(), "approve-issue") {
+		t.Fatalf("file-issues must never prescribe approve-issue: %v", err)
+	}
+	spec.Tasks[0].PolicyActions = []string{"create-issue", "label-issue", "comment-on-issue"}
 	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
 		t.Fatalf("declared actions and capabilities should compile: %v", err)
 	}

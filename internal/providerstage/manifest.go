@@ -169,7 +169,6 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			requiredExactWhenAnyFlag(capability.GitHubIssuesRead, []string{"check"}, "the read-only capability-scoped credential is not injected, so the nomination dedupe scan fails at runtime"),
 			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so nomination issue creation fails at runtime"),
-			requiredWhenAnyFlag(capability.GitHubIssuesApprove, []string{"auto-approve"}, "the approve capability-scoped credential is not injected, so every nomination files unapproved at runtime"),
 		},
 	},
 	"select-source": {
