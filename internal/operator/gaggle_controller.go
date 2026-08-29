@@ -9,8 +9,10 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/configsync"
 )
 
 const (
@@ -51,6 +54,10 @@ const (
 	// D5 — the Goobernetes v1 worker images supersede it, record D8); the
 	// reconcile shape does not depend on the image contents.
 	defaultWorkerImage = "ghcr.io/goobers/goober-runtime:latest"
+
+	// generationRequeueAfter is how long to wait before re-checking the
+	// authoritative config generation for a Gaggle that is mid-apply.
+	generationRequeueAfter = 15 * time.Second
 )
 
 // GaggleReconciler reconciles Gaggle objects.
@@ -67,6 +74,7 @@ type GaggleReconciler struct {
 // +kubebuilder:rbac:groups=goobers.dev,resources=goobers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 
 // Reconcile drives a Gaggle's desired state and updates its status.
 func (r *GaggleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -78,11 +86,21 @@ func (r *GaggleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	scope, authoritative, err := r.generationScope(ctx, &gaggle)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("authoritative config generation: %w", err)
+	}
+	if !authoritative {
+		logger.Info("gaggle is not from the authoritative config generation; deferring reconcile",
+			"gaggle", gaggle.Name, "generation", gaggle.Labels[configsync.GenerationLabel])
+		return ctrl.Result{RequeueAfter: generationRequeueAfter}, nil
+	}
+
 	if err := r.ensureNamespace(ctx, &gaggle); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure namespace: %w", err)
 	}
 
-	goobers, err := r.goobersFor(ctx, gaggle.Namespace, gaggle.Name)
+	goobers, err := r.goobersFor(ctx, gaggle.Namespace, gaggle.Name, scope...)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("list goobers: %w", err)
 	}
@@ -135,12 +153,45 @@ func (r *GaggleReconciler) ensureNamespace(ctx context.Context, g *v1alpha1.Gagg
 	return r.Create(ctx, ns)
 }
 
+// generationScope resolves the config-generation constraint for a reconcile.
+// Objects applied by config-sync are stamped with the generation they belong to
+// (configsync.GenerationLabel), and config-sync publishes exactly one generation
+// as authoritative. The operator is such a consumer, so it acts only on a Gaggle
+// from the authoritative generation and reads that gaggle's Goobers with the
+// same generation selector — a Gaggle from a half-applied generation is never
+// reconciled against Goobers from another one. It reports the list options to
+// scope managed reads with, and whether the gaggle may be reconciled at all: a
+// stamped gaggle whose generation is not (yet) authoritative, including the case
+// where none has been published, must be left alone until the barrier switches.
+// Gaggles carrying no stamp (the GitOps/ArgoCD path, or hand-applied CRs) are
+// not config-sync managed and reconcile unconstrained.
+func (r *GaggleReconciler) generationScope(ctx context.Context, g *v1alpha1.Gaggle) ([]client.ListOption, bool, error) {
+	generation := g.Labels[configsync.GenerationLabel]
+	if generation == "" {
+		return nil, true, nil
+	}
+	selector, err := configsync.GenerationSelector(ctx, r.Client, g.Namespace)
+	if errors.Is(err, configsync.ErrNoAuthoritativeGeneration) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if selector[configsync.GenerationLabel] != generation {
+		return nil, false, nil
+	}
+	return []client.ListOption{selector}, true, nil
+}
+
 // goobersFor returns the Goobers bound to the named gaggle. Goobers are matched
 // only within the Gaggle CR's own namespace, so a same-named gaggle in another
-// namespace cannot pull in foreign Goobers.
-func (r *GaggleReconciler) goobersFor(ctx context.Context, namespace, gaggle string) ([]v1alpha1.Goober, error) {
+// namespace cannot pull in foreign Goobers. scope carries the authoritative
+// config-generation selector when the gaggle is config-sync managed, so the
+// listing can never mix generations.
+func (r *GaggleReconciler) goobersFor(ctx context.Context, namespace, gaggle string, scope ...client.ListOption) ([]v1alpha1.Goober, error) {
 	var list v1alpha1.GooberList
-	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+	opts := append([]client.ListOption{client.InNamespace(namespace)}, scope...)
+	if err := r.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 	var mine []v1alpha1.Goober

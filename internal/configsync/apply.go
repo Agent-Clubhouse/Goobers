@@ -86,6 +86,12 @@ type ClientApplier struct {
 // mutation, and only then are stale managed objects pruned. Any failure before
 // the switch leaves the previous generation authoritative and is reported as an
 // *ApplyError naming every committed or ambiguous mutation.
+//
+// Objects are updated in place, so a failure before the switch can leave some
+// of them already relabelled to the abandoned generation: the previous
+// generation stays authoritative, but a consumer selecting it may then see an
+// incomplete set rather than the full previous generation. The barrier
+// guarantees a single-generation view, not a rollback of object contents.
 func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	generation, err := GenerationID(rs)
 	if err != nil {
@@ -162,18 +168,20 @@ func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 }
 
 // upsert creates the object, or updates it in place if it already exists, and
-// reports which operation was attempted so a failure can name the mutation.
+// reports which operation was attempted so a failure can name the mutation. It
+// reports OpNone when it fails before issuing any write, so a read failure is
+// not over-reported as an attempted mutation.
 func (a *ClientApplier) upsert(ctx context.Context, obj client.Object) (string, error) {
 	existing, ok := obj.DeepCopyObject().(client.Object)
 	if !ok {
-		return OpUpdate, fmt.Errorf("object %T is not a client.Object", obj)
+		return OpNone, fmt.Errorf("object %T is not a client.Object", obj)
 	}
 	err := a.Client.Get(ctx, client.ObjectKeyFromObject(obj), existing)
 	if apierrors.IsNotFound(err) {
 		return OpCreate, a.Client.Create(ctx, obj)
 	}
 	if err != nil {
-		return OpUpdate, err
+		return OpNone, err
 	}
 	obj.SetResourceVersion(existing.GetResourceVersion())
 	return OpUpdate, a.Client.Update(ctx, obj)
@@ -219,7 +227,7 @@ func (a *ClientApplier) publishGeneration(ctx context.Context, namespace, genera
 		return OpCreate, nil
 	}
 	if err != nil {
-		return OpUpdate, fmt.Errorf("read authoritative config generation: %w", err)
+		return OpNone, fmt.Errorf("read authoritative config generation: %w", err)
 	}
 	if existing.Data == nil {
 		existing.Data = map[string]string{}

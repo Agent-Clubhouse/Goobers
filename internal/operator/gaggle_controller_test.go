@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/configsync"
 )
 
 // --- pure helpers ----------------------------------------------------------
@@ -364,5 +365,109 @@ func TestReconcile_Idempotent(t *testing.T) {
 	}
 	if len(deps.Items) != 1 {
 		t.Errorf("expected exactly 1 worker after 2 reconciles, got %d", len(deps.Items))
+	}
+}
+
+// --- config-generation barrier (AC: consumers never mix generations) -------
+
+func stamped(obj client.Object, generation string) client.Object {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[configsync.ManagedByLabel] = configsync.ManagedByValue
+	labels[configsync.GenerationLabel] = generation
+	obj.SetLabels(labels)
+	return obj
+}
+
+func generationConfigMap(generation string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configsync.GenerationConfigMapName,
+			Namespace: "goobers-system",
+			Labels:    map[string]string{configsync.ManagedByLabel: configsync.ManagedByValue},
+		},
+		Data: map[string]string{configsync.GenerationKey: generation},
+	}
+}
+
+func TestReconcile_SelectsOnlyAuthoritativeGeneration(t *testing.T) {
+	// A stale goober left over from the previous generation must not be
+	// reconciled alongside the authoritative generation's goobers.
+	current := stamped(gooberFixture("coder", "web", 1), "gen2")
+	stale := stamped(gooberFixture("retired", "web", 4), "gen1")
+	r, c := newReconciler(t, nil,
+		stamped(gaggleFixture(), "gen2"), current, stale, generationConfigMap("gen2"))
+	reconcileOnce(t, r)
+
+	var g v1alpha1.Gaggle
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: "goobers-system", Name: "web"}, &g)
+	if g.Status.GooberCount != 1 {
+		t.Fatalf("GooberCount = %d, want 1 (previous-generation goober must be excluded)", g.Status.GooberCount)
+	}
+	var deps appsv1.DeploymentList
+	_ = c.List(context.Background(), &deps, client.InNamespace("gaggle-web"))
+	if len(deps.Items) != 1 || deps.Items[0].Name != workerName("coder") {
+		t.Errorf("workers = %v, want only goober-coder", deps.Items)
+	}
+}
+
+func TestReconcile_DefersWhenGaggleGenerationNotAuthoritative(t *testing.T) {
+	// Mid-apply: the Gaggle is already stamped with the new generation while the
+	// authoritative pointer still names the old one. Reconciling here would mix
+	// a new-generation Gaggle with old-generation Goobers, so it must not run.
+	r, c := newReconciler(t, nil,
+		stamped(gaggleFixture(), "gen2"),
+		stamped(gooberFixture("coder", "web", 1), "gen1"),
+		generationConfigMap("gen1"))
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "goobers-system", Name: "web"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != generationRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, generationRequeueAfter)
+	}
+	var deps appsv1.DeploymentList
+	_ = c.List(context.Background(), &deps, client.InNamespace("gaggle-web"))
+	if len(deps.Items) != 0 {
+		t.Errorf("no workers may be created mid-apply, got %d", len(deps.Items))
+	}
+	var ns corev1.Namespace
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "gaggle-web"}, &ns); !apierrors.IsNotFound(err) {
+		t.Errorf("namespace must not be created mid-apply, got err=%v", err)
+	}
+}
+
+func TestReconcile_DefersWhenNoAuthoritativeGeneration(t *testing.T) {
+	// A stamped gaggle with no generation published yet: nothing is selectable.
+	r, c := newReconciler(t, nil,
+		stamped(gaggleFixture(), "gen1"), stamped(gooberFixture("coder", "web", 1), "gen1"))
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "goobers-system", Name: "web"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != generationRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, generationRequeueAfter)
+	}
+	var deps appsv1.DeploymentList
+	_ = c.List(context.Background(), &deps, client.InNamespace("gaggle-web"))
+	if len(deps.Items) != 0 {
+		t.Errorf("no workers may be created without an authoritative generation, got %d", len(deps.Items))
+	}
+}
+
+func TestReconcile_UnstampedGaggleIsUnconstrained(t *testing.T) {
+	// Gaggles not managed by config-sync (GitOps/hand-applied) keep reconciling
+	// regardless of any published generation.
+	r, c := newReconciler(t, nil, gaggleFixture(), gooberFixture("coder", "web", 1), generationConfigMap("gen2"))
+	reconcileOnce(t, r)
+
+	var deps appsv1.DeploymentList
+	_ = c.List(context.Background(), &deps, client.InNamespace("gaggle-web"))
+	if len(deps.Items) != 1 {
+		t.Errorf("expected 1 worker for unstamped gaggle, got %d", len(deps.Items))
 	}
 }

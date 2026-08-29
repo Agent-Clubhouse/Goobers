@@ -22,6 +22,9 @@ const (
 	OpCreate = "create"
 	OpUpdate = "update"
 	OpDelete = "delete"
+	// OpNone means a step failed before issuing any write (e.g. the read that
+	// precedes an upsert failed), so there is no mutation to report.
+	OpNone = ""
 )
 
 // MutationState says whether a cluster mutation is known to have landed.
@@ -106,7 +109,12 @@ func (e *ApplyError) byState(state MutationState) []Mutation {
 	return out
 }
 
+// appendMutation records an attempted write. OpNone attempts are dropped: no
+// write was issued, so there is nothing to report as committed or ambiguous.
 func appendMutation(mutations []Mutation, op, key string, state MutationState) []Mutation {
+	if op == OpNone {
+		return mutations
+	}
 	return append(mutations, Mutation{Op: op, Key: key, State: state})
 }
 
