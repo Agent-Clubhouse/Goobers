@@ -167,10 +167,12 @@ path.
 
 A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
 in-process exactly as ruling 8's unpinned arm, with the arguments it always had. A
-**daemon-scheduled** run (`internal/runner`) has no gate dispatch arm until decision 003's
-step 12: there, checkpoint 3 (§5) refuses a gate placement self cannot satisfy exactly as
-for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately, because the
-daemon cannot honour the declared restrictions in-process either.
+**daemon-scheduled** run still drives through `internal/runner`, which has no gate dispatch
+arm and will not get one: decision 005 makes the engine walk the single driver for every
+trigger kind, so a scheduled run reaches this arm when the scheduler's `Starter` delegates
+to the engine registry. Until then, checkpoint 3 (§5) refuses a gate placement self cannot
+satisfy exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) —
+deliberately, because the daemon cannot honour the declared restrictions in-process either.
 
 ---
 

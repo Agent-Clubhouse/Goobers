@@ -784,9 +784,11 @@ func TestValidatePlacementCoversPlacedGate(t *testing.T) {
 // own substrate cannot satisfy: checkpoint 1 is clean (the declared remote
 // runner satisfies it), and checkpoint 3 marks the workflow refused exactly
 // as it would for a task — deliberately, because a DAEMON-scheduled run
-// drives through internal/runner, whose gate arm has no dispatch seam until
-// decision 003's step 12 (engine-start runs, which walk internal/engine,
-// place the gate through evaluateGate's dispatch arm), so the daemon can
+// still drives through internal/runner, whose gate arm has no dispatch seam
+// and will not get one (decision 005: the engine walk becomes the single
+// driver for every trigger kind, so a scheduled run reaches evaluateGate's
+// dispatch arm once the scheduler's Starter delegates to the engine
+// registry; engine-start runs already do). Until then the daemon can
 // neither dispatch the reviewer nor honour its declared placement
 // in-process, and refusing is the only arm that never runs the reviewer
 // outside its declared isolation.
