@@ -165,3 +165,49 @@ func TestEngineRunPinsGateGooberCapabilitiesForTheDaemonToReadBack(t *testing.T)
 		t.Fatalf("pinned reviewer capabilities = %v, want [repo:read model:invoke]", got)
 	}
 }
+
+// TestLiveJournalRunPinsGateGooberCapabilities is the same pin on the path
+// decision 003's drills actually use.
+//
+// A `--live-journal` run's run.yaml is written ONCE, by the live journal
+// plane's create path from the OpenHeader — and journal.ReplaceRun keeps a
+// complete live journal in place, so the closed-run projection can never
+// backfill an input the header omitted. An input missing here is therefore
+// missing forever, and the daemon credential plane's gate branch is
+// fail-closed on an absent pin: every agentic reviewer gate on the run answers
+// 409 gate_pin_missing, the exact failure decision 003's phase-0 graft names.
+func TestLiveJournalRunPinsGateGooberCapabilities(t *testing.T) {
+	writer, runsDir := newLiveWriter(t)
+	in := projectionInput("run-gate-caps-live", crSpec("implement",
+		[]apiv1.Task{crTask("implement", "")}, nil))
+	in.LiveJournal = true
+	in.GateGooberCapabilities = map[string][]string{
+		"reviewer": {"repo:read", "model:invoke"},
+	}
+
+	executeLive(t, in, &Activities{
+		Det:        &scriptedStages{},
+		Workspaces: testWorkspaces(t),
+		Journal:    writer,
+	}, false)
+
+	reader, err := journal.OpenRead(filepath.Join(runsDir, in.RunID))
+	if err != nil {
+		t.Fatalf("open live journal: %v", err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatalf("read live run.yaml identity: %v", err)
+	}
+	pinned, found, err := runner.PinnedGateGooberCapabilities(reader, identity)
+	if err != nil {
+		t.Fatalf("PinnedGateGooberCapabilities: %v", err)
+	}
+	if !found {
+		t.Fatalf("live-authored run.yaml pins no gate-goober capability snapshot (inputs: %+v); the credential plane would answer 409 gate_pin_missing for every reviewer gate on this run",
+			identity.Inputs)
+	}
+	if got := pinned["reviewer"]; len(got) != 2 || got[0] != "repo:read" || got[1] != "model:invoke" {
+		t.Fatalf("live-pinned reviewer capabilities = %v, want [repo:read model:invoke]", got)
+	}
+}

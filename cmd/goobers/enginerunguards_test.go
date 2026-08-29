@@ -15,6 +15,7 @@ import (
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -459,6 +460,136 @@ func TestReattachEngineRunEchoesEngineOutcome(t *testing.T) {
 	}
 }
 
+// TestReattachEngineRunHoldsTheSlotWhenTheEngineCannotBeDescribed is the
+// co-rollout case: `kubectl rollout restart deploy/goobers-api` while the
+// Temporal frontend is also cycling. DescribeWorkflowExecution answers
+// Unavailable — NOT NotFound — for a workflow that is executing perfectly
+// well.
+//
+// Releasing the run's reconciled concurrency slot here would be irreversible
+// for the life of the daemon (localscheduler.Scheduler has no periodic
+// re-seed) and its wakeForDemand immediately invites the scheduler to admit a
+// SECOND run of the same workflow: the duplicate-work hazard these guards
+// exist to close, reached from the failure path. The slot stays reserved and
+// the daemon says it does not know.
+func TestReattachEngineRunHoldsTheSlotWhenTheEngineCannotBeDescribed(t *testing.T) {
+	shortenEngineDescribeRetries(t)
+	layout := instance.NewLayout(t.TempDir())
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = instanceLog.Close() }()
+	createDriverRun(t, layout.RunsDir(), "still-running-on-engine", "implementation", "", journal.DriverEngine, time.Now(), nil)
+
+	fake := &fakeEngineWorkflows{describeErr: serviceerror.NewUnavailable("temporal frontend restarting")}
+	var released []string
+	reattachEngineRun(context.Background(), &engineRunGuards{client: fake}, journal.RunIdentity{
+		RunID: "still-running-on-engine", Workflow: "implementation", Driver: journal.DriverEngine,
+	}, engineReattachDeps{
+		layout:  layout,
+		log:     instanceLog,
+		release: func(runID, _ string) { released = append(released, runID) },
+	})
+
+	if len(released) != 0 {
+		t.Fatalf("released = %v, want none — the daemon freed the concurrency slot of a run whose status it never established", released)
+	}
+	if _, awaited, _ := fake.snapshot(); len(awaited) != 0 {
+		t.Fatalf("awaited = %v, want none — a describe that never succeeded cannot be followed by a wait", awaited)
+	}
+	// The describe was retried rather than abandoned on the first RPC error.
+	if described, _, _ := fake.snapshot(); len(described) < 2 {
+		t.Fatalf("described = %v, want more than one attempt — a single Unavailable must not end the attachment", described)
+	}
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported bool
+	for _, ev := range events {
+		if ev.Type == journal.EventRunFinished && ev.RunID == "still-running-on-engine" {
+			t.Fatalf("daemon echoed a terminal for a run it could not describe: %+v", ev)
+		}
+		if ev.Type == journal.EventError && ev.RunID == "still-running-on-engine" && ev.Error != nil &&
+			ev.Error.Code == "engine_run_reattach_failed" {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Fatalf("instance log has no engine_run_reattach_failed report: %+v", events)
+	}
+}
+
+// TestReattachEngineRunEchoesARealTerminalPhaseForAFailedWorkflow: a workflow
+// that ends badly reports its failure through Get, and every non-Completed
+// terminal takes that arm. The echo has to carry a journal.RunPhase —
+// readmodel's projection drops a run.finished whose status is not one (its
+// terminalPhase guard), which would make the echo inert in exactly the cases
+// an operator most wants it.
+func TestReattachEngineRunEchoesARealTerminalPhaseForAFailedWorkflow(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = instanceLog.Close() }()
+	createDriverRun(t, layout.RunsDir(), "failed-on-engine", "implementation", "", journal.DriverEngine, time.Now(), nil)
+
+	// Running at describe time, then reporting its own failure through the
+	// wait — the shape a daemon that re-attached mid-run observes.
+	fake := &fakeEngineWorkflows{
+		status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		getErr: temporal.NewApplicationError("stage implement failed", "stage_failed"),
+	}
+	var released []string
+	reattachEngineRun(context.Background(), &engineRunGuards{client: fake}, journal.RunIdentity{
+		RunID: "failed-on-engine", Workflow: "implementation", Driver: journal.DriverEngine,
+	}, engineReattachDeps{
+		layout:  layout,
+		log:     instanceLog,
+		release: func(runID, _ string) { released = append(released, runID) },
+	})
+
+	if len(released) != 1 {
+		t.Fatalf("released = %v, want the slot freed — the workflow reported its own outcome, so the run is over", released)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var echoed *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventRunFinished && events[i].RunID == "failed-on-engine" {
+			echoed = &events[i]
+		}
+	}
+	if echoed == nil {
+		t.Fatalf("instance log has no run.finished echo for the failed engine run: %+v", events)
+	}
+	if !isTerminalPhase(journal.RunPhase(echoed.Status)) {
+		t.Fatalf("echo status = %q, which is not a journal.RunPhase — readmodel's projection drops it and the run never leaves running",
+			echoed.Status)
+	}
+	if !strings.Contains(echoed.Reason, "stage implement failed") {
+		t.Fatalf("echo reason = %q, want the workflow's own failure text", echoed.Reason)
+	}
+}
+
+// shortenEngineDescribeRetries collapses the re-attachment's transient-describe
+// retry budget so a test can reach the give-up path without waiting minutes.
+func shortenEngineDescribeRetries(t *testing.T) {
+	t.Helper()
+	budget, initial, max := engineDescribeRetryBudget, engineDescribeRetryInitial, engineDescribeRetryMax
+	engineDescribeRetryBudget = 30 * time.Millisecond
+	engineDescribeRetryInitial = time.Millisecond
+	engineDescribeRetryMax = 5 * time.Millisecond
+	t.Cleanup(func() {
+		engineDescribeRetryBudget, engineDescribeRetryInitial, engineDescribeRetryMax = budget, initial, max
+	})
+}
+
 // TestReattachEngineRunReportsUnresolvableWorkflow: a run the engine has no
 // record of (history retention expired, or a scheduled run whose workflow id
 // is not its run id) is reported, never driven and never terminalized.
@@ -487,6 +618,12 @@ func TestReattachEngineRunReportsUnresolvableWorkflow(t *testing.T) {
 		if ev.Type == journal.EventError && ev.RunID == "vanished-run" && ev.Error != nil &&
 			ev.Error.Code == "engine_run_unresolvable" {
 			reported = true
+			// The recovery vocabulary an operator's log scraper reads must be
+			// complete on the way out as well as the way in: a documented
+			// action nothing ever writes is a contract that never fires.
+			if ev.Runner["action"] != journal.RecoveryActionUnresolved {
+				t.Errorf("unresolvable report action = %v, want %q", ev.Runner["action"], journal.RecoveryActionUnresolved)
+			}
 		}
 	}
 	if !reported {
@@ -516,6 +653,45 @@ func TestRunAbortRefusesEngineDrivenRun(t *testing.T) {
 		t.Fatalf("run journal grew from %d to %d events — abort wrote into a journal the engine owns", before, got)
 	}
 	assertWatchdogPhase(t, l.RunsDir(), runID, journal.PhaseRunning)
+}
+
+// TestRunAbortOnTerminalEngineDrivenRunReportsItTerminal: the engine-driven
+// refusal is about protecting a journal that still has a writer. Once the run
+// is closed there is nothing left to protect, and the refusal's advice — go
+// act on the engine's workflow — points the operator at a workflow that has
+// finished. The accurate answer is the command's own terminal guard.
+func TestRunAbortOnTerminalEngineDrivenRunReportsItTerminal(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "engine-run-abort-terminal"
+	createDriverRun(t, l.RunsDir(), runID, "default-implement", "", journal.DriverEngine, time.Now(), nil)
+	closeDriverRun(t, l.RunsDir(), runID, journal.PhaseCompleted)
+
+	code, _, stderr := runArgs(t, "run", "abort", runID, root)
+	if code != 1 {
+		t.Fatalf("run abort: code = %d, stderr = %q, want the business refusal (1)", code, stderr)
+	}
+	if !strings.Contains(stderr, "already terminal") {
+		t.Fatalf("run abort stderr = %q, want the already-terminal answer", stderr)
+	}
+	if strings.Contains(stderr, "engine-driven") {
+		t.Fatalf("run abort stderr = %q, want it NOT to send the operator after a workflow that already finished", stderr)
+	}
+}
+
+// closeDriverRun appends a terminal event to a run created by createDriverRun.
+func closeDriverRun(t *testing.T, runsDir, runID string, phase journal.RunPhase) {
+	t.Helper()
+	run, _, err := journal.Recover(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestRunCancelRefusesEngineDrivenRun: `run cancel` asks the daemon to stop a

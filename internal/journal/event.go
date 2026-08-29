@@ -249,8 +249,16 @@ const (
 	RecoveryActionReattached = "reattached"
 	// RecoveryActionUnresolved records that an engine-driven run could not be
 	// located on the engine at all, so the daemon neither drove nor
-	// terminalized it.
+	// terminalized it. Unlike the actions above it rides the runner map of the
+	// `engine_run_unresolvable` error event rather than a run.recovery
+	// annotation of its own — the report an operator greps for is the error
+	// code, and a second event would say nothing the first does not.
 	RecoveryActionUnresolved = "unresolved"
+	// RecoveryActionEngineCancelRequested records that the stalled-run sweep
+	// asked the engine to cancel an engine-driven run's workflow instead of
+	// terminalizing its journal. The run's own terminal event follows from the
+	// engine once the cancellation lands.
+	RecoveryActionEngineCancelRequested = "engine_cancel_requested"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in

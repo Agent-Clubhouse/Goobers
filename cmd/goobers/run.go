@@ -617,7 +617,13 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	// journal. On an engine-driven run that is a forgery: the workflow keeps
 	// executing on the engine and keeps emitting into the journal this
 	// command just declared finished.
-	if identity.EngineDriven() {
+	//
+	// An already-terminal engine run is NOT refused here — it falls through to
+	// the terminal guard below, which answers "run %s is already terminal".
+	// Nothing is going to be forged into a journal that is already closed, and
+	// pointing the operator at an engine workflow that no longer exists is the
+	// same class of misleading answer this refusal fixes for `run cancel`.
+	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
 		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run abort"))
 		return 1
 	}
@@ -836,8 +842,9 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	// driver instead of the daemon's generic "not currently running under
 	// this daemon" — which reads like a race and invites the operator to
 	// reach for `run abort`, the one command that would actually corrupt the
-	// journal.
-	if identity.EngineDriven() {
+	// journal. As with abort, an already-terminal run gets the accurate
+	// "already terminal" answer from the guard below instead.
+	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
 		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run cancel"))
 		return 1
 	}

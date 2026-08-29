@@ -511,6 +511,18 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 	})
 }
 
+// runCanceledCause is the run_failed cause text for a cancelled run. The
+// cancellation error itself is Temporal vocabulary ("canceled"), so the cause
+// names the event in the run's own terms and keeps the underlying error for
+// the operator who has to tell an external `temporal workflow cancel` apart
+// from the daemon's stall sweep.
+func runCanceledCause(err error) string {
+	if err == nil {
+		return "run canceled on the engine"
+	}
+	return "run canceled on the engine: " + err.Error()
+}
+
 // runFinished closes the projection with the terminal phase, mapped to the
 // local runner's run.finished vocabulary.
 func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase) {

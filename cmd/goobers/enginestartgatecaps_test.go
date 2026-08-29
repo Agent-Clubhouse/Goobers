@@ -11,12 +11,14 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-// gateCapabilityFixture layers the run-controls fixture with three goobers:
-// one scoped to the gaggle with grants, one global with grants, and one with
-// none at all. The daemon's own runner config (runnerwiring.go's
-// gateGooberCaps) builds exactly this projection, so the fixture is what makes
-// "engine-start pins the same map the daemon would" a checkable claim rather
-// than a restatement of the implementation.
+// gateCapabilityFixture layers the run-controls fixture with four goobers:
+// one scoped to the gaggle with grants, one global with grants, one with none
+// at all, and one belonging to a DIFFERENT gaggle. The last is what makes the
+// projection's scoping checkable: engine-start pins the goobers the worker for
+// this gaggle will admit (workerwiring.go's resolveGoobersForGaggle rule), not
+// the daemon's instance-wide gateGooberCaps map — see
+// engineStartGateGooberCapabilities for why the two differ and in which
+// direction.
 func gateCapabilityFixture() (*instance.Config, *instance.ConfigSet) {
 	cfg, set, _ := runControlsFixture()
 	set.Goobers = []apiv1.Goober{

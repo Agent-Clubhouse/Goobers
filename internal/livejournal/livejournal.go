@@ -137,6 +137,14 @@ type OpenHeader struct {
 	Item       *apiv1.BacklogItem  `json:"item,omitempty"`
 	Graph      json.RawMessage     `json:"graph,omitempty"`
 	Definition json.RawMessage     `json:"definition,omitempty"`
+	// GateGooberCapabilities is the reviewer-goober capability map pinned at
+	// run start (#294), carried here for the same reason Graph and Definition
+	// are: the closed-run projection writer's inputs never reach a live
+	// journal. journal.ReplaceRun keeps a complete live journal in place, so
+	// an input this header omits is an input the run NEVER gets — and the
+	// daemon credential plane's gate branch is fail-closed on an absent pin
+	// (409 gate_pin_missing for every agentic reviewer gate).
+	GateGooberCapabilities json.RawMessage `json:"gateGooberCapabilities,omitempty"`
 }
 
 // EmitRequest is one batched emission for a run.
@@ -500,6 +508,13 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 	inputIntegrity := map[string]apiv1.Integrity{
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}
+	// Mirrors engine/projection.go's writeProjectedRun exactly: the same
+	// snapshot under the same name with the same integrity, so a live-authored
+	// run.yaml and a re-projected one pin identical inputs.
+	if len(header.GateGooberCapabilities) > 0 {
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = []byte(header.GateGooberCapabilities)
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
 	}
 	if header.Item != nil {
 		item := *header.Item

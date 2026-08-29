@@ -29,9 +29,16 @@ func liveOpenBatch(runID, gaggle string, at time.Time) livejournal.EmitRequest {
 		RunID:  runID,
 		Gaggle: gaggle,
 		Open: &livejournal.OpenHeader{
+			// Driver mirrors production: the live journal plane's only emitter
+			// is internal/engine's runJournal, whose identity carries
+			// journal.DriverEngine from the first emit. A fixture without it
+			// is a shape nothing can author, and every sweep/resume assertion
+			// built on it would test the runner-driven path while calling
+			// itself an engine run.
 			Identity: journal.RunIdentity{
 				RunID: runID, Workflow: "implementation", WorkflowVersion: 1,
 				WorkflowDigest: "sha256:abc", Gaggle: gaggle,
+				Driver:  journal.DriverEngine,
 				Trigger: journal.Trigger{Kind: journal.TriggerManual},
 			},
 			Graph:      json.RawMessage(`{"nodes":[]}`),
@@ -48,15 +55,22 @@ func liveOpenBatch(runID, gaggle string, at time.Time) livejournal.EmitRequest {
 	}
 }
 
-// TestSweepStalledRunsTerminalizesWedgedLiveEngineRun is §13 item 3's second
-// half: an engine run whose journal is live-authored (DS4) is visible to the
+// TestSweepStalledRunsCancelsWedgedLiveEngineRun is §13 item 3's second half:
+// an engine run whose journal is live-authored (DS4) is visible to the
 // StalledRunTimeout sweep MID-RUN — under the superseded closed-run
 // projection model the same wedged run had no journal at all until terminal
 // and was undetectable. The writer's idle-close releases the run-dir lock so
 // the sweep (whose silence threshold is necessarily longer than the idle
-// window) can terminalize, exactly the interlock the daemon wiring runs each
+// window) can act on it, exactly the interlock the daemon wiring runs each
 // projection tick.
-func TestSweepStalledRunsTerminalizesWedgedLiveEngineRun(t *testing.T) {
+//
+// What the sweep does with it is the guard: the live writer authored the run
+// with driver: engine, so the settlement is a CancelWorkflow, not a terminal
+// event forged into a journal whose workflow is still executing. This is the
+// only test that carries a live-journal-AUTHORED engine run all the way into
+// the sweep — enginerunguards_test.go's sweep cases build their journals with
+// journal.Create.
+func TestSweepStalledRunsCancelsWedgedLiveEngineRun(t *testing.T) {
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	layout := instance.NewLayout(t.TempDir())
 	writer, err := livejournal.NewWriter(func(string) (string, bool) { return layout.RunsDir(), true })
@@ -85,10 +99,17 @@ func TestSweepStalledRunsTerminalizesWedgedLiveEngineRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+	fake := &fakeEngineWorkflows{}
+	if err := sweepStalledRuns(
+		context.Background(), layout, nil, runRunner, &engineRunGuards{client: fake}, nil,
+		nil, nil, nil, now, 45*time.Minute, 0,
+	); err != nil {
 		t.Fatal(err)
 	}
-	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseEscalated)
+	if _, _, cancelled := fake.snapshot(); len(cancelled) != 1 || cancelled[0] != runID {
+		t.Fatalf("cancelled = %v, want [%s] — a live-authored engine run must be settled on the engine, not on disk", cancelled, runID)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseRunning)
 }
 
 // TestNewLiveJournalWriterRequiresEngineConfiguration pins the writer's gate

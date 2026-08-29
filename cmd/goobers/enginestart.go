@@ -198,12 +198,26 @@ func engineStartSpec(req engineStartRequest) (engine.StartSpec, error) {
 }
 
 // engineStartGateGooberCapabilities maps each goober a gaggle's stages may
-// name to its declared capabilities — the same projection of the config set
-// the daemon's runner config builds (runnerwiring.go's gateGooberCaps). A
-// goober with no declared capabilities is omitted rather than mapped to an
-// empty slice, so the pinned snapshot matches the daemon's byte for byte.
-// Nil when the gaggle declares no capability-bearing goobers, which pins no
-// snapshot at all rather than an empty one.
+// name to its declared capabilities. A goober with no declared capabilities is
+// omitted rather than mapped to an empty slice; nil when the gaggle declares
+// no capability-bearing goobers, which pins no snapshot at all rather than an
+// empty one.
+//
+// The projection is GAGGLE-SCOPED, and deliberately so — it is NOT the
+// daemon's map. runnerwiring.go's gateGooberCaps is built from goobersByName,
+// which is instance-wide and shared across every gaggle; this one applies
+// workerwiring.go's resolveGoobersForGaggle rule (a goober with no gaggle, or
+// with this gaggle), because an engine-start run executes on a worker whose
+// goober admission uses exactly that rule. Pinning a reviewer the worker will
+// not admit would put a capability grant in the run's immutable snapshot for a
+// goober that cannot participate in it.
+//
+// The divergence is fail-closed in one direction: a workflow in gaggle A whose
+// agentic gate names a reviewer declared under gaggle B gets its grants pinned
+// on the daemon's own dispatch path and nothing pinned here, and the
+// credential plane's gate branch resolves an absent reviewer to no grants.
+// Nothing validates that cross-gaggle reference today; making it an error at
+// compile time is the fix, not widening the pin.
 func engineStartGateGooberCapabilities(set *instance.ConfigSet, gaggle string) map[string][]string {
 	if set == nil {
 		return nil

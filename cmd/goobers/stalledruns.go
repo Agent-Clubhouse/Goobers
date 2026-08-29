@@ -233,6 +233,14 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 // only outcome was a lie on disk. When no engine client exists the sweep
 // refuses both options and reports it, because terminalizing is the failure
 // mode, not the fallback.
+//
+// A cancel that itself fails is reported and retried on the next tick; it is
+// NOT downgraded to terminalizing the file. That includes NotFound, which is
+// not proof the run is over: a scheduled engine run's RunID is a hash of its
+// claim workflow's id (internal/engine's RunScheduled), so NotFound is the
+// normal answer for one that is executing perfectly well. Repeated identical
+// failures are collapsed by up.go's sweepErrorReporter rather than journaled
+// every tick.
 func sweepStalledRuns(
 	ctx context.Context,
 	l instance.Layout,
@@ -324,8 +332,16 @@ func sweepStalledRuns(
 
 			// Past the timeout and engine-driven: cancel the workflow and
 			// leave the journal alone. The engine writes the run's terminal
-			// event itself once the cancellation lands, through the same
-			// journal plane that has been authoring the run all along.
+			// event itself once the cancellation lands — internal/engine's
+			// cancel arm records run_failed + run.finished(aborted) through a
+			// disconnected context, so the run closes out on the same journal
+			// plane that has been authoring it all along. (Before that arm
+			// existed a cancelled run had NO terminal, which would have left
+			// this sweep cancelling a closed execution on every later tick.)
+			//
+			// The phase differs from the runner-driven neighbour below, which
+			// this sweep escalates: the engine reports what actually happened
+			// to its workflow, and what happened is a cancellation.
 			if identity.EngineDriven() {
 				if err := guards.cancel(ctx, identity.RunID); err != nil {
 					sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
@@ -341,7 +357,7 @@ func sweepStalledRuns(
 						Runner: map[string]any{
 							"kind":   journal.RunnerAnnotationRunRecovery,
 							"reason": message,
-							"action": "engine_cancel_requested",
+							"action": journal.RecoveryActionEngineCancelRequested,
 							"driver": string(identity.Driver),
 						},
 					})

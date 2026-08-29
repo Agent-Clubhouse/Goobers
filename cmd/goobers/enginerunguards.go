@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/instance"
@@ -44,6 +45,25 @@ const (
 	// engineCancelTimeout bounds one CancelWorkflow for the same reason: the
 	// stall sweep runs on the daemon's periodic ticker and must return.
 	engineCancelTimeout = 15 * time.Second
+)
+
+// engineDescribeRetryBudget bounds how long ONE re-attachment keeps retrying a
+// describe that failed for a reason other than NotFound, and
+// engineDescribeRetryInitial/Max are the backoff within that budget.
+//
+// The retry exists because the two events most likely to interrupt an engine
+// run — a goobers-api rollout and a Temporal frontend rollout — are the ones
+// an operator performs together, and a single Unavailable during that window
+// used to end the attachment permanently. The re-attachment goroutine already
+// outlives the whole run by design, so minutes of patience here cost nothing;
+// what it buys is that the daemon does not conclude "outcome unknown" from one
+// bad RPC and free the run's concurrency slot underneath a live workflow.
+//
+// Vars rather than consts so tests can drive the give-up path in milliseconds.
+var (
+	engineDescribeRetryBudget  = 5 * time.Minute
+	engineDescribeRetryInitial = 2 * time.Second
+	engineDescribeRetryMax     = 30 * time.Second
 )
 
 // engineWorkflowClient is the slice of the Temporal client these guards need,
@@ -144,6 +164,20 @@ type engineRunAttachment struct {
 	// scheduled engine run) the workflow id is not the run id at all. Either
 	// way the daemon must not drive the run itself.
 	Found bool
+	// Settled is the load-bearing one: the daemon POSITIVELY established that
+	// the run is no longer executing on the engine. Only a settled attachment
+	// may do the bookkeeping that assumes the run is over — releasing the
+	// scheduler's reconciled concurrency slot above all, because
+	// ReleaseReconciled is one-way (localscheduler.Scheduler.Reconcile's
+	// contract: "MUST call ReleaseReconciled once each one's outcome is
+	// known") and its wakeForDemand can admit a second run of the same
+	// workflow the instant it lands.
+	//
+	// An unsettled attachment is "I could not find out": a describe that kept
+	// failing for a reason other than NotFound, or a Get that failed for a
+	// transport reason rather than reporting the workflow's own outcome. The
+	// run is presumed still executing, and this daemon holds its slot.
+	Settled bool
 	// Status is Temporal's execution status at describe time.
 	Status enumspb.WorkflowExecutionStatus
 	// Err is a describe or await failure. A workflow that itself failed
@@ -159,25 +193,77 @@ func (g *engineRunGuards) await(ctx context.Context, runID string) engineRunAtta
 	if g == nil || g.client == nil {
 		return engineRunAttachment{Err: fmt.Errorf("re-attach to engine run %s: %w", runID, errNoEngineClient)}
 	}
-	describeCtx, cancel := context.WithTimeout(ctx, engineDescribeTimeout)
-	desc, err := g.client.DescribeWorkflowExecution(describeCtx, runID, "")
-	cancel()
+	desc, err := g.describe(ctx, runID)
 	if err != nil {
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
-			return engineRunAttachment{}
+			// No workflow under this run id. Settled: nothing on the engine is
+			// addressable as this run, so no describe will ever answer
+			// differently and holding the slot forever would turn one
+			// unresolvable run into a permanent concurrency outage for its
+			// workflow. See reattachEngineRun for the scheduled-run caveat
+			// this leaves open.
+			return engineRunAttachment{Settled: true}
 		}
 		return engineRunAttachment{Err: fmt.Errorf("describe engine run %s: %w", runID, err)}
 	}
 	attachment := engineRunAttachment{Found: true, Status: desc.GetWorkflowExecutionInfo().GetStatus()}
+	// A workflow already closed at describe time is settled by the describe
+	// alone, whatever the wait below reports.
+	attachment.Settled = attachment.Status != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
 	// The wait deliberately runs on the caller's context, NOT a bounded one:
 	// an engine run legitimately outlives the daemon that started it, and a
 	// premature timeout here would put the daemon right back into "I do not
 	// know how this run ended".
 	if err := g.client.GetWorkflow(ctx, runID, "").Get(ctx, nil); err != nil {
 		attachment.Err = err
+		// A failed, cancelled, terminated or timed-out workflow reports its
+		// own outcome through this error — that IS the answer, and the run is
+		// over. Anything else (an RPC the poll could not complete) is not.
+		attachment.Settled = attachment.Settled || engineOutcomeError(err)
+		return attachment
 	}
+	attachment.Settled = true
 	return attachment
+}
+
+// describe runs one bounded DescribeWorkflowExecution, retrying anything that
+// is not NotFound within engineDescribeRetryBudget. NotFound and context
+// cancellation return immediately: neither gets better by waiting.
+func (g *engineRunGuards) describe(ctx context.Context, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+	deadline := time.Now().Add(engineDescribeRetryBudget)
+	backoff := engineDescribeRetryInitial
+	for {
+		describeCtx, cancel := context.WithTimeout(ctx, engineDescribeTimeout)
+		desc, err := g.client.DescribeWorkflowExecution(describeCtx, runID, "")
+		cancel()
+		if err == nil {
+			return desc, nil
+		}
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > engineDescribeRetryMax {
+			backoff = engineDescribeRetryMax
+		}
+	}
+}
+
+// engineOutcomeError reports whether err is the workflow telling us how it
+// ended, rather than the client failing to find out.
+func engineOutcomeError(err error) bool {
+	var executionErr *temporal.WorkflowExecutionError
+	if errors.As(err, &executionErr) {
+		return true
+	}
+	return temporal.IsCanceledError(err) || temporal.IsTerminatedError(err) ||
+		temporal.IsTimeoutError(err) || temporal.IsApplicationError(err)
 }
 
 // cancel asks the engine to cancel an engine-driven run's workflow. It is the
@@ -232,10 +318,28 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 	if ctx.Err() != nil {
 		return
 	}
-	if deps.release != nil {
-		deps.release(id.RunID, id.Workflow)
+	// Both of these assume the run is OVER. Releasing the reconciled slot is
+	// irreversible for the life of the daemon and immediately invites the
+	// scheduler to admit another run of the same workflow; ingesting
+	// telemetry publishes a terminal outcome to the rollup. Doing either for
+	// a run whose status this daemon never established is the duplicate-work
+	// hazard the guards exist to close, reached from the failure path.
+	//
+	// The unresolvable case (`!Found`) IS settled and does release: no
+	// workflow is addressable under this run id, so nothing on the engine can
+	// be driving it — with the known exception of a SCHEDULED engine run,
+	// whose RunID is a hash of its claim workflow's id (internal/engine's
+	// RunScheduled) and therefore never describes. Resolving that mapping the
+	// way the DS6 liveness probe does (engine.WorkflowLiveness's open-workflow
+	// inverse) is the named follow-up; until then a scheduled engine run is
+	// guarded against a second in-process driver — the resume scan still
+	// refuses to walk it — but not re-attachable.
+	if attachment.Settled {
+		if deps.release != nil {
+			deps.release(id.RunID, id.Workflow)
+		}
+		ingestRunTelemetry(deps.telemetry, deps.rollupDB, deps.watermarks, deps.layout, id.RunID, deps.log)
 	}
-	ingestRunTelemetry(deps.telemetry, deps.rollupDB, deps.watermarks, deps.layout, id.RunID, deps.log)
 	if deps.log == nil {
 		return
 	}
@@ -243,58 +347,101 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 	// still running and this daemon waited it out" from "it had already closed
 	// while we were down" — the two shapes an operator reading the startup log
 	// wants to tell apart when a restart is followed by a terminal echo.
-	ev := journal.Event{
-		Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
-		Reason: "engine workflow " + strings.ToLower(strings.TrimPrefix(attachment.Status.String(), "WORKFLOW_EXECUTION_STATUS_")),
-	}
+	ev := journal.Event{Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID}
 	switch {
-	case attachment.Err != nil && !attachment.Found:
+	case !attachment.Settled:
 		ev.Type = journal.EventError
+		ev.Reason = "engine workflow status unknown"
 		ev.Error = &journal.ErrorDetail{
 			Code:    "engine_run_reattach_failed",
 			Message: fmt.Sprintf("engine-driven run %s could not be re-attached: %v", id.RunID, attachment.Err),
 		}
 	case !attachment.Found:
 		ev.Type = journal.EventError
+		ev.Reason = "engine has no workflow under this run id"
+		// The named recovery action rides the error event rather than a second
+		// append: an operator's log scraper greps the code, and the action
+		// vocabulary (RecoveryActionReattached on the way in) stays complete
+		// on the way out.
+		ev.Runner = map[string]any{
+			"action": journal.RecoveryActionUnresolved,
+			"driver": string(journal.DriverEngine),
+		}
 		ev.Error = &journal.ErrorDetail{
 			Code: "engine_run_unresolvable",
 			Message: fmt.Sprintf(
 				"engine-driven run %s has no workflow on the engine; neither resumed nor terminalized", id.RunID),
 		}
 	case attachment.Err != nil:
+		// The workflow reported its own failure. Echo it as a REAL terminal
+		// phase: journal.RunPhase is what readmodel's projection switches on,
+		// and a free-text status (the old "error: <err>") is silently dropped
+		// by its terminalPhase guard — losing the echo in exactly the cases an
+		// operator most wants it.
 		ev.Type = journal.EventRunFinished
-		ev.Status = "error: " + attachment.Err.Error()
+		ev.Reason = engineWorkflowReason(attachment.Status) + ": " + attachment.Err.Error()
+		ev.Status = string(engineRunTerminalPhase(deps.layout, id.RunID, journal.PhaseFailed))
 	default:
 		ev.Type = journal.EventRunFinished
-		ev.Status = string(engineRunTerminalPhase(deps.layout, id.RunID))
+		ev.Reason = engineWorkflowReason(attachment.Status)
+		ev.Status = string(engineRunTerminalPhase(deps.layout, id.RunID, journal.PhaseCompleted))
 	}
 	_ = deps.log.Append(ev)
 }
 
+// engineWorkflowReason renders Temporal's execution status for the instance
+// log. WorkflowExecutionStatus.String() already yields "Running"/"Completed"
+// (the enum's Go names, not its WORKFLOW_EXECUTION_STATUS_* wire constants).
+func engineWorkflowReason(status enumspb.WorkflowExecutionStatus) string {
+	return "engine workflow " + strings.ToLower(status.String())
+}
+
 // engineRunTerminalPhase reads back the phase the engine's own journal writer
-// recorded once its workflow closed. A run whose journal has not been
-// projected yet (the reconciler runs on its own interval) still reads
-// PhaseRunning, and the echo reports completed — the workflow returned
-// without error, which is the only thing this process actually observed.
-func engineRunTerminalPhase(l instance.Layout, runID string) journal.RunPhase {
+// recorded once its workflow closed, falling back to fallback when the
+// journal has not been projected yet (the reconciler runs on its own
+// interval) — the phase this process actually observed the workflow reach.
+func engineRunTerminalPhase(l instance.Layout, runID string, fallback journal.RunPhase) journal.RunPhase {
 	rd, err := journal.OpenRead(filepath.Join(l.RunsDir(), runID))
 	if err != nil {
-		return journal.PhaseCompleted
+		return fallback
 	}
 	phase, err := rd.Phase()
 	if err != nil || phase == journal.PhaseRunning {
-		return journal.PhaseCompleted
+		return fallback
 	}
 	return phase
+}
+
+// engineRunSettledOnDisk reports whether a run's own journal already carries
+// a terminal event. It is the precondition the operator paths check BEFORE
+// refusing an engine-driven run: a closed journal has nothing left for either
+// driver to write, so the accurate answer is each command's existing "already
+// terminal", not a refusal that sends the operator hunting for a workflow
+// that finished (or was never there).
+func engineRunSettledOnDisk(reader *journal.Reader) bool {
+	if reader == nil {
+		return false
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return false
+	}
+	return isTerminalPhase(phase)
 }
 
 // engineDrivenRefusal is the named error every operator path returns for a
 // run the engine drives. The message names the driver and the reason rather
 // than the mechanism that failed, because the operator's next question is
 // always "then how do I stop it".
+//
+// It deliberately does NOT assert that the run's workflow is still executing:
+// the daemon's operator paths have no Temporal client to check with, and for a
+// run whose workflow has vanished that claim would be false. What is true in
+// every case is that the engine, not this process, is the journal's writer —
+// so the remedy is stated as the workflow, plus the sweep that reaches it.
 func engineDrivenRefusal(runID, action string) error {
 	return fmt.Errorf(
-		"run %s is engine-driven (run.yaml driver: %s): %s would edit a journal the engine still owns "+
-			"while its workflow keeps executing; act on the engine's workflow instead",
+		"run %s is engine-driven (run.yaml driver: %s): %s would edit a journal whose only writer is the "+
+			"engine's workflow; cancel that workflow (or let the daemon's stalled-run sweep cancel it) instead",
 		runID, journal.DriverEngine, action)
 }
