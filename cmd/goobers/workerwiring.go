@@ -230,7 +230,10 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	if err != nil {
 		return nil, err
 	}
-	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot}
+	// Store is the same --blob-store the worker's artifact recorder writes
+	// through: the RWX volume the daemon's blob plane serves pods from, so a
+	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
+	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
 	return delegate.Provision(ctx, req)
 }
 

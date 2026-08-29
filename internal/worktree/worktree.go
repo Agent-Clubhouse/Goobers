@@ -204,20 +204,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	}()
 
 	if opts.AcquireRemoteBranch {
-		acquisitionPath := m.branchAcquisitionPath(key, opts.OwnerRunID, opts.Branch)
-		if _, err := os.Stat(acquisitionPath); os.IsNotExist(err) {
-			ref := "refs/heads/" + opts.Branch
-			if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, "fetch", "origin", "+"+ref+":"+ref); err != nil {
-				return nil, fmt.Errorf("worktree: acquire branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
-			}
-			if err := writeBranchAcquisition(acquisitionPath, branchAcquisition{
-				OwnerRunID: opts.OwnerRunID,
-				Branch:     opts.Branch,
-			}); err != nil {
-				return nil, fmt.Errorf("worktree: record acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
-			}
-		} else if err != nil {
-			return nil, fmt.Errorf("worktree: inspect acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+		if err := m.acquireRemoteBranchLocked(ctx, key, opts.RepoURL, repoDir, opts.OwnerRunID, opts.Branch); err != nil {
+			return nil, err
 		}
 	}
 

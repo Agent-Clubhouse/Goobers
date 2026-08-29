@@ -66,6 +66,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventRepaired,
 		journal.EventRunnerAnnotation,
 		journal.EventRunnerPlacement,
+		journal.EventRunnerWorkspaceDelta,
 		journal.EventClaimAcquired,
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,

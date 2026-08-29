@@ -93,7 +93,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// A publish failure converts the stage to a FAILURE. The commits exist and
 	// nothing else will carry them, so surrendering success here would strand
 	// exactly the diff this mechanism protects — the silent shape #3763 is about.
-	var delta string
+	var delta publishedWorkspaceDelta
 	if envelope.Status == apiv1.ResultSuccess {
 		published, derr := publishWorkspaceDelta(ctx, ".", stderr)
 		if derr != nil {
@@ -107,7 +107,10 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			delta = published
 		}
 	}
-	data, err := json.Marshal(dispatcher.SurrenderedResult{Result: envelope, WorkspaceDelta: delta})
+	data, err := json.Marshal(dispatcher.SurrenderedResult{
+		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		WorkspaceDeltaUnchanged: delta.Unchanged,
+	})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)
 		return 1
