@@ -412,7 +412,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	pf(stdout, "startup: scheduler initialized\n")
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
-	defer setup.Shutdown(context.Background())
+	// #3651: the normal stop path calls this explicitly below so a flush or
+	// close failure fails the command; the defer only covers early returns,
+	// and Shutdown itself runs at most once.
+	shutdownSetup := func() error {
+		err := setup.Shutdown(context.Background())
+		if err != nil {
+			pf(stderr, "error: shut down daemon services: %v\n", err)
+		}
+		return err
+	}
+	defer func() { _ = shutdownSetup() }()
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -1454,6 +1464,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
+	}
+	// Close telemetry, databases, watermarks, and the journal before the
+	// command reports success: a lost final flush must be an exit-code
+	// failure, not a silent clean shutdown (#3651).
+	if shutdownSetup() != nil {
+		return 1
 	}
 	return 0
 }

@@ -95,7 +95,13 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() {
+		// #3651: surface a lost final flush or close rather than exiting as if
+		// the signal command shut down cleanly.
+		if err := setup.Shutdown(context.Background()); err != nil {
+			pf(stderr, "error: shut down scheduler services: %v\n", err)
+		}
+	}()
 	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

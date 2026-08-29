@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -110,6 +111,13 @@ type schedulerSetup struct {
 	// never nil — an instance with no declared stores gets a registry that
 	// fails every store ref closed.
 	SecretStores *secretstore.Registry
+
+	// shutdownOnce/shutdownErr make Shutdown idempotent: `up` closes the setup
+	// explicitly so a flush or close failure can fail the command, while the
+	// early-return defer stays in place as a safety net. Whichever runs first
+	// owns the close; the other observes the same result.
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 type schedulerDefinitions struct {
@@ -1233,48 +1241,116 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 			if err := s.Telemetry.Flush(ctx); err != nil {
 				logIngestFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
 			}
-			s.ingestSchedulerLog()
+			_ = s.ingestSchedulerLog(context.Background())
 		}))
 	}
 	return opts
 }
 
-func (s *schedulerSetup) ingestSchedulerLog() {
+func (s *schedulerSetup) ingestSchedulerLog(ctx context.Context) error {
 	if s.RollupDB == nil || s.InstanceLog == nil {
-		return
+		return nil
 	}
-	if err := s.RollupDB.IngestSchedulerLog(context.Background(), s.InstanceLog.Dir()); err != nil {
+	if err := s.RollupDB.IngestSchedulerLog(ctx, s.InstanceLog.Dir()); err != nil {
 		logIngestFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
+		return err
 	}
+	return nil
+}
+
+// schedulerShutdownGrace bounds a setup shutdown that was handed an unbounded
+// context (#3651). Telemetry export and the sqlite closes below can all block;
+// without a deadline a daemon stop hangs forever instead of reporting which
+// step is stuck.
+var schedulerShutdownGrace = 30 * time.Second
+
+// shutdownStep is one named close/flush in a setup shutdown. The name is what
+// makes a timeout actionable: it says which resource was still closing.
+type shutdownStep struct {
+	name string
+	run  func() error
 }
 
 // Shutdown flushes/closes the telemetry client, ingests any final scheduler
-// spans, and closes the rollup db. It is nil-safe so a caller can defer it
-// unconditionally regardless of whether instance.yaml enabled telemetry
-// (issue #129).
-func (s *schedulerSetup) Shutdown(ctx context.Context) {
+// spans, and closes the rollup db, read model, watermarks, and instance log.
+// It is nil-safe so a caller can defer it unconditionally regardless of
+// whether instance.yaml enabled telemetry (issue #129), it is bounded so a
+// wedged flush cannot hang the process, and it joins every step's error so a
+// caller never reports a clean shutdown after losing final persisted state
+// (#3651). It runs at most once; later calls return the first call's result.
+func (s *schedulerSetup) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, schedulerShutdownGrace)
+		defer cancel()
+	}
+	s.shutdownOnce.Do(func() {
+		s.shutdownErr = runShutdownSteps(ctx, s.shutdownSteps(ctx))
+	})
+	return s.shutdownErr
+}
+
+func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
+	var steps []shutdownStep
 	if s.Telemetry != nil {
-		_ = s.Telemetry.Shutdown(ctx)
+		steps = append(steps, shutdownStep{"telemetry client", func() error { return s.Telemetry.Shutdown(ctx) }})
 	}
 	if s.RollupDB != nil {
-		s.ingestSchedulerLog()
-		_ = s.RollupDB.Close()
+		steps = append(steps,
+			shutdownStep{"scheduler telemetry ingest", func() error { return s.ingestSchedulerLog(ctx) }},
+			shutdownStep{"telemetry rollup database", s.RollupDB.Close},
+		)
 	}
 	// The projector stops BEFORE its store closes. Its commit loop holds the
 	// only writable handle, so closing read.db underneath a commit in flight
 	// would fail that projection — and the failure would look like corruption
 	// rather than shutdown. Stop is synchronous: it waits for the loop to drain.
 	if s.StopProjector != nil {
-		s.StopProjector()
+		steps = append(steps, shutdownStep{"read model projector", func() error { s.StopProjector(); return nil }})
 	}
 	if s.ReadModel != nil {
-		_ = s.ReadModel.Close()
+		steps = append(steps, shutdownStep{"read model store", s.ReadModel.Close})
 	}
 	if s.Watermarks != nil {
-		_ = s.Watermarks.Close()
+		steps = append(steps, shutdownStep{"source watermark store", s.Watermarks.Close})
 	}
 	if s.InstanceLog != nil {
-		_ = s.InstanceLog.Close()
+		steps = append(steps, shutdownStep{"instance log", s.InstanceLog.Close})
+	}
+	return steps
+}
+
+// runShutdownSteps runs steps in order on a goroutine so ctx can bound the
+// whole sequence. On timeout the in-flight step keeps running — a close cannot
+// be cancelled — but the caller is freed and told which step wedged rather
+// than blocking on it forever.
+func runShutdownSteps(ctx context.Context, steps []shutdownStep) error {
+	var pending atomic.Value
+	pending.Store("")
+	done := make(chan error, 1)
+	go func() {
+		var errs []error
+		for _, step := range steps {
+			pending.Store(step.name)
+			if err := step.run(); err != nil {
+				errs = append(errs, fmt.Errorf("shut down %s: %w", step.name, err))
+			}
+		}
+		pending.Store("")
+		done <- errors.Join(errs...)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		stuck, _ := pending.Load().(string)
+		if stuck == "" {
+			stuck = "unknown step"
+		}
+		return fmt.Errorf("shutdown timed out while closing %s: %w", stuck, ctx.Err())
 	}
 }
 

@@ -201,10 +201,18 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	if warning := windowsLargeRepoEnvironmentWarning(setup.Config, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
 		pln(stdout, warning)
 	}
+	// #3651: a discarded close error here would lose final telemetry, rollup,
+	// or journal state without any diagnostic; Shutdown itself runs once, so
+	// both this defer and the --no-wait cleanup below can call it.
+	shutdownSetup := func() {
+		if err := setup.Shutdown(context.Background()); err != nil {
+			pf(stderr, "error: shut down scheduler services: %v\n", err)
+		}
+	}
 	shutdownOnReturn := true
 	defer func() {
 		if shutdownOnReturn {
-			setup.Shutdown(context.Background())
+			shutdownSetup()
 		}
 	}()
 	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
@@ -285,7 +293,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		releaseOnReturn = false
 		cleanup := func() {
 			sched.Wait()
-			setup.Shutdown(context.Background())
+			shutdownSetup()
 			release()
 		}
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
