@@ -455,10 +455,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if liveJournals != nil {
 		defer liveJournals.Close()
 	}
-	// The SAME store the writer adopts spans from: DS5 verifies a
-	// live-authored journal against a re-projection, so a source given to one
-	// and not the other turns every adopted span into a false divergence.
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
+	// One Temporal client per daemon (decision 003 step 1(e)): the projection
+	// reconciler, the DS6 claim-liveness probe and the engine-driven run
+	// guards each used to dial the frontend themselves. nil on an instance
+	// with no `engine:` configuration, which leaves every consumer below on
+	// its pre-existing no-engine path.
+	engineClient, err := newDaemonEngineClient(setup.Config)
+	if err != nil {
+		pf(stderr, "error: dial engine for daemon Temporal client: %v\n", err)
+		return 1
+	}
+	defer engineClient.Close()
+	engineGuards := engineClient.Guards()
+	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
+	// verifies a live-authored journal against a re-projection, so a source
+	// given to one and not the other turns every adopted span into a false
+	// divergence.
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, engineClient, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -698,7 +711,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
 	// leaves it closed and the periodic tick below retries both halves.
-	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
@@ -891,9 +904,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
+			ctx,
 			l,
 			setup.RunnerRegistry,
 			setup.LegacyRunner,
+			engineGuards,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 				// The stalled run's gaggle is only knowable from its runs-tree
@@ -973,13 +988,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
+	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
+	}
+	// An engine-driven run is NOT resumed: this daemon waits for the engine's
+	// workflow and echoes its outcome. Announced separately so an operator
+	// reading the startup log can tell the two apart at a glance.
+	for _, runID := range reattached {
+		pf(stdout, "re-attaching to engine-driven run %s\n", runID)
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup

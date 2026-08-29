@@ -184,13 +184,13 @@ func (erroringProbe) RunLive(context.Context, string) (bool, error) {
 // live.
 func TestBuildClaimLivenessProbeMode1NeverDialsEngine(t *testing.T) {
 	prev := engineLivenessProbe
-	engineLivenessProbe = func(*instance.Config) (localscheduler.RunLivenessProbe, func(), error) {
+	engineLivenessProbe = func(*instance.Config, *daemonEngineClient) (localscheduler.RunLivenessProbe, func(), error) {
 		t.Fatal("mode-1 instance must not build an engine liveness probe")
 		return nil, nil, nil
 	}
 	t.Cleanup(func() { engineLivenessProbe = prev })
 
-	probe, closeProbe, err := buildClaimLivenessProbe(&instance.Config{}, func() []string { return []string{"tracked-run"} })
+	probe, closeProbe, err := buildClaimLivenessProbe(&instance.Config{}, nil, func() []string { return []string{"tracked-run"} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestUpDoesNotReapEngineLiveClaimAcrossRestart(t *testing.T) {
 	schedulerDir := filepath.Join(root, "scheduler")
 
 	prevProbe := buildClaimLivenessProbe
-	buildClaimLivenessProbe = func(cfg *instance.Config, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
+	buildClaimLivenessProbe = func(cfg *instance.Config, shared *daemonEngineClient, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
 		return localscheduler.CompositeRunLiveness(
 			localscheduler.TrackedRunLiveness(tracked),
 			stubProbe{"engine-live-run": true},
@@ -422,7 +422,7 @@ func TestOneShotSignalRenewsEngineLiveClaimInsteadOfReaping(t *testing.T) {
 	configureEngineInstance(t, root)
 
 	prevProbe := buildClaimLivenessProbe
-	buildClaimLivenessProbe = func(cfg *instance.Config, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
+	buildClaimLivenessProbe = func(cfg *instance.Config, shared *daemonEngineClient, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
 		return localscheduler.CompositeRunLiveness(
 			localscheduler.TrackedRunLiveness(tracked),
 			stubProbe{"engine-live-run": true},
@@ -447,7 +447,7 @@ func TestOneShotRunRenewsEngineLiveClaimInsteadOfReaping(t *testing.T) {
 	configureEngineInstance(t, root)
 
 	prevProbe := buildClaimLivenessProbe
-	buildClaimLivenessProbe = func(cfg *instance.Config, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
+	buildClaimLivenessProbe = func(cfg *instance.Config, shared *daemonEngineClient, tracked func() []string) (localscheduler.RunLivenessProbe, func(), error) {
 		return localscheduler.CompositeRunLiveness(
 			localscheduler.TrackedRunLiveness(tracked),
 			stubProbe{"engine-live-run": true},
@@ -471,7 +471,7 @@ func TestOneShotSignalMode1KeepsRecoverAtSetup(t *testing.T) {
 	root := initDeterministicDemo(t)
 
 	prevProbe := buildClaimLivenessProbe
-	buildClaimLivenessProbe = func(*instance.Config, func() []string) (localscheduler.RunLivenessProbe, func(), error) {
+	buildClaimLivenessProbe = func(*instance.Config, *daemonEngineClient, func() []string) (localscheduler.RunLivenessProbe, func(), error) {
 		t.Error("a mode-1 one-shot invocation must not build a claim liveness probe")
 		return localscheduler.CompositeRunLiveness(), func() {}, nil
 	}

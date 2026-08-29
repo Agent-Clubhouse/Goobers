@@ -183,8 +183,18 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				WorkflowVersion: in.Version,
 				WorkflowDigest:  m.Digest(),
 				Gaggle:          in.Gaggle,
-				RunControls:     &runControls,
-				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// Every run this workflow journals is, by construction, driven
+				// by the engine. The daemon reads it back from run.yaml to
+				// keep its resume scan, stall sweep and operator paths off a
+				// run it does not own (decision 003, Phase-0 hygiene). It is
+				// pinned here — in the workflow, as deterministic state —
+				// rather than stamped by the projection writer, so the live
+				// journal plane's OpenHeader carries it from the very first
+				// emit and a run is never briefly indistinguishable from a
+				// runner-driven one.
+				Driver:      journal.DriverEngine,
+				RunControls: &runControls,
+				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
 			Item:                   in.Item,
 			Graph:                  graph,
@@ -499,6 +509,18 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 		Type: journal.EventError, Stage: stage,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaled},
 	})
+}
+
+// runCanceledCause is the run_failed cause text for a cancelled run. The
+// cancellation error itself is Temporal vocabulary ("canceled"), so the cause
+// names the event in the run's own terms and keeps the underlying error for
+// the operator who has to tell an external `temporal workflow cancel` apart
+// from the daemon's stall sweep.
+func runCanceledCause(err error) string {
+	if err == nil {
+		return "run canceled on the engine"
+	}
+	return "run canceled on the engine: " + err.Error()
 }
 
 // runFinished closes the projection with the terminal phase, mapped to the
