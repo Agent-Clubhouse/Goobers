@@ -84,6 +84,26 @@ type DispatchStageInput struct {
 	// WorkspaceDelta is the blob digest of what earlier stages of this run
 	// committed (#3763), for this pod to continue from.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceBranch is the run's CURRENT workspace-branch binding (#392):
+	// empty while the run is on its derived run branch, and the rebound branch
+	// once a stage has published the well-known `workspaceBranch` output —
+	// pr-remediation's gather-pr-context binds it to the claimed PR's head, and
+	// every stage after it (rebase-pr, remediation-checkpoint, implement,
+	// local-ci, push-remediated) operates on the PR branch rather than the run
+	// branch.
+	//
+	// It is threaded HERE rather than derived in the pod because the pod cannot
+	// derive it: providers.BranchNameIn composes the run branch out of
+	// workflow + runID, which is precisely the branch a rebound run is NOT on.
+	// Before this field a pod stage in pr-remediation checked out
+	// goobers/pr-remediation/<runid>, found none of the PR's commits, and
+	// remediated a branch nobody was reviewing — while the same stage on the
+	// self runner was correct, because the local runner has threaded this
+	// binding since #392.
+	//
+	// omitempty, and the JSON name is new: an existing recorded history carries
+	// no such key and decodes to "" — the pre-#392 behaviour byte for byte.
+	WorkspaceBranch string `json:"workspaceBranch,omitempty"`
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -105,7 +125,7 @@ type DispatchStageInput struct {
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -166,7 +186,7 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta, WorkspaceBranch: workspaceBranch}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	}, deltaOut)
@@ -360,6 +380,21 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// pinned base at worst.
 	if workspace.IsWritableRepo() {
 		attempt.WorkspaceDelta = input.WorkspaceDelta
+		// The rebound branch and the base sync are stamped on exactly the same
+		// arm as the delta, and for one reason: they all describe what happens
+		// to a WRITABLE run branch. A repo-readonly stage is detached at the
+		// pinned base on every substrate — the local runner ignores a rebound
+		// branch for it (createStageWorkspace's read-only arm passes Branch:
+		// "") — so stamping either here would be the pod quietly reading
+		// something the self runner does not.
+		attempt.WorkspaceBranch = strings.TrimSpace(input.WorkspaceBranch)
+		// SyncBase is already pinned inside input.Run (apiv1.DeterministicRun,
+		// #813) and travels with it; it is lifted onto the attempt because the
+		// pod spec is where the in-pod checkout reads its provisioning
+		// instructions, and Run is not stamped there in full. An agentic stage
+		// carries no DeterministicRun and therefore never syncs base, matching
+		// the local runner (dispatchTask reads t.Run.SyncBase).
+		attempt.SyncBase = input.Run != nil && input.Run.SyncBase
 	}
 	// A repo workspace has to be CLONED, and cloning a private repository needs
 	// a credential. The pod used to take that from the stage's declared

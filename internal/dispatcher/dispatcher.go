@@ -256,6 +256,22 @@ type Attempt struct {
 	// this stage continues from their work instead of from base — the worker
 	// gets this for free from a shared branch ref, a pod does not.
 	WorkspaceDelta string
+	// WorkspaceBranch is the run's rebound workspace branch (#392): empty while
+	// the run is on the branch the pod can derive for itself (namespace +
+	// workflow + run id), and the branch a stage bound with the well-known
+	// `workspaceBranch` output once one has — pr-remediation binds it to the
+	// claimed PR's head, so every later stage works on the PR's branch.
+	//
+	// A pod cannot derive this, which is the whole reason it is carried: the
+	// derivation composes the RUN branch, which is exactly the branch a rebound
+	// run is not on.
+	WorkspaceBranch string
+	// SyncBase asks the in-pod checkout to merge the freshly fetched base into
+	// the branch it landed on, the way the local runner's worktree provisioner
+	// does for a stage declaring run.syncBase (#813). Only meaningful for a
+	// writable repo workspace, and only for a branch that already existed —
+	// a branch created at base is already synced by construction.
+	SyncBase bool
 	// Capabilities is the stage's declared credential capabilities
 	// (apiv1.InvocationEnvelope.Capabilities). The pod resolves them against
 	// the daemon's credential plane at stage START — the dispatch payload

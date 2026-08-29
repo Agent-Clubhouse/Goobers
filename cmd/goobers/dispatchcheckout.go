@@ -13,7 +13,9 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/mergeresolve"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -30,6 +32,17 @@ import (
 // This is what makes a stage declaring `workspace: repo` dispatchable at all:
 // before it, mode 3 refused every such stage, which is every stage in a
 // workflow that does not explicitly opt into scratch.
+//
+// TWO THINGS ARE STAMPED RATHER THAN DERIVED, and both are #392: the run's
+// REBOUND workspace branch, and whether the stage asked for its base to be
+// synced. Everything else about the checkout follows from the run identity the
+// dispatcher already stamps, but neither of these can: the branch a
+// pr-remediation run works on is the claimed PR's head, which only the provider
+// knows and which no composition of workflow + run id yields, and syncBase is a
+// per-stage DSL declaration that lives in the pinned definition. Deriving in
+// their absence — which is what this file did — put every pod stage of
+// pr-remediation on a run branch nobody was reviewing, against a base as old as
+// the PR.
 
 // checkoutCloneURL derives the git remote for a routed repository. A package
 // var solely so a test can point the real clone path at a local bare repo:
@@ -64,14 +77,33 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		return fmt.Errorf("derive clone URL: %w", err)
 	}
 
+	namespace := providers.NormalizeBranchNamespace(os.Getenv(executor.BranchNamespaceEnvVar))
 	// The run branch is DERIVED here, from the same inputs and the same helper
 	// the worker uses, rather than stamped. Two derivations of one convention
 	// cannot disagree about the branch a run lives on; two stamped strings can.
 	branch := providers.BranchNameIn(
-		providers.NormalizeBranchNamespace(os.Getenv(executor.BranchNamespaceEnvVar)),
+		namespace,
 		os.Getenv(dispatcher.EnvWorkflow),
 		os.Getenv(dispatcher.EnvRunID),
 	)
+	// ... EXCEPT when the run rebound its workspace branch (#392). That one
+	// cannot be derived: the derivation above composes the RUN branch, and a
+	// rebound run is by definition not on it — pr-remediation binds the
+	// binding to the claimed PR's head, which only the provider knows. The
+	// dispatcher stamps it; deriving anything here would put the stage on the
+	// wrong tree while looking entirely healthy.
+	rebound := strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch))
+	if rebound != "" {
+		// Re-assert the namespace the engine already enforced when it accepted
+		// the rebinding (selectedWorkspaceBranch). Defense in depth, and cheap:
+		// this string decides which branch a later stage force-pushes with a
+		// lease, so "outside the namespace" must fail here rather than reach
+		// git.
+		if !strings.HasPrefix(rebound, namespace) {
+			return fmt.Errorf("stamped workspace branch %q is outside branch namespace %q; refusing to provision it", rebound, namespace)
+		}
+		branch = rebound
+	}
 	base := strings.TrimSpace(os.Getenv(executor.BaseBranchEnvVar))
 	if base == "" {
 		base = "main"
@@ -109,7 +141,28 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	// pushes in a later one, so the common case is unpushed commits that must
 	// still reach this stage. applyStageWorkspaceDelta covers that.
 	if err := runGit(ctx, dir, gitEnv, stderr, "clone", "--quiet", "--branch", branch, cloneURL, "."); err == nil {
-		return applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr)
+		if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
+			return err
+		}
+		// Base sync AFTER the delta, matching the self runner's order: the
+		// worker/worktree provisioner applies the delta into the mirror and
+		// only then creates the worktree with SyncBase, so the merge lands on
+		// the branch as the stage will see it. Reversing the two would merge
+		// base into a branch the delta is about to reset away from.
+		return syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base)
+	}
+	// A REBOUND branch that does not exist is a refusal, not a fallback (#392).
+	// The fallback below creates the branch locally at base, which is right for
+	// the first stage of a run — the run branch legitimately does not exist yet
+	// — and catastrophically wrong for a rebound one: the branch was named by a
+	// producer stage that read it off a real, open PR, so its absence means the
+	// premise broke. Falling back would hand the stage a pristine base checkout
+	// wearing the PR's branch name, and push-remediated would then force-push
+	// THAT over the PR head with a lease. The local runner refuses the same
+	// case (createStageWorkspace's RequireExistingBranch, set exactly when the
+	// branch was rebound); this is that refusal on the pod substrate.
+	if rebound != "" {
+		return fmt.Errorf("rebound workspace branch %q does not exist at %s; refusing to create it at base — the branch names work that already exists", rebound, cloneURL)
 	}
 	// First stage of the run: the branch does not exist yet.
 	//
@@ -144,6 +197,108 @@ func applyStageWorkspaceDelta(ctx context.Context, dir string, gitEnv []string, 
 		return nil
 	}
 	return applyWorkspaceDelta(ctx, dir, digest, gitEnv, stderr)
+}
+
+// syncWorkspaceBase merges the freshly fetched base into the branch the
+// checkout landed on, when the stage declared run.syncBase (#813).
+//
+// It is the pod's half of a SHIPPED DSL feature that had no pod-side path at
+// all: the local runner and the worker both honour syncBase through
+// worktree.CreateOptions.SyncBase, so a `syncBase: true` stage was correct on
+// self and silently unsynced in a pod — running its build against a base
+// weeks behind the one the self runner would have given it. pr-remediation's
+// rebase-pr is exactly such a stage.
+//
+// The semantics are the provisioner's, not a new invention: `git merge --ff
+// --no-edit <base>` (a fast-forward when the branch has no commits of its own,
+// a merge commit when it does), the same mechanical adjacent-line conflict
+// resolution the worktree path applies, and the same fail-closed outcome when
+// the conflict is real — a stage that cannot sync base must not proceed
+// against a stale one and call it success.
+//
+// Called only on the arm where the branch ALREADY EXISTED on the remote,
+// mirroring the provisioner's `SyncBase && existingBranch` condition: a branch
+// this pod just created at base is synced by construction.
+func syncWorkspaceBase(ctx context.Context, dir string, gitEnv []string, stderr io.Writer, branch, base string) error {
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvStageSyncBase)) != "true" {
+		return nil
+	}
+	// FETCH, then merge FETCH_HEAD: "freshly fetched" is the contract's word
+	// (WorkspaceRequest.SyncBase), and the remote-tracking ref a clone left
+	// behind is only as fresh as the clone. Merging FETCH_HEAD rather than
+	// origin/<base> also keeps this correct on a single-branch clone, where no
+	// remote-tracking ref for the base exists at all.
+	if err := runGit(ctx, dir, gitEnv, stderr, "fetch", "--quiet", "origin", base); err != nil {
+		return fmt.Errorf("syncBase: fetch base %s: %w", base, err)
+	}
+	// A branch with commits of its own gets a MERGE COMMIT, and git refuses to
+	// write one without an identity. A pod's clone has none — the worktree
+	// provisioner sets one on every worktree it creates and a fresh clone
+	// inherits only whatever the image happens to carry — so the same identity
+	// is set here, from the same constants, rather than depending on ambient
+	// image config. Local to this repository, exactly as worktree.Create does
+	// it. Scoped to the syncBase arm on purpose: every other pod checkout
+	// behaves precisely as it did before this existed.
+	for _, kv := range [][2]string{{"user.name", worktree.BotGitUserName}, {"user.email", worktree.BotGitUserEmail}} {
+		if err := runGit(ctx, dir, gitEnv, stderr, "config", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("syncBase: set commit identity %s: %w", kv[0], err)
+		}
+	}
+	if err := runGit(ctx, dir, gitEnv, stderr, "merge", "--ff", "--no-edit", "FETCH_HEAD"); err != nil {
+		resolved, resolveErr := resolveWorkspaceBaseSyncConflict(ctx, dir, gitEnv, stderr)
+		if !resolved {
+			files, inspectErr := workspaceMergeConflictFiles(ctx, dir, gitEnv)
+			// Leave no half-merged tree behind: the stage runs in this very
+			// directory, and a workspace full of conflict markers is a far
+			// worse failure than the merge itself.
+			_ = runGit(ctx, dir, gitEnv, stderr, "merge", "--abort")
+			return fmt.Errorf("syncBase: merge base %s into %s: %w (conflicting files: %s; inspect: %v; resolve: %v)",
+				base, branch, err, strings.Join(files, ", "), inspectErr, resolveErr)
+		}
+	}
+	pf(stderr, "workspace: synced base %s into %s\n", base, branch)
+	return nil
+}
+
+// resolveWorkspaceBaseSyncConflict applies the SHARED mechanical resolution
+// (internal/mergeresolve, the one internal/worktree's syncBase path uses) to a
+// conflicted base merge and commits it when every unmerged path was provably
+// safe. Anything else leaves the merge conflicted for the caller to abort.
+func resolveWorkspaceBaseSyncConflict(ctx context.Context, dir string, gitEnv []string, stderr io.Writer) (bool, error) {
+	git := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		cmd.Env = composeGitEnv(dir, gitEnv)
+		return cmd.Output()
+	}
+	status, err := mergeresolve.ResolveAdjacentLineConflicts(dir, git)
+	if err != nil || status != mergeresolve.StatusResolved {
+		return false, err
+	}
+	if err := runGit(ctx, dir, gitEnv, stderr, "commit", "--no-edit"); err != nil {
+		return false, fmt.Errorf("commit mechanically resolved base merge: %w", err)
+	}
+	return true, nil
+}
+
+// workspaceMergeConflictFiles names the unmerged paths, so the surrendered
+// error says WHICH files collided. The pod is disposed as soon as the stage
+// fails, so a message that omits them is unactionable.
+func workspaceMergeConflictFiles(ctx context.Context, dir string, gitEnv []string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=U", "-z")
+	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, gitEnv)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, file := range strings.Split(string(out), "\x00") {
+		if file != "" {
+			files = append(files, file)
+		}
+	}
+	return files, nil
 }
 
 // gitAuthEnv builds the git child environment from a credential the stage

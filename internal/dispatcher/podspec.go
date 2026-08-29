@@ -81,6 +81,23 @@ const (
 	// the pod's own token can fetch, and a stage has no business reading or
 	// forging it.
 	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
+	// EnvWorkspaceBranch carries the run's REBOUND workspace branch (#392) — the
+	// branch the in-pod checkout must clone instead of the one it would derive
+	// from workflow + run id. Stamped only when a stage actually rebound it
+	// (pr-remediation, onto the claimed PR's head); absent otherwise, so every
+	// pod spec for a run that never rebinds is byte-identical to before.
+	//
+	// Privileged, exactly like EnvStageWorkspace and for the same reason: a
+	// stage that could rewrite it would choose which branch the platform
+	// provisions for it, and in this lane that branch is the one
+	// push-remediated force-pushes with a lease.
+	EnvWorkspaceBranch = "GOOBERS_WORKSPACE_BRANCH"
+	// EnvStageSyncBase is stamped "true" when the stage declared
+	// run.syncBase (#813) on a writable repo workspace, so the in-pod checkout
+	// merges the freshly fetched base into the branch it landed on the way the
+	// worktree provisioner does on the self runner. Privileged: a stage that
+	// could set it would rewrite its own branch's history relative to base.
+	EnvStageSyncBase = "GOOBERS_STAGE_SYNC_BASE"
 	// EnvCheckoutCapability names the capability the pod may mint SOLELY to
 	// provision a repo workspace (#3770). Privileged, and deliberately separate
 	// from EnvStageCapabilities: the resulting credential authenticates the
@@ -168,7 +185,8 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvCheckoutCapability,
+	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
+	EnvStageSyncBase, EnvCheckoutCapability,
 	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
 }
 
@@ -745,6 +763,12 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	if attempt.WorkspaceDelta != "" {
 		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: attempt.WorkspaceDelta})
+	}
+	if branch := strings.TrimSpace(attempt.WorkspaceBranch); branch != "" {
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceBranch, Value: branch})
+	}
+	if attempt.SyncBase {
+		env = append(env, corev1.EnvVar{Name: EnvStageSyncBase, Value: "true"})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {

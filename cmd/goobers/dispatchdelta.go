@@ -212,7 +212,18 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 	git := podGit{env: gitEnv, stderr: stderr}
 	tip, err := workspacedelta.Fetch(ctx, git, dir, bundle)
 	if err != nil {
-		return err
+		// A THIN bundle needs its prerequisite commit present in the receiving
+		// repository; git refuses the fetch with "does not contain prerequisite
+		// commits" when it is not. On one branch that means the base moved
+		// under the run. Across TWO branches (#392) it means something sharper
+		// and worth naming separately: the delta was bundled on the run branch
+		// before the run rebound its workspace to a PR head (or the reverse),
+		// so its prerequisite is on a line of history this checkout does not
+		// contain at all. The engine's continuity selector keys the record on
+		// the branch and should never hand such a digest across a rebind; this
+		// is the pod re-asserting it at the substrate, where git's own message
+		// alone would send a reader hunting a base drift that never happened.
+		return fmt.Errorf("%w%s", err, deltaBranchContext(dir))
 	}
 	head, err := git.Output(ctx, dir, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -224,7 +235,10 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 	baseRef, _ := resolveBaseRef(dir, stageBaseBranch())
 	outcome, err := workspacedelta.Reconcile(ctx, git, dir, digest, head, tip, baseRef)
 	if err != nil {
-		return err
+		// The shared guard already names both SHAs; what it cannot know is
+		// WHICH branch this pod is standing on, which is the first thing a
+		// reader of a diverged pr-remediation run needs (#392).
+		return fmt.Errorf("%w%s", err, deltaBranchContext(dir))
 	}
 	switch outcome {
 	case workspacedelta.OutcomeKeep:
@@ -243,4 +257,25 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 		return fmt.Errorf("move onto workspace delta %s: %w", digest, err)
 	}
 	return nil
+}
+
+// deltaBranchContext is the branch half of a delta failure's message: which
+// branch the workspace is actually on, and whether that branch is one the run
+// REBOUND to (#392) rather than the run branch a pod derives for itself.
+//
+// It returns a leading-space suffix, or "" when neither fact is available —
+// appending nothing is better than appending a lie, and a checkout too broken
+// to answer `symbolic-ref` has already produced a louder error of its own.
+func deltaBranchContext(dir string) string {
+	var parts []string
+	if branch, err := currentBranch(dir); err == nil && branch != "" {
+		parts = append(parts, fmt.Sprintf("the workspace is on branch %q", branch))
+	}
+	if rebound := strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)); rebound != "" {
+		parts = append(parts, fmt.Sprintf("this run rebound its workspace branch to %q, so a delta produced before the rebind cannot land here", rebound))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
 }

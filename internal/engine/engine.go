@@ -348,7 +348,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 
 		if t, ok := m.Task(state); ok {
 			_, remote := remotePlacementFor(in, t.Name)
-			selected, serr := selectTaskDelta(ctx, t, remote, continuity, rec)
+			selected, serr := selectTaskDelta(ctx, t, remote, continuity, workspaceBranch, rec)
 			if serr != nil {
 				return RunResult{}, serr
 			}
@@ -357,7 +357,10 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if terr != nil {
 				return RunResult{}, terr
 			}
-			continuity = recordPublication(ctx, t, published, continuity, rec)
+			// Keyed on the PRE-rebind binding on purpose: the rebind below
+			// applies from the NEXT stage on, and this stage's commits were made
+			// on the branch it was handed.
+			continuity = recordPublication(ctx, t, published, continuity, workspaceBranch, rec)
 			if res.Status == apiv1.ResultFailure && t.ContinueOnError {
 				// Outputs from a tolerated failure are discarded so downstream
 				// stages cannot consume partial results (Task.ContinueOnError,
@@ -393,7 +396,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// verdict — the same durable wait marker the local runner persists
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
-			gateDelta := selectGateDelta(ctx, g, continuity, rec)
+			gateDelta := selectGateDelta(ctx, g, continuity, workspaceBranch, rec)
 			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, rec)
 			if gerr != nil {
 				return RunResult{}, gerr
@@ -572,7 +575,12 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
 		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
 		produced := engineProducedIntegrity(t, env, upstreamResult)
-		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceDelta, deltaOut)
+		// workspaceBranch rides to the pod for the same reason it rides to the
+		// local arms (#392): a run that rebound it — pr-remediation, onto the
+		// claimed PR's head — must have every later stage checked out THERE.
+		// Without it the pod derived the run branch from workflow+runID and
+		// remediated a branch nobody was reviewing.
+		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, upstreamResult)

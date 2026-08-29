@@ -231,6 +231,257 @@ func TestCheckoutFallbackSurvivesDirtyWorkspace(t *testing.T) {
 	}
 }
 
+// gitCommand runs one git command in dir with a deterministic identity, for
+// building the fixtures below.
+func gitCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := testgit.Command(args...)
+	cmd.Dir = dir
+	cmd.Env = append(cmd.Env,
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newBareRepoWithPRBranch builds a bare remote whose PR head branch carries a
+// commit the base branch does not — the shape a pr-remediation run rebinds
+// onto. baseExtra, when non-empty, is committed on the BASE after the branch
+// was cut, so the base is ahead of the branch's merge-base: what syncBase
+// exists to pull in.
+func newBareRepoWithPRBranch(t *testing.T, baseBranch, prBranch, baseExtra string) string {
+	t.Helper()
+	work := t.TempDir()
+	gitCommand(t, work, "init", "--quiet", "-b", baseBranch, work)
+	writeFile(t, work, "README.md", "probe\n")
+	gitCommand(t, work, "add", "README.md")
+	gitCommand(t, work, "commit", "--quiet", "-m", "seed commit")
+
+	gitCommand(t, work, "checkout", "--quiet", "-b", prBranch)
+	writeFile(t, work, "pr-only.txt", "work from the PR\n")
+	gitCommand(t, work, "add", "pr-only.txt")
+	gitCommand(t, work, "commit", "--quiet", "-m", "PR commit")
+
+	gitCommand(t, work, "checkout", "--quiet", baseBranch)
+	if baseExtra != "" {
+		writeFile(t, work, baseExtra, "landed on base after the PR was cut\n")
+		gitCommand(t, work, "add", baseExtra)
+		gitCommand(t, work, "commit", "--quiet", "-m", "base moved on")
+	}
+
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitCommand(t, work, "clone", "--quiet", "--bare", work, bare)
+	return bare
+}
+
+// stageCheckoutEnv stamps the run identity a dispatched stage pod receives.
+func stageCheckoutEnv(t *testing.T, bare, mode string) {
+	t.Helper()
+	checkoutCloneURL = func(apiv1.RepoRef) (string, error) { return bare, nil }
+	t.Setenv(dispatcher.EnvStageWorkspace, mode)
+	t.Setenv(executor.RepoProviderEnvVar, string(apiv1.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "acme")
+	t.Setenv(executor.RepoNameEnvVar, "widget")
+	t.Setenv(executor.BranchNamespaceEnvVar, "goobers/")
+	t.Setenv(executor.BaseBranchEnvVar, "main")
+	t.Setenv(dispatcher.EnvWorkflow, "pr-remediation")
+	t.Setenv(dispatcher.EnvRunID, "run-392")
+}
+
+func checkedOutBranch(t *testing.T, ws string) string {
+	t.Helper()
+	out, err := testgit.Command("-C", ws, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// #392 on the pod substrate: a run that rebound its workspace branch onto the
+// claimed PR's head must have the pod check THAT branch out. The derived run
+// branch (goobers/pr-remediation/run-392) exists nowhere and carries none of
+// the PR's commits, so deriving it is not a near miss — it is remediating a
+// tree nobody is reviewing while reporting success.
+func TestCheckoutHonoursTheReboundWorkspaceBranch(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	bare := newBareRepoWithPRBranch(t, "main", prBranch, "")
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+
+	ws := t.TempDir()
+	var errOut strings.Builder
+	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if got := checkedOutBranch(t, ws); got != prBranch {
+		t.Fatalf("branch = %q, want the rebound branch %q", got, prBranch)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "pr-only.txt")); err != nil {
+		t.Fatalf("the PR's own commit is missing from the workspace: %v — the stage would remediate a tree without it", err)
+	}
+}
+
+// A rebound branch names work that ALREADY EXISTS. Creating it at base
+// instead would hand the stage a pristine checkout wearing the PR's branch
+// name, and push-remediated would force-push that over the PR head with a
+// lease. The local runner refuses the same case (RequireExistingBranch).
+func TestCheckoutRefusesAReboundBranchThatDoesNotExist(t *testing.T) {
+	bare := newBareRepoWithPRBranch(t, "main", "goobers/impl/remediation-364", "")
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, "goobers/impl/vanished")
+
+	var errOut strings.Builder
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	if err == nil {
+		t.Fatal("checkout created a rebound branch at base; push-remediated would force-push base over the PR head")
+	}
+	for _, want := range []string{"rebound workspace branch", "goobers/impl/vanished", "refusing to create it at base"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// The stamped branch decides what a later stage force-pushes with a lease, so
+// "outside the run's branch namespace" fails here rather than reaching git —
+// the same check the engine applies when it accepts the rebinding.
+func TestCheckoutRefusesAReboundBranchOutsideTheNamespace(t *testing.T) {
+	bare := newBareRepoWithPRBranch(t, "main", "goobers/impl/remediation-364", "")
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, "main")
+
+	var errOut strings.Builder
+	err := checkoutRepoWorkspace(context.Background(), t.TempDir(), &errOut, nil)
+	if err == nil || !strings.Contains(err.Error(), "outside branch namespace") {
+		t.Fatalf("error = %v, want a refusal naming the namespace", err)
+	}
+}
+
+// syncBase (#813) had no pod-side path: the stage was correct on the self
+// runner and silently unsynced in a pod, building against a base as old as
+// the branch. Both directions are asserted in one test, so the "on" arm
+// cannot pass by the base simply being present anyway.
+func TestCheckoutSyncsBaseIntoTheReboundBranch(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	run := func(t *testing.T, syncBase bool) string {
+		t.Helper()
+		bare := newBareRepoWithPRBranch(t, "main", prBranch, "base-only.txt")
+		prev := checkoutCloneURL
+		t.Cleanup(func() { checkoutCloneURL = prev })
+		stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+		t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+		if syncBase {
+			t.Setenv(dispatcher.EnvStageSyncBase, "true")
+		}
+		ws := t.TempDir()
+		var errOut strings.Builder
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
+		}
+		if got := checkedOutBranch(t, ws); got != prBranch {
+			t.Fatalf("branch = %q, want %q", got, prBranch)
+		}
+		if _, err := os.Stat(filepath.Join(ws, "pr-only.txt")); err != nil {
+			t.Fatalf("the branch's own commit was lost: %v", err)
+		}
+		return ws
+	}
+
+	t.Run("declared: the advanced base is merged in", func(t *testing.T) {
+		ws := run(t, true)
+		if _, err := os.Stat(filepath.Join(ws, "base-only.txt")); err != nil {
+			t.Fatalf("base commit missing after syncBase: %v — the stage builds against a stale base and calls it success", err)
+		}
+	})
+	t.Run("absent: the branch is left exactly where it was", func(t *testing.T) {
+		ws := run(t, false)
+		if _, err := os.Stat(filepath.Join(ws, "base-only.txt")); !os.IsNotExist(err) {
+			t.Fatalf("base was merged without syncBase declared (stat err = %v); an undeclared merge changes what the stage builds", err)
+		}
+	})
+}
+
+// A real conflict fails the stage CLOSED and names the files, and leaves no
+// half-merged tree behind for the stage's own command to run in.
+func TestCheckoutSyncBaseConflictFailsClosed(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	work := t.TempDir()
+	gitCommand(t, work, "init", "--quiet", "-b", "main", work)
+	writeFile(t, work, "conflict.txt", "original\n")
+	gitCommand(t, work, "add", "conflict.txt")
+	gitCommand(t, work, "commit", "--quiet", "-m", "seed")
+	gitCommand(t, work, "checkout", "--quiet", "-b", prBranch)
+	writeFile(t, work, "conflict.txt", "the PR's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "PR edit")
+	gitCommand(t, work, "checkout", "--quiet", "main")
+	writeFile(t, work, "conflict.txt", "base's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "base edit")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitCommand(t, work, "clone", "--quiet", "--bare", work, bare)
+
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+	t.Setenv(dispatcher.EnvStageSyncBase, "true")
+
+	ws := t.TempDir()
+	var errOut strings.Builder
+	err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil)
+	if err == nil {
+		t.Fatal("a conflicting base sync was accepted; the stage would run against a half-merged tree")
+	}
+	for _, want := range []string{"syncBase", "conflict.txt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+	out, statusErr := testgit.Command("-C", ws, "status", "--porcelain").Output()
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if strings.Contains(string(out), "UU ") {
+		t.Fatalf("the workspace was left with unmerged paths:\n%s", out)
+	}
+}
+
+// A run that never rebinds must derive exactly as before: the stamp is absent
+// and nothing about the checkout changes.
+func TestCheckoutWithoutAReboundBranchStillDerivesTheRunBranch(t *testing.T) {
+	bare := newBareRepoWithCommit(t, "main")
+	prev := checkoutCloneURL
+	checkoutCloneURL = func(apiv1.RepoRef) (string, error) { return bare, nil }
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+
+	ws := t.TempDir()
+	var errOut strings.Builder
+	creds := []dispatcher.MintedCredential{{Capability: "repo:push", Value: "t0ken"}}
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, creds); err != nil {
+		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
+	}
+	if got, want := checkedOutBranch(t, ws), "goobers/pr-remediation/run-392"; got != want {
+		t.Fatalf("branch = %q, want the derived run branch %q", got, want)
+	}
+}
+
 // The safe.directory exemption must name the workspace PATH and never the "*"
 // wildcard: the protection exists to stop git trusting a repository someone
 // else planted, and a pod that disabled it globally would trust anything
