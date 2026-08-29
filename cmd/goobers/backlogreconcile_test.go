@@ -214,6 +214,10 @@ func TestRenamedCurationClaimWithDefaultCardinalityWritesEnrichedObject(t *testi
 	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	resultFile := filepath.Join(t.TempDir(), "claimed-item.json")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	// The claim's mutation recorder appends to mutationsSidecarFile in the
+	// process's current directory, so run from scratch rather than the package
+	// source directory (#3459).
+	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 {

@@ -81,6 +81,10 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 //
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
+//
+//  4. It snapshots the package directory's `git status --porcelain` before the
+//     suite runs and fails it afterwards if the suite dirtied the worktree
+//     (#3459). See reportWorktreeDrift.
 func TestMain(m *testing.M) {
 	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runPortalBuildMake())
@@ -124,7 +128,13 @@ func TestMain(m *testing.M) {
 	disableJournalFsyncForTests()
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
-	os.Exit(m.Run())
+	suiteWorktreeDir, _ = os.Getwd()
+	suiteWorktreeStatus = worktreeStatus(suiteWorktreeDir)
+	code := m.Run()
+	if reportWorktreeDrift(suiteWorktreeDir, suiteWorktreeStatus, os.Stderr) && code == 0 {
+		code = 1
+	}
+	os.Exit(code)
 }
 
 // installMakeExecutableFixture writes a copy of this test binary into dir as
