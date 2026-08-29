@@ -2,10 +2,11 @@ package mergeresolve
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const manifest = `{
@@ -19,7 +20,7 @@ const manifest = `{
 func testGit(t *testing.T, dir string) Git {
 	t.Helper()
 	return func(args ...string) ([]byte, error) {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
 		return cmd.Output()
 	}
@@ -27,7 +28,7 @@ func testGit(t *testing.T, dir string) Git {
 
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
@@ -62,7 +63,7 @@ func newConflictedRepo(t *testing.T, theirs string) string {
 		strings.Replace(manifest, `    "lint",`+"\n", `    "lint",`+"\n"+`    "package",`+"\n", 1))
 	mustGit(t, dir, "commit", "-aqm", "own change")
 
-	merge := exec.Command("git", "merge", "--no-edit", "sibling")
+	merge := testgit.Command("merge", "--no-edit", "sibling")
 	merge.Dir = dir
 	if out, err := merge.CombinedOutput(); err == nil {
 		t.Fatalf("git merge unexpectedly succeeded: %s", out)
