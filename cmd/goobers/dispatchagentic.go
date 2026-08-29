@@ -71,7 +71,24 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
 
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted)
+	// The staging root: what the executor's contextResolver is rooted at AND
+	// what the recorder reports as its Dir(). Created HERE rather than inside
+	// buildPodAgenticExecutor because context materialization has to fill the
+	// same directory the resolver will read, and a directory the constructor
+	// alone knows about cannot be filled from out here.
+	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
+	if err != nil {
+		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("create runs dir: %v", err))
+	}
+
+	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
+	// See dispatchcontext.go: without this every artifact-backed pointer fails
+	// to resolve, because a pod's staging root starts empty.
+	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
+		return failureEnvelope("context_materialize_failed", err.Error())
+	}
+
+	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return failureEnvelope("agentic_executor_unavailable", err.Error())
 	}
@@ -147,7 +164,10 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
+// runsDir is the staging root the caller already created and already
+// materialized this stage's context into; it becomes both the recorder's Dir()
+// and the contextResolver's root, which is what makes the two agree.
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
@@ -223,11 +243,6 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		return nil, fmt.Errorf("harness %q preflight failed in pod: %w", spec.Harness, err)
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
-
-	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
-	if err != nil {
-		return nil, fmt.Errorf("create runs dir: %w", err)
-	}
 
 	return buildAgenticExecutor(agenticExecutorInput{
 		GooberName:       gooberName,

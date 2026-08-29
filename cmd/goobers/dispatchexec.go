@@ -614,6 +614,9 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		names = append(names, name)
 	}
 	sort.Strings(names) // deterministic op order; the daemon assigns sequence
+	// nil when this pod has no blob endpoint (the pre-blob-plane deployment
+	// shape); one client for the whole batch.
+	blobs := podBlobClient()
 	ops := make([]livejournal.Op, 0, len(names))
 	pointers := make([]apiv1.ArtifactPointer, 0, len(names))
 	for _, name := range names {
@@ -634,6 +637,7 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 				MediaType: "text/plain",
 				Integrity: apiv1.IntegrityDerived,
 			})
+			putStageArtifactBlob(ctx, stderr, blobs, name, ref.Digest, data)
 		}
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
@@ -658,4 +662,37 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		_, _ = fmt.Fprintf(stderr, "dispatch-exec: record stage artifacts: %v\n", err)
 	}
 	return pointers
+}
+
+// putStageArtifactBlob write-throughs ONE pod-produced artifact to the blob
+// plane under the digest its pointer was derived from (#3823, half A).
+//
+// This is the pod's half of the distributed data plane's WRITE side, and until
+// it existed there was no such half. A pod-produced artifact reached the run
+// through the journal plane alone (the OpArtifact above), which stores it in the
+// daemon's journal — not in the blob store. The fleet's FETCH side
+// (workerhost.MaterializeContext) reads the blob store by digest, so an artifact
+// a pod produced was unreachable to every later stage that ran anywhere else:
+// the pointer named a digest the store had never been told about. A
+// worker-executed stage has had this write-through since the beginning
+// (internal/workerhost/artifacts.go StagingArtifacts.record, which Puts to the
+// same store), so this closes an asymmetry rather than inventing a mechanism.
+//
+// Same digest, same bytes, by construction: the caller hands in the exact slice
+// journal.ArtifactRef derived the ref from (already scrubbed), so what the
+// pointer names and what the store holds cannot diverge.
+//
+// BEST EFFORT, matching the journal emit beside it: the stage has already
+// produced its result, and a blob plane that is down must not convert a
+// completed stage into a failure. The failure it does cause is on the READ side
+// — a later stage that needs this artifact fails closed with a named error
+// (materializePodContext) rather than running without it — which is the right
+// place for it, because that stage is the one that actually needs the bytes.
+func putStageArtifactBlob(ctx context.Context, stderr io.Writer, blobs *dispatcher.BlobClient, name, digest string, data []byte) {
+	if blobs == nil || digest == "" || len(data) == 0 {
+		return
+	}
+	if err := blobs.Put(ctx, digest, data); err != nil {
+		_, _ = fmt.Fprintf(stderr, "dispatch-exec: publish artifact %s (%s, %d bytes) to the blob plane: %v\n", name, digest, len(data), err)
+	}
 }
