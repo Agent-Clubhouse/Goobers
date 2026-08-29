@@ -295,6 +295,37 @@ func TestRunProjectionsFlagStaleUnmonitoredRunningRun(t *testing.T) {
 	}
 }
 
+// TestRunIsStaleTreatsZeroLastActivityAsUndeterminable is #3774's other
+// readservice surface: a zero LastActivityAt (a run whose newest observed
+// event was unstamped — the pod-side writer defect, fixed separately at its
+// call sites) is undeterminable, not stale — consistent with #3775/#3776's
+// rule for the run-stalled watchdog itself. Before this fix runIsStale read
+// the same zero as "activity stopped forever ago" and returned true
+// unconditionally, so the portal's Stale badge could fire on exactly the
+// zero the watchdog now declines to judge.
+func TestRunIsStaleTreatsZeroLastActivityAsUndeterminable(t *testing.T) {
+	observedAt := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	// An unhealthy scheduler heartbeat is runIsStale's precondition for
+	// judging staleness at all — without it every run is reported live
+	// regardless of LastActivityAt, so this alone must not be why the test
+	// passes.
+	lastTickAt := observedAt.Add(-10 * time.Minute)
+	const timeout = time.Minute
+
+	run := RunSummary{Phase: journal.PhaseRunning, LastActivityAt: time.Time{}}
+	if runIsStale(run, observedAt, lastTickAt, timeout) {
+		t.Fatal("zero LastActivityAt reported Stale (#3774): it is undeterminable, not evidence of staleness")
+	}
+
+	// Sanity oracle: a REAL, old LastActivityAt under the same unhealthy
+	// heartbeat is still correctly judged stale — the fix narrows the zero
+	// case, it does not disable staleness detection generally.
+	run.LastActivityAt = observedAt.Add(-5 * time.Minute)
+	if !runIsStale(run, observedAt, lastTickAt, timeout) {
+		t.Fatal("a real, old LastActivityAt under an unhealthy heartbeat must still be judged stale")
+	}
+}
+
 func TestRunEventsProjectsCompletionIntervention(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	run, clock := createFixtureRun(

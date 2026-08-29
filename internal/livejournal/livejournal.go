@@ -217,7 +217,18 @@ type replayClock struct {
 	current time.Time
 }
 
+// set adopts t as the clock's current time — except a zero t, which is
+// refused rather than adopted (#3774 defense in depth). Every legitimate
+// emitter stamps a real Time on its Op (podArtifactRecorder.Append,
+// recordStageArtifacts, engine/emit.go's liveOpFrom); a zero one reaching
+// here means some caller forgot to. Adopting it would retroactively zero the
+// clock this run's events are timestamped from — refusing it instead leaves
+// the clock at its last known-good value, so the affected event is stamped
+// with stale-but-real time rather than 0001-01-01T00:00:00Z.
 func (c *replayClock) set(t time.Time) {
+	if t.IsZero() {
+		return
+	}
 	c.mu.Lock()
 	c.current = t
 	c.mu.Unlock()

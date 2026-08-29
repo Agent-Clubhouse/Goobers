@@ -3016,7 +3016,15 @@ func runIsStale(run RunSummary, observedAt, lastTickAt time.Time, timeout time.D
 		return false
 	}
 	if run.LastActivityAt.IsZero() {
-		return true
+		// A zero LastActivityAt is undeterminable, not stale (#3774,
+		// consistent with #3775/#3776's rule for the run-stalled watchdog):
+		// it means no timestamped event has been observed yet, not that
+		// activity stopped timeout ago. Reporting Stale here for a run that
+		// may have real, recent, merely-unstamped activity (the #3774 writer
+		// defect this projector's LastActivity now guards against
+		// separately) would show the portal's badge disagreeing with the
+		// watchdog that no longer fires on the same zero.
+		return false
 	}
 	return observedAt.Sub(run.LastActivityAt) > timeout
 }

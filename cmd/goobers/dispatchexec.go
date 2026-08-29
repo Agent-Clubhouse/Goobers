@@ -638,6 +638,10 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
 			Key:  stage + "/" + name,
+			// See podArtifactRecorder.Append (dispatchagentic.go): the daemon's
+			// replayClock adopts this field verbatim, so an unstamped op here
+			// durably persists the artifact's op at 0001-01-01T00:00:00Z (#3774).
+			Time: time.Now().UTC(),
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
