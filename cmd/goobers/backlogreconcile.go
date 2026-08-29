@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -233,6 +233,20 @@ func reserveBacklogClaimReconciliation(
 		ownerRunID = "standalone"
 	}
 	runID := formatBacklogReconcileRunID(ownerRunID, os.Getpid(), backlogReconcileReservationSequence.Add(1))
+	ledger, err := openStageClaimLedger(l, localscheduler.WithLedgerClock(now))
+	if err != nil {
+		return nil, false, fmt.Errorf("open claim ledger: %w", err)
+	}
+	// Over the plane every call is contained to the bearer's run, so the
+	// reservation is taken under the run's OWN id (finding 002 C1: "--reconcile's
+	// reservation uses the run's own RunID so per-run containment holds").
+	// The synthesized id's one job — refusing to reserve an item the owning
+	// run itself holds, because a same-run claim would renew rather than
+	// refuse — is kept by checking the run's holdings first.
+	contained, onPlane := ledger.(claimsclient.Contained)
+	if onPlane {
+		runID = contained.ContainedRunID()
+	}
 	reservation := &backlogReconcileReservation{
 		itemID:   itemID,
 		gaggle:   gaggle,
@@ -240,42 +254,41 @@ func reserveBacklogClaimReconciliation(
 		runID:    runID,
 	}
 	acquired := false
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogReconcile, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithLedgerClock(now),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
+	err = ledger.Locked(claimContext(), claimLockOperationBacklogReconcile, func(tx claimsclient.Ledger) error {
+		if onPlane {
+			held, err := tx.ForRunAll(claimContext(), runID)
+			if err != nil {
+				return fmt.Errorf("read this run's claims: %w", err)
+			}
+			for _, entry := range held {
+				if claimsclient.KeyForEntry(entry) == reservation.key() {
+					return nil // the owning run holds it: not reservable, exactly as the synthesized id was refused
+				}
+			}
 		}
-		if gaggle == "" {
-			acquired, _, err = ledger.Claim(itemID, runID, "backlog-reconcile", stageTimeout())
-		} else {
-			acquired, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-				Gaggle:     gaggle,
-				Provider:   string(repo.Provider),
-				ExternalID: itemID,
-			}, runID, "backlog-reconcile", stageTimeout())
-		}
+		var err error
+		acquired, _, err = tx.ClaimScoped(claimContext(), reservation.key(), runID, "backlog-reconcile", stageTimeout())
 		return err
 	})
 	return reservation, acquired, err
 }
 
+// key addresses the reserved item: legacy (unscoped) when the stage runs
+// ungaggled, scoped otherwise.
+func (r backlogReconcileReservation) key() claimsclient.Key {
+	if r.gaggle == "" {
+		return claimsclient.Key{ExternalID: r.itemID}
+	}
+	return claimsclient.Key{Gaggle: r.gaggle, Provider: r.provider, ExternalID: r.itemID}
+}
+
 func releaseBacklogClaimReconciliation(l instance.Layout, reservation backlogReconcileReservation) error {
-	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogReconcile, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
-		if reservation.gaggle == "" {
-			return ledger.Release(reservation.itemID, reservation.runID)
-		}
-		return ledger.ReleaseScoped(localscheduler.ClaimKey{
-			Gaggle:     reservation.gaggle,
-			Provider:   reservation.provider,
-			ExternalID: reservation.itemID,
-		}, reservation.runID)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		return fmt.Errorf("open claim ledger: %w", err)
+	}
+	return ledger.Locked(claimContext(), claimLockOperationBacklogReconcile, func(tx claimsclient.Ledger) error {
+		return tx.ReleaseScoped(claimContext(), reservation.key(), reservation.runID)
 	})
 }
 

@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -215,12 +214,17 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 
 	observedAt := time.Now().UTC()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
+	ledger, err := openStageClaimLedger(layoutFor(root))
 	if err != nil {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
+	claims, err := ledger.ListNamespace(ctx, providerGaggle(), string(backlogRepo.Provider))
+	if err != nil {
+		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
+		return 1
+	}
+	items = unclaimedReadyItems(items, claims, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	report.Scan = &scan
@@ -907,26 +911,17 @@ func annotateBacklogReadyTimes(
 
 func unclaimedReadyItems(
 	items []providers.WorkItem,
-	ledger *localscheduler.ClaimLedger,
+	claims claimsclient.Listing,
 	gaggle, provider string,
 	observedAt time.Time,
 ) []providers.WorkItem {
-	if ledger == nil {
-		return items
-	}
 	available := items[:0]
 	for _, item := range items {
-		var (
-			entry localscheduler.ClaimEntry
-			ok    bool
-		)
-		if gaggle == "" {
-			entry, ok = ledger.Lookup(item.ID)
-		} else {
-			entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
-				Gaggle: gaggle, Provider: provider, ExternalID: item.ID,
-			})
+		key := claimsclient.Key{ExternalID: item.ID}
+		if gaggle != "" {
+			key = claimsclient.Key{Gaggle: gaggle, Provider: provider, ExternalID: item.ID}
 		}
+		entry, ok := claims.Lookup(key)
 		if ok && entry.ExpiresAt.After(observedAt) {
 			continue
 		}
