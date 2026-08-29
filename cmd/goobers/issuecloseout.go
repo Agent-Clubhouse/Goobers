@@ -13,10 +13,10 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -338,17 +338,23 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := layoutFor(root)
-	var claim localscheduler.ClaimEntry
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	var claim claimsclient.Entry
 	var claimHeld bool
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	err = withClaimLock(lockPath, claimLockOperationCloseOutLookup, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	err = ledger.Locked(claimContext(), claimLockOperationCloseOutLookup, func(tx claimsclient.Ledger) error {
+		// The run's one claimed item (#241; implementation claims at most
+		// one per run) — the first of ForRunAll's item-ordered entries, where
+		// the ledger's ForRun answered an unspecified one of them.
+		entries, lerr := tx.ForRunAll(claimContext(), runID)
 		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
+			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
-		entry, ok := ledger.ForRun(runID)
-		if ok {
-			claim = entry
+		if len(entries) > 0 {
+			claim = entries[0]
 			claimHeld = true
 		}
 		return nil
@@ -550,12 +556,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// Release the lease now rather than waiting for it to expire — the run
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
-	err = withClaimLock(lockPath, claimLockOperationCloseOutRelease, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		return ledger.ReleaseEntry(claim, runID)
+	err = ledger.Locked(claimContext(), claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
+		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID)
 	})
 	if err != nil {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)

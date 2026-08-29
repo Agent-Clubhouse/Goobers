@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -51,12 +53,12 @@ func TestDeprioritizeRepeatedFailuresPreservesEventualClaimability(t *testing.T)
 	}
 
 	items := []providers.WorkItem{{ID: "1"}, {ID: "2"}}
-	got := deprioritizeRepeatedFailures(layout, ledger, items, now, backlogQueryEnv{})
+	got := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
 	if got[0].ID != "2" || got[1].ID != "1" {
 		t.Fatalf("order = %v, want healthy item before repeated failure", []string{got[0].ID, got[1].ID})
 	}
 
-	onlyFailed := deprioritizeRepeatedFailures(layout, ledger, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{})
+	onlyFailed := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
 	if len(onlyFailed) != 1 || onlyFailed[0].ID != "1" {
 		t.Fatalf("deprioritized item = %v, want it retained as claimable", onlyFailed)
 	}
@@ -159,14 +161,77 @@ func TestTerminalFailureStreakResetsAtSuccessAndWindow(t *testing.T) {
 	seedRun("recent-failure", journal.PhaseFailed, base.Add(-time.Minute))
 	seedRun("successful-attempt", journal.PhaseCompleted, base)
 	now = base
-	if got := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 {
-		t.Fatalf("streak after successful attempt = %d, want 0", got)
+	if got, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
+		t.Fatalf("streak after successful attempt = (%d, %q), want (0, \"\")", got, degradedAt)
 	}
 
 	seedRun("old-failure", journal.PhaseFailed, base.Add(-backlogFailureWindow-time.Minute))
 	now = base
-	if got := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 {
-		t.Fatalf("streak after out-of-window failure = %d, want 0", got)
+	if got, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
+		t.Fatalf("streak after out-of-window failure = (%d, %q), want (0, \"\")", got, degradedAt)
+	}
+}
+
+// TestTerminalFailureStreakDegradesLoudlyOnUnreadablePhase covers the
+// terminalFailureStreakDegradedAnnotation path: a claim-history entry whose
+// run directory is gone (the pod-without-instance-root shape finding 002
+// C3/C4 leaves unaddressed) must not silently truncate the streak to
+// whatever count preceded it — terminalFailureStreak has to name the run it
+// could not read, and deprioritizeRepeatedFailures has to turn that into a
+// journal.EventRunnerAnnotation rather than let the shortfall pass unremarked.
+func TestTerminalFailureStreakDegradesLoudlyOnUnreadablePhase(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 22, 6, 0, 0, 0, time.UTC)
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(layout.SchedulerDir(), "claims.json"),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A run whose claim-history entry survives in the ledger but whose run
+	// directory is gone — the pod shape: journal.OpenRead / layout.FindRunDir
+	// find nothing, exactly as they would with no local instance root at all.
+	const missingRunID = "reaped-run"
+	if ok, _, err := ledger.Claim("1", missingRunID, "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("claim failed: ok=%t err=%v", ok, err)
+	}
+	if err := ledger.Release("1", missingRunID); err != nil {
+		t.Fatal(err)
+	}
+
+	streak, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now)
+	if streak != 0 {
+		t.Fatalf("streak = %d, want 0 (the unreadable entry must not count as a failure)", streak)
+	}
+	if degradedAt != missingRunID {
+		t.Fatalf("degradedAt = %q, want %q naming the unreadable run", degradedAt, missingRunID)
+	}
+
+	items := []providers.WorkItem{{ID: "1"}, {ID: "2"}}
+	deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{stderr: io.Discard}, "watching-run", "implementation")
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventRunnerAnnotation && events[i].Runner["annotation"] == terminalFailureStreakDegradedAnnotation {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no %s annotation in the instance journal: events = %+v", terminalFailureStreakDegradedAnnotation, events)
+	}
+	if found.RunID != "watching-run" {
+		t.Fatalf("annotation RunID = %q, want the backlog-query run that observed the degradation", found.RunID)
 	}
 }
 

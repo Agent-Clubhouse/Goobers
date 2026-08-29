@@ -124,9 +124,10 @@ func IsPodPrincipal(principal Principal) bool {
 }
 
 // podPlanePath reports whether path is one of the write routes a pod
-// principal may reach: the claims plane, plus the credential plane's resolve
-// route (distributed-state-and-coordination.md §11 — the plane exists FOR
-// stage pods). The journal plane is the third pod-reachable plane; it carries
+// principal may reach: the claims plane (its four mutations and its list
+// read, all POST), plus the credential plane's resolve route
+// (distributed-state-and-coordination.md §11 — the plane exists FOR stage
+// pods). The journal plane is the third pod-reachable plane; it carries
 // a run-id segment and is matched structurally by journalPlanePath. The blob
 // plane is the fourth; it carries a digest segment and is matched
 // structurally by blobPlanePath. The surrender plane is the fifth; it
@@ -140,6 +141,7 @@ func podPlanePath(path string) bool {
 		apicontract.ClaimRenewPath,
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
+		apicontract.ClaimListPath,
 		apicontract.CredentialResolvePath:
 		return true
 	default:

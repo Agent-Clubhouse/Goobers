@@ -3,14 +3,12 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
 )
 
 const prRemediationLifecycleResultFile = "pr-remediation-lifecycle.json"
@@ -111,11 +109,11 @@ func releasePRRemediationClaim(root string) error {
 		return err
 	}
 	l := layoutFor(root)
-	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	log, closeLog, err := claimLedgerJournal(l)
 	if err != nil {
-		return fmt.Errorf("open instance log: %w", err)
+		return err
 	}
-	defer func() { _ = log.Close() }()
+	defer closeLog()
 	return releasePullRequestClaimsForRun(l, log, runID)
 }
 

@@ -56,7 +56,7 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "backlog-query --debug alone reaches the scan lock", cmd: []string{"goobers", "backlog-query", "--debug"}, want: true},
 		{name: "backlog-query --read-only", cmd: []string{"goobers", "backlog-query", "--read-only"}, want: false},
 		{name: "backlog-health --feedback", cmd: []string{"goobers", "backlog-health", "--feedback"}, want: true},
-		{name: "backlog-health bare is read-only", cmd: []string{"goobers", "backlog-health"}, want: false},
+		{name: "backlog-health bare opens the claim ledger", cmd: []string{"goobers", "backlog-health"}, want: true},
 
 		// --- unrelated / provider-only commands stay dispatchable ---
 		{name: "push-branch", cmd: []string{"goobers", "push-branch"}, want: false},
