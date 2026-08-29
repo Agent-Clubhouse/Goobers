@@ -25,6 +25,8 @@ type versionedInterpreter struct {
 	checkRunsOnPlacement            func(Definition, *apiv1.GaggleRunsOn) []string
 	stagePlacements                 func(Definition, apiv1.GaggleSpec, map[string]apiv1.GooberSpec) []runnersolve.StageRequirement
 	checkRepoHandoffs               func(Definition) []string
+	checkGateRunsOn                 func(Definition) []string
+	checkGatePlacementWarnings      func(Definition) []string
 	checkGateParameters             func(Definition) []string
 	checkGateOutcomes               func(Definition) []string
 	checkStageRequiredInputs        func(Definition) []string
@@ -46,11 +48,12 @@ type versionedInterpreter struct {
 }
 
 // preV30SurfaceProblems is the checkRunsOnPlacement arm for every interpreter
-// BEFORE 3.0: the runsOn/repoFrom/commitsRepo surface does not exist in those
-// versions, and the frozen packages must not learn it (PO-D0: 2.0 never
-// learns distributed features), so the refusal lives here in the router. A
-// document that touches none of the fields — every config that exists today —
-// produces no problems, keeping the frozen interpreters byte-identical.
+// BEFORE 3.0: the runsOn/repoFrom/commitsRepo surface — on tasks AND on gates
+// (decision 001) — does not exist in those versions, and the frozen packages
+// must not learn it (PO-D0: 2.0 never learns distributed features), so the
+// refusal lives here in the router. A document that touches none of the
+// fields — every config that exists today — produces no problems, keeping the
+// frozen interpreters byte-identical.
 //
 // The gaggle half is the dsl-3.0.md open point 2 compile-time statement: a
 // gaggle that declares runsOn (or reaches this router while 3.0 is the newest
@@ -80,6 +83,13 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 				task.Name, supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
 		}
 	}
+	for _, gate := range def.Spec.Gates {
+		if gate.RunsOn != nil {
+			problems = append(problems, fmt.Sprintf(
+				"gate %q declares runsOn, which requires dslVersion %q (this workflow pins %q); migrate with `goobers fix --to %s`",
+				gate.Name, supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
+		}
+	}
 	if gaggleRunsOn != nil {
 		problems = append(problems, fmt.Sprintf(
 			"the gaggle declares runsOn, which requires every workflow in the gaggle to pin dslVersion %q (this workflow pins %q); migrate the workflow with `goobers fix --to %s`, or keep the gaggle on requiredCapabilities until then",
@@ -91,6 +101,17 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 func noRunsOnProblems(Definition, *apiv1.GaggleRunsOn) []string { return nil }
 
 func noRepoHandoffProblems(Definition) []string { return nil }
+
+// noGateRunsOnProblems is the pre-3.0 checkGateRunsOn arm: a gate runsOn on
+// a 2.0 document is already refused by preV30SurfaceProblems (the frozen
+// interpreter never sees the field), so the gate-only rules have nothing to
+// say.
+func noGateRunsOnProblems(Definition) []string { return nil }
+
+// noGatePlacementWarnings is the pre-3.0 checkGatePlacementWarnings arm: a
+// 2.0 gate cannot carry runsOn (refused by preV30SurfaceProblems), so there
+// is no unhonoured placement to warn about.
+func noGatePlacementWarnings(Definition) []string { return nil }
 
 var nextInterpreter = versionedInterpreter{
 	compile:                         compileNext,
@@ -105,6 +126,8 @@ var nextInterpreter = versionedInterpreter{
 	checkRunsOnPlacement:            preV30SurfaceProblems,
 	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
+	checkGateRunsOn:                 noGateRunsOnProblems,
+	checkGatePlacementWarnings:      noGatePlacementWarnings,
 	checkGateParameters:             vnext.CheckGateParameters,
 	checkGateOutcomes:               vnext.CheckGateOutcomes,
 	checkStageRequiredInputs:        vnext.CheckStageRequiredInputs,
@@ -140,6 +163,8 @@ var v30Interpreter = versionedInterpreter{
 	checkRunsOnPlacement:            v30.CheckRunsOnPlacement,
 	stagePlacements:                 v30StagePlacements,
 	checkRepoHandoffs:               v30.CheckRepoHandoffs,
+	checkGateRunsOn:                 v30.CheckGateRunsOn,
+	checkGatePlacementWarnings:      v30.CheckGatePlacementWarnings,
 	checkGateParameters:             v30.CheckGateParameters,
 	checkGateOutcomes:               v30.CheckGateOutcomes,
 	checkStageRequiredInputs:        v30.CheckStageRequiredInputs,

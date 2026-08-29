@@ -263,12 +263,34 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if err != nil {
 		// A walk-level error is the engine's failTerminal (#305): record the
 		// cause and the failed terminal in the projection, then fail the
-		// workflow. A canceled run is the one exception — it has no terminal.
+		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error())
 			rec.runFinished(ctx, journal.PhaseFailed)
 			rec.emitTerminal(ctx)
+			return RunResult{}, err
 		}
+		// Cancellation is a terminal OUTCOME, not an absence of one. It used
+		// to be the single exception that wrote no terminal, and that left the
+		// only external stop signal the engine has — CancelWorkflow, which the
+		// daemon's stall sweep now issues for a wedged engine run
+		// (cmd/goobers/stalledruns.go) — unable to settle anything: the run's
+		// journal stayed journal.PhaseRunning forever, the repair projection
+		// refused it (ErrUnprojectable: "history has no terminal
+		// run.finished event"), and every later sweep re-cancelled a closed
+		// execution. The terminal is written through a DISCONNECTED context
+		// because ctx is already cancelled and every activity started on it —
+		// the live-journal emit included — would fail immediately.
+		//
+		// PhaseAborted is the local runner's vocabulary for a run an operator
+		// stopped (`goobers run abort`), which is what a cancellation is from
+		// the journal's side; the walk itself is not resumed, so this is the
+		// run's last event either way.
+		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
+		defer disconnect()
+		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
+		rec.runFinished(abortCtx, journal.PhaseAborted)
+		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
 	}
 	if res.Status == StatusFailed {

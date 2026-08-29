@@ -421,10 +421,33 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+	// (internal/dispatcher/blob.go) fetches and puts content-addressed
+	// artifacts by digest over this route instead of a shared filesystem. The
+	// daemon fronts the SAME blobstore.Store type a local worker plugs into
+	// MaterializeContext/StagingArtifacts (cmd/goobers/worker.go's
+	// --blob-store), rooted at its own instance-local directory — wired
+	// unconditionally like the claims and trigger planes, because it is inert
+	// without a caller: a mode-1/2 daemon that never serves a mode-3 stage
+	// never gets a request on these routes, and the blob plane's own
+	// fail-closed pod-principal gate (registerBlobPlaneRoutes) keeps a
+	// loopback null-auth daemon from handing out raw content to any local
+	// caller either — the same posture the credential plane already takes.
+	//
+	// Constructed HERE, above the journal plane, because it is also the
+	// daemon's SPAN SOURCE (#3805): the live journal writer and the DS5
+	// reconciler both adopt an executor-recorded transcript by digest from
+	// this store, and a stage pod PUTs the transcript into it over the same
+	// plane. Its own HTTP service is registered further down, unchanged.
+	blobStore, err := blobstore.NewDir(l.BlobStoreDir())
+	if err != nil {
+		pf(stderr, "error: initialize blob store: %v\n", err)
+		return 1
+	}
 	// The live journal writer (DS4) authors engine-run journals from events
 	// emitted as they happen; the projection reconciler below is thereby the
 	// repair/verify path (DS5), never the authority, for live-authored runs.
-	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog)
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore)
 	if err != nil {
 		pf(stderr, "error: initialize live journal writer: %v\n", err)
 		return 1
@@ -432,7 +455,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if liveJournals != nil {
 		defer liveJournals.Close()
 	}
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals)
+	// One Temporal client per daemon (decision 003 step 1(e)): the projection
+	// reconciler, the DS6 claim-liveness probe and the engine-driven run
+	// guards each used to dial the frontend themselves. nil on an instance
+	// with no `engine:` configuration, which leaves every consumer below on
+	// its pre-existing no-engine path.
+	engineClient, err := newDaemonEngineClient(setup.Config)
+	if err != nil {
+		pf(stderr, "error: dial engine for daemon Temporal client: %v\n", err)
+		return 1
+	}
+	defer engineClient.Close()
+	engineGuards := engineClient.Guards()
+	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
+	// verifies a live-authored journal against a re-projection, so a source
+	// given to one and not the other turns every adopted span into a false
+	// divergence.
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, engineClient, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -541,23 +580,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
-	// The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
-	// (internal/dispatcher/blob.go) fetches and puts content-addressed
-	// artifacts by digest over this route instead of a shared filesystem. The
-	// daemon fronts the SAME blobstore.Store type a local worker plugs into
-	// MaterializeContext/StagingArtifacts (cmd/goobers/worker.go's
-	// --blob-store), rooted at its own instance-local directory — wired
-	// unconditionally like the claims and trigger planes, because it is inert
-	// without a caller: a mode-1/2 daemon that never serves a mode-3 stage
-	// never gets a request on these routes, and the blob plane's own
-	// fail-closed pod-principal gate (registerBlobPlaneRoutes) keeps a
-	// loopback null-auth daemon from handing out raw content to any local
-	// caller either — the same posture the credential plane already takes.
-	blobStore, err := blobstore.NewDir(l.BlobStoreDir())
-	if err != nil {
-		pf(stderr, "error: initialize blob store: %v\n", err)
-		return 1
-	}
 	// The surrender plane (#3699) rides beside the blob store, under the same
 	// instance-local root — the "<blob-store>/surrender" convention
 	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
@@ -689,7 +711,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
 	// leaves it closed and the periodic tick below retries both halves.
-	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
@@ -882,9 +904,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
+			ctx,
 			l,
 			setup.RunnerRegistry,
 			setup.LegacyRunner,
+			engineGuards,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 				// The stalled run's gaggle is only knowable from its runs-tree
@@ -964,13 +988,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
+	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
+	}
+	// An engine-driven run is NOT resumed: this daemon waits for the engine's
+	// workflow and echoes its outcome. Announced separately so an operator
+	// reading the startup log can tell the two apart at a glance.
+	for _, runID := range reattached {
+		pf(stdout, "re-attaching to engine-driven run %s\n", runID)
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup

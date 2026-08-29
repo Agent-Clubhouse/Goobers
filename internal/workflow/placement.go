@@ -16,9 +16,12 @@ import (
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
 
-// StagePlacements returns each task's effective placement requirement for
-// def's DSL version — the solver input every admission checkpoint shares.
-// gaggle is the workflow's own gaggle spec (its runsOn floor for 3.0
+// StagePlacements returns each placeable stage's effective placement
+// requirement for def's DSL version — the solver input every admission
+// checkpoint shares: tasks in task order and, on a 3.0 document, the agentic
+// gates that declare runsOn after them (decision 001). Rows are keyed by
+// StageRequirement.Stage; consumers must never assume a row's position names
+// a task. gaggle is the workflow's own gaggle spec (its runsOn floor for 3.0
 // documents, its requiredCapabilities for earlier ones); goobers supplies
 // referenced goober specs for 3.0 harness derivation.
 func StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
@@ -38,8 +41,10 @@ func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[str
 // preV30StagePlacements is the arm for every interpreter before 3.0: the only
 // placement surface those versions have is requiredCapabilities (task-level
 // plus the gaggle floor), matched as an exact tag set — no OS, no quantities,
-// no restrictions, no derivation. It lives here in the router, like
-// preV30SurfaceProblems, so the frozen packages stay untouched.
+// no restrictions, no derivation, and no gate rows (a 2.0 gate cannot carry
+// runsOn, so every 2.0 gate stays in the control plane). It lives here in
+// the router, like preV30SurfaceProblems, so the frozen packages stay
+// untouched.
 func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
 	requirements := make([]runnersolve.StageRequirement, 0, len(def.Spec.Tasks))
 	for _, task := range def.Spec.Tasks {

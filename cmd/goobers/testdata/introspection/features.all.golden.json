@@ -385,6 +385,41 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.runsOn",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.capabilities",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.cpu",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.disk",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.memory",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.os",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.restrictions",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "goober.spec.capabilities",
       "stability": "ga",
       "sinceVersion": "dev"

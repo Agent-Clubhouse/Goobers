@@ -38,6 +38,29 @@ const (
 	TriggerItem TriggerKind = "item"
 )
 
+// RunDriver names the component that walks a run's stages.
+type RunDriver string
+
+// DriverEngine marks a run whose walk the tier-3 engine owns on Temporal. The
+// engine's own run journal writes it at creation; every other writer leaves
+// Driver empty, which means the daemon's in-process runner.
+//
+// The distinction is load-bearing rather than informational: a daemon that
+// restarts mid-run scans its runs tree and resumes anything still
+// journal.PhaseRunning, and every WF-016 pin an engine-authored journal
+// carries passes that scan's checks — so without this marker a goobers-api
+// restart re-drives an engine run in-process while the worker keeps driving
+// the same run on Temporal (decision 003, "Phase-0 engine-start hygiene").
+// The same applies to the stall sweep, which would terminalize the journal of
+// a workflow nothing ever cancelled, and to the operator paths (run
+// cancel/abort, HITL resume) that edit a journal the engine still owns.
+//
+// It is deliberately NOT derived from livejournal.Authored: authorship says
+// which writer put the bytes on disk, and under the planned
+// livejournal.Writer.Adopt a runner-driven run's journal carries live emit
+// keys too. Drivership is a different question and is pinned at creation.
+const DriverEngine RunDriver = "engine"
+
 // Trigger describes what caused a run to start.
 type Trigger struct {
 	Kind TriggerKind `json:"kind"`
@@ -79,6 +102,11 @@ type RunIdentity struct {
 	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string `json:"gaggle"`
+	// Driver names the component walking this run's stages. Empty — the only
+	// value any run.yaml written before this field existed can carry — means
+	// the daemon's in-process runner, so every existing journal keeps both
+	// its exact bytes and its exact meaning.
+	Driver RunDriver `json:"driver,omitempty"`
 	// RunControls pins the effective inherited safety budgets this run started
 	// with. Nil identifies a legacy run that predates run-control pinning.
 	RunControls *apiv1.RunControls `json:"runControls,omitempty"`
@@ -112,3 +140,9 @@ type RunIdentity struct {
 // this build owns — the same check Event.KnownSchema applies per event,
 // applied here to the single-document run.yaml (#2054).
 func (id RunIdentity) KnownSchema() bool { return id.Schema == RunSchema }
+
+// EngineDriven reports whether the tier-3 engine, rather than the daemon's
+// own runner, owns this run's walk. It is the single predicate the daemon's
+// resume scan, stall sweep and operator paths consult before acting on a run
+// they did not start.
+func (id RunIdentity) EngineDriven() bool { return id.Driver == DriverEngine }

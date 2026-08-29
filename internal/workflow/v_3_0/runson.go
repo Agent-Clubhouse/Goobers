@@ -67,11 +67,116 @@ func removedSurfaceProblems(def Definition) []string {
 	return problems
 }
 
-// runsOnProblems reports structural problems in the declared runsOn blocks:
-// an os value outside the validated enum, a malformed or non-positive
-// quantity, a malformed capability token, and a gaggle-vs-stage OS conflict
-// (the merge rule of dsl-3.0.md §2: capabilities and restrictions union; an
-// OS conflict is a compile error, never a silent override).
+// runsOnStages lists every stage whose declared runsOn block the structural
+// and vocabulary checks read: every task (declared or not — the checks skip a
+// nil block themselves), then every gate that declares one, evaluator
+// notwithstanding. A non-agentic gate's block is refused separately by
+// gateRunsOnProblems (WF023); its spelling is still checked here so one
+// compile reports every problem. Derivation is not needed by these checks,
+// so Derived stays nil.
+func runsOnStages(def Definition) []PlacementStage {
+	stages := make([]PlacementStage, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		stages = append(stages, PlacementStage{Kind: stageKindTask, Name: task.Name, RunsOn: task.RunsOn})
+	}
+	for _, gate := range def.Spec.Gates {
+		if gate.RunsOn == nil {
+			continue
+		}
+		stages = append(stages, PlacementStage{Kind: stageKindGate, Name: gate.Name, RunsOn: gate.RunsOn})
+	}
+	return stages
+}
+
+// gateRunsOnProblems is WF023 (decision 001, dsl-3.0.md §2 "Gates"): the two
+// gate-only rules on a declared gates[].runsOn block.
+//
+//   - Ruling 2: only an AGENTIC gate is placeable. An automated gate is a pure
+//     function over its inputs and a human gate pauses for a portal decision;
+//     both evaluate in the daemon/control plane by definition, so runsOn on
+//     either is a compile error, never a silently ignored block.
+//   - Ruling 5: a placed gate must carry quantities. The gaggle floor
+//     deliberately has no cpu/memory, and an agentic review is the most
+//     expensive stage class in a lane; inheriting the floor's capabilities
+//     with no envelope would be a silent under-provision. So a gate runsOn
+//     without explicit cpu AND memory is a compile error, not a default —
+//     default-to-self would make "did my gate place?" invisible in the yaml.
+//   - A placed gate must name its reviewer. The reviewer's harness is the
+//     gate's derived requirement (DerivedGateCapabilities reads
+//     gate.Agentic.Goober); an agentic gate with runsOn but no agentic:
+//     block would otherwise solve with NO harness tag and could place on a
+//     harness-less runner image. api/validate's GT-016 cardinality check
+//     (WF014) catches the shape on the config-tree path; this is the
+//     interpreter's own fail-closed arm so the API path and the CRD cannot
+//     reach placeableStages with it.
+func gateRunsOnProblems(def Definition) []string {
+	var problems []string
+	for _, gate := range def.Spec.Gates {
+		if gate.RunsOn == nil {
+			continue
+		}
+		if gate.Evaluator != apiv1.EvaluatorAgentic {
+			problems = append(problems, fmt.Sprintf(
+				"gate %q declares runsOn but its evaluator is %q: only an agentic gate is placeable — automated and human gates evaluate in the daemon/control plane by definition (decision 001, dsl-3.0.md §2); remove runsOn from the gate",
+				gate.Name, gate.Evaluator))
+			continue
+		}
+		if gate.Agentic == nil {
+			problems = append(problems, fmt.Sprintf(
+				"gate %q declares runsOn but has no agentic: block naming its reviewer goober, so the reviewer's harness requirement cannot be derived and the gate could place on a runner without one (decision 001, dsl-3.0.md §2); add agentic.goober or remove runsOn",
+				gate.Name))
+			continue
+		}
+		var missing []string
+		if gate.RunsOn.CPU == "" {
+			missing = append(missing, "cpu")
+		}
+		if gate.RunsOn.Memory == "" {
+			missing = append(missing, "memory")
+		}
+		if len(missing) > 0 {
+			problems = append(problems, fmt.Sprintf(
+				"gate %q declares runsOn without %s: a placed agentic gate must declare cpu and memory explicitly — the gaggle floor carries no quantities and a review is the most expensive stage class in a lane, so an inherited envelope would silently under-provision the reviewer (decision 001 ruling 5, dsl-3.0.md §2)",
+				gate.Name, strings.Join(missing, " and ")))
+		}
+	}
+	return problems
+}
+
+// gatePlacementWarnings is WF024: one warning per agentic gate that declares
+// runsOn, for as long as decision 001's engine/pod half (rulings 7–8:
+// evaluateGate through the dispatch seam, a review mode on the agentic kit,
+// the surrendered verdict) is unlanded. Today the block is compiled, solved
+// (RNR001/RNR003) and pinned by name, but engine.evaluateGate has no
+// placement arm: an agentic gate always runs ActReviewGoober in-process on
+// the workflow's own queue. Accepting a declared isolation set and running
+// the reviewer outside it silently would be the insecure half, so the two
+// start seams fail closed — a placement self cannot satisfy is refused
+// (checkpoint 3 for daemon-scheduled runs; bootstrap.PinStagePlacements for
+// engine-start) — and this warning tells the author so at validate time.
+//
+// REMOVE with the engine half: once evaluateGate honours a non-self gate
+// pin, this function and its WF024 code retire together with the
+// PinStagePlacements refusal.
+func gatePlacementWarnings(def Definition) []string {
+	var warnings []string
+	for _, gate := range def.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.RunsOn == nil {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"gate %q declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet (decision 001 rulings 7–8, the engine/pod half, land separately) — the reviewer still evaluates in the daemon/control plane with that host's OS, network and envelope. A placement self satisfies pins self and evaluates in-process; one self cannot satisfy is refused at start (workflow.refused for daemon-scheduled runs, a named error for engine-start) rather than run outside its declared isolation",
+			gate.Name))
+	}
+	return warnings
+}
+
+// runsOnProblems reports structural problems in the declared runsOn blocks
+// (tasks and gates alike — runsOnStages): an os value outside the validated
+// enum, a malformed or non-positive quantity, a malformed capability token,
+// and a gaggle-vs-stage OS conflict (the merge rule of dsl-3.0.md §2:
+// capabilities and restrictions union; an OS conflict is a compile error,
+// never a silent override).
 func runsOnProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
 	var problems []string
 	gaggleOS := ""
@@ -87,19 +192,19 @@ func runsOnProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
 			}
 		}
 	}
-	for _, task := range def.Spec.Tasks {
-		runsOn := task.RunsOn
+	for _, stage := range runsOnStages(def) {
+		runsOn := stage.RunsOn
 		if runsOn == nil {
 			continue
 		}
 		if runsOn.OS != "" && !validRunsOnOS(runsOn.OS) {
 			problems = append(problems, fmt.Sprintf(
-				"task %q runsOn.os %q is not one of %s", task.Name, runsOn.OS, strings.Join(runsOnOSValues, ", ")))
+				"%s %q runsOn.os %q is not one of %s", stage.Kind, stage.Name, runsOn.OS, strings.Join(runsOnOSValues, ", ")))
 		}
 		if runsOn.OS != "" && gaggleOS != "" && runsOn.OS != gaggleOS && validRunsOnOS(runsOn.OS) && validRunsOnOS(gaggleOS) {
 			problems = append(problems, fmt.Sprintf(
-				"task %q runsOn.os %q conflicts with the gaggle-level runsOn.os %q; the gaggle floor merges into every stage and an OS conflict is unsatisfiable (dsl-3.0.md §2)",
-				task.Name, runsOn.OS, gaggleOS))
+				"%s %q runsOn.os %q conflicts with the gaggle-level runsOn.os %q; the gaggle floor merges into every stage and an OS conflict is unsatisfiable (dsl-3.0.md §2)",
+				stage.Kind, stage.Name, runsOn.OS, gaggleOS))
 		}
 		for _, quantity := range []struct {
 			field string
@@ -115,18 +220,18 @@ func runsOnProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
 			parsed, err := resource.ParseQuantity(quantity.value)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf(
-					"task %q runsOn.%s %q must be a Kubernetes quantity string (for example \"2000m\", \"4Gi\"): %v",
-					task.Name, quantity.field, quantity.value, err))
+					"%s %q runsOn.%s %q must be a Kubernetes quantity string (for example \"2000m\", \"4Gi\"): %v",
+					stage.Kind, stage.Name, quantity.field, quantity.value, err))
 				continue
 			}
 			if parsed.Sign() <= 0 {
 				problems = append(problems, fmt.Sprintf(
-					"task %q runsOn.%s must be positive, got %q", task.Name, quantity.field, quantity.value))
+					"%s %q runsOn.%s must be positive, got %q", stage.Kind, stage.Name, quantity.field, quantity.value))
 			}
 		}
 		for i, token := range runsOn.Capabilities {
 			if err := runnercap.ValidateToken(token); err != nil {
-				problems = append(problems, fmt.Sprintf("task %q runsOn.capabilities[%d]: %v", task.Name, i, err))
+				problems = append(problems, fmt.Sprintf("%s %q runsOn.capabilities[%d]: %v", stage.Kind, stage.Name, i, err))
 			}
 		}
 	}
@@ -136,7 +241,7 @@ func runsOnProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
 // osTokenProblems is CAP004 (dsl-3.0.md D12): an os=* token anywhere in a 3.0
 // document is refused — runsOn.os is the only platform vocabulary, so the
 // #659 two-vocabularies drift hazard structurally cannot recur. It scans
-// every capability tag position: stage runsOn.capabilities and the
+// every capability tag position: task and gate runsOn.capabilities and the
 // gaggle-level floor. (requiredCapabilities cannot carry one because the
 // whole field is already refused by removedSurfaceProblems; that refusal
 // names the os=* rewrite too.)
@@ -150,14 +255,14 @@ func osTokenProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []string 
 			}
 		}
 	}
-	for _, task := range def.Spec.Tasks {
-		if task.RunsOn == nil {
+	for _, stage := range runsOnStages(def) {
+		if stage.RunsOn == nil {
 			continue
 		}
-		for _, token := range task.RunsOn.Capabilities {
+		for _, token := range stage.RunsOn.Capabilities {
 			if goos, ok := strings.CutPrefix(token, "os="); ok {
 				problems = append(problems, fmt.Sprintf(
-					"task %q runsOn.capabilities contains %q: os=* tokens do not exist in DSL 3.0 — declare runsOn.os: %s instead", task.Name, token, canonicalOSName(goos)))
+					"%s %q runsOn.capabilities contains %q: os=* tokens do not exist in DSL 3.0 — declare runsOn.os: %s instead", stage.Kind, stage.Name, token, canonicalOSName(goos)))
 			}
 		}
 	}
@@ -190,13 +295,13 @@ func restrictionProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []str
 			}
 		}
 	}
-	for _, task := range def.Spec.Tasks {
-		if task.RunsOn == nil {
+	for _, stage := range runsOnStages(def) {
+		if stage.RunsOn == nil {
 			continue
 		}
-		for _, token := range task.RunsOn.Restrictions {
+		for _, token := range stage.RunsOn.Restrictions {
 			if !runnercap.KnownRestriction(token) {
-				problems = append(problems, fmt.Sprintf("task %q runsOn.restrictions: %s", task.Name, unknownRestriction(token)))
+				problems = append(problems, fmt.Sprintf("%s %q runsOn.restrictions: %s", stage.Kind, stage.Name, unknownRestriction(token)))
 			}
 		}
 	}
@@ -219,13 +324,14 @@ func unknownRestriction(token string) string {
 // gaggle-level floor merged with the stage's own declaration (capabilities
 // and restrictions union, OS from whichever side declares one — a conflict is
 // already a compile error via runsOnProblems). Quantities come from the stage
-// alone; the gaggle floor has none by design.
-func EffectiveRunsOn(task apiv1.Task, gaggleRunsOn *apiv1.GaggleRunsOn) apiv1.RunsOn {
+// alone; the gaggle floor has none by design. The stage is a task or an
+// agentic gate (PlacementStage): the merge rule is one rule, not two.
+func EffectiveRunsOn(stage PlacementStage, gaggleRunsOn *apiv1.GaggleRunsOn) apiv1.RunsOn {
 	var effective apiv1.RunsOn
-	if task.RunsOn != nil {
-		effective = *task.RunsOn
-		effective.Capabilities = append([]string(nil), task.RunsOn.Capabilities...)
-		effective.Restrictions = append([]string(nil), task.RunsOn.Restrictions...)
+	if stage.RunsOn != nil {
+		effective = *stage.RunsOn
+		effective.Capabilities = append([]string(nil), stage.RunsOn.Capabilities...)
+		effective.Restrictions = append([]string(nil), stage.RunsOn.Restrictions...)
 	}
 	if gaggleRunsOn != nil {
 		if effective.OS == "" {

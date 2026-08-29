@@ -81,6 +81,7 @@
       }
     },
     "gaggle": { "type": "string", "minLength": 1, "description": "Gaggle that owns the run." },
+    "driver": { "type": "string", "enum": ["engine"], "description": "Component that walks the run's stages: \"engine\" for a run the tier-3 engine drives on Temporal. Omitted for a run the daemon's own in-process runner drives, which is every run written before this field existed." },
     "runControls": {
       "description": "Effective inherited run-control policy pinned when the run started. Omitted only on legacy journals.",
       "type": "object",

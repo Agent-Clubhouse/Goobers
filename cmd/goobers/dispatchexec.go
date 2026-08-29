@@ -162,6 +162,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	}
 	defer cleanup()
 
+	// Decision 003 ruling 3, pod-entrypoint backstop: the engine's
+	// dispatchRemoteTask already refuses a stage that needs the daemon's
+	// instance root before ever creating a pod (a ledger-touching or
+	// journal-reading goobers CLI command, or a built-in stage kind with no
+	// pod-side execution path). This re-asserts the identical refusal HERE,
+	// at the one point in the tree where every substrate skew — an older
+	// engine image dispatching to a newer worker, a hand-built attempt —
+	// would actually surface, rather than trusting that the workflow-side
+	// check happened. Gated on GOOBERS_INSTANCE_ROOT being unset (always
+	// true in a pod today, since the dispatcher never stamps it) rather than
+	// "this is a pod": once a plane client lands and a pod gets a scoped
+	// root, this stops firing on its own, no dispatchexec.go change needed.
+	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) &&
+		strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
+		return failureEnvelope(executor.StageRequiresInstanceRootCode, fmt.Sprintf(
+			"stage command %v requires the daemon's instance root (%s is unset in this pod); this should have been refused before dispatch",
+			argv, executor.InstanceRootEnvVar,
+		))
+	}
+
 	timeout := dispatcher.DefaultStageTimeout
 	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
 		timeout = declared
@@ -836,9 +856,14 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // as an infrastructure fault. A REFUSING endpoint is instant (connection
 // refused); a DROPPING one — the NetworkPolicy shape this change's own evidence
 // plan tells operators to look for — is what needs the ceiling. Generous for
-// the payload (stream artifacts are capped at 32 KiB by boundedCapture) and far
-// below anything that would look like a hung pod.
-const blobWriteThroughBudget = 15 * time.Second
+// the payload (stream artifacts are capped at 32 KiB by boundedCapture, and a
+// span transcript by DefaultMaxTranscriptBytes) and far below anything that
+// would look like a hung pod.
+//
+// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
+// a hanging plane is the one failure mode this budget exists for, and a test
+// that had to wait the real 15s to observe it would never be written.
+var blobWriteThroughBudget = 15 * time.Second
 
 // stageBlobWriteThroughContext returns the context the write-through PUTs run
 // under, and it is DELIBERATELY NOT THE STAGE'S.

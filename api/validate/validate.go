@@ -160,6 +160,18 @@ const (
 	// WARNING: resource requirements are advisory on local modes by design
 	// (dsl-3.0.md D4) and never affect eligibility.
 	RunnerQuantityAdvisory WarningCode = "RNR004"
+	// RunnerInstanceRootRequired (RNR005) identifies a 3.0 stage whose
+	// resolved ELIGIBLE RUNNER SET (the same per-stage solve RNR001 runs)
+	// excludes every self entry, but whose command or built-in stage kind
+	// needs the daemon's instance root: the file claim ledger, a merge
+	// lock, an on-disk run journal, or a kind with no pod-side execution
+	// path (executor.StageRequiresInstanceRoot, decision 003 ruling 3).
+	// Always a WARNING, never promoted by inventory declaration the way
+	// RNR001/RNR003 are: the enforcement is at dispatch (a placed run of
+	// this workflow is refused loud, with the same named code, rather than
+	// running silently wrong), so this is advance notice at author time,
+	// not a second gate.
+	RunnerInstanceRootRequired WarningCode = "RNR005"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -170,6 +182,18 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningGatePlacementUnhonoured (WF024) identifies an agentic gate that
+	// declares runsOn (decision 001) while the engine/pod half of that
+	// decision (rulings 7–8) is unlanded: the block is validated, solved
+	// (RNR001/RNR003) and pinned by name, but engine.evaluateGate has no
+	// placement arm, so the reviewer still evaluates in the daemon/control
+	// plane with that host's OS, network and envelope. The start seams fail
+	// closed rather than run the reviewer outside its declared isolation — a
+	// placement self cannot satisfy is refused (checkpoint 3 for
+	// daemon-scheduled runs, bootstrap.PinStagePlacements for engine-start)
+	// — and this warning is how the author learns that before starting a
+	// run. Informational: the config is valid. Retires with the engine half.
+	WarningGatePlacementUnhonoured WarningCode = "WF024"
 )
 
 const (
@@ -202,6 +226,7 @@ const (
 	errorOSTokenInV3              WarningCode = "CAP004"
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
+	errorGateRunsOn               WarningCode = "WF023"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -1913,6 +1938,17 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	}
 	for _, msg := range wf.CheckRunsOnPlacement(def, gaggleRunsOn) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// The gate-only runsOn rules (WF023, decision 001): runsOn on a
+	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
+	for _, msg := range wf.CheckGateRunsOn(def) {
+		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// WF024: a declared gate placement is not yet honoured at execution
+	// (decision 001 rulings 7–8 unlanded). Warning, not error — the config is
+	// valid and the start seams refuse the unsatisfiable case themselves.
+	for _, msg := range wf.CheckGatePlacementWarnings(def) {
+		r.addWarning(WarningGatePlacementUnhonoured, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
