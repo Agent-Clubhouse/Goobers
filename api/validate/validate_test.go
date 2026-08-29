@@ -2454,14 +2454,3 @@ spec:
 		})
 	}
 }
-
-func TestGatePlacementUnhonouredCodeStable(t *testing.T) {
-	if got, want := WarningGatePlacementUnhonoured, WarningCode("WF024"); got != want {
-		t.Fatalf("WarningGatePlacementUnhonoured = %q, want stable code %q", got, want)
-	}
-	for _, other := range []WarningCode{errorGateRunsOn, WarningSubprocessTimeout, errorCapabilityRuntimeSupport, WarningGateCompletionHidesFailure} {
-		if WarningGatePlacementUnhonoured == other {
-			t.Fatalf("WarningGatePlacementUnhonoured duplicates %q", other)
-		}
-	}
-}

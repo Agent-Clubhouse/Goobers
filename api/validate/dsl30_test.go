@@ -316,24 +316,24 @@ func TestValidateTwoPointOhGateRunsOnIsRefused(t *testing.T) {
 	if len(issuesWithCode(report, errorGateRunsOn)) != 0 {
 		t.Fatalf("issues = %+v, want no WF023 on a 2.0 document (the router refuses the field first)", report.Issues)
 	}
-	if len(issuesWithCode(report, WarningGatePlacementUnhonoured)) != 0 {
-		t.Fatalf("issues = %+v, want no WF024 on a 2.0 document (nothing is pinned there)", report.Issues)
-	}
 }
 
 func TestValidateGateRunsOnRules(t *testing.T) {
-	t.Run("agentic gate with cpu and memory is accepted with a WF024 warning", func(t *testing.T) {
+	t.Run("agentic gate with cpu and memory is accepted clean", func(t *testing.T) {
 		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic", placedGateRunsOnYAML)))
 		for _, issue := range report.Issues {
 			if issue.Severity == Error {
 				t.Fatalf("issues = %+v, want no errors for a placed agentic gate", report.Issues)
 			}
 		}
-		// Decision 001 rulings 7–8 are unlanded: the placement is accepted
-		// and pinned but not honoured, and validate must say so.
-		found := issuesWithCode(report, WarningGatePlacementUnhonoured)
-		if len(found) != 1 || found[0].Severity != Warning || !strings.Contains(found[0].Message, `gate "review" declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet`) {
-			t.Fatalf("issues = %+v, want exactly one WF024 warning naming the gate", report.Issues)
+		// The "not yet honoured" WF024 warning that rode here between the
+		// DSL half of decision 001 and its engine/pod half is gone with the
+		// engine half: a placed gate is now honoured at execution, and the
+		// code must not come back under any spelling.
+		for _, issue := range report.Issues {
+			if issue.Code == "WF024" || strings.Contains(issue.Message, "no execution path honours a gate placement") {
+				t.Fatalf("issues = %+v, want no retired WF024 warning on a placed agentic gate", report.Issues)
+			}
 		}
 	})
 	t.Run("agentic gate with runsOn but no agentic block is WF023", func(t *testing.T) {

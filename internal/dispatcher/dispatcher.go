@@ -330,6 +330,15 @@ type Attempt struct {
 	// whole InvocationEnvelope and its goober's resolved execution inputs, which
 	// travel as a claim check (internal/agentickit) rather than on the pod spec.
 	Agentic bool
+	// Review marks an AGENTIC attempt that is a reviewer GATE evaluation
+	// (decision 001 rulings 7–8): the pod drives the goober in the harness's
+	// review mode and surrenders a Verdict instead of a stage result. It
+	// rides the attempt, not the pod spec — the kit writer stamps it as
+	// agentickit.Kit.Mode inside the verified claim check, so a pod learns
+	// which completion contract it owes from the same content-addressed
+	// document that carries its instructions, never from a listable env var.
+	// Meaningless without Agentic; Dispatch refuses the combination.
+	Review bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -623,6 +632,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// An agentic stage's kit is published BEFORE the pod exists, and a failure
 	// to publish refuses the attempt rather than creating a pod that would find
 	// no kit and fail with something obscure inside the container.
+	if attempt.Review && !attempt.Agentic {
+		// A review is a completion contract for a goober invocation; a
+		// declared command has no verdict to write. Refused here, before a
+		// pod or a kit exists, rather than surfacing as "surrendered result
+		// carries no verdict" after the stage ran.
+		return Report{}, fmt.Errorf("dispatcher: stage %s of run %s is marked review but not agentic; only a goober invocation can produce a verdict", attempt.Stage, attempt.RunID)
+	}
 	if attempt.Agentic {
 		if d.cfg.KitWriter == nil {
 			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)

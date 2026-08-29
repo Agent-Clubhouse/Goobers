@@ -108,6 +108,19 @@ type SurrenderedResult struct {
 	// nothing about the branch rather than inferring "unchanged" from
 	// silence. Never set beside a non-empty WorkspaceDelta.
 	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// Verdict is the reviewer's decision when the attempt was an agentic
+	// reviewer GATE evaluated in a pod (Attempt.Review, agentickit.ModeReview;
+	// decision 001 rulings 7–8) — the same apiv1.Verdict the worker's
+	// ReviewGoober activity returns in-process. Result then carries a bare
+	// success status (the harness session completed), never a business
+	// outcome: the verdict IS the outcome, and the engine routes on
+	// Verdict.Decision alone. Nil for every task attempt.
+	//
+	// The engine RE-VALIDATES what comes back (fail closed on an empty
+	// Decision and on the verdict schema) rather than trusting the pod's own
+	// harness validation: a substituted or truncated surrender document must
+	// never route control flow (#3838's shape).
+	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
 }
 
 // ReadSurrenderedResult fetches and decodes one attempt's surrendered result.
