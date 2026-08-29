@@ -731,6 +731,18 @@ func TestClaimsPlaneListScopesAndContainment(t *testing.T) {
 	if !errors.As(err, &planeErr) || planeErr.Code != "gaggle_mismatch" {
 		t.Fatalf("pod listing for a run with no journal: err = %v, want gaggle_mismatch", err)
 	}
+	// The gaggle is a pod-supplied path segment on the containment check's
+	// only filesystem probe: anything that is not one plain element is
+	// refused before it is joined, never resolved.
+	for _, gaggle := range []string{"../g", "g/../g", "./g", ".", "..", "sub/g", `sub\g`} {
+		_, err = service.List(ctx, httpapi.ClaimListRequest{
+			Gaggle: gaggle, Provider: "github", RunID: "run-g",
+			Scope: httpapi.ClaimListScopeNamespace, PodScoped: true,
+		})
+		if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "gaggle_mismatch" {
+			t.Fatalf("pod listing gaggle %q: err = %v, want 403 gaggle_mismatch", gaggle, err)
+		}
+	}
 	if _, err := service.List(ctx, httpapi.ClaimListRequest{Gaggle: "other", Provider: "github", RunID: "run-g", Scope: httpapi.ClaimListScopeNamespace}); err != nil {
 		t.Fatalf("a human (not PodScoped) listing of another gaggle: %v", err)
 	}

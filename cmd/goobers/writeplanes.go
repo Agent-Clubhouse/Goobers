@@ -270,12 +270,31 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 // runBelongsToGaggle reports whether runID's journal lives under gaggle's
 // runs directory on this instance — the run.yaml the daemon's live writer
 // creates at the run's first emit, which every pod plane call follows.
+//
+// Both segments are validated before they are joined into a path: this is a
+// containment check whose only inputs are a pod's request body, so a gaggle
+// that is not a single plain path element (".", "..", anything carrying a
+// separator) is refused outright rather than resolved. Fail closed — an
+// unverifiable gaggle is not a gaggle the run belongs to.
 func (s *daemonClaimService) runBelongsToGaggle(gaggle, runID string) bool {
-	if !apiv1.ValidRunID(runID) {
+	if !apiv1.ValidRunID(runID) || !plainPathElement(gaggle) {
 		return false
 	}
 	_, err := os.Stat(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
 	return err == nil
+}
+
+// plainPathElement reports whether value is safe to join as exactly one path
+// segment: non-empty, no separator of either platform's flavour, no volume
+// name, and not a relative-path element.
+func plainPathElement(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	if strings.ContainsAny(value, `/\`) || filepath.VolumeName(value) != "" {
+		return false
+	}
+	return true
 }
 
 func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
