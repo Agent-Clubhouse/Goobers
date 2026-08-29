@@ -221,7 +221,7 @@ func TestHTTPMergeLockPollsRenewsAndReleases(t *testing.T) {
 	})
 	lock := MergeLock{Key: MergeLockKey("g", "github", "acme", "web"), RunID: "run-1", Workflow: "merge-review"}
 	windowErr := errors.New("merge refused")
-	err := client.MergeLock(context.Background(), lock, func() error {
+	err := client.MergeLock(context.Background(), lock, func(context.Context) error {
 		time.Sleep(3 * client.cfg.MergeLockLease / 3 * 2)
 		return windowErr
 	})
@@ -253,11 +253,79 @@ func TestHTTPMergeLockPollsRenewsAndReleases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	ran := false
-	err = client.MergeLock(ctx, lock, func() error { ran = true; return nil })
+	err = client.MergeLock(ctx, lock, func(context.Context) error { ran = true; return nil })
 	if err == nil || ran || !strings.Contains(err.Error(), "held by run run-0") {
 		t.Fatalf("waiting MergeLock: err = %v, ran = %v", err, ran)
 	}
-	if err := client.MergeLock(context.Background(), MergeLock{Key: lock.Key}, func() error { return nil }); err == nil {
+	if err := client.MergeLock(context.Background(), MergeLock{Key: lock.Key}, func(context.Context) error { return nil }); err == nil {
 		t.Fatal("MergeLock without a run id was accepted")
+	}
+}
+
+// TestHTTPMergeLockFailsClosedOnLostLease is SHOULD #3: a renewal that comes
+// back definitively refused (ok=false, not a transport error) must cancel
+// fn's context with errMergeLeaseLost — and, if fn does not itself observe
+// that cancellation before returning, MergeLock must still surface the loss
+// as its own error rather than let a nil fn error read as "the window held".
+func TestHTTPMergeLockFailsClosedOnLostLease(t *testing.T) {
+	var mu sync.Mutex
+	renewed := false
+	plane, client := newFakePlane(t, func(path string, body map[string]any) (int, any) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch path {
+		case apicontract.ClaimAcquirePath:
+			return http.StatusOK, map[string]any{"ok": true}
+		case apicontract.ClaimRenewPath:
+			renewed = true
+			// Definitive refusal: the daemon says another run now holds it.
+			return http.StatusOK, map[string]any{"ok": false, "holder": "run-thief"}
+		case apicontract.ClaimReleasePath:
+			return http.StatusOK, map[string]any{"ok": true}
+		}
+		return http.StatusNotFound, map[string]any{}
+	})
+	client.cfg.MergeLockLease = 30 * time.Millisecond
+	lock := MergeLock{Key: MergeLockKey("g", "github", "acme", "web"), RunID: "run-1", Workflow: "merge-review"}
+
+	var sawCancel bool
+	var fnCtxErr error
+	err := client.MergeLock(context.Background(), lock, func(fnCtx context.Context) error {
+		// fn does its own work first (as mergepr.go's closure does — it
+		// never returns fnCtx.Err() itself), then, if given long enough for
+		// the definitive-refusal renewal above to land, observes the
+		// cancellation on a later ctx-aware wait — never a raw sleep past
+		// deadline.
+		select {
+		case <-fnCtx.Done():
+			sawCancel = true
+			fnCtxErr = context.Cause(fnCtx)
+		case <-time.After(2 * time.Second):
+		}
+		return nil
+	})
+	if !renewed {
+		t.Fatal("test did not exercise a renewal at all")
+	}
+	if !sawCancel {
+		t.Fatal("fn's context was never cancelled after the lease was definitively lost")
+	}
+	if !errors.Is(fnCtxErr, errMergeLeaseLost) {
+		t.Fatalf("fn's context.Cause = %v, want errMergeLeaseLost", fnCtxErr)
+	}
+	// fn itself returned nil (it does not read its own context in
+	// mergepr.go's shape) — MergeLock must still fail closed rather than
+	// report success for a window it knows was surrendered mid-flight.
+	if err == nil || !errors.Is(err, errMergeLeaseLost) {
+		t.Fatalf("MergeLock err = %v, want it to surface the lost lease even though fn returned nil", err)
+	}
+	var releases int
+	for _, request := range plane.recorded() {
+		if request.path == apicontract.ClaimReleasePath {
+			releases++
+		}
+	}
+	if releases != 1 {
+		t.Fatalf("releases = %d, want 1: the window is still handed back on the way out", releases)
 	}
 }

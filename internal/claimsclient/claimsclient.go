@@ -181,8 +181,16 @@ type Ledger interface {
 	// history.
 	ListNamespace(ctx context.Context, gaggle, provider string) (Listing, error)
 	// MergeLock runs fn inside merge-pr's exclusive window: the instance-wide
-	// merge flock on the file backend, a polled lease on the plane.
-	MergeLock(ctx context.Context, lock MergeLock, fn func() error) error
+	// merge flock on the file backend, a polled lease on the plane. fn
+	// receives a context scoped to the window: on the plane it is cancelled
+	// (with Cause naming the loss) the moment a renewal is definitively
+	// refused (RenewEntry's ok=false — the lease now belongs to another run
+	// or expired out from under it), so fn fails closed on its next
+	// context-aware operation instead of continuing to act as though it
+	// still held exclusivity. A transient renewal transport error is NOT
+	// this: it stays best-effort, same as before, because the lease's own
+	// TTL is the backstop for a network hiccup.
+	MergeLock(ctx context.Context, lock MergeLock, fn func(context.Context) error) error
 	// Locked runs fn as one critical section labelled operation. On the file
 	// backend that is one cross-process claims-lock acquisition and one
 	// fresh ledger open for every primitive fn calls — today's

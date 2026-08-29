@@ -232,7 +232,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
-	lockErr := ledger.MergeLock(ctx, mergeLock, func() error {
+	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
 		// actual current state right before deciding, now guaranteed to be

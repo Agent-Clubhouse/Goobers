@@ -87,6 +87,19 @@ const (
 	backlogFailureWindow                = 7 * 24 * time.Hour
 )
 
+// terminalFailureStreakDegradedAnnotation marks a cycle where the
+// consecutive-terminal-failure count for one or more items could not be
+// fully computed: terminalFailureStreak's phase lookup (layout.FindRunDir +
+// journal.OpenRead) is a direct on-disk read of a PRIOR run's journal, not a
+// claims-plane call, because no plane route answers "what phase did run X
+// end in" yet (finding 002 C3/C4). On the file seam this only fails for a
+// genuinely reaped/missing run directory; on a stage pod with no local
+// instance root it fails for every entry, so the streak silently degrades
+// toward 0 and repeated-failure deprioritization silently stops working.
+// This annotation is the loud alternative: it survives until the read route
+// lands and this direct FindRunDir/OpenRead pair is deleted in its favor.
+const terminalFailureStreakDegradedAnnotation = "backlog.failure-streak-degraded"
+
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
@@ -510,7 +523,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			pf(stderr, "error: read claim ledger: %v\n", err)
 			return 1
 		}
-		eligible = deprioritizeRepeatedFailures(env.layout, listing, eligible, observedAt, env)
+		eligible = deprioritizeRepeatedFailures(env.layout, listing, eligible, observedAt, env, runID, workflow)
 	}
 
 	if !claim {
@@ -551,14 +564,19 @@ func deprioritizeRepeatedFailures(
 	items []providers.WorkItem,
 	now time.Time,
 	env backlogQueryEnv,
+	runID, workflow string,
 ) []providers.WorkItem {
 	if len(items) < 2 {
 		return items
 	}
 	healthy := make([]providers.WorkItem, 0, len(items))
 	deprioritized := make([]providers.WorkItem, 0, len(items))
+	var degraded []string
 	for _, item := range items {
-		streak := terminalFailureStreak(layout, claims.HistoryForItem(item.ID), now)
+		streak, degradedAt := terminalFailureStreak(layout, claims.HistoryForItem(item.ID), now)
+		if degradedAt != "" {
+			degraded = append(degraded, item.ID+"@"+degradedAt)
+		}
 		if streak >= backlogFailureDeprioritizeThreshold {
 			deprioritized = append(deprioritized, item)
 			env.debugf("deprioritized %s: %d consecutive terminal failures", item.ID, streak)
@@ -566,31 +584,69 @@ func deprioritizeRepeatedFailures(
 		}
 		healthy = append(healthy, item)
 	}
+	if len(degraded) > 0 {
+		journalFailureStreakDegraded(layout, env.stderr, runID, workflow, degraded)
+	}
 	return append(healthy, deprioritized...)
 }
 
-func terminalFailureStreak(layout instance.Layout, history []localscheduler.ClaimEntry, now time.Time) int {
-	streak := 0
+// terminalFailureStreak returns the item's consecutive terminal-failure
+// count and, when the walk stopped because a prior run's phase could not be
+// read (rather than a clean end-of-window or a non-failed phase), the id of
+// that run — the caller's signal to fire
+// terminalFailureStreakDegradedAnnotation rather than let the shortfall pass
+// unremarked.
+func terminalFailureStreak(layout instance.Layout, history []localscheduler.ClaimEntry, now time.Time) (streak int, degradedRunID string) {
 	for _, entry := range history {
 		endedAt := entry.ReleasedAt
 		if endedAt == nil || now.Sub(*endedAt) > backlogFailureWindow || now.Before(*endedAt) {
-			break
+			return streak, ""
 		}
 		runDir, err := layout.FindRunDir(entry.RunID)
 		if err != nil {
-			break
+			return streak, entry.RunID
 		}
 		reader, err := journal.OpenRead(runDir)
 		if err != nil {
-			break
+			return streak, entry.RunID
 		}
 		phase, err := reader.PhaseBounded(context.Background())
-		if err != nil || phase != journal.PhaseFailed {
-			break
+		if err != nil {
+			return streak, entry.RunID
+		}
+		if phase != journal.PhaseFailed {
+			return streak, ""
 		}
 		streak++
 	}
-	return streak
+	return streak, ""
+}
+
+// journalFailureStreakDegraded records, once per backlog-query cycle, that
+// repeated-failure deprioritization was dropped for one or more items — see
+// terminalFailureStreakDegradedAnnotation. Best-effort like
+// blockedOnlyCompletionAnnotation's write above: a journal failure here must
+// never turn a working claim cycle into a failed one, so it is warned to
+// stderr and swallowed rather than propagated.
+func journalFailureStreakDegraded(layout instance.Layout, stderr io.Writer, runID, workflow string, degraded []string) {
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		pf(stderr, "warning: journal failure-streak degradation: open instance log: %v\n", err)
+		return
+	}
+	defer func() { _ = instanceLog.Close() }()
+	if err := instanceLog.Append(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: workflow,
+		RunID:    runID,
+		Reason:   fmt.Sprintf("repeated-failure deprioritization dropped for %d item(s): a prior run's phase could not be read (finding 002 C3/C4 — no plane route yet)", len(degraded)),
+		Runner: map[string]any{
+			"annotation": terminalFailureStreakDegradedAnnotation,
+			"items":      degraded,
+		},
+	}); err != nil {
+		pf(stderr, "warning: journal failure-streak degradation: %v\n", err)
+	}
 }
 
 type backlogClaimOptions struct {

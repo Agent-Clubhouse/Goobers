@@ -348,7 +348,7 @@ func TestClaimLedgerMergeLockParity(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_ = first.MergeLock(ctx, lock("run-1"), func() error {
+				_ = first.MergeLock(ctx, lock("run-1"), func(context.Context) error {
 					mu.Lock()
 					order = append(order, "first-in")
 					mu.Unlock()
@@ -363,7 +363,7 @@ func TestClaimLedgerMergeLockParity(t *testing.T) {
 			<-entered
 			secondDone := make(chan error, 1)
 			go func() {
-				secondDone <- second.MergeLock(ctx, lock("run-2"), func() error {
+				secondDone <- second.MergeLock(ctx, lock("run-2"), func(context.Context) error {
 					mu.Lock()
 					order = append(order, "second-in")
 					mu.Unlock()

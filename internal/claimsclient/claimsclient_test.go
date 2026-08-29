@@ -349,7 +349,7 @@ func TestFileMergeLockIsTheInjectedFlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := without.MergeLock(ctx, MergeLock{}, func() error { return nil }); err == nil {
+	if err := without.MergeLock(ctx, MergeLock{}, func(context.Context) error { return nil }); err == nil {
 		t.Fatal("MergeLock with no flock configured ran the window")
 	}
 	flocked := 0
@@ -364,11 +364,11 @@ func TestFileMergeLockIsTheInjectedFlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran := false
-	if err := with.MergeLock(ctx, MergeLock{}, func() error { ran = true; return nil }); err != nil || !ran || flocked != 1 {
+	if err := with.MergeLock(ctx, MergeLock{}, func(context.Context) error { ran = true; return nil }); err != nil || !ran || flocked != 1 {
 		t.Fatalf("MergeLock: err = %v, ran = %v, flocked = %d", err, ran, flocked)
 	}
 	if err := with.Locked(ctx, "op", func(tx Ledger) error {
-		return tx.MergeLock(ctx, MergeLock{}, func() error { return nil })
+		return tx.MergeLock(ctx, MergeLock{}, func(context.Context) error { return nil })
 	}); err != nil || flocked != 2 {
 		t.Fatalf("MergeLock inside Locked: err = %v, flocked = %d", err, flocked)
 	}

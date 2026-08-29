@@ -265,12 +265,26 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	return Listing(response), nil
 }
 
+// errMergeLeaseLost is MergeLock's context.Cause when a renewal is
+// DEFINITIVELY refused (RenewEntry's ok=false: the daemon says this run no
+// longer holds the lease, not that the round trip failed) — distinct from a
+// transient renewal transport error, which stays best-effort under the
+// lease's own TTL exactly as before.
+var errMergeLeaseLost = errors.New("claimsclient: merge lock lease lost to another run or expiry")
+
 // MergeLock implements Ledger as a polled lease on the synthetic merge-lock
 // item: acquire until held (the refusal's Holder is the wait signal), keep
 // the lease renewed while fn runs, release on the way out. A holder that
 // crashes mid-window leaks nothing: its lease lapses within the lease bound
 // and the daemon's expiry reaper frees the item.
-func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func() error) error {
+//
+// fn runs under a lease-scoped context (leaseCtx below), not ctx directly:
+// the moment a renewal comes back definitively refused, leaseCtx is
+// cancelled with errMergeLeaseLost so fn fails closed on its next
+// context-aware call instead of finishing the window unaware another run
+// now holds it (a prior version discarded that refusal and let fn run to
+// completion regardless).
+func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Context) error) error {
 	if err := scopedKey(lock.Key); err != nil {
 		return err
 	}
@@ -299,6 +313,7 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func() error) e
 		}
 	}
 	renewCtx, stopRenewing := context.WithCancel(ctx)
+	leaseCtx, cancelLease := context.WithCancelCause(renewCtx)
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
@@ -309,15 +324,34 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func() error) e
 			case <-renewCtx.Done():
 				return
 			case <-ticker.C:
-				// Best effort: a failed renewal shortens the window to the
-				// remaining lease; the release below is what ends it.
-				_, _ = h.renew(renewCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				ok, err := h.renew(renewCtx, lock.Key, lock.RunID, lock.Workflow, h.cfg.MergeLockLease)
+				if err != nil {
+					// Best effort: a failed renewal shortens the window to
+					// the remaining lease; the release below is what ends
+					// it, same as an unreachable daemon always has.
+					continue
+				}
+				if !ok {
+					// Definitive: the daemon confirms this run no longer
+					// holds the lease. Fail fn closed immediately rather
+					// than let it keep acting on an exclusivity window that
+					// already belongs to someone else, then stop renewing —
+					// there is nothing left to keep alive.
+					cancelLease(errMergeLeaseLost)
+					return
+				}
 			}
 		}
 	}()
-	fnErr := fn()
+	fnErr := fn(leaseCtx)
 	stopRenewing()
+	cancelLease(context.Canceled)
 	<-renewDone
+	if fnErr == nil {
+		if cause := context.Cause(leaseCtx); errors.Is(cause, errMergeLeaseLost) {
+			fnErr = fmt.Errorf("merge lock %s: %w", lock.Key.ExternalID, cause)
+		}
+	}
 	// Release on a context that outlives a cancelled fn: the window must be
 	// handed back even when the stage is being torn down.
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultHTTPTimeout)

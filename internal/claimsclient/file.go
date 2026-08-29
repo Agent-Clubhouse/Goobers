@@ -142,12 +142,14 @@ func (f *File) ListNamespace(ctx context.Context, gaggle, provider string) (List
 
 // MergeLock implements Ledger over the instance-wide merge flock. The key is
 // deliberately unused: the flock is one per instance (#719's shape), and the
-// per-repository lease is the plane's refinement, not the file's.
-func (f *File) MergeLock(_ context.Context, _ MergeLock, fn func() error) error {
+// per-repository lease is the plane's refinement, not the file's. There is no
+// renewal race to fail closed on here — the flock is held for fn's whole
+// duration, not leased and polled — so fn simply gets ctx back unchanged.
+func (f *File) MergeLock(ctx context.Context, _ MergeLock, fn func(context.Context) error) error {
 	if f.cfg.MergeLock == nil {
 		return errors.New("claimsclient: file backend has no merge lock configured")
 	}
-	return f.cfg.MergeLock(fn)
+	return f.cfg.MergeLock(func() error { return fn(ctx) })
 }
 
 // fileSession is one open ledger inside a held critical section. Its
@@ -207,6 +209,6 @@ func (s *fileSession) ListNamespace(_ context.Context, gaggle, provider string) 
 	return listing, nil
 }
 
-func (s *fileSession) MergeLock(ctx context.Context, lock MergeLock, fn func() error) error {
+func (s *fileSession) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Context) error) error {
 	return s.file.MergeLock(ctx, lock, fn)
 }
