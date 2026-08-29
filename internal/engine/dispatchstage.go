@@ -32,37 +32,16 @@ import (
 // routes the dispatch ACTIVITY, which is where all K8s I/O lives.
 
 // PinnedPlacement is one task's resolved execution placement, pinned into
-// RunInput at run start. The zero value never occurs in a pinned list; an
-// absent entry (or an empty Placements list — every zero-declaration and
-// local-mode instance) leaves the stage on the legacy self path, byte for
-// byte.
-type PinnedPlacement struct {
-	// Stage is the task name the placement binds to.
-	Stage string `json:"stage"`
-	// Self marks a placement that resolved to the daemon/worker host: the
-	// stage executes through the existing InvokeGoober / RunDeterministic
-	// arms, exactly as before this field existed. The dispatcher models the
-	// same outcome as Local=true/no-pod, so self stays a first-class
-	// placement rather than a special case.
-	Self bool `json:"self,omitempty"`
-	// Queue is the per-(gaggle × runner-type) task queue the dispatch
-	// activity is routed onto (dispatcher.QueueName of the runner
-	// SelectRunner picks — D9). Empty inherits the workflow's queue.
-	Queue string `json:"queue,omitempty"`
-	// Eligible is the solver's eligible runner set for this stage, in
-	// inventory order — dispatch consumes eligibility, it never re-derives it
-	// (goobernetes-dispatcher.md §2).
-	Eligible []dispatcher.RunnerSpec `json:"eligible,omitempty"`
-	// LedgerTouching, CPU, Memory, Disk, and Restrictions are the
-	// dispatcher.Attempt requirement facts, carried from the run-start solve
-	// (runnersolve.StageRequirement) because the workflow cannot recompute
-	// them mid-run.
-	LedgerTouching bool     `json:"ledgerTouching,omitempty"`
-	CPU            string   `json:"cpu,omitempty"`
-	Memory         string   `json:"memory,omitempty"`
-	Disk           string   `json:"disk,omitempty"`
-	Restrictions   []string `json:"restrictions,omitempty"`
-}
+// RunInput at run start.
+//
+// The type itself now lives in internal/dispatcher (decision 003 ruling 2):
+// the daemon's runner pins the same list and hands one entry to DispatchOne,
+// so the contract belongs beside the eligible-runner set it carries rather
+// than inside the engine that used to be its only consumer. This ALIAS — not
+// a distinct named type — is what keeps every existing reference, every
+// recorded Temporal history, and every persisted RunInput identical: an alias
+// is the same type, so no conversion exists to get wrong.
+type PinnedPlacement = dispatcher.PinnedPlacement
 
 // remotePlacementFor returns the stage's pinned placement and whether it
 // routes to the dispatch activity. A stage with no pinned placement, or one
@@ -78,7 +57,7 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 	return PinnedPlacement{}, false
 }
 
-// dispatchStageInput is ActDispatchStage's activity input: the stage's fully
+// DispatchStageInput is ActDispatchStage's activity input: the stage's fully
 // built invocation envelope, the pinned placement facts, and — for a
 // deterministic task — the pinned DeterministicRun content the pod actually
 // executes (#3699). Pure data — the workflow resolves nothing at dispatch
@@ -87,7 +66,15 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // no new nondeterminism. Deliberately NOT added to apiv1.InvocationEnvelope
 // (the DSL/CRD-shared wire contract): this type is Temporal activity input
 // only, never DSL-visible.
-type dispatchStageInput struct {
+//
+// EXPORTED for decision 003 ruling 2: the daemon's runner builds one of these
+// per placed stage attempt and starts DispatchOne with it, so the shape has to
+// be nameable outside this package. The JSON TAGS ARE UNCHANGED by that
+// export and must stay so — they are recorded verbatim in the
+// ActivityTaskScheduled event of every history the engine has already
+// written, and an existing history must replay identically
+// (dispatchone_test.go's recorded-history fixture is the guard).
+type DispatchStageInput struct {
 	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
 	Placement PinnedPlacement          `json:"placement"`
 	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
@@ -155,7 +142,7 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	}, deltaOut)
@@ -179,7 +166,7 @@ type StageDispatcher interface {
 // No workspace is provisioned here, on purpose: the pod provisions its own
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
-func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput) (stageActivityResult, error) {
+func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
 	if a.Dispatcher == nil || a.Surrenders == nil {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
 	}
@@ -198,7 +185,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 	// placement check above already applies, and the activity boundary is
 	// where a version-skewed or hand-built input would actually surface.
 	// NOT re-asserted at this boundary, deliberately, unlike the guards below.
-	// dispatchStageInput carries no task type, so the activity cannot tell an
+	// DispatchStageInput carries no task type, so the activity cannot tell an
 	// agentic stage from a deterministic one whose Run it simply was not given
 	// — the pod reads its command from the spec the dispatcher already stamped.
 	// Inferring "Run == nil means agentic" would refuse legitimate inputs. The
@@ -395,7 +382,30 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		Mutations:      surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues: surrendered.MutationIssues,
 		WorkspaceDelta: surrendered.WorkspaceDelta,
+		Placement:      placementProvenance(report),
 	})
+}
+
+// placementProvenance lifts the dispatcher's report into the result's
+// provenance block (decision 003, "placement provenance in the dispatch
+// result"). It is built from the REPORT, never from the pinned placement the
+// activity was handed: the point of the block is to record what the substrate
+// did, so echoing the request back would make it evidence of nothing.
+//
+// A Local report yields nil — DispatchStage already refuses that case as a
+// pin/selection disagreement, and nil keeps "provenance present" equivalent to
+// "a pod ran this".
+func placementProvenance(report dispatcher.Report) *StagePlacement {
+	if report.Local {
+		return nil
+	}
+	return &StagePlacement{
+		Runner:       report.Runner,
+		Pod:          report.Pod,
+		Image:        report.Image,
+		QueuedAt:     report.QueuedAt,
+		PodStartedAt: report.PodStartedAt,
+	}
 }
 
 // declaresRepoCapability reports whether the stage already holds a repo-shaped

@@ -476,6 +476,14 @@ type Report struct {
 	Local bool
 	// Pod is the created pod's name ("" when Local).
 	Pod string
+	// Image is the image the stage container was created with ("" when Local
+	// or when the attempt failed before a pod was rendered). Read back off
+	// the RENDERED pod rather than off RunnerSpec.Host, because the two
+	// differ for a deployment-templated runner: Host is the Deployment name
+	// and the image comes from its pod template. Decision 009 makes the tag
+	// load-bearing (it IS the skew comparison), so the provenance has to name
+	// the image that actually ran.
+	Image string
 	// Phase is the pod's terminal phase.
 	Phase corev1.PodPhase
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
@@ -583,6 +591,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	if err != nil {
 		return report, err
 	}
+	// Stamped from the rendered spec BEFORE the create call, so a create
+	// failure still reports which image was about to run — that is exactly
+	// the case where an operator needs to know (a skew-passing tag whose pull
+	// or admission then fails).
+	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -635,6 +648,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
 	return report, nil
+}
+
+// stageContainerImage reads the stage container's image off a rendered pod.
+// Both render paths put the stage container FIRST — RenderPod builds the pod
+// with exactly one container, RenderFromTemplate takes the template's first
+// container as the stage container (DI-9) — so index 0 is the single rule that
+// covers both rather than a name lookup that would silently return "" for a
+// consumer template whose first container is not called "stage".
+func stageContainerImage(pod *corev1.Pod) string {
+	if pod == nil || len(pod.Spec.Containers) == 0 {
+		return ""
+	}
+	return pod.Spec.Containers[0].Image
 }
 
 // renderFor renders the fresh pod for the resolved runner's host kind:

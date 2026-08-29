@@ -90,7 +90,18 @@ type Activities struct {
 	Surrenders dispatcher.SurrenderPlane
 }
 
-type stageActivityResult struct {
+// DispatchStageResult is what a stage activity returns: the stage's own
+// result envelope plus the substrate facts the engine journals alongside it.
+//
+// EXPORTED for decision 003 ruling 2 (with stageActivityResult kept as an
+// alias below, so every in-package reference and every recorded history stay
+// identical): DispatchOne returns this to a caller outside the package — the
+// daemon's runner — which has to be able to name the type it decodes into.
+//
+// The JSON tags are a WIRE CONTRACT recorded in ActivityTaskCompleted events;
+// Placement is additive and omitempty, so a history written before it existed
+// decodes with a nil Placement rather than failing.
+type DispatchStageResult struct {
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
@@ -101,7 +112,49 @@ type stageActivityResult struct {
 	// pod-dispatched stage produces one; a self-placed stage needs none,
 	// because its commits are already on the shared run branch.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// Placement is where this attempt actually ran, when it ran in a pod.
+	// Nil for every in-process arm (InvokeGoober, RunDeterministic,
+	// ReviewGoober): those execute on the host that is already recorded, so a
+	// provenance block there would say nothing.
+	Placement *StagePlacement `json:"placement,omitempty"`
 }
+
+// StagePlacement is the substrate provenance of one pod-executed stage
+// attempt, lifted verbatim from dispatcher.Report.
+//
+// It exists because the driver that journals `runner.placement` is not the
+// process that created the pod: under decision 003 the daemon's runner drives
+// the run and the WORKER's dispatcher creates the pod, so without these fields
+// crossing back over the activity boundary the runner can only journal the
+// placement it ASKED for, never the one it got. §11 acceptance 6 wants the
+// second — which runner served the stage, which pod carried it, which image
+// that pod actually ran, and how long the attempt waited for capacity.
+//
+// Every field is omitzero: a Local (self) resolution never reaches here, and
+// an attempt that failed before its pod existed carries the runner name alone.
+type StagePlacement struct {
+	// Runner is the inventory entry SelectRunner resolved for the attempt.
+	Runner string `json:"runner,omitzero"`
+	// Pod is the created pod's name, empty when the attempt failed before
+	// the pod was created (capacity wait, skew refusal, kit publish).
+	Pod string `json:"pod,omitzero"`
+	// Image is the image the stage container actually ran — the decision-009
+	// skew subject, read back from the rendered pod rather than from the
+	// runner's declared host, so a deployment-templated runner reports the
+	// template's image and not the Deployment name.
+	Image string `json:"image,omitzero"`
+	// QueuedAt and PodStartedAt bound the attempt's wait for capacity:
+	// QueuedAt is stamped when the dispatcher accepted the attempt,
+	// PodStartedAt when the pod was created. PodStartedAt is zero for an
+	// attempt that never got a pod.
+	QueuedAt     time.Time `json:"queuedAt,omitzero"`
+	PodStartedAt time.Time `json:"podStartedAt,omitzero"`
+}
+
+// stageActivityResult is the in-package spelling of DispatchStageResult. An
+// ALIAS, not a definition: the export must not introduce a second type that
+// could drift from the one recorded in history.
+type stageActivityResult = DispatchStageResult
 
 type mutationFact struct {
 	Provider  string `json:"provider"`

@@ -83,8 +83,8 @@ func remoteEligible() []dispatcher.RunnerSpec {
 	}}
 }
 
-func dispatchInput(runID, stage string, attempt int) dispatchStageInput {
-	return dispatchStageInput{
+func dispatchInput(runID, stage string, attempt int) DispatchStageInput {
+	return DispatchStageInput{
 		Envelope: apiv1.InvocationEnvelope{
 			TaskID:     runID + ":" + stage,
 			WorkflowID: "wf",
@@ -310,7 +310,7 @@ func TestDispatchStageFailsClosed(t *testing.T) {
 	})
 }
 
-// #3699: the pod actually needs to know what to run. dispatchStageInput
+// #3699: the pod actually needs to know what to run. DispatchStageInput
 // carries the pinned DeterministicRun through to the activity, and
 // DispatchStage lands it on the dispatcher.Attempt the pod spec is rendered
 // from.
@@ -356,12 +356,12 @@ func TestDispatchStagePopulatesAttemptFromRun(t *testing.T) {
 // builtin command must never reach the dispatcher, because the in-pod
 // executor cannot honor any of them yet.
 func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
-	for name, mutate := range map[string]func(*dispatchStageInput){
+	for name, mutate := range map[string]func(*DispatchStageInput){
 		// repo and scratch are both provisioned in-pod now (pod-side checkout);
 		// what remains refused is a mode this substrate has never had, because
 		// running it as if it were scratch would hand the stage the wrong
 		// workspace silently.
-		"workspace mode the pod cannot provision": func(in *dispatchStageInput) {
+		"workspace mode the pod cannot provision": func(in *DispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceMode("shared-nfs")}
 		},
 		// Narrow, measured replacement for the blanket goobers-CLI refusal:
@@ -369,7 +369,7 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 		// definitions), which a stage pod does not have. Every other CLI stage
 		// this instance's workflows invoke reaches its repo and credential
 		// through the environment and now dispatches.
-		"goobers command reading the config dir": func(in *dispatchStageInput) {
+		"goobers command reading the config dir": func(in *DispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}, Workspace: apiv1.WorkspaceScratch}
 		},
 	} {
