@@ -2605,102 +2605,88 @@ a.telemetry-error-row:hover {
   background-size: 16px 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  min-height: 520px;
   overflow: hidden;
 }
 
 .gaggle-workflow-picker {
   background: color-mix(in srgb, var(--panel) 92%, transparent);
-  border-right: 1px solid var(--line);
-  padding: 18px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 18px;
 }
 
-.gaggle-workflow-picker > h3 {
+.gaggle-workflow-picker-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.gaggle-workflow-picker-heading > h3 {
   font-size: 11px;
   letter-spacing: 0.06em;
-  margin: 0 0 12px;
+  margin: 0;
   text-transform: uppercase;
 }
 
-.gaggle-workflow-list {
-  display: grid;
-  gap: 10px;
+.gaggle-workflow-picker-heading > p {
+  color: var(--muted);
+  font-size: 9px;
+  margin: 0;
+  text-align: right;
+}
+
+.gaggle-workflow-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  overflow-x: auto;
+  padding: 0 0 4px;
+  scrollbar-width: thin;
 }
 
 .gaggle-workflow-choice {
+  align-items: start;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
   display: grid;
-  overflow: hidden;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-width: 156px;
+  padding: 9px 11px;
+  text-align: left;
 }
 
 .gaggle-workflow-choice.is-selected {
   border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent);
 }
 
-.gaggle-workflow-select {
-  background: transparent;
-  border: 0;
-  color: var(--ink);
-  cursor: pointer;
-  display: grid;
-  gap: 6px;
-  padding: 14px;
-  text-align: left;
-}
-
-.gaggle-workflow-select:hover {
+.gaggle-workflow-choice:hover {
   background: var(--hover);
 }
 
-.gaggle-workflow-select:focus-visible {
+.gaggle-workflow-choice:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -3px;
+  outline-offset: 2px;
 }
 
-.gaggle-workflow-select > strong {
-  font-size: 13px;
+.gaggle-workflow-choice > strong {
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
-.gaggle-workflow-select > span:not(.status-badge) {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.gaggle-workflow-select > small {
+.gaggle-workflow-choice > small {
   color: var(--muted);
   font-size: 9px;
   overflow-wrap: anywhere;
 }
 
-.gaggle-workflow-select .status-badge {
+.gaggle-workflow-choice .status-badge {
   width: fit-content;
-}
-
-.gaggle-workflow-actions {
-  align-items: center;
-  border-top: 1px solid var(--line);
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  padding: 8px 14px;
-}
-
-.gaggle-workflow-actions > a {
-  color: var(--accent-ink);
-  font-size: 9px;
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.gaggle-workflow-actions > a:hover {
-  text-decoration: underline;
 }
 
 .gaggle-selected-workflow {
@@ -2727,78 +2713,35 @@ a.telemetry-error-row:hover {
   margin: 0;
 }
 
-.gaggle-selected-workflow > header > a {
-  color: var(--accent-ink);
+.gaggle-selected-workflow > header small {
+  color: var(--muted);
+  display: block;
+  font-size: 9px;
+  margin-top: 6px;
+}
+
+.gaggle-workflow-preview-actions {
+  align-items: flex-end;
+  display: grid;
   flex: none;
+  gap: 8px;
+  justify-items: end;
+}
+
+.gaggle-workflow-preview-actions > a {
+  color: var(--accent-ink);
   font-size: 10px;
   font-weight: 700;
 }
 
-.gaggle-workflow-definition {
-  align-items: start;
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
-}
-
-.gaggle-workflow-definition .workflow-graph-shell {
+.gaggle-workflow-preview .workflow-graph-shell {
   min-width: 0;
 }
 
-.gaggle-stage-summary {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  min-width: 0;
-  padding: 16px;
-}
-
-.gaggle-stage-summary h4 {
-  font-size: 16px;
-  margin: 3px 0 8px;
-  overflow-wrap: anywhere;
-}
-
-.gaggle-stage-summary > p:not(.section-kicker, .inline-empty) {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
-  margin: 0 0 14px;
-}
-
-.gaggle-stage-summary dl {
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 12px;
-  margin: 0;
-  padding-top: 12px;
-}
-
-.gaggle-stage-summary dl > div {
-  display: grid;
-  gap: 4px;
-}
-
-.gaggle-stage-summary dt {
-  color: var(--muted);
-  font-size: 8px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.gaggle-stage-summary dd {
-  font-size: 10px;
-  line-height: 1.45;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.gaggle-stage-summary ul {
-  display: grid;
-  gap: 4px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.workflow-graph-shell-preview .workflow-graph-viewport {
+  cursor: default;
+  min-height: 400px;
+  overflow: hidden;
 }
 
 .gaggle-workflow-error {
@@ -5839,21 +5782,13 @@ a.telemetry-error-row:hover {
 }
 
 @media (max-width: 940px) {
-  .gaggle-workflow-explorer {
-    grid-template-columns: minmax(0, 1fr);
+  .gaggle-workflow-picker-heading {
+    align-items: start;
+    display: grid;
   }
 
-  .gaggle-workflow-picker {
-    border-bottom: 1px solid var(--line);
-    border-right: 0;
-  }
-
-  .gaggle-workflow-list {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  }
-
-  .gaggle-workflow-definition {
-    grid-template-columns: minmax(0, 1fr);
+  .gaggle-workflow-picker-heading > p {
+    text-align: left;
   }
 
   .gaggle-workflow-topology {

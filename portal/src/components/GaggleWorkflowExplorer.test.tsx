@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient, fixtureKey } from "../api/fixtureClient";
@@ -10,7 +10,7 @@ import {
 } from "./GaggleWorkflowExplorer";
 
 describe("GaggleWorkflowExplorer", () => {
-  it("loads the selected workflow graph and inspects stages", async () => {
+  it("loads a fitted read-only graph preview that opens the full workflow", async () => {
     const fixtures = populatedDaemonFixtures();
     const workflows = fixtures.workflows?.core?.items;
     if (!workflows) {
@@ -26,25 +26,76 @@ describe("GaggleWorkflowExplorer", () => {
       />,
     );
 
+    const graph = await screen.findByRole("group", {
+      name: "implementation execution graph",
+    });
+    expect(graph).toHaveAttribute("data-preview", "true");
+    expect(graph).not.toHaveAttribute("tabindex");
     expect(
-      await screen.findByRole("group", { name: "implementation execution graph" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "query stage details" })).toHaveTextContent(
-      "Runtime",
-    );
-
-    await userEvent.click(
-      screen.getByRole("button", {
+      screen.getByRole("img", {
         name: /implement, agentic task, owned by core\/implementer, configured/i,
       }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Graph view controls" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /stage details/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Open full workflow",
+      }),
+    ).toHaveAttribute("href", "#/workflow/core/implementation");
+    expect(
+      screen.getByText(
+        "Definitions share this gaggle's resources, but do not imply an execution order.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("switches the selected independent workflow preview", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const workflows = fixtures.workflows?.core?.items;
+    const implementation = fixtures.workflowDetails?.[fixtureKey("core", "implementation")];
+    if (!workflows || !implementation) {
+      throw new Error("Core workflow fixtures are required.");
+    }
+    const curation = {
+      ...implementation,
+      identity: { gaggle: "core", name: "curation" },
+      displayName: "Backlog curation",
+      stageCount: implementation.stages.length,
+      definition: { ...implementation.definition, digest: "sha256:curation" },
+      graph: {
+        ...implementation.graph,
+        name: "curation",
+        digest: "sha256:curation",
+      },
+    };
+    const client = new FixtureDaemonClient(fixtures);
+    vi.spyOn(client, "getWorkflow").mockImplementation(async (_gaggle, workflow) =>
+      workflow === "curation" ? curation : implementation,
     );
 
-    const stage = screen.getByRole("region", {
-      name: "implement stage details",
-    });
-    expect(within(stage).getByText("Core product / implementer")).toBeInTheDocument();
-    expect(within(stage).getByText("repo:push")).toBeInTheDocument();
-    expect(within(stage).getByText("Next → review")).toBeInTheDocument();
+    render(
+      <GaggleWorkflowExplorer
+        client={client}
+        gaggleDisplayName="Core product"
+        runs={[]}
+        workflows={[
+          workflows[0],
+          workflowSummary("curation", "Backlog curation"),
+        ]}
+      />,
+    );
+
+    await screen.findByRole("group", { name: "implementation execution graph" });
+    await userEvent.click(screen.getByRole("tab", { name: /Backlog curation/ }));
+
+    expect(
+      await screen.findByRole("group", { name: "curation execution graph" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open full workflow" })).toHaveAttribute(
+      "href",
+      "#/workflow/core/curation",
+    );
   });
 
   it("retries a failed workflow definition request", async () => {
@@ -167,11 +218,7 @@ describe("WorkflowPicker", () => {
 
     expect(onSelect).toHaveBeenCalledWith("curation");
     expect(curation).toHaveFocus();
-    expect(
-      screen.getByRole("link", {
-        name: "Open workflow Backlog curation for gaggle Core product",
-      }),
-    ).toHaveAttribute("href", "#/workflow/core/curation");
+    expect(screen.getByText(/do not imply an execution order/i)).toBeInTheDocument();
   });
 });
 

@@ -1,11 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type {
   DaemonClient,
   RunSummary,
-  StageDefinition,
   WorkflowDetail,
-  WorkflowGraphEdge,
   WorkflowSummary,
 } from "../api/types";
 import { latestWorkflowOutcome } from "../operationalData";
@@ -133,10 +131,13 @@ export function WorkflowPicker({
 
   return (
     <div className="gaggle-workflow-picker">
-      <h3>Workflows</h3>
+      <div className="gaggle-workflow-picker-heading">
+        <h3>Independent workflows</h3>
+        <p>Definitions share this gaggle's resources, but do not imply an execution order.</p>
+      </div>
       <div
         aria-label={`${gaggleDisplayName} workflows`}
-        className="gaggle-workflow-list"
+        className="gaggle-workflow-tabs"
         role="tablist"
       >
         {workflows.map((workflow, index) => {
@@ -147,55 +148,31 @@ export function WorkflowPicker({
             workflow.identity.name,
           );
           return (
-            <div
+            <button
+              aria-controls="gaggle-selected-workflow"
+              aria-selected={selected}
               className={`gaggle-workflow-choice${selected ? " is-selected" : ""}`}
               key={workflow.identity.name}
+              onClick={() => onSelect(workflow.identity.name)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
+              ref={(element) => {
+                tabRefs.current[index] = element;
+              }}
+              role="tab"
+              tabIndex={selected ? 0 : -1}
+              type="button"
             >
-              <button
-                aria-controls="gaggle-selected-workflow"
-                aria-selected={selected}
-                className="gaggle-workflow-select"
-                onClick={() => onSelect(workflow.identity.name)}
-                onKeyDown={(event) => onTabKeyDown(event, index)}
-                ref={(element) => {
-                  tabRefs.current[index] = element;
-                }}
-                role="tab"
-                tabIndex={selected ? 0 : -1}
-                type="button"
-              >
-                <strong>{workflow.displayName}</strong>
-                <span>{workflow.purpose}</span>
-                <small>
-                  {workflow.stageCount} {workflow.stageCount === 1 ? "stage" : "stages"} ·{" "}
-                  {formatTriggers(workflow)}
-                </small>
-                {latestOutcome ? (
-                  <StatusBadge status={latestOutcome.phase} />
-                ) : (
-                  <span className="gaggle-workflow-no-runs">No recorded runs</span>
-                )}
-              </button>
-              <div className="gaggle-workflow-actions">
-                <a
-                  aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
-                  href={routeHash({
-                    page: "workflow",
-                    gaggle: workflow.identity.gaggle,
-                    id: workflow.identity.name,
-                  })}
-                >
-                  View details
-                </a>
-                <ScopePivot
-                  label={`${gaggleDisplayName} / ${workflow.displayName}`}
-                  scope={{
-                    gaggle: workflow.identity.gaggle,
-                    workflow: workflow.identity.name,
-                  }}
-                />
-              </div>
-            </div>
+              <strong>{workflow.displayName}</strong>
+              <small>
+                {workflow.stageCount} {workflow.stageCount === 1 ? "stage" : "stages"} ·{" "}
+                {formatTriggers(workflow)}
+              </small>
+              {latestOutcome ? (
+                <StatusBadge status={latestOutcome.phase} />
+              ) : (
+                <span className="gaggle-workflow-no-runs">No runs</span>
+              )}
+            </button>
           );
         })}
       </div>
@@ -214,14 +191,6 @@ function SelectedWorkflow({
 }) {
   const [retryKey, setRetryKey] = useState(0);
   const state = useWorkflowDefinition(client, summary, retryKey);
-  const [selectedStageID, setSelectedStageID] = useState("");
-  const activeStageID =
-    state.status === "ready" &&
-    state.detail.graph.nodes.some(({ id }) => id === selectedStageID)
-      ? selectedStageID
-      : state.status === "ready"
-        ? state.detail.graph.start
-        : "";
 
   return (
     <section
@@ -232,19 +201,32 @@ function SelectedWorkflow({
     >
       <header>
         <div>
-          <p className="section-kicker">Selected workflow</p>
+          <p className="section-kicker">Workflow preview</p>
           <h3>{summary.displayName}</h3>
-          <p>{summary.purpose}</p>
+          <p>{summary.purpose || "No purpose is documented for this workflow."}</p>
+          <small>
+            {summary.stageCount} {summary.stageCount === 1 ? "stage" : "stages"} ·{" "}
+            {formatTriggers(summary)}
+          </small>
         </div>
-        <a
-          href={routeHash({
-            page: "workflow",
-            gaggle: summary.identity.gaggle,
-            id: summary.identity.name,
-          })}
-        >
-          Open full workflow
-        </a>
+        <div className="gaggle-workflow-preview-actions">
+          <a
+            href={routeHash({
+              page: "workflow",
+              gaggle: summary.identity.gaggle,
+              id: summary.identity.name,
+            })}
+          >
+            Open full workflow
+          </a>
+          <ScopePivot
+            label={`${gaggleDisplayName} / ${summary.displayName}`}
+            scope={{
+              gaggle: summary.identity.gaggle,
+              workflow: summary.identity.name,
+            }}
+          />
+        </div>
       </header>
 
       {state.status === "loading" && (
@@ -264,81 +246,11 @@ function SelectedWorkflow({
         </div>
       )}
       {state.status === "ready" && (
-        <div className="gaggle-workflow-definition">
-          <WorkflowTopologyGraph
-            graph={state.detail.graph}
-            onSelectStage={setSelectedStageID}
-            selectedStageId={activeStageID}
-          />
-          <WorkflowStageSummary
-            detail={state.detail}
-            gaggleDisplayName={gaggleDisplayName}
-            selectedStageID={activeStageID}
-          />
+        <div className="gaggle-workflow-preview">
+          <WorkflowTopologyGraph graph={state.detail.graph} preview />
         </div>
       )}
     </section>
-  );
-}
-
-export function WorkflowStageSummary({
-  detail,
-  gaggleDisplayName,
-  selectedStageID,
-}: {
-  detail: WorkflowDetail;
-  gaggleDisplayName: string;
-  selectedStageID: string;
-}) {
-  const stage = detail.stages.find(({ name }) => name === selectedStageID);
-  const node = detail.graph.nodes.find(({ id }) => id === selectedStageID);
-  const transitions = useMemo(
-    () => detail.graph.edges.filter(({ source }) => source === selectedStageID),
-    [detail.graph.edges, selectedStageID],
-  );
-
-  if (!stage || !node) {
-    return (
-      <aside className="gaggle-stage-summary">
-        <p className="inline-empty">Select a stage to inspect it.</p>
-      </aside>
-    );
-  }
-
-  return (
-    <aside
-      aria-label={`${stage.name} stage details`}
-      className="gaggle-stage-summary"
-      role="region"
-    >
-      <p className="section-kicker">{stageKind(stage)}</p>
-      <h4>{stage.name}</h4>
-      <p>{stage.goal || "No goal is documented for this stage."}</p>
-      <dl>
-        <div>
-          <dt>Owner</dt>
-          <dd>{stageOwner(stage, gaggleDisplayName)}</dd>
-        </div>
-        <div>
-          <dt>Next</dt>
-          <dd>
-            {transitions.length === 0 ? (
-              "No outgoing transition"
-            ) : (
-              <ul>
-                {transitions.map((edge, index) => (
-                  <li key={transitionKey(edge, index)}>{transitionLabel(edge)}</li>
-                ))}
-              </ul>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt>Capabilities</dt>
-          <dd>{stage.capabilities.length > 0 ? stage.capabilities.join(", ") : "None"}</dd>
-        </div>
-      </dl>
-    </aside>
   );
 }
 
@@ -402,37 +314,4 @@ function useWorkflowDefinition(
   ]);
 
   return state;
-}
-
-function stageKind(stage: StageDefinition): string {
-  if (stage.kind === "gate") {
-    return `${stage.evaluator || "Configured"} gate`;
-  }
-  if (stage.kind === "parallel") {
-    return "Parallel fan-out";
-  }
-  return `${stage.kind} stage`;
-}
-
-function stageOwner(stage: StageDefinition, gaggleDisplayName: string): string {
-  if (stage.owner) {
-    return `${gaggleDisplayName} / ${stage.owner.name}`;
-  }
-  return stage.evaluator ? `${stage.evaluator} evaluator` : "Runtime";
-}
-
-function transitionKey(edge: WorkflowGraphEdge, index: number): string {
-  return `${edge.source}:${edge.outcome ?? "next"}:${edge.target}:${edge.terminal ?? ""}:${index}`;
-}
-
-function transitionLabel(edge: WorkflowGraphEdge): string {
-  const condition = edge.branch
-    ? `Branch ${edge.branch}`
-    : edge.outcome
-      ? edge.outcome
-      : "Next";
-  const target = edge.terminal
-    ? `${edge.terminal.charAt(0).toUpperCase()}${edge.terminal.slice(1)}`
-    : edge.target;
-  return `${condition} → ${target}`;
 }
