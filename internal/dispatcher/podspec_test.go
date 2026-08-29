@@ -1,8 +1,10 @@
 package dispatcher
 
 import (
+	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -793,5 +796,275 @@ func TestPodSpecAlwaysPullsTheStageImage(t *testing.T) {
 	if got := pod.Spec.Containers[0].ImagePullPolicy; got != corev1.PullAlways {
 		t.Fatalf("ImagePullPolicy = %q, want %q — a mutable tag under IfNotPresent lets a node serve stale content that the skew check cannot see",
 			got, corev1.PullAlways)
+	}
+}
+
+// envDenyRunner is linuxRunner plus the restriction this file now binds to an
+// environment stamp rather than to a volume or a security context.
+func envDenyRunner() RunnerSpec {
+	runner := linuxRunner()
+	runner.Restrictions = append(runner.Restrictions, string(runnercap.RestrictionEnvDefaultDeny))
+	return runner
+}
+
+func testDeployment() *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "consumer-template"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "stage",
+						Image: "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+					}},
+				},
+			},
+		},
+	}
+}
+
+func podEnv(pod *corev1.Pod) map[string]string {
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	return env
+}
+
+// #3725: env:default-deny was a fully-wired declaration, validation, placement
+// and NetworkPolicy-labeling token with NO enforcement over a pod's
+// environment. The dispatcher is where the restriction becomes real, because
+// the pod must be TOLD it is under the restriction — a stage that self-reported
+// it could turn its own isolation off.
+//
+// Derived from the RUNNER's enforced set, the same source stampVolumes and
+// stampSecurity read: a stage placed on a restricted class gets that class's
+// posture whether or not it asked for it, which is the case the issue was filed
+// about (cli-stage-probe landed on linux-shell-strict and "worked because the
+// restriction is unimplemented").
+func TestStagePodStampsEnvDefaultDenyFromTheRunnerClass(t *testing.T) {
+	attempt := testAttempt()
+	attempt.Env = map[string]string{"DECLARED_STAGE_VAR": "from-the-workflow"}
+	attempt.Inputs = map[string]string{"probe": "declared-input"}
+	attempt.RunContext = map[string]string{executorRepoNameEnv: "Goobers"}
+	cfg := testConfig()
+	cfg.EnvPassthrough = []string{"OPERATOR_DECLARED_VAR"}
+
+	pod, err := RenderPod(cfg, attempt, envDenyRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := podEnv(pod)
+	if env[EnvStageEnvDefaultDeny] != "true" {
+		t.Fatalf("%s = %q, want \"true\" on a class enforcing env:default-deny", EnvStageEnvDefaultDeny, env[EnvStageEnvDefaultDeny])
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s (%q): %v", EnvStageEnvAllow, env[EnvStageEnvAllow], err)
+	}
+	// Everything the DISPATCHER stamped for the stage. In a pod these arrive as
+	// ordinary container variables, indistinguishable from the image's own, so
+	// procenv's allowlist alone would drop the stage's declared env and inputs.
+	for _, want := range []string{"DECLARED_STAGE_VAR", InputEnvVar("probe"), executorRepoNameEnv, "OPERATOR_DECLARED_VAR"} {
+		if !slices.Contains(allow, want) {
+			t.Fatalf("%s = %v, missing %q", EnvStageEnvAllow, allow, want)
+		}
+	}
+	// NEVER by name. Resolved credentials do not pass through the filter at
+	// all — they are minted in-pod and appended after it — so naming them here
+	// would be an allowlist entry that looks load-bearing and is not, plus a
+	// grant to any image-baked GOOBERS_CRED_*.
+	for _, name := range allow {
+		if strings.HasPrefix(name, "GOOBERS_CRED_") {
+			t.Fatalf("%s must never name a credential variable, found %q (#3725)", EnvStageEnvAllow, name)
+		}
+	}
+}
+
+// Additive only: a class that does not enforce env:default-deny renders exactly
+// the pod spec it rendered before this existed.
+func TestStagePodOmitsEnvDefaultDenyStampWithoutTheRestriction(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := podEnv(pod)
+	for _, name := range []string{EnvStageEnvDefaultDeny, EnvStageEnvAllow} {
+		if _, present := env[name]; present {
+			t.Fatalf("%s must not be stamped for a class that does not enforce env:default-deny", name)
+		}
+	}
+}
+
+// The template path (DI-9) renders the same stage container, so it must carry
+// the same restriction binding — a consumer-authored Deployment template must
+// not be a way to run on a restricted class without the restriction.
+func TestTemplateStagePodStampsEnvDefaultDeny(t *testing.T) {
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), envDenyRunner(), testDeployment())
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	if podEnv(pod)[EnvStageEnvDefaultDeny] != "true" {
+		t.Fatalf("the template path must bind env:default-deny too, env = %v", podEnv(pod))
+	}
+}
+
+// The signal is authority, not identity: a goobers-CLI stage keeps the run
+// identity half of the control plane and must STILL not see this.
+func TestEnvDefaultDenySignalIsPrivileged(t *testing.T) {
+	for _, name := range []string{EnvStageEnvDefaultDeny, EnvStageEnvAllow} {
+		if !slices.Contains(DispatcherPrivilegedEnv, name) {
+			t.Fatalf("%s must be privileged: a stage that can rewrite it disables its own isolation", name)
+		}
+		if slices.Contains(DispatcherRunIdentityEnv, name) {
+			t.Fatalf("%s is authority, not run identity", name)
+		}
+	}
+}
+
+// The run's operational identity is stamped in stageEnv's own base block, not
+// from attempt.Env/Inputs/RunContext — so the first cut of the allowlist did
+// not name it, and the in-pod rebuild (which runs BEFORE the CLI/non-CLI strip)
+// deleted GOOBERS_RUN_ID/GAGGLE/WORKFLOW/STAGE/ATTEMPT for every stage on a
+// declaring class, goobers-CLI stages included.
+//
+// That is #3725's own failure shape one seam over: providerRunContext() fails
+// closed with "GOOBERS_RUN_ID is not set — this subcommand must run as a
+// workflow stage", and providers.BranchName cannot compose the run branch, on
+// one runner class and not another.
+func TestEnvDefaultDenyAllowlistCarriesTheRunIdentityACLIStageKeeps(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), envDenyRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(podEnv(pod)[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	for _, want := range []string{EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt} {
+		if !slices.Contains(allow, want) {
+			t.Fatalf("%s = %v, missing %q — a goobers-CLI stage keeps its run identity by design, and the "+
+				"in-pod rebuild runs BEFORE the CLI/non-CLI split, so a name missing here is gone before the "+
+				"split can keep it (#3725)", EnvStageEnvAllow, allow, want)
+		}
+	}
+}
+
+// The general form of the bug above, and the durable guard: stageEnvAllowlist
+// enumerates its sources BY HAND while stageEnv stamps from ~15 sites, and the
+// two lists have no mechanical relationship. Every name the dispatcher stamps
+// on a stage container must land in exactly one of three places —
+//
+//  1. the allowlist          → re-admitted by the in-pod rebuild,
+//  2. THIS STAGE's strip set → deliberately removed in the pod,
+//  3. procenv's own base     → carried by the floor every stage gets,
+//
+// — or it is DELETED for a stage on a declaring class and PRESENT for the same
+// stage on every other class. That is restriction-conditional breakage
+// diagnosed at the far side, which is the shape #3725 itself was filed about.
+//
+// "THIS STAGE's strip set" is the load-bearing phrase, and the first cut of
+// this test got it wrong. The strip is not one set: stageEnvironment() removes
+// DispatcherControlEnv from an ordinary stage and only DispatcherPrivilegedEnv
+// from a goobers-CLI stage. Checking every stage against the wider set ACCEPTS
+// the run-identity gap the test above catches — those names are in
+// DispatcherControlEnv, and a CLI stage is nonetheless supposed to receive
+// them. So the invariant runs per stage class, against the set that class
+// actually loses.
+//
+// Populated with every Attempt field that reaches stageEnv, so the next
+// dispatcher-stamped stage-visible variable fails here rather than in a pod.
+func TestEveryStampedStageVarIsAllowlistedOrStrippedOrProcenvBase(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cliStage bool
+		stripped []string
+	}{
+		{"goobers-CLI stage", true, DispatcherPrivilegedEnv},
+		{"ordinary stage", false, DispatcherControlEnv},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := testAttempt()
+			attempt.Command = []string{"sh", "-c", "true"}
+			attempt.Env = map[string]string{"DECLARED_STAGE_VAR": "from-the-workflow"}
+			attempt.Inputs = map[string]string{"probe": "declared-input"}
+			attempt.RunContext = map[string]string{
+				executorRepoNameEnv:        "Goobers",
+				executorRepoOwnerEnv:       "Agent-Clubhouse",
+				executorBranchNamespaceEnv: "goobers",
+			}
+			attempt.CLIStage = tc.cliStage
+			attempt.Workspace = "repo"
+			attempt.KitDigest = "sha256:0123456789abcdef"
+			attempt.CheckoutCapability = "provider:contents:read"
+			attempt.WorkspaceDelta = "sha256:fedcba9876543210"
+			attempt.Capabilities = []string{"provider:pr:write"}
+			cfg := testConfig()
+			cfg.EnvPassthrough = []string{"OPERATOR_DECLARED_VAR"}
+
+			pod, err := RenderPod(cfg, attempt, envDenyRunner())
+			if err != nil {
+				t.Fatalf("RenderPod: %v", err)
+			}
+			var allow []string
+			if err := json.Unmarshal([]byte(podEnv(pod)[EnvStageEnvAllow]), &allow); err != nil {
+				t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+			}
+
+			var orphans []string
+			for _, e := range pod.Spec.Containers[0].Env {
+				switch {
+				case slices.Contains(allow, e.Name):
+				case slices.Contains(tc.stripped, e.Name):
+				case slices.Contains(procenv.Vars, e.Name):
+				default:
+					carried := false
+					for _, prefix := range procenv.Prefixes {
+						if strings.HasPrefix(e.Name, prefix) {
+							carried = true
+							break
+						}
+					}
+					if !carried {
+						orphans = append(orphans, e.Name)
+					}
+				}
+			}
+			if len(orphans) > 0 {
+				t.Fatalf("the dispatcher stamps %v on a stage container, and env:default-deny neither allowlists "+
+					"nor strips them for this stage class: they are silently DELETED on a class enforcing the "+
+					"restriction and present everywhere else. Add each to stageEnvAllowlist (stage-visible) or "+
+					"to DispatcherPrivilegedEnv (never stage-visible) — #3725", orphans)
+			}
+		})
+	}
+}
+
+// A DI-9 consumer template owns the stage container's ambient contract as well
+// as its sidecars and volumes. Those names arrive in the pod as ordinary
+// container variables, so without the allowlist carrying them the in-pod
+// rebuild drops exactly the vars the consumer declared — present on an
+// unrestricted class, silently gone on a restricted one.
+func TestTemplateDeclaredContainerEnvIsAllowlistedUnderEnvDefaultDeny(t *testing.T) {
+	deployment := testDeployment()
+	deployment.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "TEMPLATE_DECLARED_VAR", Value: "from-the-consumer-deployment"},
+	}
+
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), envDenyRunner(), deployment)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	env := podEnv(pod)
+	if env["TEMPLATE_DECLARED_VAR"] == "" {
+		t.Fatalf("the template's own container env must survive rendering, env = %v", env)
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	if !slices.Contains(allow, "TEMPLATE_DECLARED_VAR") {
+		t.Fatalf("%s = %v omits TEMPLATE_DECLARED_VAR — the in-pod rebuild will drop the var the consumer "+
+			"Deployment declared, on a restricted class only (#3725)", EnvStageEnvAllow, allow)
 	}
 }
