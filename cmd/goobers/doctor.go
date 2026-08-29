@@ -60,10 +60,14 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"scan holding a handle on a just-written file surfaces minutes later as an\n" +
 	"unrelated git \"Permission denied\" (#3480, #3161–#3164). The list is\n" +
 	"derived from the same path code the daemon (instance root, run journals,\n" +
-	"scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root\n" +
-	"and its workcopies/scratch subtrees) and a Windows stage pod (C:\\workspace,\n" +
-	"the tmp:ephemeral TEMP, the container user's profile) actually use, so it\n" +
-	"cannot drift from what the binary writes. On a Windows host it also reads\n" +
+	"scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root,\n" +
+	"which applies to this mode only, and its workcopies/scratch subtrees) and\n" +
+	"a Windows stage pod (C:\\workspace, the tmp:ephemeral TEMP, the container\n" +
+	"user's profile) actually use, so it cannot drift from what the binary\n" +
+	"writes. Each gaggle's own spec.workcopies.root is enumerated separately,\n" +
+	"since it beats the instance-wide one and may name any drive; when config/\n" +
+	"cannot be read, that is reported rather than passed off as no gaggles.\n" +
+	"On a Windows host it also reads\n" +
 	"Microsoft Defender's exclusion list (Get-MpPreference, read-only) and\n" +
 	"reports each directory as excluded, not-excluded, or unknown; elsewhere\n" +
 	"it lists the set and reports unknown. ADVISORY: exit 0 whatever the\n" +
@@ -135,6 +139,21 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	if modes != 1 {
 		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
+		fs.Usage()
+		return 2
+	}
+	// --work-root belongs to --av-exclusions alone. Parsing it and quietly
+	// ignoring it in the other two modes would let an operator believe they
+	// had scoped a check they had not, which is the same class of silent
+	// mis-report the mode exclusivity above exists to prevent.
+	workRootSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "work-root" {
+			workRootSet = true
+		}
+	})
+	if workRootSet && !*avMode {
+		pf(stderr, "goobers doctor: --work-root applies to --av-exclusions only\n\n")
 		fs.Usage()
 		return 2
 	}

@@ -183,6 +183,19 @@ const (
 	// unrelated git "Permission denied" (#3161–#3164), not a wrong result.
 	// `goobers doctor --av-exclusions` on the runner's host or image
 	// produces the answer to declare.
+	//
+	// STRICT-NEUTRAL, like DVL020 and unlike every other config-shape
+	// finding (DI-10's general rule): `goobers validate --strict` does not
+	// promote it. Two reasons, both specific to this code. First, it is a
+	// new warning that lands on configs nobody edited, so promoting it
+	// would turn every existing --strict pipeline with a Windows runner red
+	// on upgrade — the same "a nudge must not break a green pipeline"
+	// property DVL020 was carved out for. Second, and decisive: declaring
+	// `avExclusionsVerified: false` does NOT silence it, so the only way to
+	// get green under --strict is to declare `true`. That would put an
+	// operator under CI pressure to assert a trusted claim they have not
+	// earned, and a trusted-claim surface that rewards lying is worse than
+	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the

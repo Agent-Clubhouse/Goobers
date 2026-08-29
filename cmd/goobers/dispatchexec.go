@@ -86,9 +86,10 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// excluded from real-time scanning — the far-side evidence for the
 	// advisory, readable with `kubectl logs` after the fact. Printed before
 	// the stage so it precedes any git error the race would otherwise
-	// surface as. Advisory: bounded by avexclusion.DefenderQueryTimeout,
-	// never fails the stage, silent off Windows.
-	if line := stagePodAVExclusionAdvisory(ctx, realAVExclusionDeps(), os.Getwd, os.Getenv); line != "" {
+	// surface as. Advisory: bounded by avexclusion.StagePodQueryTimeout (the
+	// pod pays this probe on every stage attempt, so its bound is tighter
+	// than the daemon's), never fails the stage, silent off Windows.
+	if line := stagePodAVExclusionAdvisory(ctx, realStagePodAVExclusionDeps(), os.Getwd, os.Getenv); line != "" {
 		pf(stderr, "dispatch-exec: %s\n", line)
 	}
 

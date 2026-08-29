@@ -10,8 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/avexclusion"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workerhost"
 )
 
 // avExclusionInstanceYAML declares one windows runner with the claim and one
@@ -48,6 +53,186 @@ func writeAVExclusionInstance(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+// writeAVExclusionGaggle adds a config/ directory declaring one gaggle whose
+// spec.workcopies.root points OUTSIDE the instance root — the override that
+// beats the instance-wide one and that the daemon resolves per gaggle.
+func writeAVExclusionGaggle(t *testing.T, root, gaggle, workcopiesRoot string) {
+	t.Helper()
+	dir := filepath.Join(root, "config", "gaggles", gaggle)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: av-exclusions
+spec:
+  instance:
+    name: av-exclusions
+    environment: dev
+  connections:
+    - name: repo-token
+      type: repo
+      provider: github
+      secretRef:
+        name: repo-token
+  gaggles:
+    - ` + gaggle + "\n"
+	if err := os.WriteFile(filepath.Join(root, "config", "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	def := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: ` + gaggle + `
+spec:
+  displayName: Builders
+  project:
+    provider: github
+    owner: example
+    name: repo
+    branch: main
+    connectionRef: repo-token
+  backlog:
+    provider: github
+    project: example/repo
+    labels:
+      - goobers
+    connectionRef: repo-token
+  workcopies:
+    root: ` + workcopiesRoot + `
+  isolation:
+    namespace: gaggle-` + gaggle + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(def), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDoctorAVExclusionsEnumeratesGaggleWorkcopiesRoots is the hole a
+// gaggle-level workcopies.root left open. That override wins over the
+// instance-wide one, the daemon resolves it per gaggle, and the directory it
+// names holds that gaggle's git mirrors and per-run worktrees — the exact
+// write-then-read hot spot #3161–#3164 describes. Enumerated only from
+// instance.yaml, the doctor listed it nowhere and the advisory reported an
+// affirmative all-clear over a directory it had never looked at.
+func TestDoctorAVExclusionsEnumeratesGaggleWorkcopiesRoots(t *testing.T) {
+	root := writeAVExclusionInstance(t)
+	fastSSD := filepath.Join(t.TempDir(), "fast-ssd")
+	writeAVExclusionGaggle(t, root, "builders", fastSSD)
+	relocated := filepath.Join(fastSSD, "builders")
+
+	deps := avExclusionDeps{
+		hostOS:  "windows",
+		tempDir: filepath.Join(root, "tmp"),
+		// An operator who excluded everything the previous list named.
+		query: func(context.Context) ([]string, error) {
+			return []string{root, filepath.Join(root, "tmp")}, nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runDoctorAVExclusions(root, filepath.Join(root, "worker"), "json", &stdout, &stderr, deps); code != 0 {
+		t.Fatalf("code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	var report doctorAVExclusionsReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode json report: %v\n%s", err, stdout.String())
+	}
+	var finding *avexclusion.Finding
+	for i := range report.Findings {
+		if report.Findings[i].Path == relocated {
+			finding = &report.Findings[i]
+		}
+	}
+	if finding == nil {
+		t.Fatalf("gaggle workcopies root %s missing from the report:\n%s", relocated, stdout.String())
+	}
+	if finding.Coverage != avexclusion.CoverageNotExcluded {
+		t.Errorf("relocated gaggle root coverage = %q, want %q", finding.Coverage, avexclusion.CoverageNotExcluded)
+	}
+	if !strings.Contains(finding.Purpose, "builders") {
+		t.Errorf("finding %+v does not name the gaggle it belongs to", *finding)
+	}
+	// The advisory the daemon prints must not call this covered.
+	if line := avexclusion.Summary("daemon", report.Report); !strings.Contains(line, relocated) ||
+		strings.Contains(line, "every enumerated directory is covered") {
+		t.Errorf("summary must name the uncovered gaggle root, got %q", line)
+	}
+
+	// The text report names it too, so an operator feeding their tooling
+	// from `doctor` gets the path.
+	stdout.Reset()
+	if code := runDoctorAVExclusions(root, filepath.Join(root, "worker"), "text", &stdout, &stderr, deps); code != 0 {
+		t.Fatalf("text code = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "NOT-EXCLUDED  daemon       "+relocated) {
+		t.Errorf("text report missing the relocated gaggle root:\n%s", stdout.String())
+	}
+}
+
+// TestDaemonAVExclusionDirectoriesResolveBothWorkcopiesOverrides pins the
+// derivation `goobers up`'s startup advisory and `goobers doctor` share: a
+// gaggle's own workcopies.root BEATS the instance-wide one (the daemon
+// resolves it that way per gaggle when it builds each worktree.Manager), so
+// both roots must appear, each as its own entry.
+func TestDaemonAVExclusionDirectoriesResolveBothWorkcopiesOverrides(t *testing.T) {
+	root := t.TempDir()
+	instanceWide := filepath.Join(t.TempDir(), "shared-wc")
+	gaggleRoot := filepath.Join(t.TempDir(), "fast-ssd")
+
+	layout := instance.NewLayout(root)
+	cfg := &instance.Config{Workcopies: &instance.WorkcopiesConfig{Root: instanceWide}}
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "builders"},
+			Spec:       apiv1.GaggleSpec{Workcopies: &apiv1.GaggleWorkcopies{Root: gaggleRoot}},
+		},
+		{ObjectMeta: metav1.ObjectMeta{Name: "inherits"}},
+	}}
+
+	dirs := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, set, avExclusionDeps{tempDir: filepath.Join(root, "tmp")}))
+	paths := map[string]string{}
+	for _, d := range dirs {
+		paths[d.Path] = d.Purpose
+	}
+	// The gaggle keeps its own segment under the override, so two gaggles
+	// cannot share mutable worktrees.
+	if _, ok := paths[filepath.Join(gaggleRoot, "builders")]; !ok {
+		t.Errorf("gaggle-level workcopies.root missing from %v", dirs)
+	}
+	// The instance-wide override still stands for the gaggle that inherits.
+	if _, ok := paths[filepath.Join(instanceWide, "inherits")]; !ok {
+		t.Errorf("instance-wide workcopies.root missing for the inheriting gaggle: %v", dirs)
+	}
+	// With no config set the per-gaggle entries are simply absent — the
+	// caller is responsible for saying so, and both do.
+	without := avexclusion.Dedupe(daemonAVExclusionDirectories(layout, cfg, nil, avExclusionDeps{tempDir: filepath.Join(root, "tmp")}))
+	if len(without) >= len(dirs) {
+		t.Errorf("nil config set produced %d entries, want fewer than %d", len(without), len(dirs))
+	}
+}
+
+// TestDoctorAVExclusionsSaysWhenGagglesCouldNotBeEnumerated: a config
+// directory that will not load must never pass silently for "no gaggles" —
+// that is the same false all-clear, one level up.
+func TestDoctorAVExclusionsSaysWhenGagglesCouldNotBeEnumerated(t *testing.T) {
+	root := writeAVExclusionInstance(t)
+	if err := os.MkdirAll(filepath.Join(root, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "manifest.yaml"), []byte(":\n\tnot yaml at all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps := avExclusionDeps{hostOS: "darwin", tempDir: filepath.Join(root, "tmp")}
+	var stdout, stderr bytes.Buffer
+	if code := runDoctorAVExclusions(root, filepath.Join(root, "worker"), "text", &stdout, &stderr, deps); code != 0 {
+		t.Fatalf("code = %d, want 0 (advisory); stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "per-gaggle workcopies roots are NOT enumerated") {
+		t.Errorf("an unloadable config directory must be reported, got stderr=%q", stderr.String())
+	}
 }
 
 // TestDoctorAVExclusionsWindowsReport is the verification half on a Windows
@@ -201,6 +386,21 @@ func TestDoctorAVExclusionsUsage(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout, `"findings"`) {
 		t.Errorf("code = %d, stdout = %q; want a JSON report and exit 0 on any host", code, stdout)
 	}
+	// --work-root scopes --av-exclusions alone. Parsed and ignored in the
+	// other modes it would let an operator believe they had scoped a check
+	// they had not.
+	for _, args := range [][]string{
+		{"doctor", "--k8s", "--work-root", t.TempDir()},
+		{"doctor", "--repo", "--work-root", t.TempDir()},
+	} {
+		code, _, stderr := runArgs(t, args...)
+		if code != 2 || !strings.Contains(stderr, "--work-root applies to --av-exclusions only") {
+			t.Errorf("%v: code = %d, stderr = %q; want a usage error", args, code, stderr)
+		}
+	}
+	if code, _, stderr := runArgs(t, "doctor", "--av-exclusions", "--work-root", t.TempDir(), t.TempDir()); code != 0 {
+		t.Errorf("--work-root with --av-exclusions: code = %d, want 0; stderr=%q", code, stderr)
+	}
 }
 
 // TestStagePodAVExclusionAdvisory is the pod-entrypoint line: derived from
@@ -258,19 +458,45 @@ func TestStagePodAVExclusionAdvisory(t *testing.T) {
 	}
 }
 
-// TestWorkerAVExclusionDirectoriesFollowTheProvisioner: the worker's set is
-// resolved through the same helpers workerEngineDepsForPlatform provisions
-// with, so a renamed subtree cannot leave the advisory naming a stale path.
+// TestWorkerAVExclusionDirectoriesFollowTheProvisioner: the advisory's
+// worker set is the set workerEngineDepsForPlatform ACTUALLY provisions.
+//
+// The assertion is deliberately made against the runtime the provisioner
+// returns — the worktree manager's own root and the workspace
+// provisioner's own scratch directory — rather than against
+// workerWorkcopiesDir/workerScratchDir, which are the helpers the function
+// under test calls. Asserting against those would be tautological: it
+// cannot fail, and it would stay green if the provisioner were re-pointed
+// at a literal path, which is exactly the drift the advisory must not have.
 func TestWorkerAVExclusionDirectoriesFollowTheProvisioner(t *testing.T) {
 	workRoot := t.TempDir()
-	dirs := workerAVExclusionDirectories(workRoot, avExclusionDeps{tempDir: filepath.Join(workRoot, "tmp")})
+	runtimeDeps, err := workerEngineDepsForPlatform(workRoot, "linux", "test-owner")
+	if err != nil {
+		t.Fatalf("provision worker engine deps: %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeDeps.Close() })
+
+	provisioned, ok := runtimeDeps.deps.Workspaces.(*workerhost.WorktreeWorkspaces)
+	if !ok {
+		t.Fatalf("worker workspaces = %T, want *workerhost.WorktreeWorkspaces", runtimeDeps.deps.Workspaces)
+	}
+	tempDir := filepath.Join(workRoot, "tmp")
+	dirs := workerAVExclusionDirectories(workRoot, avExclusionDeps{tempDir: tempDir})
 	paths := map[string]bool{}
 	for _, d := range dirs {
 		paths[d.Path] = true
 	}
-	for _, want := range []string{workRoot, workerWorkcopiesDir(workRoot), workerScratchDir(workRoot), filepath.Join(workRoot, "tmp")} {
+	// worktree.NewManager absolutises its root, so compare like for like.
+	wantWorkcopies, err := filepath.Abs(workerWorkcopiesDir(workRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provisioned.Manager.Root != wantWorkcopies {
+		t.Fatalf("provisioner mirror root = %q, want %q", provisioned.Manager.Root, wantWorkcopies)
+	}
+	for _, want := range []string{workRoot, provisioned.Manager.Root, provisioned.ScratchDir, tempDir} {
 		if !paths[want] {
-			t.Errorf("worker set %v lacks %s", dirs, want)
+			t.Errorf("worker advisory set %v does not name the provisioned directory %s", dirs, want)
 		}
 	}
 }

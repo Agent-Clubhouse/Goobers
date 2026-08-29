@@ -118,6 +118,31 @@ func DaemonDirectories(layout instance.Layout, tempDir string) []Directory {
 	return dirs
 }
 
+// GaggleWorkcopiesDirectory names one gaggle's managed working copies, from
+// the layout the daemon itself resolves for that gaggle.
+//
+// This entry is NOT redundant with DaemonDirectories' workcopies base. A
+// gaggle may set `spec.workcopies.root` to any absolute path, and that
+// override WINS over the instance-wide `workcopies.root`
+// (instance.EffectiveWorkcopiesLayout); the daemon applies it per gaggle
+// when it builds that gaggle's worktree.Manager. The result holds the git
+// mirrors and per-run worktrees — the write-then-read hot spot #3161–#3164
+// describes. Enumerating only the instance-wide root would leave a gaggle
+// pointed at another drive neither named nor judged, and Summary would then
+// print an affirmative all-clear over a directory it never looked at: the
+// worst failure mode an advisory has.
+//
+// scoped is that gaggle's own EffectiveWorkcopiesLayout. Dedupe collapses
+// the common case, where the gaggle inherits the instance root.
+func GaggleWorkcopiesDirectory(gaggle string, scoped instance.Layout) Directory {
+	return Directory{
+		Role: RoleDaemon,
+		Path: scoped.WorkcopiesBaseDir(),
+		Purpose: fmt.Sprintf("gaggle %q managed working copies (git mirrors and per-run worktrees, at workcopies.root as the daemon resolves it for this gaggle)",
+			gaggle),
+	}
+}
+
 // WorkerDirectories is `goobers worker`'s set. workcopies and scratch are
 // the two subtrees the worker provisions under its work root (the caller
 // passes the worker's own resolution of them, so the names are never
@@ -190,6 +215,22 @@ func Verify(dirs []Directory, exclusions []string, queried bool, queryErr error)
 // own comparison is case-insensitive), it equals the path, names one of its
 // ancestors, or is a wildcard pattern (`*`, `?`, Defender's two) matching
 // the path or one of its ancestors.
+//
+// The wildcard arm APPROXIMATES Defender, and does so deliberately in the
+// conservative direction — it may report not-excluded for something
+// Defender excludes, never excluded for something Defender scans:
+//
+//   - `*` and `?` stand for characters WITHIN one path component and never
+//     span a separator, matching Defender's documented folder-exclusion
+//     rule that `*` replaces a single folder level (nested levels need one
+//     `*` per level). Letting `*` span separators would make
+//     `C:\Users\*\AppData\Local\Temp` report EXCLUDED for
+//     `C:\Users\a\b\c\AppData\Local\Temp` — a false all-clear.
+//   - An entry with a trailing `\*` does NOT cover the directory itself:
+//     `C:\workspace\*` leaves `C:\workspace` reported not-excluded even
+//     though an operator plainly meant the subtree. That is a spurious
+//     warning, which costs an operator a second look; the opposite error
+//     costs them the race this whole package exists to name.
 func Covers(exclusions []string, path string) (string, bool) {
 	target := normalise(path)
 	if target == "" {
@@ -241,10 +282,22 @@ func parent(p string) string {
 	return p[:i]
 }
 
+// pathSeparator is the separator normalise leaves behind, and the boundary
+// neither wildcard crosses.
+const pathSeparator = '\\'
+
 // wildcardMatch matches s against a Defender-style pattern where `*` spans
-// any run of characters and `?` exactly one, case-insensitively. Only
-// patterns that actually contain a wildcard are matched this way; a literal
-// entry is handled by the equality arm of Covers.
+// any run of characters WITHIN one path component and `?` exactly one such
+// character, case-insensitively. Neither crosses a separator: Defender's
+// folder wildcard stands for a single folder level, so
+// `C:\Users\*\AppData` covers `C:\Users\alice\AppData` and not
+// `C:\Users\alice\bob\AppData` (see Covers' doc comment for why the error
+// this prevents is the dangerous direction). Deeper nesting is expressed
+// the way Defender expresses it, one `*` per level.
+//
+// Only patterns that actually contain a wildcard are matched this way; a
+// literal entry is handled by the equality arm of Covers, and Covers' walk
+// up the ancestors is what makes a matched folder cover its whole subtree.
 func wildcardMatch(pattern, s string) bool {
 	if !strings.ContainsAny(pattern, "*?") {
 		return false
@@ -256,14 +309,17 @@ func wildcardMatch(pattern, s string) bool {
 	star, mark := -1, 0
 	for ti < len(t) {
 		switch {
-		case pi < len(p) && (p[pi] == '?' || p[pi] == t[ti]):
-			pi++
-			ti++
 		case pi < len(p) && p[pi] == '*':
 			star = pi
 			mark = ti
 			pi++
-		case star >= 0:
+		case pi < len(p) && ((p[pi] == '?' && t[ti] != pathSeparator) || p[pi] == t[ti]):
+			pi++
+			ti++
+		// Backtracking widens the last `*` by one more character of s —
+		// t[mark]. A separator is not a character `*` may absorb, so it
+		// ends the backtrack rather than being swallowed.
+		case star >= 0 && mark < len(t) && t[mark] != pathSeparator:
 			pi = star + 1
 			mark++
 			ti = mark

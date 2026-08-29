@@ -345,14 +345,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if warning := windowsLargeRepoEnvironmentWarning(startupConfig, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
 		pln(stdout, warning)
 	}
-	// #3480: on a Windows host, say once whether the directories this daemon
-	// writes then immediately reads are excluded from real-time scanning.
-	// Advisory — startup continues regardless.
-	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
-		if line := hostAVExclusionAdvisory(ctx, "daemon", daemonAVExclusionDirectories(l, startupConfig, avDeps), avDeps); line != "" {
-			pln(stdout, line)
-		}
-	}
 	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -418,6 +410,25 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3480: on a Windows host, say once whether the directories this daemon
+	// writes then immediately reads are excluded from real-time scanning.
+	// Advisory — startup continues regardless.
+	//
+	// Printed HERE, not beside the large-repo warning above, because the set
+	// includes each gaggle's own workcopies.root — an override that beats the
+	// instance-wide one and can point at any drive — and setup.Definitions is
+	// the gaggle inventory the daemon itself is about to provision from. Read
+	// off instance.yaml alone, the advisory would have reported an
+	// affirmative all-clear over directories it never enumerated.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(ctx, "daemon",
+			daemonAVExclusionDirectories(l, setup.Config, setup.Definitions, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
+		if setup.Definitions == nil {
+			pln(stdout, "av-exclusions (advisory, daemon): config directory unavailable; per-gaggle workcopies roots are NOT enumerated above")
+		}
+	}
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())

@@ -903,6 +903,30 @@ func TestValidateWarnsWindowsAVExclusionsUndeclared(t *testing.T) {
 		}
 	}
 
+	// RNR006 is strict-neutral, like DVL020. A new warning that lands on
+	// configs nobody edited must not turn an existing --strict pipeline red
+	// on upgrade — and because declaring `false` does NOT silence RNR006,
+	// promoting it would leave `true` as the only way to get green, putting
+	// an operator under CI pressure to assert a trusted claim they have not
+	// earned.
+	// Clear the scaffold's unedited template markers first: PLACEHOLDER001
+	// is a finding of its own, and this assertion is about RNR006 alone.
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code = %d, want 0 (RNR006 is strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING RNR006") {
+		t.Errorf("--strict must still PRINT RNR006, only not promote it:\n%s", stdout)
+	}
+
 	replaceInFile(t, filepath.Join(root, "instance.yaml"),
 		"      os: windows\n      shell: true\n",
 		"      os: windows\n      shell: true\n      windows:\n        avExclusionsVerified: true\n")

@@ -1,10 +1,12 @@
 package avexclusion
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -32,6 +34,17 @@ func TestCovers(t *testing.T) {
 		{name: "wildcard covers subtree", exclusions: []string{`C:\Users\*\AppData\Local\Temp`}, path: `C:\Users\ContainerUser\AppData\Local\Temp\goobers-worker`, want: true},
 		{name: "wildcard question mark", exclusions: []string{`?:\workspace`}, path: `C:\workspace`, want: true},
 		{name: "wildcard no match", exclusions: []string{`C:\Users\*\Documents`}, path: `C:\Users\ContainerUser\AppData\Local\Temp`, want: false},
+		// The dangerous direction: a `*` that spanned separators would call
+		// a profile nested two levels deeper EXCLUDED on the strength of a
+		// one-level rule — an affirmative all-clear over a directory the
+		// host is still scanning.
+		{name: "star does not span a separator", exclusions: []string{`C:\Users\*\AppData\Local\Temp`}, path: `C:\Users\a\b\c\AppData\Local\Temp`, want: false},
+		{name: "one star per level, as Defender writes it", exclusions: []string{`C:\Users\*\*\AppData`}, path: `C:\Users\a\b\AppData`, want: true},
+		{name: "question mark does not match a separator", exclusions: []string{`C:\a?b`}, path: `C:\a\b`, want: false},
+		{name: "trailing star still covers one level", exclusions: []string{`C:\workspace\*`}, path: `C:\workspace\repo`, want: true},
+		// The safe direction, documented on Covers: a spurious warning, not
+		// a false all-clear.
+		{name: "trailing star does not cover the directory itself", exclusions: []string{`C:\workspace\*`}, path: `C:\workspace`, want: false},
 		{name: "whole drive", exclusions: []string{`C:\`}, path: `C:\workspace`, want: true},
 		{name: "empty path", exclusions: []string{`C:\`}, path: "", want: false},
 		{name: "blank entry ignored", exclusions: []string{"", "  "}, path: `C:\workspace`, want: false},
@@ -120,6 +133,56 @@ func TestDaemonDirectoriesDeriveFromLayout(t *testing.T) {
 	}
 }
 
+// TestGaggleWorkcopiesDirectoryFollowsTheGaggleOverride is the hole the
+// instance-wide-only enumeration left: a gaggle's own workcopies.root beats
+// the instance-wide one, so the directory that actually holds that gaggle's
+// mirrors and worktrees is not under the instance root at all. It must be
+// enumerated on its own, and Dedupe must still collapse the ordinary case
+// where the gaggle inherits.
+func TestGaggleWorkcopiesDirectoryFollowsTheGaggleOverride(t *testing.T) {
+	root := filepath.Join("C:", "instance")
+	base := instance.NewLayout(root)
+
+	// Gaggle override wins over the instance-wide root, and keeps its own
+	// gaggle segment so two gaggles cannot share mutable worktrees.
+	relocated := base.ForGaggle("builders").WithWorkcopiesRoot(filepath.Join("D:", "fast-ssd"))
+	dir := GaggleWorkcopiesDirectory("builders", relocated)
+	if want := filepath.Join("D:", "fast-ssd", "builders"); dir.Path != want {
+		t.Errorf("relocated gaggle path = %q, want %q", dir.Path, want)
+	}
+	if dir.Role != RoleDaemon || !strings.Contains(dir.Purpose, "builders") {
+		t.Errorf("entry = %+v, want a daemon entry naming the gaggle", dir)
+	}
+
+	// A relocated gaggle is NOT covered by the instance-root entry: the
+	// whole point is that it appears as its own finding.
+	instanceSet := DaemonDirectories(base, "")
+	report := Verify(append(instanceSet, dir), []string{root}, true, nil)
+	var found bool
+	for _, f := range report.Findings {
+		if f.Path != dir.Path {
+			continue
+		}
+		found = true
+		if f.Coverage != CoverageNotExcluded {
+			t.Errorf("relocated gaggle coverage = %q, want %q", f.Coverage, CoverageNotExcluded)
+		}
+	}
+	if !found {
+		t.Fatalf("relocated gaggle root missing from %+v", report.Findings)
+	}
+	if line := Summary("daemon", report); !strings.Contains(line, dir.Path) || strings.Contains(line, "every enumerated directory is covered") {
+		t.Errorf("summary must name the uncovered gaggle root, got %q", line)
+	}
+
+	// The inheriting case: the gaggle's base dir is the instance-wide one,
+	// so Dedupe collapses it rather than printing the same path twice.
+	inherited := GaggleWorkcopiesDirectory("e2e", base.ForGaggle("e2e"))
+	if got := Dedupe(append(DaemonDirectories(base, ""), inherited)); len(got) != len(instanceSet) {
+		t.Errorf("Dedupe = %d entries, want the inherited gaggle root collapsed into %d", len(got), len(instanceSet))
+	}
+}
+
 func TestWorkerDirectoriesAndDedupe(t *testing.T) {
 	dirs := WorkerDirectories(`C:\Temp\goobers-worker`, `C:\Temp\goobers-worker\workcopies`, `C:\Temp\goobers-worker\scratch`, `C:\Temp`)
 	if len(dirs) != 4 {
@@ -156,6 +219,23 @@ func TestSummaryIsOneLineNamingTheGap(t *testing.T) {
 		if !strings.Contains(unknown, want) {
 			t.Errorf("unknown summary %q lacks %q", unknown, want)
 		}
+	}
+}
+
+// TestStagePodQueryIsBoundedTighterThanTheDaemons: a stage pod pays the
+// Defender probe on EVERY attempt, and on the Server Core images this
+// feature anticipates it pays it for an answer that is always unknown — so
+// its bound is shorter than the daemon's, and the error a caller sees names
+// the bound that caller actually chose rather than a constant.
+func TestStagePodQueryIsBoundedTighterThanTheDaemons(t *testing.T) {
+	if StagePodQueryTimeout >= DefenderQueryTimeout {
+		t.Errorf("StagePodQueryTimeout = %s, want less than the daemon's %s", StagePodQueryTimeout, DefenderQueryTimeout)
+	}
+	// A bound this small expires before the probe can produce anything, on
+	// any host — the point is which duration the message names.
+	if _, err := QueryDefenderWithin(context.Background(), time.Nanosecond); err == nil ||
+		!strings.Contains(err.Error(), "timed out after 1ns") {
+		t.Errorf("QueryDefenderWithin error = %v, want one naming the 1ns bound it was given", err)
 	}
 }
 

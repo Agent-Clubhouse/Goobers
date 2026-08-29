@@ -38,6 +38,15 @@ func realAVExclusionDeps() avExclusionDeps {
 	return avExclusionDeps{hostOS: runtime.GOOS, query: avexclusion.QueryDefender, tempDir: filepath.Clean(os.TempDir())}
 }
 
+// realStagePodAVExclusionDeps is the pod's variant: the same reader under
+// avexclusion.StagePodQueryTimeout, because a stage pod pays the probe on
+// every attempt (see that constant's doc comment).
+func realStagePodAVExclusionDeps() avExclusionDeps {
+	deps := realAVExclusionDeps()
+	deps.query = avexclusion.QueryDefenderStagePod
+	return deps
+}
+
 // avExclusionReport verifies dirs against the host's exclusion list. Off
 // Windows there is nothing to read: every directory is reported unknown with
 // the reason, so a `doctor --av-exclusions` run on an operator's macOS
@@ -68,14 +77,42 @@ func hostAVExclusionAdvisory(ctx context.Context, label string, dirs []avexclusi
 }
 
 // daemonAVExclusionDirectories is the daemon's set for the instance rooted
-// at layout, honouring the instance-wide workcopies.root override the daemon
-// itself applies (instance.EffectiveWorkcopiesLayout). cfg may be nil (no
-// instance.yaml yet): the layout defaults stand.
-func daemonAVExclusionDirectories(layout instance.Layout, cfg *instance.Config, deps avExclusionDeps) []avexclusion.Directory {
+// at layout, honouring BOTH workcopies.root overrides the daemon itself
+// applies (instance.EffectiveWorkcopiesLayout): the instance-wide one, and
+// each gaggle's own — which wins over it, points at any absolute path, and
+// is where that gaggle's git mirrors and per-run worktrees actually live.
+// Enumerating only the instance-wide root would let a gaggle relocated to
+// another drive go unnamed and unjudged while Summary printed an
+// affirmative all-clear (see avexclusion.GaggleWorkcopiesDirectory).
+//
+// cfg may be nil (no instance.yaml yet): the layout defaults stand. set may
+// be nil (no config directory, or one that would not load): the per-gaggle
+// entries are simply absent, and every caller that can say so says so.
+func daemonAVExclusionDirectories(layout instance.Layout, cfg *instance.Config, set *instance.ConfigSet, deps avExclusionDeps) []avexclusion.Directory {
+	instanceWide := layout
 	if effective, err := instance.EffectiveWorkcopiesLayout(layout, cfg, nil); err == nil {
-		layout = effective
+		instanceWide = effective
 	}
-	return avexclusion.DaemonDirectories(layout, deps.tempDir)
+	dirs := avexclusion.DaemonDirectories(instanceWide, deps.tempDir)
+	if set == nil {
+		return dirs
+	}
+	// The same resolution, per gaggle, that daemon.go performs when it
+	// builds each gaggle's worktree.Manager — layout.ForGaggle first, so
+	// the gaggle segment is present, then the override.
+	for i := range set.Gaggles {
+		gaggle := &set.Gaggles[i]
+		scoped, err := instance.EffectiveWorkcopiesLayout(layout.ForGaggle(gaggle.Name), cfg, gaggle)
+		if err != nil {
+			// A relative workcopies.root: the daemon refuses to start on
+			// this config, so no such directory is ever written. Naming a
+			// path we could not resolve would be the drift this package
+			// exists to prevent.
+			continue
+		}
+		dirs = append(dirs, avexclusion.GaggleWorkcopiesDirectory(gaggle.Name, scoped))
+	}
+	return dirs
 }
 
 // workerAVExclusionDirectories is `goobers worker`'s set under workRoot,
@@ -156,10 +193,34 @@ func runDoctorAVExclusions(root, workRoot, reportFormat string, stdout, stderr i
 	} else {
 		pf(stderr, "note: %s not found; listing the default layout under %s\n", layout.ConfigFile(), absRoot)
 	}
+	// The config directory supplies the gaggle inventory, and with it every
+	// per-gaggle workcopies.root override — directories the daemon writes
+	// then reads that no other source names. Loaded FOR COMPARISON, not
+	// fail-closed: this is diagnostic tooling, and an instance whose config
+	// has an unrelated error is exactly an instance whose operator is about
+	// to go looking at directories. When it cannot be loaded at all, say so
+	// rather than report coverage over a set that is silently short.
+	var set *instance.ConfigSet
+	if _, statErr := os.Stat(layout.ConfigDir()); statErr == nil {
+		loaded, configReport, loadErr := instance.LoadConfigDirForComparison(layout.ConfigDir())
+		switch {
+		case loaded != nil:
+			set = loaded
+			// The gaggles parsed, but the directory did not validate. Say
+			// which findings, so an operator reading a coverage report knows
+			// the inventory it was derived from is not one the daemon would
+			// accept — rather than trusting a list silently built on it.
+			if summary := validationIssueSummary(configReport); summary != "" {
+				pf(stderr, "note: %s does not validate (%s); the gaggle roots below are read from it as-is\n", layout.ConfigDir(), summary)
+			}
+		case loadErr != nil:
+			pf(stderr, "note: %s could not be loaded (%v); per-gaggle workcopies roots are NOT enumerated below\n", layout.ConfigDir(), loadErr)
+		}
+	}
 	if workRoot == "" {
 		workRoot = defaultWorkerRoot(deps.tempDir)
 	}
-	dirs := append(daemonAVExclusionDirectories(layout, cfg, deps), workerAVExclusionDirectories(workRoot, deps)...)
+	dirs := append(daemonAVExclusionDirectories(layout, cfg, set, deps), workerAVExclusionDirectories(workRoot, deps)...)
 	dirs = append(dirs, avexclusion.StagePodDirectories(
 		dispatcher.WindowsWorkspacePath, dispatcher.WindowsTmpPath, dispatcher.WindowsHomePath, "")...)
 

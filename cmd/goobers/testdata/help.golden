@@ -801,10 +801,14 @@ back — the set real-time antivirus scanning on Windows must exclude, or a
 scan holding a handle on a just-written file surfaces minutes later as an
 unrelated git "Permission denied" (#3480, #3161–#3164). The list is
 derived from the same path code the daemon (instance root, run journals,
-scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root
-and its workcopies/scratch subtrees) and a Windows stage pod (C:\workspace,
-the tmp:ephemeral TEMP, the container user's profile) actually use, so it
-cannot drift from what the binary writes. On a Windows host it also reads
+scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root,
+which applies to this mode only, and its workcopies/scratch subtrees) and
+a Windows stage pod (C:\workspace, the tmp:ephemeral TEMP, the container
+user's profile) actually use, so it cannot drift from what the binary
+writes. Each gaggle's own spec.workcopies.root is enumerated separately,
+since it beats the instance-wide one and may name any drive; when config/
+cannot be read, that is reported rather than passed off as no gaggles.
+On a Windows host it also reads
 Microsoft Defender's exclusion list (Get-MpPreference, read-only) and
 reports each directory as excluded, not-excluded, or unknown; elsewhere
 it lists the set and reports unknown. ADVISORY: exit 0 whatever the
