@@ -53,10 +53,19 @@ const (
 	// validate/dedupe/mint path the pending-triggers sweep uses; the HITL
 	// plane resolves an escalated run (approve/deny/redirect). Modes 1/2 keep
 	// their file seams — these routes are the non-local path.
-	ClaimAcquirePath         = V1Prefix + "/claims/acquire"
-	ClaimRenewPath           = V1Prefix + "/claims/renew"
-	ClaimReleasePath         = V1Prefix + "/claims/release"
-	ClaimSettlePath          = V1Prefix + "/claims/settle"
+	ClaimAcquirePath = V1Prefix + "/claims/acquire"
+	ClaimRenewPath   = V1Prefix + "/claims/renew"
+	ClaimReleasePath = V1Prefix + "/claims/release"
+	ClaimSettlePath  = V1Prefix + "/claims/settle"
+	// ClaimListPath is the claims plane's read (decision 005 amendment /
+	// finding 002 C1): a pod principal lists the claims its own run holds, or
+	// its gaggle namespace's current holders plus released history, so the
+	// selection filters every ledger-touching CLI stage runs in-process today
+	// (pre-existing claims, dedupe, ready-pool, PR claim-availability,
+	// failure-streak deprioritization) keep their input off the daemon. POST
+	// like its sibling routes: it is served under the same claims lock and
+	// carries a body, not a query string.
+	ClaimListPath            = V1Prefix + "/claims/list"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
@@ -126,6 +135,7 @@ const (
 	RouteClaimRenew        RouteID = "claimRenew"
 	RouteClaimRelease      RouteID = "claimRelease"
 	RouteClaimSettle       RouteID = "claimSettle"
+	RouteClaimList         RouteID = "claimList"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -252,6 +262,11 @@ var v1Routes = []Route{
 	{ID: RouteClaimRenew, Method: http.MethodPost, Path: ClaimRenewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimRelease, Method: http.MethodPost, Path: ClaimReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/list is a read of the ledger, but it is served under the same
+	// claims lock as the four mutations and pooled with them on purpose: a
+	// claimant's select-then-acquire must not have its select shed as read
+	// traffic while its acquire is admitted.
+	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 

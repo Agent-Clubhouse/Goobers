@@ -370,9 +370,16 @@ func StageRequiresInstanceRoot(cmd []string, kind string) bool {
 		// runReadOnlyBacklogQuery path (a zero cursor, no lock).
 		return !commandDeclaresAnyFlag(cmd[2:], "read-only")
 	case "backlog-health":
-		// Only --feedback reads the instance telemetry rollup and run/error
-		// evidence; the bare ready-pool snapshot is provider-only.
-		return commandDeclaresAnyFlag(cmd[2:], "feedback")
+		// Every mode: --feedback reads the instance telemetry rollup and
+		// run/error evidence and takes a per-item claim reservation; the bare
+		// ready-pool snapshot opens the claim ledger too (backloghealth.go's
+		// unclaimedReadyItems), and a missing claims.json in a pod resolves to
+		// a fresh EMPTY ledger, so every ready item would be reported
+		// unclaimed and the stage would succeed — the silent-wrong-result
+		// class this list exists to close (finding 002, the critic's
+		// bare-backlog-health row). Removed deliberately, with a test, once
+		// the stage's ledger read reaches the daemon through the claims plane.
+		return true
 	default:
 		return stageCommandsRequiringInstanceRoot[cmd[1]]
 	}
