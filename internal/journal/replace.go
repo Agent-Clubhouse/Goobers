@@ -85,7 +85,7 @@ func ReplaceRun(finalDir, stagedDir string, keep func() (bool, error)) (bool, er
 		}
 		if restoreErr := os.Rename(backupDir, finalDir); restoreErr != nil {
 			return false, fmt.Errorf(
-				"%w; superseded run directory could not be restored and remains at %s: %v",
+				"%w; superseded run directory could not be restored and remains at %s: %w",
 				publishErr, backupDir, restoreErr,
 			)
 		}
