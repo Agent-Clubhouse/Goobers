@@ -2,16 +2,19 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
@@ -84,6 +87,74 @@ type DispatchStageInput struct {
 	// WorkspaceDelta is the blob digest of what earlier stages of this run
 	// committed (#3763), for this pod to continue from.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// Review marks an agentic reviewer GATE evaluation (decision 001 rulings
+	// 7–8): the pod drives the gate's reviewer goober in review mode and
+	// surrenders a Verdict, which DispatchStage re-validates and returns as
+	// DispatchStageResult.Verdict. Run must be nil (a review has no command)
+	// and the activity refuses the combination. Additive and omitempty, so
+	// every history recorded before it — task dispatches all — decodes with
+	// Review false and replays through the task path unchanged.
+	Review bool `json:"review,omitempty"`
+}
+
+// gatePodAttempt names the pod attempt number for one dispatch of a reviewer
+// gate: the gate's dispatch ordinal within the run, counted across repasses
+// and infrastructure retries alike. It has to be unique per (run, gate)
+// because it is the surrender-plane key and the pod name (D1: one attempt,
+// one pod), and it has to be a pure function of walk state because the
+// workflow replays. The repass count alone cannot serve — it resets on pass
+// — so the walk keeps a dedicated per-gate dispatch counter.
+func gatePodAttempt(gateDispatches map[string]int, gate string) int {
+	gateDispatches[gate]++
+	return gateDispatches[gate]
+}
+
+// dispatchRemoteGate drives one non-self agentic reviewer gate through the
+// dispatch activity (decision 001 rulings 7–8) and returns the verdict the
+// pod surrendered. It is the gate-shaped twin of dispatchRemoteTask: the
+// same activity, the same pinned queue, the same surrender plane — the
+// difference is the completion contract (Review) and what comes back (a
+// Verdict, never a stage result).
+//
+// The retry loop is the caller's evaluateWithInfraRetry, exactly as for the
+// self arm's ActReviewGoober: each call here is one pod attempt, numbered
+// from the walk's per-gate dispatch counter so a retried evaluation never
+// reuses a surrendered key. The workspace is the gate's own declaration
+// with the self arm's default (ReviewGoober: "" is the writable repo
+// worktree) resolved HERE, once, before dispatch — the pod stamps no
+// workspace for an empty mode, and a reviewer cut an empty directory would
+// truthfully report the repository missing. workspaceDelta is what the
+// continuity selector chose for this gate (selectGateDelta's nil-repoFrom
+// arm); DispatchStage withholds it from a read-only mode as it does for
+// tasks.
+//
+// #3844's instance-root refusal list is command-keyed and a gate declares
+// no command, so there is nothing of it to apply here; the pod entrypoint's
+// backstop still stands for anything a reviewer's harness might spawn.
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceDelta string, podAttempt int) (apiv1.Verdict, error) {
+	workspace := g.EffectiveWorkspace()
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	attemptEnv := env
+	attemptEnv.Attempt = int32(podAttempt)
+	var result stageActivityResult
+	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		Envelope:       attemptEnv,
+		Placement:      placement,
+		Workspace:      workspace,
+		WorkspaceDelta: workspaceDelta,
+		Review:         true,
+	}).Get(ctx, &result); err != nil {
+		return apiv1.Verdict{}, err
+	}
+	if result.Verdict == nil {
+		// DispatchStage never returns a review result without one; a
+		// version-skewed activity host that ignores Review would. Refuse
+		// rather than route on an empty decision.
+		return apiv1.Verdict{}, fmt.Errorf("gate %q: the dispatch activity returned no verdict for a review attempt (activity host predates gate placement?); refusing to route on nothing", g.Name)
+	}
+	return *result.Verdict, nil
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -275,6 +346,14 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// workflow-side refusal is what prevents the pod; making this boundary
 	// re-assert too would mean threading the task type through the activity
 	// input, which is a wire-contract change worth its own decision.
+	if input.Review && input.Run != nil {
+		// A review is a goober invocation driven to a verdict; a declared
+		// command has no verdict to write. The workflow never builds this
+		// shape (dispatchRemoteGate sets Review with no Run), so reaching it
+		// means a hand-built or version-skewed input — refused before a pod
+		// exists rather than after a command ran under a review kit.
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q is marked review but carries a DeterministicRun; a reviewer gate invokes a goober and never runs a command (fail closed)", input.Envelope.TaskID))
+	}
 	if input.Run != nil {
 		if ws := input.Run.Workspace; ws != "" && ws != apiv1.WorkspaceScratch && !ws.IsRepoBacked() {
 			return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q declares workspace %q, which mode-3 dispatch cannot provision in a pod (fail closed)", input.Envelope.TaskID, ws))
@@ -314,6 +393,9 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		attempt.Agentic = true
 		envelope := input.Envelope
 		attempt.Envelope = &envelope
+		// The completion contract rides the attempt into the kit writer, which
+		// stamps it as agentickit.Kit.Mode inside the verified claim check.
+		attempt.Review = input.Review
 	}
 
 	// A goobers-CLI stage needs the run's operational identity to do its job:
@@ -460,6 +542,16 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if surrendered.Result.Status == "" {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
 	}
+	if input.Review {
+		return a.reviewActivityResult(input, attempt.Number, surrendered, report)
+	}
+	if surrendered.Verdict != nil {
+		// A task attempt has no reviewer; a verdict here means the pod ran
+		// under a review kit it was not dispatched with. Refused rather than
+		// dropped: a silently ignored verdict is exactly the shape a
+		// substituted surrender document would take to look harmless.
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number))
+	}
 	return a.scrubStageActivityResult(stageActivityResult{
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
@@ -476,6 +568,88 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 		Placement:               placementProvenance(report),
 	})
+}
+
+// reviewActivityResult projects a REVIEW attempt's surrender (decision 001
+// rulings 7–8) into the result the workflow routes on. It is the pod-path
+// twin of ReviewGoober's return, and it is deliberately stricter than the
+// task projection above it: a task's surrendered envelope is a business
+// outcome the definition branches on whatever its status, but a verdict IS
+// the branch, so every way it could be absent, empty, or malformed fails
+// the attempt closed here.
+//
+//   - The pod's own session failed (ResultFailure, no verdict): the failure
+//     is returned as an ERROR — the self arm's ReviewGoober does the same
+//     when Goober.Review errors — classed by the pod's own Retryable
+//     marking, so a substrate fault (kit, credential, checkout, context)
+//     retries on a fresh pod under the gate's evaluator retry bound and a
+//     harness failure fails the run.
+//   - No verdict on a successful session: refused. Nothing to route on.
+//   - An empty Decision, or a verdict the shared verdict schema rejects:
+//     refused (#3838's shape — a substituted surrender blob must never
+//     route control flow). The schema is the same one harness.Executor.
+//     Review validates against in the pod; this is the engine's own read
+//     of it, because the pod's validation is exactly what a substituted
+//     document bypasses.
+//   - A workspace delta beside a verdict: refused. A reviewer never
+//     publishes (ReviewGoober), and a review pod that surrendered commits
+//     has done something no reviewer does.
+func (a *Activities) reviewActivityResult(input DispatchStageInput, number int, surrendered dispatcher.SurrenderedResult, report dispatcher.Report) (stageActivityResult, error) {
+	stage := input.Envelope.TaskID
+	if surrendered.Result.Status != apiv1.ResultSuccess {
+		code, message := failureCause(surrendered.Result.Error)
+		if code == "" {
+			code = "agentic_review_failed"
+		}
+		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
+		if surrendered.Result.Error != nil && surrendered.Result.Error.Retryable {
+			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(err))
+		}
+		return stageActivityResult{}, classifySeamError(err)
+	}
+	if surrendered.Verdict == nil {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: reviewer gate %q attempt %d surrendered no verdict; refusing to route the run on nothing (fail closed)", stage, number))
+	}
+	if surrendered.WorkspaceDelta != "" || surrendered.WorkspaceDeltaUnchanged {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: reviewer gate %q attempt %d surrendered a workspace delta; a reviewer never publishes commits (fail closed)", stage, number))
+	}
+	if err := validateSurrenderedVerdict(*surrendered.Verdict); err != nil {
+		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: reviewer gate %q attempt %d surrendered an invalid verdict: %w (fail closed)", stage, number, err))
+	}
+	verdict := *surrendered.Verdict
+	return a.scrubStageActivityResult(stageActivityResult{
+		ResultEnvelope: surrendered.Result,
+		Verdict:        &verdict,
+		Placement:      placementProvenance(report),
+	})
+}
+
+// verdictValidator compiles the shared envelope schemas once per process —
+// the same api/validate validator harness.Executor builds — so the engine's
+// re-validation of a surrendered verdict reads the identical
+// verdict.schema.json the pod's harness validated against.
+var verdictValidator = sync.OnceValues(validate.New)
+
+// validateSurrenderedVerdict is the engine's fail-closed read of a verdict
+// that crossed the surrender plane: a non-empty Decision first (the one field
+// the walk routes on, checked explicitly so the refusal names it even if the
+// schema ever loosens), then the whole document against the verdict schema.
+func validateSurrenderedVerdict(verdict apiv1.Verdict) error {
+	if strings.TrimSpace(string(verdict.Decision)) == "" {
+		return errors.New("verdict carries an empty decision")
+	}
+	v, err := verdictValidator()
+	if err != nil {
+		return fmt.Errorf("verdict schema unavailable: %w", err)
+	}
+	data, err := json.Marshal(verdict)
+	if err != nil {
+		return fmt.Errorf("marshal verdict for validation: %w", err)
+	}
+	if err := v.ValidateEnvelope("verdict", data); err != nil {
+		return fmt.Errorf("verdict does not satisfy the verdict schema: %w", err)
+	}
+	return nil
 }
 
 // placementProvenance lifts the dispatcher's report into the result's

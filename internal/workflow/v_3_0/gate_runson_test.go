@@ -295,30 +295,3 @@ func TestStagePlacementsSkipsPlacedGateWithoutReviewerBlock(t *testing.T) {
 		t.Fatalf("control: the gate with its reviewer block must emit a row carrying the reviewer harness, got %+v", found)
 	}
 }
-
-// WF024 (decision 001 rulings 7–8 unlanded): every agentic gate that declares
-// runsOn is warned about — the placement is validated, solved and pinned but
-// not honoured at execution. Unplaced and non-agentic gates draw no warning.
-func TestGatePlacementWarnings(t *testing.T) {
-	placed := Definition{Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), nil)}
-	got := CheckGatePlacementWarnings(placed)
-	if len(got) != 1 || !strings.HasPrefix(got[0], `gate "review" declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet`) {
-		t.Fatalf("CheckGatePlacementWarnings = %v, want one WF024 naming the gate", got)
-	}
-	for _, want := range []string{"rulings 7–8", "refused at start", "declared isolation"} {
-		if !strings.Contains(got[0], want) {
-			t.Errorf("WF024 message missing %q: %s", want, got[0])
-		}
-	}
-	if got := CheckGatePlacementWarnings(Definition{Spec: gatedSpec()}); len(got) != 0 {
-		t.Fatalf("an unplaced agentic gate must draw no WF024, got %v", got)
-	}
-	automated := func(g *apiv1.Gate) {
-		g.Evaluator = apiv1.EvaluatorAutomated
-		g.Agentic = nil
-		g.Automated = &apiv1.AutomatedGate{Check: "status-equals"}
-	}
-	if got := CheckGatePlacementWarnings(Definition{Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), automated)}); len(got) != 0 {
-		t.Fatalf("a non-agentic gate is WF023's, not WF024's: got %v", got)
-	}
-}

@@ -772,21 +772,24 @@ func TestValidatePlacementCoversPlacedGate(t *testing.T) {
 	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF023") {
 		t.Errorf("satisfiable placed gate must produce no placement finding:\n%s", stdout)
 	}
-	// Valid, but not yet honoured at execution (decision 001 rulings 7–8):
-	// the satisfiable placement still carries the WF024 warning.
-	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) || !strings.Contains(stdout, "no execution path honours a gate placement yet") {
-		t.Errorf("a placed gate must carry the WF024 not-yet-honoured warning:\n%s", stdout)
+	// The WF024 "not yet honoured" warning retired with decision 001's
+	// engine/pod half: a placed gate is honoured at execution now.
+	if strings.Contains(stdout, "WF024") {
+		t.Errorf("a placed gate must not carry the retired WF024 warning:\n%s", stdout)
 	}
 }
 
 // TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses pins the documented
 // consequence (dsl-3.0.md §2 Gates) of declaring a gate placement the daemon's
-// own substrate cannot satisfy while the engine half is unlanded: checkpoint 1
-// is clean (the declared remote runner satisfies it; WF024 warns), and
-// checkpoint 3 marks the workflow refused exactly as it would for a task —
-// deliberately, because the daemon can neither dispatch the reviewer nor
-// honour its declared placement in-process, and refusing is the only arm
-// that never runs the reviewer outside its declared isolation.
+// own substrate cannot satisfy: checkpoint 1 is clean (the declared remote
+// runner satisfies it), and checkpoint 3 marks the workflow refused exactly
+// as it would for a task — deliberately, because a DAEMON-scheduled run
+// drives through internal/runner, whose gate arm has no dispatch seam until
+// decision 003's step 12 (engine-start runs, which walk internal/engine,
+// place the gate through evaluateGate's dispatch arm), so the daemon can
+// neither dispatch the reviewer nor honour its declared placement
+// in-process, and refusing is the only arm that never runs the reviewer
+// outside its declared isolation.
 func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
@@ -798,11 +801,8 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate code = %d, want 0 (the declared remote runner satisfies the gate); stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "RNR001") {
-		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) {
-		t.Errorf("checkpoint 1 must warn that the gate placement is not honoured yet:\n%s", stdout)
+	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF024") {
+		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate (and WF024 is retired):\n%s", stdout)
 	}
 
 	var wg sync.WaitGroup

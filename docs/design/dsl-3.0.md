@@ -143,30 +143,34 @@ agentic gate in gate order; every consumer keys on the stage *name* (the run-sta
 `bootstrap.PinStagePlacements`, looks each row up against the task and gate lists and never
 by position — a gate is never ledger-touching). Parallels remain control-plane. The frozen
 2.0 interpreter refuses `gates[].runsOn` through the router, exactly as it refuses the task
-field. The engine/pod half — routing `evaluateGate` through the dispatch seam, a review mode
-on the agentic kit, the surrendered verdict — is decision 001's rulings 7–8 and lands
-separately.
+field.
 
-**Until the engine half lands, a gate placement is declared but not honoured — and the
-system says so.** `engine.evaluateGate` has no placement arm: an agentic gate always runs
-`ActReviewGoober` in-process on the workflow's own queue, so a remote gate pin would be
-manufactured and ignored and the reviewer would run with that host's OS, network and
-envelope instead of the isolation the author declared. Three things hold the line:
+**The engine honours a gate placement** (decision 001 rulings 7–8). `engine.evaluateGate`
+reads the gate's pin exactly as `runTask` reads a task's: a gate pinned to a non-self runner
+dispatches `ActDispatchStage` on its pinned per-(gaggle × runner-type) queue with
+`Review=true` (`dispatchRemoteGate`), and the reviewer evaluates in a dispatcher-created
+pod on that runner — the pod's agentic kit carries `mode: review`, the pod checks the
+repository out in the gate's declared workspace (`agentic.workspace`, default `repo`) with
+the subject's workspace delta applied, computes the reviewer diff **itself** (`git diff
+<base>...HEAD`, journaled as `<gate>/reviewer-diff.patch` and handed to the reviewer as the
+`<gate>.diff` pointer — the #301 "runner-produced, never model-reported" property on the pod
+path), drives the goober in the harness's review mode, and surrenders a `verdict`. The
+engine re-validates what comes back — an empty decision or a verdict the shared verdict
+schema rejects fails the attempt closed, a surrendered workspace delta is refused (a
+reviewer never publishes) — and then journals `gate.evaluated`, the verdict artifact and
+the `<gate>.verdict` pointer exactly as the in-process arm does. A pod that could not start
+(credential, checkout, context, image) is retried on a fresh pod under the gate's evaluator
+retry bound; a harness or verdict failure fails the run, as `ReviewGoober` does. The
+reviewer pod mints `agent:model` from the run's pinned gate-goober map and its checkout
+credential through the same implicit checkout capability tasks use — no second credential
+path.
 
-- `goobers validate` emits **WF024** (warning) for every agentic gate that declares
-  `runsOn`, naming the consequence.
-- A gate placement **self cannot satisfy is refused at start, never run unrestricted.**
-  For daemon-scheduled runs this is checkpoint 3 (§5) exactly as for a task: the workflow is
-  marked refused (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately so,
-  because the daemon cannot honour the declared restrictions either. For `engine-start`,
-  `bootstrap.PinStagePlacements` refuses a non-self gate pin with an error naming the runner
-  and queue the gate would have pinned to.
-- A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
-  in-process exactly as ruling 8's unpinned arm.
-
-The CRD and JSON-schema descriptions of `gates[].runsOn` carry the same caveat. WF024 and
-the `PinStagePlacements` refusal retire together when `evaluateGate` honours a non-self
-gate pin.
+A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
+in-process exactly as ruling 8's unpinned arm, with the arguments it always had. A
+**daemon-scheduled** run (`internal/runner`) has no gate dispatch arm until decision 003's
+step 12: there, checkpoint 3 (§5) refuses a gate placement self cannot satisfy exactly as
+for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately, because the
+daemon cannot honour the declared restrictions in-process either.
 
 ---
 
@@ -370,7 +374,7 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
 | WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
-| WF024 | Warning | An agentic gate declares `runsOn` while no execution path honours a gate placement (decision 001 rulings 7–8 unlanded); a placement self cannot satisfy is refused at start (§2 Gates) |
+| WF024 | retired | Was "gate placement declared but not honoured" while decision 001's engine half was unlanded; the engine honours gate placement now (§2 Gates) and the code is not reused |
 
 CAP003 keeps its shipped meaning for 2.0 documents on inventory-less instances (frozen
 interpreter, frozen severity). `instance.yaml`'s own untyped fail-first errors

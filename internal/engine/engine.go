@@ -318,6 +318,10 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	// run budget cumulatively by completed target stage.
 	gateAttempts := map[string]int{}
 	repassAttempts := map[string]int{}
+	// gateDispatches numbers each placed gate's pod attempts across the whole
+	// run (gatePodAttempt): the surrender-plane key and the pod name for a
+	// reviewer evaluated in a pod. Untouched by the self arm.
+	gateDispatches := map[string]int{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
@@ -394,7 +398,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
 			gateDelta := selectGateDelta(ctx, g, continuity, rec)
-			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, rec)
+			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, gateDispatches, rec)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -628,7 +632,17 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // outcome plus, for an agentic gate, the reviewer's full Verdict (journaled as
 // the verdict artifact alongside gate.evaluated, mirroring internal/gate's
 // recordVerdict).
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
+//
+// An agentic gate whose PINNED placement resolved to a non-self runner
+// (decision 001 rulings 7–8) evaluates in a dispatcher-created pod through
+// ActDispatchStage on its pinned queue — dispatchRemoteGate — and the verdict
+// it surrenders lands in exactly the same gate.evaluated, verdict artifact
+// and "<gate>.verdict" pointer the self arm produces; everything after the
+// verdict is substrate-blind. A gate with no pin, or pinned to self, calls
+// ActReviewGoober with the arguments it always has (ruling 8, as amended by
+// #3845): that arm is untouched, and the walk's continuity selector already
+// hands both arms the same delta.
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, gateAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -679,7 +693,19 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
-		ctx := stageActivityContext(ctx, env.Limits)
+		// Mode-3 routing for a gate, read from RunInput exactly as runTask
+		// reads it for a task: a pure function of pinned data, no solve, no
+		// I/O, replay-deterministic. The activity options are the only thing
+		// the self arm and the pod arm decide differently before the
+		// evaluator dispatches — the pinned per-(gaggle × runner-type) queue
+		// versus the workflow's own — and the self arm's options are the
+		// ones it has always had.
+		placement, remote := remotePlacementFor(in, g.Name)
+		if remote {
+			ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+		} else {
+			ctx = stageActivityContext(ctx, env.Limits)
+		}
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1)
 		// Pre-evaluation emission, as on the automated arm above.
 		if err := rec.emitPending(ctx); err != nil {
@@ -692,6 +718,14 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// history recorded before them replays (see Activities.ReviewGoober).
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
+			if remote {
+				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceDelta, gatePodAttempt(gateDispatches, g.Name))
+				if err != nil {
+					return err
+				}
+				verdict = surrendered
+				return nil
+			}
 			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta, g.EffectiveWorkspace()).Get(ctx, &verdict)
 		}); err != nil {
 			return "", nil, err

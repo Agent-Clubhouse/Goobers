@@ -182,18 +182,9 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
-	// WarningGatePlacementUnhonoured (WF024) identifies an agentic gate that
-	// declares runsOn (decision 001) while the engine/pod half of that
-	// decision (rulings 7–8) is unlanded: the block is validated, solved
-	// (RNR001/RNR003) and pinned by name, but engine.evaluateGate has no
-	// placement arm, so the reviewer still evaluates in the daemon/control
-	// plane with that host's OS, network and envelope. The start seams fail
-	// closed rather than run the reviewer outside its declared isolation — a
-	// placement self cannot satisfy is refused (checkpoint 3 for
-	// daemon-scheduled runs, bootstrap.PinStagePlacements for engine-start)
-	// — and this warning is how the author learns that before starting a
-	// run. Informational: the config is valid. Retires with the engine half.
-	WarningGatePlacementUnhonoured WarningCode = "WF024"
+	// WF024 was the "gate placement not yet honoured" warning that stood
+	// between the DSL half of decision 001 (#3848) and its engine/pod half
+	// (rulings 7–8). It retired with that half and the code is not reused.
 )
 
 const (
@@ -1943,12 +1934,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
 	for _, msg := range wf.CheckGateRunsOn(def) {
 		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
-	}
-	// WF024: a declared gate placement is not yet honoured at execution
-	// (decision 001 rulings 7–8 unlanded). Warning, not error — the config is
-	// valid and the start seams refuse the unsatisfiable case themselves.
-	for _, msg := range wf.CheckGatePlacementWarnings(def) {
-		r.addWarning(WarningGatePlacementUnhonoured, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)

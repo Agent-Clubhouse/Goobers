@@ -26,7 +26,6 @@ type versionedInterpreter struct {
 	stagePlacements                 func(Definition, apiv1.GaggleSpec, map[string]apiv1.GooberSpec) []runnersolve.StageRequirement
 	checkRepoHandoffs               func(Definition) []string
 	checkGateRunsOn                 func(Definition) []string
-	checkGatePlacementWarnings      func(Definition) []string
 	checkGateParameters             func(Definition) []string
 	checkGateOutcomes               func(Definition) []string
 	checkStageRequiredInputs        func(Definition) []string
@@ -108,11 +107,6 @@ func noRepoHandoffProblems(Definition) []string { return nil }
 // say.
 func noGateRunsOnProblems(Definition) []string { return nil }
 
-// noGatePlacementWarnings is the pre-3.0 checkGatePlacementWarnings arm: a
-// 2.0 gate cannot carry runsOn (refused by preV30SurfaceProblems), so there
-// is no unhonoured placement to warn about.
-func noGatePlacementWarnings(Definition) []string { return nil }
-
 var nextInterpreter = versionedInterpreter{
 	compile:                         compileNext,
 	checkWarnings:                   vnext.CheckWarnings,
@@ -127,7 +121,6 @@ var nextInterpreter = versionedInterpreter{
 	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
 	checkGateRunsOn:                 noGateRunsOnProblems,
-	checkGatePlacementWarnings:      noGatePlacementWarnings,
 	checkGateParameters:             vnext.CheckGateParameters,
 	checkGateOutcomes:               vnext.CheckGateOutcomes,
 	checkStageRequiredInputs:        vnext.CheckStageRequiredInputs,
@@ -164,7 +157,6 @@ var v30Interpreter = versionedInterpreter{
 	stagePlacements:                 v30StagePlacements,
 	checkRepoHandoffs:               v30.CheckRepoHandoffs,
 	checkGateRunsOn:                 v30.CheckGateRunsOn,
-	checkGatePlacementWarnings:      v30.CheckGatePlacementWarnings,
 	checkGateParameters:             v30.CheckGateParameters,
 	checkGateOutcomes:               v30.CheckGateOutcomes,
 	checkStageRequiredInputs:        v30.CheckStageRequiredInputs,
