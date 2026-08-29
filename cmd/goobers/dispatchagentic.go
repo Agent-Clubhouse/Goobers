@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -145,6 +146,16 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 		name, strings.Join(capabilities, ", "))
 }
 
+// The two construction seams buildPodAgenticExecutor's own test substitutes,
+// same var-hook shape as dialEngineProjection and harnessAdapterFor: a pod's
+// harness preflight runs against a real signed-in CLI no test machine has,
+// and the invoke.Goober that comes back does not expose the recorder the
+// wiring test is about. Both point at the real functions in production.
+var (
+	podHarnessRegistry = buildHarnessRegistry
+	podExecutorBuilder = buildAgenticExecutor
+)
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
 func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
@@ -200,7 +211,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// the ambient environment above, so the preflight's ambient-env-first
 	// lookup already finds it. There's no *instance.Config/StoreResolver in
 	// this pod-context function to build one anyway.
-	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -229,7 +240,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		return nil, fmt.Errorf("create runs dir: %w", err)
 	}
 
-	return buildAgenticExecutor(agenticExecutorInput{
+	return podExecutorBuilder(agenticExecutorInput{
 		GooberName:       gooberName,
 		Goobers:          kit.Goobers,
 		Instructions:     kit.Instructions,
@@ -311,11 +322,21 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 // The PUT is the half that makes the daemon's SpanSource wiring mean
 // anything. The engine workflow never holds the transcript: it emits a
 // pointer-only span op (internal/engine/journal.go JournalSpanOp) and the
-// daemon's live writer fetches the bytes by digest. Until this PUT, no
-// producer ever placed those bytes anywhere the daemon could fetch them, so
+// daemon's live writer fetches the bytes by digest FROM THE BLOB STORE.
+// Until this PUT, no producer had placed those bytes in that store, so
 // wiring a span source alone would only change the recorded failure from
 // "no span source configured" to "blobstore: blob not found" — the same
 // span_unavailable code, the same missing transcript.
+//
+// PRECISELY: the daemon does already receive these exact bytes, at this
+// exact digest, moments earlier — recordStageArtifacts puts them on the wire
+// as a livejournal.OpArtifact and the daemon writes them under
+// runs/<id>/artifacts/. What it cannot do is FIND them by digest: the span
+// source reads the blob store, and nothing mirrors an artifact op into it.
+// (The alternative design — have the daemon mirror artifact ops named
+// spans/* into its store — is recorded on #3805; it trades this second
+// transfer for a dependency on artifact NAMING, and loses both copies if the
+// artifact emit fails.)
 //
 // Best effort with a stderr line, deliberately, and in that ORDER: the
 // journal artifact is emitted first so the transcript is preserved even when
@@ -339,6 +360,16 @@ func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string
 	return ref, nil
 }
 
+// spanBlobPutTimeout bounds the span PUT. This call sits on the stage's
+// critical path — the harness has finished, the result is not returned until
+// the recorder does — and BlobClient's own fallback is 60s
+// (internal/dispatcher/blob.go defaultBlobTimeout), so a blob plane that
+// HANGS rather than refusing would hold a finished stage for a minute for a
+// best-effort telemetry copy. A transcript is bounded by
+// DefaultMaxTranscriptBytes, so this is generous for the transfer itself.
+// A var, not a const, so the timeout path itself is testable in bounded time.
+var spanBlobPutTimeout = 10 * time.Second
+
 // putSpanBlob publishes span bytes to the blob plane under digest. Silent on
 // success — the daemon-side evidence is the blob's presence — and one stderr
 // line on failure, never an error: see RecordSpanWithSchema.
@@ -346,7 +377,9 @@ func (r podArtifactRecorder) putSpanBlob(digest string, scrubbed []byte) {
 	if r.blobs == nil {
 		return
 	}
-	if err := r.blobs.Put(context.Background(), digest, scrubbed); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), spanBlobPutTimeout)
+	defer cancel()
+	if err := r.blobs.Put(ctx, digest, scrubbed); err != nil {
 		_, _ = fmt.Fprintf(r.stderr, "record span blob %s: %v\n", digest, err)
 	}
 }
