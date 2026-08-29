@@ -1,6 +1,8 @@
 // Command config-sync turns a config-as-code repo into the Goobers CRs the
 // operator reconciles (M12). Default mode renders the desired CR manifest set
-// for ArgoCD to apply; --apply writes directly to the cluster (and prunes).
+// for ArgoCD to apply; --apply writes directly to the cluster, publishing the
+// set as one generation and pruning stale objects only once that generation is
+// authoritative.
 //
 //	config-sync --config ./my-config-repo --out ./rendered
 //	config-sync --config ./my-config-repo --apply --namespace goobers-system
