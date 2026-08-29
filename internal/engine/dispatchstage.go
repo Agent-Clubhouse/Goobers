@@ -648,7 +648,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 //     when Goober.Review errors — classed by the pod's own Retryable
 //     marking, so a substrate fault (kit, credential, checkout, context)
 //     retries on a fresh pod under the gate's evaluator retry bound and a
-//     harness failure fails the run.
+//     harness failure fails the run. The two kit-FETCH codes are classed
+//     here regardless of that marking; see reviewKitFetchFailure (#3888).
 //   - No verdict on a successful session: refused. Nothing to route on.
 //   - An empty Decision, or a verdict the shared verdict schema rejects:
 //     refused (#3838's shape — a substituted surrender blob must never
@@ -667,7 +668,8 @@ func (a *Activities) reviewActivityResult(input DispatchStageInput, number int, 
 			code = "agentic_review_failed"
 		}
 		err := fmt.Errorf("engine: reviewer gate %q attempt %d failed in its pod: %s: %s", stage, number, code, message)
-		if surrendered.Result.Error != nil && surrendered.Result.Error.Retryable {
+		retryable := surrendered.Result.Error != nil && surrendered.Result.Error.Retryable
+		if retryable || reviewKitFetchFailure(code) {
 			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(err))
 		}
 		return stageActivityResult{}, classifySeamError(err)
@@ -693,7 +695,36 @@ func (a *Activities) reviewActivityResult(input DispatchStageInput, number int, 
 // the same api/validate validator harness.Executor builds — so the engine's
 // re-validation of a surrendered verdict reads the identical
 // verdict.schema.json the pod's harness validated against.
+//
+// The singleton is read from every dispatch activity the worker runs
+// concurrently; api/validate.Validator is safe for that by contract (#3887).
 var verdictValidator = sync.OnceValues(validate.New)
+
+// reviewKitFetchFailure reports whether a surrendered failure code names the
+// pod's kit FETCH — the two refusals a stage pod makes before it holds a kit
+// at all (dispatcher.CodeAgenticKitMissing, CodeAgenticKitUnavailable).
+//
+// Both are substrate faults on the way to the reviewer, never the reviewer's
+// own outcome: a pod created without a kit digest is a dispatch/podspec fault,
+// and a digest the blob plane would not serve is a blob-plane transport fault
+// — the same class context materialization already carries. Neither says
+// anything about the change under review, and a gate has no branch for "the
+// reviewer never started", so both belong on the gate's evaluator retry bound
+// with a fresh pod rather than failing the run.
+//
+// They are classed HERE rather than pod-side because the pod cannot class
+// them: both returns precede the kit, so they precede kit.IsReview(), and the
+// pod surrenders them with Retryable=false. input.Review is the engine's own
+// knowledge, so the engine applies it (#3888). This runs only on the review
+// arm — a task dispatch's surrendered failure stays the business outcome the
+// definition routes on, untouched.
+func reviewKitFetchFailure(code string) bool {
+	switch code {
+	case dispatcher.CodeAgenticKitMissing, dispatcher.CodeAgenticKitUnavailable:
+		return true
+	}
+	return false
+}
 
 // validateSurrenderedVerdict is the engine's fail-closed read of a verdict
 // that crossed the surrender plane: a non-empty Decision first (the one field
