@@ -294,6 +294,13 @@ func TestUnpinnedAndSelfPinnedGatesKeepTheReviewGooberArm(t *testing.T) {
 		if seen.TaskID == "" {
 			t.Fatal("ActReviewGoober never ran")
 		}
+		// The workspace path is stamped by the provisioner per attempt (a
+		// fresh temp dir each run) and is the one field that legitimately
+		// differs between two executions of the same arm.
+		if seen.Workspace == "" {
+			t.Fatal("the reviewer's envelope carries no provisioned workspace")
+		}
+		seen.Workspace = ""
 		return observed{Env: seen, Request: requestFor(t, workspaces.provisioned(), "review")}
 	}
 	unpinned := run(t, nil)
