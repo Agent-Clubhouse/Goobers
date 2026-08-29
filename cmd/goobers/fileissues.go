@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/nomination"
 	"github.com/goobers/goobers/providers"
 )
@@ -25,8 +26,18 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"and evidence; this stage dedupes by body marker against every issue\n" +
 	"carrying the nominated label, excludes anything flake-watch already\n" +
 	"fingerprints, enforces maxPerRun, and creates issues with a retry-safe\n" +
-	"idempotency key. It never applies goobers:approved: that is the SEC-047\n" +
-	"trust decision and a maintainer supplies it.\n\n" +
+	"idempotency key.\n\n" +
+	"goobers:approved (the SEC-047 trust label) is applied on one condition\n" +
+	"only (decision 004): the nomination's evidence names a finding — a go\n" +
+	"vet diagnostic, a golangci-lint issue (linter + file + line) or a go\n" +
+	"test failure (package + test) — that the deterministic signalsStage's\n" +
+	"stdout artifact of THIS run contains byte for byte, as parsed by this\n" +
+	"stage from the run journal; plus riskClass low, type:bug, one package,\n" +
+	"no load-bearing path, no needs-human trigger, no prior issue with the\n" +
+	"same key. autoApprove=deterministic-only opts in (default never) and\n" +
+	"the label is added with the github:issues:approve credential only.\n" +
+	"Everything else files unapproved with the reasons in the result. On a\n" +
+	"stage pod the run journal is unreachable, so nothing is approved.\n\n" +
 	"With --check, only validate the artifact and run the read-only dedupe\n" +
 	"scan (github:issues:read); nothing is created. The write path must be\n" +
 	"bound to a --check that marked this artifact valid: wire the check\n" +
@@ -35,15 +46,20 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"checkStage's recorded result is in the run journal.\n\n" +
 	"Inputs: nominationsFile (nominations.json), producerStage (triage),\n" +
 	"backlogLabel (required), partitionLabel (required), maxPerRun (3),\n" +
-	"dedupeWindowDays (21), nominatedLabel, checkDigest, checkFile\n" +
-	"(nomination-check.json), checkStage (validate-nominations),\n" +
-	"resultFile (filed-nominations.json).\n" +
+	"dedupeWindowDays (21), nominatedLabel, autoApprove (never), signalsStage\n" +
+	"(collect-repo-signals), checkDigest, checkFile (nomination-check.json),\n" +
+	"checkStage (validate-nominations), resultFile (filed-nominations.json).\n" +
 	"Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.\n"
 
 const (
 	fileIssuesResultFileName = "filed-nominations.json"
 	fileIssuesCheckFileName  = "nomination-check.json"
 	fileIssuesArtifactName   = "nominations.json"
+	// fileIssuesSignalsStage is the default deterministic stage whose stdout
+	// artifact carries the raw go vet / golangci-lint / go test output a
+	// nomination's finding evidence is confirmed against (the signalsStage
+	// input).
+	fileIssuesSignalsStage = "collect-repo-signals"
 )
 
 // fileIssuesCheckResult is `file-issues --check`'s result file; its keys are
@@ -52,15 +68,21 @@ const (
 // (inputsFrom: nominationsDigest) is bound to a check that marked the
 // artifact valid — an invalid check carries no digest to bind to.
 type fileIssuesCheckResult struct {
-	Valid             bool                     `json:"valid"`
-	NominationsDigest string                   `json:"nominationsDigest"`
-	FiledCount        int                      `json:"filedCount"`
-	SuppressedCount   int                      `json:"suppressedCount"`
-	OverBudget        int                      `json:"overBudget"`
-	Errors            []string                 `json:"errors"`
-	SchemaInvalid     bool                     `json:"schemaInvalid,omitempty"`
-	Suppressions      []nomination.Suppression `json:"suppressions,omitempty"`
-	Overflow          []string                 `json:"overflow,omitempty"`
+	Valid             bool   `json:"valid"`
+	NominationsDigest string `json:"nominationsDigest"`
+	FiledCount        int    `json:"filedCount"`
+	SuppressedCount   int    `json:"suppressedCount"`
+	OverBudget        int    `json:"overBudget"`
+	// ApprovableCount is how many of the candidates to file clear every
+	// deterministic approval bound — what a write with
+	// autoApprove=deterministic-only and the approve credential would
+	// approve.
+	ApprovableCount int                      `json:"approvableCount"`
+	Findings        fileIssuesFindings       `json:"findings"`
+	Errors          []string                 `json:"errors"`
+	SchemaInvalid   bool                     `json:"schemaInvalid,omitempty"`
+	Suppressions    []nomination.Suppression `json:"suppressions,omitempty"`
+	Overflow        []string                 `json:"overflow,omitempty"`
 }
 
 // fileIssuesResult is `file-issues`' result file.
@@ -68,14 +90,30 @@ type fileIssuesResult struct {
 	NominationsDigest string                   `json:"nominationsDigest"`
 	Created           int                      `json:"created"`
 	Filed             int                      `json:"filed"`
+	Approved          int                      `json:"approved"`
+	Unapproved        int                      `json:"unapproved"`
 	Suppressed        int                      `json:"suppressed"`
 	Overflow          int                      `json:"overflow"`
 	Refused           int                      `json:"refused"`
+	Findings          fileIssuesFindings       `json:"findings"`
 	Issues            []nomination.FiledIssue  `json:"issues"`
 	Suppressions      []nomination.Suppression `json:"suppressions,omitempty"`
 	OverflowKeys      []string                 `json:"overflowKeys,omitempty"`
 	Refusals          []nomination.Refusal     `json:"refusals,omitempty"`
 	Annotated         []string                 `json:"annotated,omitempty"`
+}
+
+// fileIssuesFindings summarizes the deterministic tool findings the stage
+// could confirm nominations against: where they came from, or why none could
+// be read.
+type fileIssuesFindings struct {
+	Available bool     `json:"available"`
+	Stage     string   `json:"stage"`
+	Reason    string   `json:"reason,omitempty"`
+	Vet       int      `json:"vet"`
+	Lint      int      `json:"lint"`
+	Test      int      `json:"test"`
+	Problems  []string `json:"problems,omitempty"`
 }
 
 func runFileIssues(args []string, stdout, stderr io.Writer) int {
@@ -116,10 +154,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	signalsStage := providerInput("signalsStage", fileIssuesSignalsStage)
 	if !validation.Valid {
 		if *checkOnly {
 			return writeFileIssuesCheck(stdout, stderr, resultFile, fileIssuesCheckResult{
-				Errors: validation.Errors, SchemaInvalid: validation.SchemaInvalid,
+				Errors: validation.Errors, SchemaInvalid: validation.SchemaInvalid, Findings: fileIssuesFindings{Stage: signalsStage},
 			})
 		}
 		pf(stderr, "error: refusing to file an invalid nominations artifact: %s\n", strings.Join(validation.Errors, "; "))
@@ -130,6 +169,15 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// The tool findings a nomination can be confirmed against come from the
+	// deterministic signals stage's stdout artifact of this run, read from
+	// the run journal — never from a file the finder could have written.
+	// Unreachable (a stage pod) means nothing matches and nothing is
+	// approved; the reason is recorded, not hidden.
+	findings, findingsSummary := loadFileIssuesFindings(root, runID, signalsStage)
+	if !findingsSummary.Available {
+		pf(stderr, "warning: %s; no nomination can be approved\n", findingsSummary.Reason)
 	}
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -147,7 +195,7 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	publisher := nomination.Publisher{Repo: repo, RunID: runID, Policy: policy}
+	publisher := nomination.Publisher{Repo: repo, RunID: runID, Policy: policy, Findings: findings, FindingsUnavailable: findingsSummary.Reason}
 	if *checkOnly {
 		token, err := providerToken(capability.GitHubIssuesRead)
 		if err != nil {
@@ -162,6 +210,18 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		publisher.Provider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+		if policy.AutoApprove {
+			// The approve label is applied by the capability's own credential
+			// — never the write token — so the far-side label-event ledger
+			// names the approving identity. A missing credential is an unmet
+			// bound, not a crash: everything files unapproved and says so.
+			approveToken, err := providerToken(capability.GitHubIssuesApprove)
+			if err != nil {
+				pf(stderr, "warning: autoApprove is deterministic-only but %v; filing every nomination unapproved\n", err)
+			} else {
+				publisher.Approver = newCachedGitHubProvider(root, approveToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+			}
+		}
 	}
 
 	ctx, cancel := providerCommandContext()
@@ -171,9 +231,16 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, "scan nominations", err, fileIssuesResultFileName)
 		}
+		approvable := 0
+		for _, cand := range plan.File {
+			if len(cand.ApprovalUnmet) == 0 {
+				approvable++
+			}
+		}
 		return writeFileIssuesCheck(stdout, stderr, resultFile, fileIssuesCheckResult{
 			Valid: true, NominationsDigest: plan.Digest, FiledCount: len(plan.File),
 			SuppressedCount: len(plan.Suppressed), OverBudget: len(plan.Overflow),
+			ApprovableCount: approvable, Findings: findingsSummary,
 			Errors: []string{}, Suppressions: plan.Suppressed, Overflow: plan.Overflow,
 		})
 	}
@@ -188,13 +255,17 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 			created++
 		}
 	}
+	approved := result.Approved()
 	data, err := json.Marshal(fileIssuesResult{
 		NominationsDigest: result.Digest,
 		Created:           created,
 		Filed:             len(result.Filed),
+		Approved:          approved,
+		Unapproved:        len(result.Filed) - approved,
 		Suppressed:        len(result.Suppressed),
 		Overflow:          len(result.Overflow),
 		Refused:           len(result.Refused),
+		Findings:          findingsSummary,
 		Issues:            nonNilFiled(result.Filed),
 		Suppressions:      result.Suppressed,
 		OverflowKeys:      result.Overflow,
@@ -209,9 +280,64 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "filed %d nomination(s) (%d created), suppressed %d, %d over budget, %d refused\n",
-		len(result.Filed), created, len(result.Suppressed), len(result.Overflow), len(result.Refused))
+	pf(stdout, "filed %d nomination(s) (%d created, %d approved, %d unapproved), suppressed %d, %d over budget, %d refused\n",
+		len(result.Filed), created, approved, len(result.Filed)-approved, len(result.Suppressed), len(result.Overflow), len(result.Refused))
+	for _, issue := range result.Filed {
+		if !issue.Approved {
+			pf(stdout, "unapproved %q (#%s): %s\n", issue.Key, issue.IssueID, strings.Join(issue.ApprovalUnmet, "; "))
+		}
+	}
 	return 0
+}
+
+// loadFileIssuesFindings reads the signals stage's stdout artifact of this
+// run through the run journal — the same path readDecompositionInput's
+// journal arm uses — and parses the tool findings out of it. There is
+// deliberately no file arm: a file in the working directory could have been
+// written by anything, while the journal artifact is what the runner
+// recorded from the deterministic stage's own stdout. A stage pod cannot
+// reach the journal; the summary then says so and nothing is approved.
+func loadFileIssuesFindings(root, runID, stage string) (*nomination.Findings, fileIssuesFindings) {
+	summary := fileIssuesFindings{Stage: stage}
+	data, err := readStageStdoutArtifact(root, runID, stage)
+	if err != nil {
+		summary.Reason = fmt.Sprintf("the %s stdout artifact of run %s is not readable from this stage (%v); a stage pod cannot reach the run journal, so no nomination can be confirmed against a tool finding", stage, runID, err)
+		return nil, summary
+	}
+	findings := nomination.ParseSignals(data)
+	summary.Available = true
+	summary.Vet = findings.Counts[nomination.ToolVet]
+	summary.Lint = findings.Counts[nomination.ToolLint]
+	summary.Test = findings.Counts[nomination.ToolTest]
+	summary.Problems = findings.Problems
+	return findings, summary
+}
+
+// readStageStdoutArtifact returns the stdout artifact the run journal
+// records for stage's successful finish: the executor records every
+// deterministic stage's captured stdout as "<task>/stdout.log" and lists it
+// in the stage.finished event (internal/executor/shell.go).
+func readStageStdoutArtifact(root, runID, stage string) ([]byte, error) {
+	if runID == "" {
+		return nil, errors.New("no run id")
+	}
+	runDir, err := runDirFor(layoutFor(root), runID)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return nil, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, err
+	}
+	ref, ok := decompositionStageArtifact(events, stage, "/stdout.log")
+	if !ok {
+		return nil, fmt.Errorf("the run journal records no successful %s stage with a stdout artifact", stage)
+	}
+	return reader.ArtifactBytes(ref)
 }
 
 func nonNilFiled(filed []nomination.FiledIssue) []nomination.FiledIssue {
@@ -269,6 +395,13 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 		return nomination.Policy{}, fmt.Errorf("dedupeWindowDays input must be a non-negative integer, got %q", providerInput("dedupeWindowDays", "21"))
 	}
 	policy.DedupeWindow = time.Duration(days) * 24 * time.Hour
+	switch mode := strings.ToLower(strings.TrimSpace(providerInput("autoApprove", "never"))); mode {
+	case "", "never":
+	case "deterministic-only":
+		policy.AutoApprove = true
+	default:
+		return nomination.Policy{}, fmt.Errorf("autoApprove input must be never or deterministic-only, got %q", mode)
+	}
 	return policy, nil
 }
 

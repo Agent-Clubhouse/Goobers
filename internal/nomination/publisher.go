@@ -3,6 +3,7 @@ package nomination
 import (
 	"context"
 	"fmt"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -24,15 +25,29 @@ type Provider interface {
 	CreateWorkItemComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
 }
 
+// Approver is the surface that applies goobers:approved. It is a separate
+// value from Provider because it must be authenticated by the
+// github:issues:approve credential — never the write credential — so the
+// label-event ledger on the far side names the approving identity. It is
+// used for the label add and nothing else.
+type Approver interface {
+	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+}
+
 // Policy is the publisher's deterministic label and budget policy, sourced
 // from stage inputs — never from the artifact.
 //
-// The publisher never applies goobers:approved. That label is the SEC-047
-// trust decision (docs/requirements/security.md): a maintainer supplies it,
-// exactly as the nominate stage of docs/design/test-suite-quality-workflow.md
-// leaves nominated issues unapproved. Every precondition a filer could check
-// is written by the finder's own model, so a filer-side approval would mint
-// the trust label from inputs the nominating model controls end to end.
+// goobers:approved is the SEC-047 trust label (docs/requirements/security.md).
+// The publisher applies it on one condition only (engagement decision 004):
+// the nomination names a finding — a go vet diagnostic, a golangci-lint
+// issue, or a go test failure — that the deterministic collect-repo-signals
+// stage's own tool output contains byte for byte (Publisher.Findings), and
+// clears the mechanical bounds in approvalUnmet. Every other precondition a
+// filer could check is written by the finder's own model; a tool the model
+// does not control reporting the defect is the one thing it cannot forge.
+// Anything whose only evidence is a telemetry aggregate, a journal pointer
+// or a source location the model chose files goobers:nominated, unapproved,
+// and waits for a maintainer.
 type Policy struct {
 	// BacklogLabel (the instance's backlog label) and PartitionLabel (its
 	// claim partition, e.g. goobers:cloud) are applied to every filed issue so
@@ -46,6 +61,11 @@ type Policy struct {
 	// DedupeWindow applies only to CLOSED matches: an open match always
 	// suppresses, regardless of age.
 	DedupeWindow time.Duration
+	// AutoApprove opts the stage into applying goobers:approved to
+	// nominations that match a deterministic tool finding and clear every
+	// mechanical bound (the autoApprove: deterministic-only input). Default
+	// off: everything files unapproved.
+	AutoApprove bool
 }
 
 func (p Policy) validate() error {
@@ -68,7 +88,18 @@ func (p Policy) validate() error {
 // Publisher files nominations.
 type Publisher struct {
 	Provider Provider
-	Repo     providers.RepositoryRef
+	// Approver is nil when the github:issues:approve credential did not
+	// resolve (or the stage did not opt in); then no nomination is approved
+	// and every filed issue names that reason.
+	Approver Approver
+	// Findings is the parsed collect-repo-signals stdout artifact of THIS
+	// run — the only source a nomination's finding evidence is confirmed
+	// against. Nil when the artifact is unreachable (a stage pod cannot read
+	// the run journal): then nothing matches, nothing is approved, and
+	// FindingsUnavailable names why.
+	Findings            *Findings
+	FindingsUnavailable string
+	Repo                providers.RepositoryRef
 	// RunID is the stage's own run id (GOOBERS_RUN_ID). The artifact must
 	// name the same run; it is what every marker, footer and provenance line
 	// carries.
@@ -88,9 +119,19 @@ type Suppression struct {
 type Candidate struct {
 	Nomination Nomination
 	KeyHash    string
-	// Strength orders the budget: 3 artifact-backed, 2 journal-backed, 1
-	// source-location-only.
+	// Strength orders the budget: 2 when every finding pointer the
+	// nomination carries is confirmed against the tool output (and there is
+	// at least one), 1 otherwise. It is keyed on the deterministic match
+	// alone, so the model cannot promote its own items by claiming evidence
+	// kinds.
 	Strength int
+	// Findings are the confirmed tool findings, one per finding pointer, in
+	// evidence order — empty unless every finding pointer matched.
+	Findings []Finding
+	// ApprovalUnmet names every deterministic approval bound the candidate
+	// fails, evaluated by the scan. Empty means the write would approve it,
+	// given the opt-in and the approve credential (file adds those two).
+	ApprovalUnmet []string
 	// OpenDuplicate is the open issue that suppressed this candidate, when
 	// one did (such candidates are in Plan.Suppressed, not Plan.File).
 	OpenDuplicate string
@@ -116,12 +157,17 @@ type Plan struct {
 }
 
 // FiledIssue records one issue the publisher created or, on retry, found.
+// Approved reports whether goobers:approved was applied (or already
+// present) through the approve credential; ApprovalUnmet names every reason
+// it was not.
 type FiledIssue struct {
-	Key     string   `json:"key"`
-	IssueID string   `json:"issueId"`
-	URL     string   `json:"url,omitempty"`
-	Labels  []string `json:"labels"`
-	Reused  bool     `json:"reused,omitempty"`
+	Key           string   `json:"key"`
+	IssueID       string   `json:"issueId"`
+	URL           string   `json:"url,omitempty"`
+	Labels        []string `json:"labels"`
+	Approved      bool     `json:"approved"`
+	ApprovalUnmet []string `json:"approvalUnmet,omitempty"`
+	Reused        bool     `json:"reused,omitempty"`
 }
 
 // Refusal records an issue the publisher declined to label.
@@ -139,6 +185,17 @@ type Result struct {
 	Overflow   []string
 	Refused    []Refusal
 	Annotated  []string
+}
+
+// Approved counts filed issues that carry goobers:approved.
+func (r Result) Approved() int {
+	n := 0
+	for _, f := range r.Filed {
+		if f.Approved {
+			n++
+		}
+	}
+	return n
 }
 
 func (p Publisher) now() time.Time {
@@ -206,7 +263,8 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 	}
 	var admitted []Candidate
 	for _, n := range artifact.Nominations {
-		cand := Candidate{Nomination: n, KeyHash: KeyHash(n.DedupeKey), Strength: evidenceStrength(n)}
+		cand := Candidate{Nomination: n, KeyHash: KeyHash(n.DedupeKey)}
+		cand.Findings, cand.Strength = p.matchFindings(n)
 		if n.TestFailure != nil {
 			fp := flake.Fingerprint(n.TestFailure.Package, n.TestFailure.Test, flake.NormalizeSignature(n.TestFailure.Signature))
 			if owner, owned := byFingerprint[fp]; owned {
@@ -246,6 +304,7 @@ func (p Publisher) Scan(ctx context.Context, artifact Artifact) (Plan, error) {
 			}
 			continue
 		}
+		cand.ApprovalUnmet = p.approvalUnmet(cand)
 		admitted = append(admitted, cand)
 	}
 	sort.SliceStable(admitted, func(i, j int) bool {
@@ -369,14 +428,38 @@ func (p Publisher) file(ctx context.Context, artifact Artifact, cand Candidate, 
 			return FiledIssue{}, nil, fmt.Errorf("label issue #%s for nomination %q: %w", item.ID, n.Key, err)
 		}
 	}
-	return FiledIssue{Key: n.Key, IssueID: item.ID, URL: item.URL, Reused: reused, Labels: append([]string(nil), item.Labels...)}, nil, nil
+	filed := FiledIssue{Key: n.Key, IssueID: item.ID, URL: item.URL, Reused: reused, ApprovalUnmet: cand.ApprovalUnmet}
+	switch {
+	case len(filed.ApprovalUnmet) > 0:
+	case !p.Policy.AutoApprove:
+		filed.ApprovalUnmet = []string{"autoApprove is never on this stage (set autoApprove: deterministic-only to approve confirmed tool findings)"}
+	case p.Approver == nil:
+		filed.ApprovalUnmet = []string{"the github:issues:approve credential did not resolve"}
+	default:
+		if !item.HasLabel(providers.LabelApproved) {
+			// The approve label is applied by the capability's own
+			// credential — never the write token — so the far-side
+			// label-event ledger names the approving identity.
+			item, err = p.Approver.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: p.Repo, ID: item.ID, ExpectedRevision: item.Revision, AddLabels: []string{providers.LabelApproved},
+			})
+			if err != nil {
+				return FiledIssue{}, nil, fmt.Errorf("approve issue #%s for nomination %q: %w", item.ID, n.Key, err)
+			}
+		}
+		filed.Approved = true
+	}
+	filed.Labels = append([]string(nil), item.Labels...)
+	return filed, nil, nil
 }
 
-// baseLabels is the closed set the publisher applies: backlog, partition and
-// nominated markers, the validated area/type labels, and needs-human when the
-// finder or its source finding asked for a human. Approval, readiness,
-// priority, claim and partition-sibling labels are never in this set — a
-// maintainer owns the trust decision and curation owns the rest.
+// baseLabels is the closed set the publisher applies with the write
+// credential: backlog, partition and nominated markers, the validated
+// area/type labels, and needs-human when the finder or its source finding
+// asked for a human. goobers:approved is never in this set — it is applied
+// separately, by the approve credential, and only on a confirmed tool
+// finding (file). Readiness, priority, claim and partition-sibling labels are
+// never applied at all — curation owns them.
 func (p Publisher) baseLabels(n Nomination, needsHuman bool) []string {
 	labels := []string{p.Policy.BacklogLabel, p.Policy.PartitionLabel, p.Policy.NominatedLabel}
 	labels = append(labels, n.Labels...)
@@ -384,6 +467,166 @@ func (p Publisher) baseLabels(n Nomination, needsHuman bool) []string {
 		labels = append(labels, providers.LabelNeedsHuman)
 	}
 	return labels
+}
+
+// loadBearingPaths are envelopes a change cannot touch and still be
+// auto-approved (decision 004 §2): the API and its schemas, design docs, CI
+// workflows, deployment, the provider model, and the journal. A directory
+// entry (trailing slash) covers everything under it; a file entry is exact.
+var loadBearingPaths = []string{"api/", "api/schemas/", "docs/design/", ".github/workflows/", "deploy/", "providers/model.go", "internal/journal/"}
+
+// matchFindings confirms every finding pointer a nomination carries against
+// the tool output. It returns the confirmed findings and the budget
+// strength: 2 only when there is at least one finding pointer and every one
+// of them matched; one fabricated pointer beside a real one is a fabricated
+// nomination.
+func (p Publisher) matchFindings(n Nomination) ([]Finding, int) {
+	var matched []Finding
+	for _, e := range n.Evidence {
+		if e.Kind != EvidenceFinding {
+			continue
+		}
+		finding, ok := p.Findings.Match(e)
+		if !ok {
+			return nil, 1
+		}
+		matched = append(matched, finding)
+	}
+	if len(matched) == 0 {
+		return nil, 1
+	}
+	return matched, 2
+}
+
+// approvalUnmet evaluates the deterministic approval bounds and names every
+// one the candidate fails: a confirmed tool finding (decision 004 §1), then
+// the mechanical bounds the brief states (§2) — riskClass low, type:bug, one
+// package, no load-bearing path, no needs-human trigger. The last §2 bound,
+// no open or windowed-closed duplicate, holds by construction: Scan
+// suppresses such candidates before this is evaluated, so an admitted
+// candidate has none. The opt-in and the approve credential are checked at
+// filing time (file), so a --check reports what the write would approve.
+func (p Publisher) approvalUnmet(cand Candidate) []string {
+	n := cand.Nomination
+	var unmet []string
+	switch {
+	case p.Findings == nil:
+		reason := p.FindingsUnavailable
+		if reason == "" {
+			reason = "the collect-repo-signals stdout artifact is not readable from this stage"
+		}
+		unmet = append(unmet, "no tool finding can be confirmed: "+reason)
+	case len(cand.Findings) == 0:
+		named := false
+		for i, e := range n.Evidence {
+			if e.Kind != EvidenceFinding {
+				continue
+			}
+			named = true
+			if _, ok := p.Findings.Match(e); !ok {
+				unmet = append(unmet, fmt.Sprintf("evidence %d names a %s finding the collect-repo-signals artifact of this run does not contain", i, e.Tool))
+			}
+		}
+		if !named {
+			unmet = append(unmet, "no evidence names a deterministic tool finding (kind finding)")
+		}
+	}
+	if n.RiskClass != RiskLow {
+		unmet = append(unmet, fmt.Sprintf("riskClass is %q, not low", n.RiskClass))
+	}
+	if !slices.Contains(n.Labels, "type:bug") {
+		unmet = append(unmet, "labels do not include type:bug (only a defect a tool reported is approvable)")
+	}
+	if len(cand.Findings) > 0 {
+		unmet = append(unmet, fixSurfaceUnmet(n, cand.Findings)...)
+	}
+	if n.RequiresHumanReview {
+		unmet = append(unmet, "the source finding requires human review")
+	}
+	return unmet
+}
+
+// fixSurfaceUnmet checks the "one bounded fix surface" bound: every confirmed
+// finding lies in one package, every source pointer lies in that package,
+// and none of it is load-bearing. A vet or lint finding's package is its
+// file's directory; a test finding's package is its import path, which a
+// source pointer's directory must be a suffix of.
+func fixSurfaceUnmet(n Nomination, findings []Finding) []string {
+	var unmet []string
+	surface := ""
+	for _, f := range findings {
+		pkg := findingPackage(f)
+		switch {
+		case surface == "":
+			surface = pkg
+		case pkg != surface:
+			unmet = append(unmet, fmt.Sprintf("the confirmed findings span more than one package (%s, %s)", surface, pkg))
+		}
+		if findingTouchesLoadBearing(f) {
+			unmet = append(unmet, fmt.Sprintf("finding %s touches a load-bearing path", f))
+		}
+	}
+	for _, e := range n.Evidence {
+		if e.Kind != EvidenceSource {
+			continue
+		}
+		if !inPackage(e.Path, surface) {
+			unmet = append(unmet, fmt.Sprintf("source evidence %q is outside the finding's package %q", e.Path, surface))
+		}
+		if touchesLoadBearing(e.Path) {
+			unmet = append(unmet, fmt.Sprintf("source evidence touches load-bearing path %q", e.Path))
+		}
+	}
+	return slices.Compact(unmet)
+}
+
+func findingPackage(f Finding) string {
+	if f.Tool == ToolTest {
+		return f.Package
+	}
+	return path.Dir(f.Path)
+}
+
+// inPackage reports whether a source path's directory is the package: equal
+// to a directory surface, or a suffix of an import-path surface.
+func inPackage(source, surface string) bool {
+	dir := path.Dir(source)
+	if dir == surface {
+		return true
+	}
+	return dir != "." && strings.HasSuffix(surface, "/"+dir)
+}
+
+func findingTouchesLoadBearing(f Finding) bool {
+	if f.Tool != ToolTest {
+		return touchesLoadBearing(f.Path)
+	}
+	// A test finding's fix surface is its whole package directory, which is
+	// load-bearing when a load-bearing entry lies in or above it: the entry's
+	// directory is a suffix of, or a segment run inside, the import path.
+	for _, entry := range loadBearingPaths {
+		dir := strings.TrimSuffix(entry, "/")
+		if !strings.HasSuffix(entry, "/") {
+			dir = path.Dir(entry)
+		}
+		if strings.HasSuffix(f.Package, "/"+dir) || strings.Contains(f.Package, "/"+dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func touchesLoadBearing(p string) bool {
+	for _, entry := range loadBearingPaths {
+		if strings.HasSuffix(entry, "/") {
+			if p == strings.TrimSuffix(entry, "/") || strings.HasPrefix(p, entry) {
+				return true
+			}
+		} else if p == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Publisher) annotateOpenDuplicate(ctx context.Context, cand Candidate) (bool, error) {
@@ -426,6 +669,12 @@ func IssueBody(keyHash, runID string, producer Producer, n Nomination, needsHuma
 			} else {
 				fmt.Fprintf(&b, "- source: `%s`\n", e.Path)
 			}
+		case EvidenceFinding:
+			if e.Tool == ToolTest {
+				fmt.Fprintf(&b, "- finding: %s `%s` `%s`\n", e.Tool, e.Package, e.Test)
+			} else {
+				fmt.Fprintf(&b, "- finding: %s `%s:%d` %s\n", e.Tool, e.Path, e.Line, e.Rule)
+			}
 		}
 	}
 	if n.TestFailure != nil {
@@ -443,19 +692,6 @@ func IssueBody(keyHash, runID string, producer Producer, n Nomination, needsHuma
 // stamps into every create, keyed by nomination and run.
 func CreateRunID(keyHash, runID string) string {
 	return "nomination-" + keyHash + "-" + runID
-}
-
-func evidenceStrength(n Nomination) int {
-	strength := 1
-	for _, e := range n.Evidence {
-		switch e.Kind {
-		case EvidenceArtifact:
-			return 3
-		case EvidenceJournal:
-			strength = 2
-		}
-	}
-	return strength
 }
 
 func missingLabels(have, want []string) []string {

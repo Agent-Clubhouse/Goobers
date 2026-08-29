@@ -28,6 +28,23 @@ func TestValidateAcceptsClosedArtifact(t *testing.T) {
 	}
 }
 
+// TestValidateAcceptsEveryFindingShape pins that a well-formed finding
+// pointer of each tool passes validation: the shape check must not refuse
+// what the publisher would confirm.
+func TestValidateAcceptsEveryFindingShape(t *testing.T) {
+	for name, e := range map[string]Evidence{
+		"vet":  {Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of Close is not used"},
+		"lint": {Kind: EvidenceFinding, Tool: ToolLint, Path: "internal/worktree/manager.go", Line: 88, Rule: "errcheck"},
+		"test": {Kind: EvidenceFinding, Tool: ToolTest, Package: "github.com/goobers/goobers/internal/worktree", Test: "TestManagerClose"},
+	} {
+		a := validArtifact()
+		a.Nominations[0].Evidence = []Evidence{e}
+		if got := Validate(a, testRunID); !got.Valid {
+			t.Errorf("%s finding pointer rejected: %v", name, got.Errors)
+		}
+	}
+}
+
 func TestValidateRejectsEveryClosedRule(t *testing.T) {
 	// forgedFooter is the provider's create-idempotency footer for some other
 	// nomination's key: a body carrying it would make that sibling's create
@@ -84,6 +101,36 @@ func TestValidateRejectsEveryClosedRule(t *testing.T) {
 		{"forged marker in test signature", func(a *Artifact) {
 			a.Nominations[0].TestFailure = &TestFailure{Package: "p", Test: "TestX", Signature: "<!-- goobers-flake-fingerprint:x -->"}
 		}, `testFailure signature contains goobers control text "<!-- goobers-"`},
+		{"finding with unknown tool", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: "staticcheck", Path: "internal/x/y.go", Line: 3, Rule: "SA1"}}
+		}, `has tool "staticcheck" (want vet, lint, or test)`},
+		{"vet finding without a line", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Rule: "result of Close is not used"}}
+		}, "line must be positive"},
+		{"lint finding without a rule", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolLint, Path: "internal/x/y.go", Line: 3}}
+		}, "rule must be a single non-empty line"},
+		{"vet finding with an absolute path", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "/internal/x/y.go", Line: 3, Rule: "r"}}
+		}, "must be a clean relative slash path"},
+		{"vet finding carrying test fields", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Line: 3, Rule: "r", Test: "TestX"}}
+		}, "names a package or test, which only a test finding carries"},
+		{"test finding without a test name", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "github.com/goobers/goobers/internal/x"}}
+		}, "needs both package and test"},
+		{"test finding carrying a path", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "TestX", Path: "internal/x/y.go"}}
+		}, "names a path, line or rule, which only a vet or lint finding carries"},
+		{"finding carrying a journal seq", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "TestX", Seq: 4}}
+		}, "carries journal or artifact fields"},
+		{"control text in a finding rule", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Line: 3, Rule: "<!-- goobers-x"}}
+		}, `evidence 0 rule contains goobers control text "<!-- goobers-"`},
+		{"control text in a finding test name", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "Test" + forgedFooter}}
+		}, `evidence 0 test contains goobers control text "goobers run-id: "`},
 		{"empty dedupe key", func(a *Artifact) { a.Nominations[0].DedupeKey = "" }, "empty dedupeKey"},
 		{"multiline dedupe key", func(a *Artifact) { a.Nominations[0].DedupeKey = "a\nb" }, "malformed dedupeKey"},
 		{"bad key", func(a *Artifact) { a.Nominations[0].Key = "Not A Key" }, "malformed key"},

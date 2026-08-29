@@ -8,9 +8,12 @@
 // goobers.dev/nominations/v1 artifact; `goobers file-issues --check`
 // validates it and runs the read-only dedupe scan; `goobers file-issues`
 // creates the issues. The model proposes area/type labels and evidence; every
-// goobers:* label, the dedupe decision and the budget belong to the publisher.
-// The publisher never applies goobers:approved: that is the SEC-047 trust
-// decision and a maintainer supplies it (see Policy).
+// goobers:* label, the dedupe decision, the budget and the approval decision
+// belong to the publisher. goobers:approved (the SEC-047 trust label) is
+// applied on one condition only — engagement decision 004: the nomination
+// names a finding that the deterministic collect-repo-signals stage's own
+// tool output contains byte for byte (see Findings and Policy.AutoApprove);
+// nothing the model writes can satisfy that on its own.
 package nomination
 
 import (
@@ -59,8 +62,8 @@ var (
 )
 
 // RiskClass is the finder's risk assessment of one nomination. It is rendered
-// into the issue for the maintainer who decides on approval; RiskHuman always
-// files as goobers:needs-human.
+// into the issue; only RiskLow can be auto-approved (and only on a confirmed
+// tool finding), and RiskHuman always files as goobers:needs-human.
 type RiskClass string
 
 // Risk classes.
@@ -75,16 +78,23 @@ type EvidenceKind string
 
 // Evidence kinds. A journal pointer names a run event; an artifact pointer
 // names a stage artifact by path and content digest; a source pointer names a
-// source location. The kind orders the filing budget (artifact > journal >
-// source); none of them is verified by the publisher — they are pointers for
-// the maintainer, not proof.
+// source location; a finding pointer names a deterministic tool finding
+// (Finding) the publisher confirms byte for byte against the
+// collect-repo-signals stdout artifact of this run. Only a confirmed finding
+// counts for anything beyond the maintainer's eyes: it is the one route to
+// goobers:approved and the one thing that orders the filing budget. The
+// other three kinds are pointers for the maintainer, not proof.
 const (
 	EvidenceJournal  EvidenceKind = "journal"
 	EvidenceArtifact EvidenceKind = "artifact"
 	EvidenceSource   EvidenceKind = "source"
+	EvidenceFinding  EvidenceKind = "finding"
 )
 
-// Evidence is one pointer backing a nomination.
+// Evidence is one pointer backing a nomination. A finding pointer carries
+// Tool plus, for vet and lint, Path, Line and Rule (the vet diagnostic text /
+// the linter name), or, for test, Package and Test — exactly the fields of
+// the tool's own record, which the publisher compares byte for byte.
 type Evidence struct {
 	Kind   EvidenceKind `json:"kind"`
 	RunID  string       `json:"runId,omitempty"`
@@ -92,6 +102,11 @@ type Evidence struct {
 	Path   string       `json:"path,omitempty"`
 	Digest string       `json:"digest,omitempty"`
 	Line   int          `json:"line,omitempty"`
+	// Finding fields (kind finding only).
+	Tool    Tool   `json:"tool,omitempty"`
+	Rule    string `json:"rule,omitempty"`
+	Package string `json:"package,omitempty"`
+	Test    string `json:"test,omitempty"`
 }
 
 // TestFailure identifies a test failure the nomination is about, in the
@@ -227,7 +242,10 @@ func validateNomination(where string, n Nomination, dedupeKeys map[string]string
 	for i, e := range n.Evidence {
 		rendered = append(rendered,
 			struct{ name, value string }{fmt.Sprintf("evidence %d path", i), e.Path},
-			struct{ name, value string }{fmt.Sprintf("evidence %d runId", i), e.RunID})
+			struct{ name, value string }{fmt.Sprintf("evidence %d runId", i), e.RunID},
+			struct{ name, value string }{fmt.Sprintf("evidence %d rule", i), e.Rule},
+			struct{ name, value string }{fmt.Sprintf("evidence %d package", i), e.Package},
+			struct{ name, value string }{fmt.Sprintf("evidence %d test", i), e.Test})
 	}
 	if n.TestFailure != nil {
 		rendered = append(rendered,
@@ -327,8 +345,48 @@ func validateEvidence(where string, e Evidence) []string {
 		if e.Line < 0 {
 			errs = append(errs, where+" (source) line must not be negative")
 		}
+	case EvidenceFinding:
+		errs = append(errs, validateFindingEvidence(where+" (finding)", e)...)
 	default:
-		errs = append(errs, fmt.Sprintf("%s has kind %q (want journal, artifact, or source)", where, e.Kind))
+		errs = append(errs, fmt.Sprintf("%s has kind %q (want journal, artifact, source, or finding)", where, e.Kind))
+	}
+	return errs
+}
+
+// validateFindingEvidence checks the shape of a finding pointer per tool: a
+// vet or lint finding is a file, a positive line and a rule (the diagnostic
+// text for vet, the linter name for lint); a test finding is a package and
+// a test name. Fields of the other shape must be empty, so a pointer can
+// never be read as two findings.
+func validateFindingEvidence(where string, e Evidence) []string {
+	var errs []string
+	switch e.Tool {
+	case ToolVet, ToolLint:
+		errs = append(errs, validateEvidencePath(where, e.Path)...)
+		if e.Line <= 0 {
+			errs = append(errs, where+" line must be positive")
+		}
+		if strings.TrimSpace(e.Rule) == "" || strings.ContainsAny(e.Rule, "\r\n") {
+			errs = append(errs, where+" rule must be a single non-empty line (the vet diagnostic text, or the golangci-lint linter name)")
+		}
+		if e.Package != "" || e.Test != "" {
+			errs = append(errs, where+" names a package or test, which only a test finding carries")
+		}
+	case ToolTest:
+		if strings.TrimSpace(e.Package) == "" || strings.TrimSpace(e.Test) == "" {
+			errs = append(errs, where+" needs both package and test")
+		}
+		if strings.ContainsAny(e.Package+e.Test, " \r\n") {
+			errs = append(errs, where+" package and test must be single tokens")
+		}
+		if e.Path != "" || e.Line != 0 || e.Rule != "" {
+			errs = append(errs, where+" names a path, line or rule, which only a vet or lint finding carries")
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("%s has tool %q (want vet, lint, or test)", where, e.Tool))
+	}
+	if e.RunID != "" || e.Seq != 0 || e.Digest != "" {
+		errs = append(errs, where+" carries journal or artifact fields")
 	}
 	return errs
 }
