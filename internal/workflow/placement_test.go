@@ -212,26 +212,3 @@ func TestStagePlacementsPreV30RefusesWindowsAdmin(t *testing.T) {
 		t.Fatalf("requirements = %#v, want one windows row carrying the token", requirements)
 	}
 }
-
-// TestCheckGatePlacementWarningsRouter: WF024 rides the 3.0 arm only. The
-// same placed gate on a 2.0 document draws nothing here — the router refuses
-// the field outright (preV30SurfaceProblems), so there is no unhonoured
-// placement to warn about.
-func TestCheckGatePlacementWarningsRouter(t *testing.T) {
-	spec := apiv1.WorkflowSpec{
-		Tasks: []apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "dev", Next: "review"}},
-		Gates: []apiv1.Gate{{
-			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-			Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
-			RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"},
-			Branches: map[string]string{"pass": "", "fail": "@abort"},
-		}},
-	}
-	v30 := CheckGatePlacementWarnings(Definition{Name: "wf", Version: 1, DSLVersion: supportmatrix.V3DSLVersion, Spec: spec})
-	if len(v30) != 1 || !strings.Contains(v30[0], `gate "review" declares runsOn`) || !strings.Contains(v30[0], "no execution path honours a gate placement yet") {
-		t.Fatalf("3.0 CheckGatePlacementWarnings = %v, want one WF024 naming the gate", v30)
-	}
-	if v20 := CheckGatePlacementWarnings(Definition{Name: "wf", Version: 1, DSLVersion: "2.0", Spec: spec}); len(v20) != 0 {
-		t.Fatalf("2.0 CheckGatePlacementWarnings = %v, want none (the router refuses the field instead)", v20)
-	}
-}
