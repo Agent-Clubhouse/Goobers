@@ -46,9 +46,6 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 	outbox := r9Task("implement")
 	outbox.Outbox = []string{"dist/report.json"}
 
-	parallels := r9Spec(r9Task("implement"))
-	parallels.Parallels = []apiv1.Parallel{{Name: "fan"}}
-
 	cases := []struct {
 		name     string
 		spec     apiv1.WorkflowSpec
@@ -59,7 +56,6 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 		{"cumulative token budget", r9Spec(tokens), ErrUsageLimitsUnsupported, "task.limits.maxTokens/maxCostUSD"},
 		{"cumulative cost budget", r9Spec(cost), ErrUsageLimitsUnsupported, "task.limits.maxTokens/maxCostUSD"},
 		{"outbox export", r9Spec(outbox), ErrOutboxUnsupported, "task.outbox"},
-		{"parallel fan-out", parallels, ErrParallelsUnsupported, "spec.parallels"},
 	}
 
 	for _, tc := range cases {
@@ -72,7 +68,7 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 			if err == nil {
 				t.Fatalf("StartInput admitted a definition declaring %s — the engine walk ignores it silently", tc.wantIn)
 			}
-			if !errIsUnsupportedFeature(err, tc.sentinel) {
+			if !errors.Is(err, tc.sentinel) {
 				t.Errorf("error does not wrap the named sentinel %v: %v", tc.sentinel, err)
 			}
 			var refusal *UnsupportedFeatureError
@@ -92,23 +88,56 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 	}
 }
 
+// TestStartInputRefusesShippedParallels pins the spec-level half of R9 against
+// the REAL declaration rather than a synthetic one: quality-sprint.yaml is the
+// lane finding 002's grep found, so a hand-rolled Parallel{} that the compiler
+// would reject anyway proves nothing about the refusal that matters.
+func TestStartInputRefusesShippedParallels(t *testing.T) {
+	lane := loadProductionLane(t, "goobers", "quality-sprint")
+	if len(lane.Spec.Parallels) == 0 {
+		t.Fatal("quality-sprint no longer declares parallels — retarget this guard at whichever lane does, do not delete it")
+	}
+	r := NewRegistryWithPreviewFeatures(true)
+	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
+		t.Fatalf("RegisterDefinition: %v", err)
+	}
+	_, err := r.StartInput(lane.Name, StartSpec{RunID: "run-1", Gaggle: "goobers"})
+	if err == nil {
+		t.Fatal("StartInput admitted a lane declaring parallels — the engine walk would run only its root path")
+	}
+	if !errors.Is(err, ErrParallelsUnsupported) {
+		t.Errorf("error does not wrap ErrParallelsUnsupported: %v", err)
+	}
+	var refusal *UnsupportedFeatureError
+	if !errors.As(err, &refusal) || refusal.Feature != "spec.parallels" {
+		t.Errorf("refusal does not name spec.parallels: %v", err)
+	}
+	if refusal != nil && refusal.Stage != "" {
+		t.Errorf("a spec-level refusal must name no stage, got %q", refusal.Stage)
+	}
+}
+
 // TestStartInputRefusalReportsEveryDeclaration pins the multi-refusal shape: a
 // definition declaring several R9 features is refused once, with all of them
 // named and each reachable through errors.Is, so an operator sees the whole
-// set instead of fixing them one deploy at a time.
+// set instead of fixing them one deploy at a time. It starts from the shipped
+// parallels lane so the spec-level and task-level halves are exercised
+// together on a definition the compiler actually admits.
 func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
-	task := r9Task("implement")
-	task.Experiment = &apiv1.BanditExperiment{}
-	task.Limits = &apiv1.Limits{MaxCostUSD: 2}
-	task.Outbox = []string{"out.json"}
-	spec := r9Spec(task)
-	spec.Parallels = []apiv1.Parallel{{Name: "fan"}}
+	lane := loadProductionLane(t, "goobers", "quality-sprint")
+	spec := *lane.Spec.DeepCopy()
+	if len(spec.Tasks) == 0 {
+		t.Fatal("quality-sprint declares no tasks")
+	}
+	spec.Tasks[0].Experiment = &apiv1.BanditExperiment{}
+	spec.Tasks[0].Limits = &apiv1.Limits{MaxCostUSD: 2}
+	spec.Tasks[0].Outbox = []string{"out.json"}
 
 	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", Spec: spec}); err != nil {
+	if _, err := r.RegisterDefinition(wf.Definition{Name: "flow", DSLVersion: lane.DSLVersion, Spec: spec}); err != nil {
 		t.Fatalf("RegisterDefinition: %v", err)
 	}
-	_, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
+	_, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "goobers"})
 	if err == nil {
 		t.Fatal("StartInput admitted a definition declaring four unsupported features")
 	}
@@ -156,11 +185,10 @@ func TestStartInputAdmitsSupportedLimits(t *testing.T) {
 // along with it. This test pins that a gaggle containing an unsupported lane
 // still builds a registry whose OTHER lanes start.
 func TestRegisterDefinitionStillAdmitsUnsupportedFeatures(t *testing.T) {
-	unsupported := r9Spec(r9Task("implement"))
-	unsupported.Parallels = []apiv1.Parallel{{Name: "fan"}}
+	lane := loadProductionLane(t, "goobers", "quality-sprint")
 
 	r := NewRegistryWithPreviewFeatures(true)
-	if _, err := r.RegisterDefinition(wf.Definition{Name: "quality-sprint", Spec: unsupported}); err != nil {
+	if _, err := r.RegisterDefinition(wf.Definition{Name: lane.Name, DSLVersion: lane.DSLVersion, Spec: lane.Spec}); err != nil {
 		t.Fatalf("RegisterDefinition must not refuse — refusing here fails the whole gaggle registry build: %v", err)
 	}
 	if _, err := r.RegisterDefinition(wf.Definition{Name: "backlog-curation", Spec: r9Spec(r9Task("query-backlog"))}); err != nil {
@@ -169,7 +197,7 @@ func TestRegisterDefinitionStillAdmitsUnsupportedFeatures(t *testing.T) {
 	if _, err := r.StartInput("backlog-curation", StartSpec{RunID: "run-1", Gaggle: "web"}); err != nil {
 		t.Fatalf("an unsupported lane in the same registry must not block a supported one: %v", err)
 	}
-	if _, err := r.StartInput("quality-sprint", StartSpec{RunID: "run-2", Gaggle: "web"}); !errors.Is(err, ErrParallelsUnsupported) {
+	if _, err := r.StartInput(lane.Name, StartSpec{RunID: "run-2", Gaggle: "goobers"}); !errors.Is(err, ErrParallelsUnsupported) {
 		t.Fatalf("StartInput on the unsupported lane must refuse with the named sentinel, got %v", err)
 	}
 }

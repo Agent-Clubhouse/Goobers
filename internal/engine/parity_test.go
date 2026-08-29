@@ -35,9 +35,19 @@ package engine
 // delete it from this list or CI goes red.
 //
 // SEAM FOR LATER PORTS. Each row lives in its own parity_row_<row>_test.go
-// file and registers itself with registerParityRow in an init function. Adding
-// a failing-first case for a port is one new file plus (while it is red) one
-// line in parityExpectedFailures.
+// file and registers itself with registerParityRow in an init function. To add
+// a failing-first case for a port:
+//
+//  1. add a parityRow constant naming the finding-002 inventory row and the
+//     plan item that closes it (e.g. "E4-cached-verdict");
+//  2. create parity_row_<slug>_test.go with an init that calls
+//     registerParityRow, a Build (for a lane-derived fixture) or a literal
+//     Spec, and a Check that asserts the RUNNER side really exhibits the
+//     behaviour before diffing — otherwise the row can pass with both sides
+//     equally wrong;
+//  3. add one line to parityExpectedFailures with the reason and the plan
+//     item, and confirm the row logs "expected failure, still open";
+//  4. when the port lands, DELETE that line. CI fails if you do not.
 
 import (
 	"context"
@@ -45,6 +55,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -61,6 +72,7 @@ import (
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // --- inventory rows ---------------------------------------------------------
@@ -76,6 +88,10 @@ const (
 	// that proves the harness walks a real production lane end to end on both
 	// runners. It must stay GREEN; a port that breaks it broke the lane.
 	rowLaneBacklogCuration parityRow = "P0-lane-backlog-curation"
+	// rowLaneImplementation is the second lane baseline (finding 002 R11's
+	// second cutover) and the DECLARED-WINS half of the backlog-query
+	// defaulting contract. It must stay GREEN.
+	rowLaneImplementation parityRow = "P0-lane-implementation"
 	// rowInputsFromBareKey is the P0 far-side golden named in the plan: bare
 	// (including legacy dotted) inputsFrom keys resolve identically on both
 	// runners. It must stay GREEN.
@@ -155,11 +171,6 @@ type parityCase struct {
 	// UsesRepo marks a fixture whose stages take a repo workspace, so the
 	// local side needs the hermetic git fixture repo.
 	UsesRepo bool
-	// WantRunnerErr / WantEngineErr accept fixtures whose walk legitimately
-	// errors on that side. They describe the fixture, not the row's verdict:
-	// an UNEXPECTED error on either side is always a parity failure.
-	WantRunnerErr bool
-	WantEngineErr bool
 	// Check is the row's own assertion. It returns an error rather than
 	// calling t.Fatal so the expected-failure list can grade it. Nil means
 	// "the three default surfaces must match" (checkAllSurfaces).
@@ -237,9 +248,16 @@ type parityEnvelope struct {
 	Item string
 }
 
+// String prints EVERY compared field. A projection that compares a field it
+// does not print produces the worst possible failure message — "these two
+// identical-looking envelopes differ" — so the two must stay in lockstep;
+// TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s goal=%q goober=%s inputs=%s caps=%s policy=%s minIntegrity=%s pointers=%s item=%s",
-		e.Stage, e.Goal, e.Goober, e.Inputs, e.Capabilities, e.PolicyActions, e.MinimumIntegrity, e.ContextPointers, e.Item)
+	return fmt.Sprintf("stage=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
+		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q",
+		e.Stage, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
+		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity,
+		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item)
 }
 
 // stageOf extracts the stage name from an envelope TaskID ("<runID>:<stage>"),
@@ -389,6 +407,48 @@ func (r *recordingExec) Review(ctx context.Context, env apiv1.InvocationEnvelope
 	return r.inner.Review(ctx, env)
 }
 
+// boundTo returns the agentic seam for one named goober.
+//
+// The two runners carry goober identity by DIFFERENT, both-correct routes, and
+// this is the seam that makes them comparable rather than the harness pretending
+// the difference away. The engine puts the name on the wire
+// (InvocationEnvelope.Goober — a Temporal worker has only the envelope and
+// cannot otherwise know which goober to construct, per the field's own doc).
+// The local runner passes it out of band, as the first argument to
+// Config.NewAgentic, and leaves env.Goober empty.
+//
+// Dropping Goober from the comparison would therefore lose the ability to
+// assert that the engine dispatches to the SAME goober the runner does — which
+// is exactly the identity the critic's WF-016 goober-pin row is about. So the
+// runner side stamps the factory's argument onto the envelope it records: the
+// compared field then means "which goober did this side dispatch to", which is
+// true of both wire shapes.
+func (r *recordingExec) boundTo(goober string) invoke.Goober {
+	return &boundRecordingExec{owner: r, goober: goober}
+}
+
+type boundRecordingExec struct {
+	owner  *recordingExec
+	goober string
+}
+
+func (b *boundRecordingExec) stamp(env apiv1.InvocationEnvelope) apiv1.InvocationEnvelope {
+	if env.Goober == "" {
+		env.Goober = b.goober
+	}
+	return env
+}
+
+func (b *boundRecordingExec) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	env = b.stamp(env)
+	b.owner.record(env)
+	return b.owner.inner.Invoke(ctx, env)
+}
+
+func (b *boundRecordingExec) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return b.owner.inner.Review(ctx, b.stamp(env))
+}
+
 func (r *recordingExec) projected() []parityEnvelope {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -415,6 +475,20 @@ const parityWorkflowName = "parity"
 // comparison instead of an accidental agreement.
 var parityRepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 
+// parityBranchNamespace is the gaggle's run-branch namespace, NORMALIZED
+// exactly as cmd/goobers' branchNamespacesByGaggle normalizes it before either
+// starter pins it (runnerwiring.go:784).
+//
+// It is pinned on both sides on purpose. The local runner normalizes an unset
+// namespace itself (run.go:1357 -> providers.NormalizeBranchNamespace), while
+// the engine takes RunInput.BranchNamespace verbatim into the envelope
+// (engine.go's buildInvocation), so a harness that left it empty would compare
+// "goobers/" against "" and report a divergence that production does not have
+// — the normalization is the STARTER's job and both starters do it. Pinning
+// the same normalized value here keeps the envelope surface about behaviour
+// rather than about which side happens to default.
+var parityBranchNamespace = providers.NormalizeBranchNamespace("")
+
 // runParityRunnerSide walks the fixture through the real local runner.
 func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 	t.Helper()
@@ -429,8 +503,8 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return exec, nil
 		},
-		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
-			return exec, nil
+		NewAgentic: func(goober string, _ runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
+			return exec.boundTo(goober), nil
 		},
 		Automated:                 gate.NewAutomatedEvaluator(),
 		MaxRepasses:               c.MaxRepasses,
@@ -439,6 +513,7 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		ScratchDir:                filepath.Join(instanceRoot, "scratch"),
 		BacklogQueryAssignedTo:    c.BacklogQueryAssignedTo,
 		BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
+		BranchNamespaces:          map[string]string{c.Spec.Gaggle: parityBranchNamespace},
 	}
 	if c.UsesRepo {
 		repo := newConformanceFixtureRepo(t)
@@ -459,21 +534,24 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
 		RepoRef: parityRepoRef,
 	})
-	if (startErr != nil) != c.WantRunnerErr {
-		t.Fatalf("runner Start error = %v, WantRunnerErr = %t", startErr, c.WantRunnerErr)
-	}
-	return paritySide{
+	side := paritySide{
 		Name:      "runner",
 		Envelopes: exec.projected(),
 		Events:    readJournalEvents(t, filepath.Join(runsDir, runID)),
-		Terminal: parityTerminal{
+		Err:       startErr,
+	}
+	// A walk that errored has no terminal to compare; diffParityWalkOutcome
+	// reports the asymmetry instead, and the zero terminal keeps the
+	// comparison from inventing a phase the runner never reached.
+	if startErr == nil {
+		side.Terminal = parityTerminal{
 			Status:      statusForPhase(t, res.Phase),
 			FinalState:  res.FinalState,
 			FailureCode: res.FailureCode,
 			NoWork:      res.NoWork,
-		},
-		Err: startErr,
+		}
 	}
+	return side
 }
 
 // runParityEngineSide walks the same fixture through the engine in Temporal's
@@ -493,6 +571,7 @@ func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
 		RepoRef:                parityRepoRef,
 		TriggerKind:            string(journal.TriggerManual),
 		MaxRepasses:            c.MaxRepasses,
+		BranchNamespace:        parityBranchNamespace,
 	}
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
@@ -505,27 +584,25 @@ func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
 	})
 	env.ExecuteWorkflow(Run, in)
 	workflowErr := env.GetWorkflowError()
-	if (workflowErr != nil) != c.WantEngineErr {
-		t.Fatalf("engine workflow error = %v, WantEngineErr = %t", workflowErr, c.WantEngineErr)
-	}
-	var res RunResult
-	if workflowErr == nil {
-		if err := env.GetWorkflowResult(&res); err != nil {
-			t.Fatalf("engine result: %v", err)
-		}
-	}
-	return paritySide{
+	side := paritySide{
 		Name:      "engine",
 		Envelopes: exec.projected(),
 		Events:    projectEngineJournal(t, env),
-		Terminal: parityTerminal{
+		Err:       workflowErr,
+	}
+	if workflowErr == nil {
+		var res RunResult
+		if err := env.GetWorkflowResult(&res); err != nil {
+			t.Fatalf("engine result: %v", err)
+		}
+		side.Terminal = parityTerminal{
 			Status:      res.Status,
 			FinalState:  res.FinalState,
 			FailureCode: res.FailureCode,
 			NoWork:      engineRunResultNoWork(t, res),
-		},
-		Err: workflowErr,
+		}
 	}
+	return side
 }
 
 // engineRunResultNoWork reads RunResult's NoWork accounting WITHOUT compiling
@@ -618,12 +695,34 @@ func diffParityTerminal(obs parityObservation) error {
 	return nil
 }
 
-// checkAllSurfaces is the default row check: envelopes, then journals, then
-// the terminal. Envelopes come first because an envelope divergence explains
-// most journal divergences, and reporting the cause beats reporting the
-// symptom.
+// diffParityWalkOutcome reports the coarsest divergence there is: one runner
+// finished the walk and the other did not.
+//
+// It is a graded surface rather than a fixture knob on purpose. An earlier
+// draft declared "the engine is expected to error here" per case, which bakes
+// today's broken behaviour into the fixture: when the port lands, the fixture's
+// own expectation goes stale and the row fails for a reason that has nothing to
+// do with the inventory row. Comparing the two walks instead means a port that
+// makes the engine complete simply turns the row green.
+func diffParityWalkOutcome(obs parityObservation) error {
+	switch {
+	case obs.Runner.Err != nil && obs.Engine.Err == nil:
+		return fmt.Errorf("runner walk failed while the engine completed: %w", obs.Runner.Err)
+	case obs.Engine.Err != nil && obs.Runner.Err == nil:
+		return fmt.Errorf("engine walk failed while the runner completed: %w", obs.Engine.Err)
+	}
+	return nil
+}
+
+// checkAllSurfaces is the default row check: envelopes, then walk outcome, then
+// journals, then the terminal. Envelopes come first because an envelope
+// divergence explains most of the others, and reporting the cause beats
+// reporting the symptom.
 func checkAllSurfaces(obs parityObservation) error {
 	if err := diffParityEnvelopes(obs); err != nil {
+		return err
+	}
+	if err := diffParityWalkOutcome(obs); err != nil {
 		return err
 	}
 	if err := diffConformanceViews(obs.Runner.Events, obs.Engine.Events); err != nil {
@@ -645,7 +744,7 @@ func checkParityCase(obs parityObservation) error {
 // or a journal does not span run.started..run.finished. A row that stopped
 // exercising anything must not be able to hide behind the expected-failure
 // list.
-func assertParityHarnessIsNotVacuous(t *testing.T, side paritySide, wantErr bool) {
+func assertParityHarnessIsNotVacuous(t *testing.T, side paritySide) {
 	t.Helper()
 	if len(side.Envelopes) == 0 {
 		t.Fatalf("%s side dispatched no stage — the fixture proves nothing", side.Name)
@@ -657,9 +756,9 @@ func assertParityHarnessIsNotVacuous(t *testing.T, side paritySide, wantErr bool
 	if view[0].Type != journal.EventRunStarted {
 		t.Fatalf("%s view does not begin at run.started: first=%s", side.Name, view[0].Type)
 	}
-	// A fixture whose walk errors has no run.finished on either side; only a
-	// clean walk is required to close its journal.
-	if !wantErr && view[len(view)-1].Type != journal.EventRunFinished {
+	// A walk that errored closes no journal; that asymmetry is graded by
+	// diffParityWalkOutcome, not fatal here.
+	if side.Err == nil && view[len(view)-1].Type != journal.EventRunFinished {
 		t.Fatalf("%s view does not end at run.finished: last=%s", side.Name, view[len(view)-1].Type)
 	}
 }
@@ -683,8 +782,8 @@ func TestParityRunnerVsEngine(t *testing.T) {
 			obs := parityObservation{Case: c}
 			obs.Runner = runParityRunnerSide(t, c, runID)
 			obs.Engine = runParityEngineSide(t, c, runID)
-			assertParityHarnessIsNotVacuous(t, obs.Runner, c.WantRunnerErr)
-			assertParityHarnessIsNotVacuous(t, obs.Engine, c.WantEngineErr)
+			assertParityHarnessIsNotVacuous(t, obs.Runner)
+			assertParityHarnessIsNotVacuous(t, obs.Engine)
 
 			err := checkParityCase(obs)
 			reason, expected := parityExpectedFailures[c.Row]
@@ -793,6 +892,67 @@ func TestParityTerminalDiffNamesBothSides(t *testing.T) {
 	}
 }
 
+// TestParityEnvelopeStringPrintsEveryComparedField keeps parityEnvelope's
+// String in lockstep with its fields. Without it, adding a field to the
+// comparison without adding it to String yields the useless failure message
+// "these two identical-looking envelopes differ" — which is exactly what the
+// first draft of this harness produced.
+func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
+	// Every field set to a value that appears nowhere else in the rendering.
+	full := parityEnvelope{
+		Stage: "s-stage", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
+		Gaggle: "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
+		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
+		MinimumIntegrity: apiv1.Integrity("s-integrity"),
+		Inputs:           "s-inputs", Capabilities: "s-caps", PolicyActions: "s-policy",
+		ContextPointers: "s-pointers", Item: "s-item",
+	}
+	rendered := full.String()
+	for _, sentinel := range []string{
+		"s-stage", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
+		"s-trigger", "s-ownership", "s-integrity", "s-inputs", "s-caps", "s-policy", "s-pointers", "s-item",
+	} {
+		if !strings.Contains(rendered, sentinel) {
+			t.Errorf("parityEnvelope.String() omits a compared field (%s):\n%s", sentinel, rendered)
+		}
+	}
+	// Guard the other direction: a newly added field must be added to String.
+	// reflect.NumField is the tripwire — bump the count deliberately, together
+	// with the sentinel list above.
+	if got, want := reflect.TypeOf(full).NumField(), 15; got != want {
+		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
+	}
+}
+
+// TestParityWalkOutcomeDiffNamesTheFailingSide pins the coarsest surface: a
+// walk that failed on one side and not the other is reported, naming which
+// side failed and why, and two clean (or two failed) walks are not.
+func TestParityWalkOutcomeDiffNamesTheFailingSide(t *testing.T) {
+	boom := errors.New("upstream output not found")
+	clean := parityObservation{}
+	if err := diffParityWalkOutcome(clean); err != nil {
+		t.Fatalf("two clean walks must not diverge: %v", err)
+	}
+	both := parityObservation{
+		Runner: paritySide{Name: "runner", Err: boom},
+		Engine: paritySide{Name: "engine", Err: boom},
+	}
+	if err := diffParityWalkOutcome(both); err != nil {
+		t.Fatalf("two failed walks are a fixture property, not a divergence: %v", err)
+	}
+	engineOnly := diffParityWalkOutcome(parityObservation{Engine: paritySide{Name: "engine", Err: boom}})
+	if engineOnly == nil || !strings.Contains(engineOnly.Error(), "engine walk failed") {
+		t.Errorf("engine-only failure not reported as such: %v", engineOnly)
+	}
+	if !errors.Is(engineOnly, boom) {
+		t.Errorf("the reported divergence must wrap the walk's own error: %v", engineOnly)
+	}
+	runnerOnly := diffParityWalkOutcome(parityObservation{Runner: paritySide{Name: "runner", Err: boom}})
+	if runnerOnly == nil || !strings.Contains(runnerOnly.Error(), "runner walk failed") {
+		t.Errorf("runner-only failure not reported as such: %v", runnerOnly)
+	}
+}
+
 // TestParityRowIDsAreDocumented guards the join key with finding 002: every
 // registered row id must carry the inventory-row shape (a plan item or P0
 // prefix and a descriptive slug), so a reader can find the row it pins.
@@ -831,10 +991,8 @@ func requireEnvelopeInput(side paritySide, stage, key, want string) error {
 		return fmt.Errorf("%s envelope for stage %q lacks input %s=%q; inputs were: %s",
 			side.Name, stage, key, want, env.Inputs)
 	}
+	if side.Err != nil {
+		return fmt.Errorf("%s never dispatched stage %q; its walk ended with: %w", side.Name, stage, side.Err)
+	}
 	return fmt.Errorf("%s never dispatched stage %q", side.Name, stage)
-}
-
-// errIsUnsupportedFeature is a small helper the refusal tests share.
-func errIsUnsupportedFeature(err error, sentinel error) bool {
-	return errors.Is(err, sentinel)
 }

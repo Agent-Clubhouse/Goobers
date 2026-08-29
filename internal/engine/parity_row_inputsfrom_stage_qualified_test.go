@@ -72,12 +72,12 @@ func init() {
 			"produce":   {succeed(map[string]interface{}{"selectedPr": "4242"})},
 			"intervene": {succeed(map[string]interface{}{"unrelated": "noise"})},
 		},
-		// The engine fails the walk closed on the unresolvable reference
-		// ("upstream output %q not found"), so its workflow errors while the
-		// runner completes — itself a parity divergence, and the reason the
-		// row needs its own Check rather than the default terminal diff.
-		WantEngineErr: true,
-		Check:         checkInputsFromStageQualified,
+		// Today the engine fails the walk closed on the unresolvable reference
+		// ("upstream output %q not found") while the runner completes. That
+		// asymmetry is graded by diffParityWalkOutcome rather than declared
+		// here, so the port that lands stage-qualified resolution turns this
+		// row green without also having to unpick a stale fixture expectation.
+		Check: checkInputsFromStageQualified,
 	})
 
 	registerParityRow(parityCase{
