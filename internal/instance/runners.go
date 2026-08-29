@@ -123,6 +123,27 @@ type RunnerProvides struct {
 	// same rationale as Shell: a self runner satisfies harness:<name>
 	// implicitly already; this is for non-self runners only.
 	Harnesses []string `json:"harnesses,omitempty" yaml:"harnesses,omitempty"`
+	// Windows carries the claims only a Windows runner can make (#3480).
+	// nil is "undeclared"; `goobers validate` warns (RNR006) on a windows
+	// runner that leaves it out, because the daemon has no other way to
+	// learn whether the host or image was prepared. Refused at load on a
+	// runner whose OS is not windows — a Windows claim on a Linux runner is
+	// a copy-paste error, not a harmless extra.
+	Windows *RunnerWindowsClaims `json:"windows,omitempty" yaml:"windows,omitempty"`
+}
+
+// RunnerWindowsClaims is the Windows-only half of a runner's provides: set.
+type RunnerWindowsClaims struct {
+	// AVExclusionsVerified asserts that the directories Goobers writes then
+	// immediately reads on this runner — the set `goobers doctor
+	// --av-exclusions` enumerates (internal/avexclusion) — are excluded from
+	// real-time antivirus scanning, so a scan cannot hold a handle on a
+	// just-written file and surface later as an unrelated git "Permission
+	// denied" (#3161–#3164). Trusted like every other provides: claim
+	// (DI-11): nothing re-verifies it against the image or host; the
+	// stage pod's own startup advisory line is the far-side evidence. false
+	// is an honest "not prepared" and still warns.
+	AVExclusionsVerified bool `json:"avExclusionsVerified" yaml:"avExclusionsVerified"`
 }
 
 // RunnerOS is a runner's declared operating system — a validated enum, not a
@@ -365,7 +386,64 @@ func (r RunnerEntry) validate(i int, seen map[string]bool, engineConfigured bool
 	if err := r.Provides.validate(i, r.Name); err != nil {
 		return err
 	}
-	return r.validateRestrictions(i)
+	if err := r.validateRestrictions(i); err != nil {
+		return err
+	}
+	return r.validateWindowsBindings(i)
+}
+
+// validateWindowsBindings is the inventory-side half of restrictions doc D4
+// as corrected by #3619 — the two Windows rules a runner entry must satisfy,
+// checked at load so an unenforceable claim never reaches the solver:
+//
+//   - A Windows runner may declare only the restrictions Windows can bind
+//     (runnercap.DeclarableOnWindows: tmp:ephemeral, env:default-deny).
+//     Kubernetes silently ignores readOnlyRootFilesystem on a Windows pod and
+//     the network effects have no verified Windows binding, so a Windows
+//     entry declaring one would make a stage solve as isolated and run with
+//     no isolation at all — the fail-open shape the closed list exists to
+//     refuse. The same predicate is re-asserted by the 3.0 validator on the
+//     stage side and by the dispatcher at pod render.
+//   - The privilege=windows-admin capability is a Windows container identity
+//     (ContainerAdministrator); a runner on any other OS claiming it would
+//     satisfy a stage's requirement and then run it with no such identity.
+//     The claim is refused on a non-Windows entry, and on an entry that
+//     claims no OS at all (a Windows claim needs a Windows runner, not an
+//     OS-less one the solver would never match to os: windows anyway).
+//
+// Both rules key on the DECLARED provides.os. A `host: self` entry that
+// declares no OS is os-unknown here even when the daemon later runs on
+// Windows: the HostOS() substitution is runtime-only and deliberately absent
+// from the load/validate path (PlacementRunners, cmd validatereality — a
+// machine-independent validate). Such an entry keeps the pre-#3619 #2034
+// marker-only behaviour for a restriction like network:none until D11; the
+// restrictions doc's Windows-self column says so.
+func (r RunnerEntry) validateWindowsBindings(i int) error {
+	windows := r.Provides.OS == RunnerOSWindows
+	if windows {
+		for j, restriction := range r.Restrictions {
+			if !runnercap.DeclarableOnWindows(runnercap.Restriction(restriction)) {
+				return fmt.Errorf("runners[%d] (%s): restrictions[%d]: %q has no Windows binding in v1 and cannot be declared on a provides.os: windows runner (declarable on Windows: %s) — goobernetes-restrictions.md D4/D11",
+					i, r.Name, j, restriction, windowsDeclarableRestrictionNames())
+			}
+		}
+	}
+	if runnercap.HasWindowsAdmin(r.Provides.Capabilities) && !windows {
+		return fmt.Errorf("runners[%d] (%s): provides.capabilities claims %q, a Windows container identity (ContainerAdministrator), but provides.os is %q — the claim is meaningful only on a provides.os: %s runner (#3619)",
+			i, r.Name, runnercap.CapabilityWindowsAdmin, r.Provides.OS, RunnerOSWindows)
+	}
+	return nil
+}
+
+// windowsDeclarableRestrictionNames renders the Windows-declarable sub-list
+// for an error message.
+func windowsDeclarableRestrictionNames() string {
+	restrictions := runnercap.WindowsDeclarableRestrictions()
+	names := make([]string, len(restrictions))
+	for i, r := range restrictions {
+		names[i] = string(r)
+	}
+	return strings.Join(names, ", ")
 }
 
 func (p RunnerProvides) validate(i int, name string) error {
@@ -409,6 +487,10 @@ func (p RunnerProvides) validate(i int, name string) error {
 			return fmt.Errorf("runners[%d] (%s): provides.harnesses[%d]: %q is declared more than once", i, name, j, harness)
 		}
 		seenHarnesses[harness] = true
+	}
+	if p.Windows != nil && p.OS != RunnerOSWindows {
+		return fmt.Errorf("runners[%d] (%s): provides.windows is declared but provides.os is %q; the Windows claim block (avExclusionsVerified) is only meaningful on a runner declaring provides.os: %s",
+			i, name, p.OS, RunnerOSWindows)
 	}
 	return nil
 }

@@ -91,6 +91,8 @@ complete -c goobers -n '__fish_seen_subcommand_from fix' -l to -r -d 'Target DSL
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l write -d 'Apply migrations in place'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l k8s -d 'Preflight a Kubernetes cluster'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l repo -d 'Compare repository forge policy with GitHub'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l av-exclusions -d 'List the directories Goobers writes then reads and verify antivirus exclusions (advisory)'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l work-root -r -d 'Worker work root to enumerate (--av-exclusions)'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l kubeconfig -r -d 'Kubeconfig path'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l context -r -d 'Kubeconfig context'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l report -r -a 'text json' -d 'Report format'

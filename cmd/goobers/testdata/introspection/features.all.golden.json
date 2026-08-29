@@ -175,6 +175,11 @@
       "sinceVersion": "v0.4.0"
     },
     {
+      "name": "gaggle.spec.runsOn.capabilities.privilege.windows-admin",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "gaggle.spec.runsOn.os",
       "stability": "ga",
       "sinceVersion": "v0.4.0"
@@ -391,6 +396,11 @@
     },
     {
       "name": "gate.runsOn.capabilities",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "gate.runsOn.capabilities.privilege.windows-admin",
       "stability": "ga",
       "sinceVersion": "v0.4.0"
     },
@@ -736,6 +746,11 @@
     },
     {
       "name": "task.runsOn.capabilities",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
+      "name": "task.runsOn.capabilities.privilege.windows-admin",
       "stability": "ga",
       "sinceVersion": "v0.4.0"
     },

@@ -117,6 +117,45 @@ func DerivedTag(s string) bool {
 	return s == DerivedShellTag || strings.HasPrefix(s, DerivedHarnessTagPrefix)
 }
 
+// CapabilityWindowsAdmin is the ONE capability token the product itself
+// interprets (issue #3619): a claim, by a Windows runner class, that stages
+// placed on it may run as the container's administrator identity
+// (ContainerAdministrator), and a requirement, by a stage, that it needs to.
+//
+// It is a CAPABILITY, not a restriction, on purpose. A restriction names an
+// isolation effect the substrate takes away; this names something the
+// substrate OFFERS — the same shape as `dotnet@8`: the runner claims it in
+// provides.capabilities, the stage requires it in runsOn.capabilities, and
+// the solver matches by exact set membership like every other token, so a
+// stage requiring it places ONLY on a class that provides it. What is new is
+// the binding: the dispatcher stamps windowsOptions.runAsUserName
+// ContainerAdministrator on a Windows stage pod when — and only when — the
+// stage REQUIRES the token and the resolved runner PROVIDES it, and stamps
+// ContainerUser otherwise. Provided-but-not-required stays ContainerUser
+// (least privilege is the default in both directions); required-but-not-
+// provided is refused at dispatch, never silently served.
+//
+// Spelled with `=` rather than a colon deliberately: the colon namespace is
+// the DERIVED-tag grammar (DerivedTag — system-derived facts an author can
+// neither claim nor require), and this token must be author-declarable on
+// both sides. `=` is the same separator the legacy `os=windows` token used;
+// CAP004 bans only the `os=` prefix, and the toolchain preflight has no
+// prober for the `privilege` family, so the token is inert everywhere except
+// the three sites that read it by this constant (the 3.0 validator, the
+// instance inventory loader, and the dispatcher's identity stamp).
+const CapabilityWindowsAdmin = "privilege=windows-admin"
+
+// HasWindowsAdmin reports whether tokens (a stage's effective requirement or
+// a runner's claim set) contains CapabilityWindowsAdmin.
+func HasWindowsAdmin(tokens []string) bool {
+	for _, t := range tokens {
+		if t == CapabilityWindowsAdmin {
+			return true
+		}
+	}
+	return false
+}
+
 // Restriction is one isolation effect from the closed v1 effect list
 // (Goobernetes decision record D7, docs/design/goobernetes-restrictions.md
 // §2). Restrictions name effects, never mechanisms; growing this set is a
@@ -158,6 +197,47 @@ func KnownRestriction(s string) bool {
 		}
 	}
 	return false
+}
+
+// windowsDeclarable is the sub-list of the closed effect list a WINDOWS
+// runner may declare (and a Windows-placed stage may require) in v1 —
+// goobernetes-restrictions.md D4 as corrected by #3619. Windows can bind
+// exactly two effects today: tmp:ephemeral (the dispatcher mounts a sized
+// emptyDir at the profile temp path and points TMP/TEMP at it) and
+// env:default-deny (the in-pod procenv rebuild is OS-independent). The other
+// three have NO Windows binding: Kubernetes silently ignores
+// readOnlyRootFilesystem on a Windows pod (fails OPEN — decision 007), and
+// the network effects are NetworkPolicy-class bindings D11's epic has yet to
+// verify on Windows nodes. A restriction a runner cannot enforce must be
+// UNDECLARABLE, or validation produces confident PASSes on unenforced
+// substrate; every member of the closed list has a decided answer here and
+// TestDeclarableOnWindowsCoversClosedList pins it.
+var windowsDeclarable = map[Restriction]bool{
+	RestrictionTmpEphemeral:   true,
+	RestrictionEnvDefaultDeny: true,
+}
+
+// DeclarableOnWindows reports whether restriction r has a Windows binding in
+// v1 — whether a Windows runner may declare it and a Windows-placed stage may
+// require it. Unknown effects are not declarable anywhere. Consumed by three
+// sites that must agree: the DSL 3.0 validator (a Windows-placed stage
+// requiring an unbindable effect is refused at validate), the instance
+// inventory loader (a Windows runner declaring one is refused at load), and
+// the dispatcher (re-asserted at pod render, refuse-to-create).
+func DeclarableOnWindows(r Restriction) bool {
+	return windowsDeclarable[r]
+}
+
+// WindowsDeclarableRestrictions returns the effects a Windows runner may
+// declare in v1, in stable order, for diagnostics.
+func WindowsDeclarableRestrictions() []Restriction {
+	out := make([]Restriction, 0, len(windowsDeclarable))
+	for _, r := range knownRestrictions {
+		if windowsDeclarable[r] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // SuggestRestriction returns the closest known restriction to a token that is

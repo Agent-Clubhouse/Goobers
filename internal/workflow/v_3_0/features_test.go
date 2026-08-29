@@ -8,6 +8,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 func TestFeatureRegistryLookup(t *testing.T) {
@@ -670,7 +671,10 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				NestedAgentPolicy: nestedFeaturePolicy(),
 				RunsOn: &apiv1.RunsOn{
 					OS: "linux", CPU: "2000m", Memory: "4Gi", Disk: "20Gi",
-					Capabilities: []string{"dotnet@8"},
+					// The privilege token is the one capability with its own
+					// FeatureID (#3619); the registry records what the document
+					// USES, not what compiles (the token is refused off Windows).
+					Capabilities: []string{"dotnet@8", runnercap.CapabilityWindowsAdmin},
 					Restrictions: []string{"network:allowlist"},
 				},
 				Outbox:           []string{"reports"},
@@ -743,7 +747,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				// Agentic-gate placement (decision 001): every gate.runsOn leaf.
 				RunsOn: &apiv1.RunsOn{
 					OS: "linux", CPU: "1000m", Memory: "2Gi", Disk: "10Gi",
-					Capabilities: []string{"git"}, Restrictions: []string{"network:allowlist"},
+					Capabilities: []string{"git", runnercap.CapabilityWindowsAdmin}, Restrictions: []string{"network:allowlist"},
 				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
@@ -809,7 +813,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		BranchNamespace: "goobers/",
 		RunsOn: &apiv1.GaggleRunsOn{
 			OS:           "linux",
-			Capabilities: []string{"dotnet@8"},
+			Capabilities: []string{"dotnet@8", runnercap.CapabilityWindowsAdmin},
 			Restrictions: []string{"network:allowlist"},
 		},
 		RunControls: &apiv1.RunControls{
@@ -1218,6 +1222,10 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"gate.runsOn.disk",
 		"gate.runsOn.capabilities",
 		"gate.runsOn.restrictions",
+		// The Windows admin privilege token (#3619): the one
+		// runsOn.capabilities value the product interprets.
+		"task.runsOn.capabilities.privilege.windows-admin",
+		"gate.runsOn.capabilities.privilege.windows-admin",
 	}
 	slices.Sort(ids)
 	return ids
@@ -1266,6 +1274,7 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleRunsOnOS,
 		featureGaggleRunsOnCapabilities,
 		featureGaggleRunsOnRestrictions,
+		featureGaggleRunsOnWindowsAdmin,
 	}
 }
 
