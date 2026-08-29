@@ -253,6 +253,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	ctx := webhookGate.Context()
 	var ready atomic.Bool
+	// Named subsystem readiness checks (#3806), surfaced on /readyz alongside
+	// the overall Ready gate above. Each flips exactly once, in startup
+	// order, as its own phase below completes; none of them gate anything —
+	// they are purely additive instrumentation describing WHY the daemon
+	// isn't ready yet. `ready` above remains the single source of truth both
+	// /api/v1/health.Ready and /readyz.Ready read, so the two surfaces can
+	// never disagree — by the time `ready` flips true (webhookGate.Start(),
+	// below), every one of these four has already flipped true too, in this
+	// same, sequential, error-returns-early function body.
+	var (
+		configLoaded    atomic.Bool  // instance config + scheduler wiring validated
+		stateOpen       atomic.Bool  // scheduler's run-tracking state reconciled from disk
+		resumeComplete  atomic.Bool  // crash-resume of interrupted runs finished
+		sweepsStarted   atomic.Bool  // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
+		lastTickAtNanos atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
+	)
 	stopDaemon := func() {
 		ready.Store(false)
 		webhookGate.Stop()
@@ -393,6 +410,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3806: instance config validated, definitions/scheduler wiring built.
+	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -628,6 +647,31 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// #3806: /healthz and /readyz are registered OUTSIDE the versioned router
+	// httpapi.NewHandler just built — no authenticate/authorize/admission/
+	// budget — so a kubelet probe reaches them with no credential regardless
+	// of api.auth (including this daemon's own DenyAllAuthenticator fallback
+	// for a non-loopback bind with no human authenticator configured, just
+	// above). Every other path keeps going through the versioned handler
+	// exactly as before; WrapWithProbes forwards authenticatedTransport() and
+	// shutdown() straight through so NewServer's SEC-043 gate below and
+	// apiHandler's own SSE-close lifecycle both keep working unchanged.
+	//
+	// The checks themselves live on daemonProbeState (daemon_probes.go) —
+	// a named type, not two inline closures — so they are directly unit
+	// testable without a real daemon.
+	probes := &daemonProbeState{
+		ready:           &ready,
+		configLoaded:    &configLoaded,
+		stateOpen:       &stateOpen,
+		resumeComplete:  &resumeComplete,
+		sweepsStarted:   &sweepsStarted,
+		schedulerTicked: &schedulerTicked,
+		lastTickAtNanos: &lastTickAtNanos,
+		livenessTimeout: livenessTimeout,
+		now:             time.Now,
+	}
+	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
 	var apiServerOpts []httpapi.ServerOption
 	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
 		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
@@ -769,9 +813,35 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
-	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
-		return daemonstate.Refresh(lockPath, tickAt)
-	}))
+	// markTickProgress updates the two in-memory values daemonProbeState's
+	// liveness check reads (#3806): purely an atomic store, never disk I/O,
+	// so it stays safe to call frequently — including from inside Tick's
+	// tickMu-held critical section, below — even on this cluster's
+	// documented failure mode of a stalled RWO volume attachment.
+	markTickProgress := func(tickAt time.Time) {
+		lastTickAtNanos.Store(tickAt.UnixNano())
+		// #3806: /healthz's liveness grace ends once the scheduler has ticked
+		// at least once — set regardless of whether the on-disk heartbeat
+		// write below succeeds, since the tick itself (not that write) is
+		// what "has the main loop reached its steady-state loop" means.
+		schedulerTicked.Store(true)
+	}
+	sched := newDaemonScheduler(setup,
+		localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+			err := daemonstate.Refresh(lockPath, tickAt)
+			markTickProgress(tickAt)
+			return err
+		}),
+		// #3806: a single Tick can poll several due, provider-backed
+		// workflows SEQUENTIALLY while holding tickMu (each bounded only by
+		// demandPollTimeout, 45s) — WithTickHeartbeat's refresh above fires
+		// only once Tick returns in full, which for N due polls can leave
+		// the liveness heartbeat looking stale for N*45s even though the
+		// scheduler is busy, not wedged. WithPollHeartbeat marks progress
+		// after EACH such poll instead, bounding staleness to a single
+		// poll's worst case.
+		localscheduler.WithPollHeartbeat(markTickProgress),
+	)
 	sourceReconcileWake := make(chan struct{}, 1)
 	wakeSourceReconcile := func(context.Context) {
 		select {
@@ -796,6 +866,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// #3806: the scheduler's run-tracking state has been reconciled from the
+	// run directories already on disk.
+	stateOpen.Store(true)
 	stalledRunTimeout, err := setup.RunConditions.StalledRunTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -917,6 +990,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
+	// #3806: crash-resume of every interrupted run finished (this is the
+	// startup phase whose duration is unbounded and scales with interrupted-
+	// run count, so a kubelet startupProbe against /readyz must wait this
+	// out with a generous failureThreshold, not a short initialDelay).
+	resumeComplete.Store(true)
 
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
@@ -1161,6 +1239,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
+	// #3806: the initial synchronous trigger/claim-admin/cancel/apply sweeps
+	// above already ran once, and every one of their periodic tickers is now
+	// live.
+	sweepsStarted.Store(true)
 
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})

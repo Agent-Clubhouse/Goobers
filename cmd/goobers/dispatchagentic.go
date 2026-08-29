@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -72,7 +73,24 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
 
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted)
+	// The staging root: what the executor's contextResolver is rooted at AND
+	// what the recorder reports as its Dir(). Created HERE rather than inside
+	// buildPodAgenticExecutor because context materialization has to fill the
+	// same directory the resolver will read, and a directory the constructor
+	// alone knows about cannot be filled from out here.
+	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
+	if err != nil {
+		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("create runs dir: %v", err))
+	}
+
+	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
+	// See dispatchcontext.go: without this every artifact-backed pointer fails
+	// to resolve, because a pod's staging root starts empty.
+	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
+		return failureEnvelope("context_materialize_failed", err.Error())
+	}
+
+	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
 		return failureEnvelope("agentic_executor_unavailable", err.Error())
 	}
@@ -146,9 +164,25 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 		name, strings.Join(capabilities, ", "))
 }
 
+// podHarnessRegistry builds the pod's harness registry, and is a var SO THAT
+// buildPodAgenticExecutor HAS A TEST CALLER AT ALL.
+//
+// The real builder produces adapters that preflight an actual harness binary,
+// which is why this constructor had none — and why the one invariant it cannot
+// get wrong (the staging directory it is handed must be the directory the
+// executor reads context from) was unobservable: a reviewer's ablation that
+// reintroduced a constructor-local os.MkdirTemp here, the original bug's exact
+// shape, passed the entire cmd/goobers suite. Swapping the registry is the
+// smallest seam that lets a test drive the whole constructor. Mirrors the
+// existing newAgenticAdapter / repoCloneURL test seams.
+var podHarnessRegistry = buildHarnessRegistry
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
+// runsDir is the staging root the caller already created and already
+// materialized this stage's context into; it becomes both the recorder's Dir()
+// and the contextResolver's root, which is what makes the two agree.
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
@@ -201,7 +235,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// the ambient environment above, so the preflight's ambient-env-first
 	// lookup already finds it. There's no *instance.Config/StoreResolver in
 	// this pod-context function to build one anyway.
-	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -225,28 +259,75 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
 
-	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
-	if err != nil {
-		return nil, fmt.Errorf("create runs dir: %w", err)
-	}
+	return buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
+		Kit:             kit,
+		RunsDir:         runsDir,
+		Stderr:          stderr,
+		Scrubber:        scrubber,
+		Registry:        registry,
+		Resolver:        resolver,
+		Grants:          grants,
+		AdapterRegistry: adapterRegistry,
+		HarnessInfo:     harnessInfo,
+	}))
+}
 
-	return buildAgenticExecutor(agenticExecutorInput{
-		GooberName:       gooberName,
-		Goobers:          kit.Goobers,
-		Instructions:     kit.Instructions,
-		Assets:           kit.AssetBundles(),
-		HarnessInfo:      harnessInfo,
-		AdapterRegistry:  adapterRegistry,
-		EnvCapabilities:  kit.EnvCapabilities,
-		Resolver:         resolver,
-		Grants:           grants,
-		SharedRegistry:   registry,
-		RunsDir:          runsDir,
-		SandboxPosture:   instance.SandboxPosture(kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir},
-		SecretRegistrar:  registry,
+// podExecutorWiring is everything buildPodAgenticExecutor discovers about this
+// pod before it can name an executor: the kit it fetched, the staging root its
+// caller materialized context into, and the local facilities (scrubber,
+// credential resolver, preflighted harness) it built along the way.
+type podExecutorWiring struct {
+	Kit     *agentickit.Kit
+	RunsDir string
+	Stderr  io.Writer
+	// Scrubber redacts artifact bytes before they are digested and emitted.
+	Scrubber journal.Scrubber
+	// Registry is the same scrubber's registry, used as both the shared secret
+	// registry and the SecretRegistrar.
+	Registry        *journal.RegistryScrubber
+	Resolver        credentials.Resolver
+	Grants          []credentials.Grant
+	AdapterRegistry *harness.Registry
+	HarnessInfo     harnessPreflightInfo
+}
+
+// podAgenticExecutorInput assembles the executor input for a pod stage.
+//
+// FACTORED OUT SO THE DIRECTORY AGREEMENT IS OBSERVABLE. The bug this file's
+// change fixes crosses two edges: materializePodContext must be CALLED before
+// the executor is built, AND it must fill the SAME directory the executor's
+// contextResolver reads. The first edge is pinned by a test that drives
+// runAgenticStage. The second could not be pinned at the production
+// constructor, because buildPodAgenticExecutor calls adapter.Preflight against
+// a real harness binary and therefore has no test callers at all — so a
+// refactor that reintroduced a constructor-local staging dir (the original
+// bug's exact shape) would ship green.
+//
+// RunsDir and the recorder's dir are the two fields that MUST name that one
+// directory: the first is where harness.NewContextResolver looks for an
+// upstream artifact, the second is where a produced artifact is reported from.
+// Both are assigned from w.RunsDir here, in a function a test can call, and
+// TestPodAgenticStageReadsAnUpstreamArtifactPointer builds its executor through
+// this function rather than a hand-assembled replica — so the agreement is
+// exercised by the same code production runs.
+func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
+	return agenticExecutorInput{
+		GooberName:       w.Kit.Envelope.Goober,
+		Goobers:          w.Kit.Goobers,
+		Instructions:     w.Kit.Instructions,
+		Assets:           w.Kit.AssetBundles(),
+		HarnessInfo:      w.HarnessInfo,
+		AdapterRegistry:  w.AdapterRegistry,
+		EnvCapabilities:  w.Kit.EnvCapabilities,
+		Resolver:         w.Resolver,
+		Grants:           w.Grants,
+		SharedRegistry:   w.Registry,
+		RunsDir:          w.RunsDir,
+		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
+		ArtifactRecorder: podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir},
+		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
-	})
+	}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.
