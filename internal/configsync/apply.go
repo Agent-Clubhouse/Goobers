@@ -275,13 +275,13 @@ func GenerationSelector(ctx context.Context, c client.Client, namespace string) 
 // yields an identical generation, so re-applying is idempotent.
 func GenerationID(rs *RenderSet) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "namespace=%s\n", rs.Namespace)
+	_, _ = fmt.Fprintf(h, "namespace=%s\n", rs.Namespace)
 	for _, obj := range rs.Objects {
 		data, err := json.Marshal(obj)
 		if err != nil {
 			return "", fmt.Errorf("identify generation for %s: %w", objKey(obj), err)
 		}
-		fmt.Fprintf(h, "%s\n%s\n", objKey(obj), data)
+		_, _ = fmt.Fprintf(h, "%s\n%s\n", objKey(obj), data)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16], nil
 }
