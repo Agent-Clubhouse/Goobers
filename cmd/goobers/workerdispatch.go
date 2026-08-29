@@ -50,6 +50,15 @@ var dispatchKubeClient = func() (kubernetes.Interface, error) {
 	return kubernetes.NewForConfig(restConfig)
 }
 
+// newStageDispatcher is a seam beside dispatchKubeClient, for the same reason:
+// what buildStageDispatch does that nothing else does is ASSEMBLE the
+// dispatcher's Config from the instance's config, and that assembly is
+// unobservable once it is inside a constructed Dispatcher. Config.EnvPassthrough
+// is the sharp one — it is the operator's env:default-deny hatch on the pod
+// substrate (#3725/#736), and deleting the line that threads it would leave the
+// helper-level tests green and the hatch dead on the far side.
+var newStageDispatcher = dispatcher.New
+
 // buildStageDispatch loads the instance's runner inventory and constructs the
 // dispatcher-backed seam. blobRoot is the worker's --blob-store directory;
 // the surrender plane lives beside the content-addressed tree under
@@ -120,7 +129,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 	}
 
 	build := version.Get()
-	d, err := dispatcher.New(dispatcher.Config{
+	d, err := newStageDispatcher(dispatcher.Config{
 		TokenMinter: minter,
 		// The kit writer needs the same signing key's peer facility — the blob
 		// plane — plus the instance config only the worker has. Nil when no
@@ -132,6 +141,11 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 		EmbeddedVersion: build.Version,
 		BlobEndpoint:    os.Getenv("GOOBERS_BLOB_ENDPOINT"),
 		WriteAPIBase:    daemonAPI,
+		// The same operator-declared passthrough list the local executor gets
+		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
+		// runner class enforcing env:default-deny keeps the vars an operator
+		// declared for it instead of losing them by substrate (#3725/#736).
+		EnvPassthrough: cfg.Runner.EnvPassthrough,
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)

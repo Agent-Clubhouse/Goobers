@@ -4801,6 +4801,33 @@ type unpushedDiffMetadata struct {
 	Diff      apiv1.ArtifactPointer `json:"diff"`
 }
 
+// unpushedDiffCaptureTimeout bounds the post-attempt diff capture (#3644).
+// The capture deliberately outlives its attempt's cancellation, so it needs a
+// bound of its own: `git diff base...HEAD` on a blobless partial clone is a
+// promisor fetch, and a stalled remote or credential helper would otherwise
+// hold terminalization and workspace teardown open indefinitely. Generous
+// enough that a healthy capture (including a legitimate blob hydration over a
+// slow link) always finishes inside it. A var, not a const, only so tests can
+// shorten it.
+var unpushedDiffCaptureTimeout = 2 * time.Minute
+
+// unpushedDiffCaptureFailure turns a capture failure into the message
+// journaled under unpushed_diff_record_failed. A bound overrun is reported as
+// what it is — the capture, not the run's work, was abandoned — and names the
+// branch that still carries the commits, so a human recovering the stranded
+// work knows exactly where to look (git's own error for a killed process,
+// "signal: killed", says none of that).
+func unpushedDiffCaptureFailure(ctx context.Context, cause error, branch string) error {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	return fmt.Errorf(
+		"unpushed-diff capture exceeded its %s bound (a partial clone's diff can hydrate blobs from the remote — check remote and credential-helper reachability); "+
+			"branch %q retains the committed work for recovery: %w",
+		unpushedDiffCaptureTimeout, branch, cause,
+	)
+}
+
 // recordUnpushedDiff persists the run branch's cumulative committed diff vs.
 // base as a stage artifact plus a discovery sidecar (#3366). Called after
 // every agentic attempt, success or failure: the run branch is shared across
@@ -4821,12 +4848,23 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 	// Deliberately cancellation-immune: a stalled-run watchdog cancelling the
 	// attempt mid-dispatch is itself one of #3366's trigger classes (infra
 	// restart mid-run), and that is precisely when the diff most needs
-	// capturing. The git reads here are local and bounded.
-	ctx = context.WithoutCancel(ctx)
+	// capturing. Cancellation-immune is not unbounded, though (#3644): on a
+	// blobless partial clone these git reads can hydrate missing blobs from
+	// the remote, so an unreachable remote or a wedged credential helper would
+	// otherwise pin terminalization and workspace teardown open forever. Bound
+	// the capture instead — the branch still holds the work, so abandoning a
+	// capture that overruns costs recoverability of one artifact, never the
+	// run's liveness.
+	captureCtx, cancelCapture := context.WithTimeout(context.WithoutCancel(ctx), unpushedDiffCaptureTimeout)
+	defer cancelCapture()
+	ctx = captureCtx
 	journalFailure := func(cause error) {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: "unpushed_diff_record_failed", Message: cause.Error()},
+			Error: &journal.ErrorDetail{
+				Code:    "unpushed_diff_record_failed",
+				Message: unpushedDiffCaptureFailure(captureCtx, cause, workspace.worktree.Branch).Error(),
+			},
 		})
 	}
 	// Cheap local guard before Diff: on a blobless mirror Diff is a remote

@@ -186,6 +186,9 @@ _goobers_completion()
         backlog-query)
             flags+=" --claim --debug --release --read-only --reconcile"
             ;;
+        file-issues)
+            flags+=" --check"
+            ;;
         reconcile-branches)
             flags+=" --delete --max --min-age --after"
             ;;

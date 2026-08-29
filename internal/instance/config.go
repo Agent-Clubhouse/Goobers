@@ -1178,6 +1178,42 @@ type OTLPConfig struct {
 	Endpoint string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	Insecure bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// TLS configures trust for a collector that presents a certificate the
+	// system trust store does not already recognize (e.g. a private CA),
+	// and optionally a client certificate for mTLS. It is additive: absent,
+	// the exporter behaves exactly as before (system trust pool only). It
+	// is mutually exclusive with Insecure — TLS configuration only makes
+	// sense on the encrypted path (#3804).
+	TLS *OTLPTLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
+}
+
+// OTLPTLSConfig extends the OTLP exporter's TLS trust beyond the system
+// certificate pool. Every field is optional; CAFile alone is the common
+// case (trust one additional private CA), CertFile+KeyFile add a client
+// certificate for mTLS, and ServerName overrides SNI/verification when the
+// endpoint's host does not match the certificate (e.g. reaching the
+// collector through a Service name other than the certificate's SAN).
+//
+// Validated SHAPE ONLY at load — no filesystem read happens here. The same
+// instance.yaml this loads is also loaded by `goobers worker --instance`,
+// which builds no telemetry client at all, so a load-time file read here
+// would fail the worker over a file it has no reason to mount. The paths
+// are read only by telemetry.New, on the daemon, where a read/parse failure
+// degrades to local-only telemetry rather than a boot-fatal (#3804).
+type OTLPTLSConfig struct {
+	// CAFile is a PEM file appended to the system trust pool as an extra
+	// root. The system pool is still trusted — this adds to it, it does
+	// not replace it.
+	CAFile string `json:"caFile,omitempty" yaml:"caFile,omitempty"`
+	// ServerName overrides the hostname used for SNI and certificate
+	// verification. Empty uses the endpoint's own host.
+	ServerName string `json:"serverName,omitempty" yaml:"serverName,omitempty"`
+	// CertFile is a PEM client certificate presented for mTLS. Requires
+	// KeyFile; both or neither.
+	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
+	// KeyFile is the PEM private key for CertFile. Requires CertFile; both
+	// or neither.
+	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
 }
 
 // EngineConfig identifies the Temporal frontend and task queue shared by all
@@ -1585,8 +1621,8 @@ func (c OTLPConfig) Enabled() bool {
 // Validate checks the collector endpoint, transport, and credential references.
 func (c OTLPConfig) Validate() error {
 	if c.Endpoint == "" {
-		if c.Insecure || len(c.Headers) != 0 {
-			return fmt.Errorf("endpoint is required when insecure mode or headers are configured")
+		if c.Insecure || len(c.Headers) != 0 || c.TLS != nil {
+			return fmt.Errorf("endpoint is required when insecure mode, headers, or tls are configured")
 		}
 		return nil
 	}
@@ -1595,6 +1631,18 @@ func (c OTLPConfig) Validate() error {
 	}
 	if err := validateOTLPEndpoint(c.Endpoint, c.Insecure); err != nil {
 		return fmt.Errorf("endpoint %q: %w", c.Endpoint, err)
+	}
+	if c.TLS != nil {
+		// Mirrors the https/insecure conflict below: TLS trust configuration
+		// only makes sense on the encrypted path. Checked independently of
+		// scheme/loopback so it also catches insecure:true against an https
+		// or bare host:port endpoint, not just http.
+		if c.Insecure {
+			return fmt.Errorf("tls configuration conflicts with insecure: true")
+		}
+		if err := c.TLS.Validate(); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
 	}
 	seenHeaders := make(map[string]bool, len(c.Headers))
 	for name, ref := range c.Headers {
@@ -1611,6 +1659,58 @@ func (c OTLPConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Validate checks the TLS block's SHAPE only: whitespace, the certFile/
+// keyFile both-or-neither pairing, and serverName's hostname syntax. It
+// never touches the filesystem — see the type doc for why (the worker loads
+// this same instance.yaml and has no telemetry client to use these paths
+// with).
+func (c OTLPTLSConfig) Validate() error {
+	for _, path := range []struct {
+		field string
+		value string
+	}{
+		{"caFile", c.CAFile},
+		{"certFile", c.CertFile},
+		{"keyFile", c.KeyFile},
+	} {
+		if strings.TrimSpace(path.value) != path.value {
+			return fmt.Errorf("%s must not contain leading or trailing whitespace", path.field)
+		}
+	}
+	if (c.CertFile == "") != (c.KeyFile == "") {
+		return fmt.Errorf("certFile and keyFile must both be set or both be empty")
+	}
+	if strings.TrimSpace(c.ServerName) != c.ServerName {
+		return fmt.Errorf("serverName must not contain leading or trailing whitespace")
+	}
+	if c.ServerName != "" && !validHostname(c.ServerName) {
+		return fmt.Errorf("serverName %q must be a bare hostname (no scheme, port, path, or userinfo)", c.ServerName)
+	}
+	return nil
+}
+
+// validHostname reports whether name is a plain DNS-label hostname: letters,
+// digits, hyphens, and interior dots only — no scheme, port, path, or
+// userinfo. Used for OTLPTLSConfig.ServerName, an SNI override rather than a
+// dialable address, so it deliberately rejects the host:port and URL shapes
+// validateOTLPEndpoint accepts for Endpoint.
+func validHostname(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // APIListenAddress returns the configured HTTP address, defaulting to a

@@ -453,6 +453,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"respond-to-findings": {
 		{name: "check", desc: "Validate without publishing responses"},
 	},
+	"file-issues": {
+		{name: "check", desc: "Validate and scan without creating issues"},
+	},
 	"mcp-io": {
 		{name: "config", takesArg: true, desc: "MCP server configuration path"},
 	},

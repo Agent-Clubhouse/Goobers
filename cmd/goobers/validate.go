@@ -347,11 +347,15 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// Static reality cross-checks (2026-08-08 cold-start audit; dsl-3.0.md §5
 	// checkpoint 1): the per-stage placement solve against the resolved
 	// runner inventory (RNR001/RNR003 — ERROR when a runners: inventory is
-	// declared, the #3497 fix; RNR004 always advisory), a
-	// requiredCapabilities token no runner claims (CAP003, 2.0 documents on
-	// inventory-less instances), an unenforceable maxOpenPRs cap (PRCAP001),
-	// and an automated gate completion branch a failed stage can never
-	// complete through (WF018). Warnings append to the report like the
+	// declared, the #3497 fix; RNR004 always advisory), a stage whose
+	// declared runsOn.restrictions guarantees it resolves off the daemon's
+	// own host but whose command or kind needs the daemon's instance root
+	// (RNR005, always advisory — decision 003 ruling 3; the enforcement is
+	// at dispatch), a requiredCapabilities token no runner claims (CAP003,
+	// 2.0 documents on inventory-less instances), an unenforceable
+	// maxOpenPRs cap (PRCAP001), and an automated gate completion branch a
+	// failed stage can never complete through (WF018). Warnings append to
+	// the report like the
 	// harness/skill warnings above (--strict and the JSON report treat them
 	// as ordinary config warnings); error-severity placement findings fail
 	// validation below. --source-tree solves against instance.yaml.example

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -140,5 +141,89 @@ func TestMaterializeNoStoreIsNoOp(t *testing.T) {
 	cp := pointerFor("x", []byte("data"))
 	if err := MaterializeContext(context.Background(), nil, t.TempDir(), []apiv1.ContextPointer{cp}); err != nil {
 		t.Fatalf("MaterializeContext with no store = %v; want nil", err)
+	}
+}
+
+// THE WRITE PRIMITIVE'S OWN CONTAINMENT CHECK.
+//
+// This function is the only place in the fetch half that turns a DECLARED path
+// into MkdirAll + WriteFile, and the path arrives on an envelope this process
+// did not author: on a worker it comes from an upstream stage's surrendered
+// ResultEnvelope (a bare json.Unmarshal in dispatcher.ReadSurrenderedResult,
+// with no ArtifactPointer.Validate anywhere on that path), and since #3823 it
+// also comes over the network into a stage pod. Every other declared-path call
+// site in this repo applies the #120 containment primitive before it acts —
+// ArtifactPointer.Resolve does — and a fetch that wrote first would place a new
+// filesystem-write primitive AHEAD of that check, with the bytes already on
+// disk by the time anything refused.
+//
+// Refused HARD, not skipped: an escaping path is not a cache miss to fill in
+// later, it is an envelope that must not be acted on at all.
+func TestMaterializeRefusesAPointerThatEscapesTheStagingRoot(t *testing.T) {
+	t.Parallel()
+	payload := []byte("#!/bin/sh\necho pwned\n")
+	parent := t.TempDir()
+	staging := filepath.Join(parent, "staging")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	escaped := filepath.Join(parent, "escaped.sh")
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "traversal", path: "../escaped.sh"},
+		{name: "nested traversal", path: "artifacts/../../escaped.sh"},
+		{name: "absolute", path: escaped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(escaped)
+			store, err := blobstore.NewDir(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewDir: %v", err)
+			}
+			ctx := context.Background()
+			// The blob IS present under the digest named, so the refusal comes
+			// from the PATH and not from a fetch that failed anyway.
+			cp := pointerFor("upstream", payload)
+			if err := store.Put(ctx, cp.Artifact.Digest, payload); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			cp.Artifact.Path = tc.path
+
+			err = MaterializeContext(ctx, store, staging, []apiv1.ContextPointer{cp})
+			// ASSERTED FIRST: whatever it returns, nothing may be written
+			// outside the staging root.
+			if data, readErr := os.ReadFile(escaped); readErr == nil {
+				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q (MaterializeContext returned %v)",
+					len(data), escaped, data, err)
+			}
+			if err == nil {
+				t.Fatal("MaterializeContext accepted a pointer whose path escapes the staging root")
+			}
+			if !errors.Is(err, apiv1.ErrPathEscape) {
+				t.Fatalf("error = %v, want one wrapping apiv1.ErrPathEscape", err)
+			}
+			if !strings.Contains(err.Error(), "upstream") {
+				t.Errorf("error %q does not name the pointer it refused", err.Error())
+			}
+		})
+	}
+}
+
+// A pointer whose digest is not a real content address is refused too: it is
+// the same structural check, and a digest the store can never hold would
+// otherwise be fetched, missed, and left to fail later as a missing input.
+func TestMaterializeRefusesAMalformedDigest(t *testing.T) {
+	t.Parallel()
+	store, err := blobstore.NewDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDir: %v", err)
+	}
+	cp := pointerFor("upstream", []byte("data"))
+	cp.Artifact.Digest = "sha256:not-hex"
+	if err := MaterializeContext(context.Background(), store, t.TempDir(), []apiv1.ContextPointer{cp}); err == nil {
+		t.Fatal("MaterializeContext accepted a pointer whose digest is not a content address")
 	}
 }

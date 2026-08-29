@@ -740,6 +740,11 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 					Workspace: apiv1.WorkspaceRepoReadOnly,
 					Retry:     &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
 				},
+				// Agentic-gate placement (decision 001): every gate.runsOn leaf.
+				RunsOn: &apiv1.RunsOn{
+					OS: "linux", CPU: "1000m", Memory: "2Gi", Disk: "10Gi",
+					Capabilities: []string{"git"}, Restrictions: []string{"network:allowlist"},
+				},
 				Branches: map[string]string{"pass": "human-remind", "fail": TargetAbort, "needs-changes": TargetEscalate},
 			},
 			humanFeatureGate("human-remind", "remind", "human-escalate"),
@@ -1205,6 +1210,14 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.runsOn.restrictions",
 		"task.repoFrom",
 		"task.commitsRepo",
+		// Agentic-gate placement (decision 001, #3798).
+		"gate.runsOn",
+		"gate.runsOn.os",
+		"gate.runsOn.cpu",
+		"gate.runsOn.memory",
+		"gate.runsOn.disk",
+		"gate.runsOn.capabilities",
+		"gate.runsOn.restrictions",
 	}
 	slices.Sort(ids)
 	return ids

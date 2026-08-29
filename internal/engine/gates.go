@@ -118,7 +118,7 @@ func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal,
 		if temporal.IsCanceledError(err) || ctx.Err() != nil {
 			return err
 		}
-		class, cerr := attemptFailureClass(err)
+		class, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return cerr
 		}

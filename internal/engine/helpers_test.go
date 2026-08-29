@@ -27,11 +27,26 @@ type fakeWorkspaces struct {
 	// one until the script is exhausted, then provisioning succeeds.
 	provisionErrs []error
 	emptyPath     bool
+	// publish, when set, is what a provisioned workspace reports from
+	// PublishDelta (keyed by stage) — the fake's stand-in for the worker's
+	// bundle-and-Put. Nil publishes nothing, the pre-#3803 self-arm shape.
+	publish func(stage string) (WorkspaceDeltaPublication, error)
 }
 
 func testWorkspaces(t *testing.T) *fakeWorkspaces {
 	t.Helper()
 	return &fakeWorkspaces{root: t.TempDir()}
+}
+
+// provisionableWorkspaceModes is the set of modes the PRODUCTION provisioner
+// (workerhost.WorktreeWorkspaces.Provision) has an arm for — the full
+// WorkspaceMode enum plus the unset default. The fake refuses anything else
+// exactly as the real one does, so an engine test cannot pass by threading a
+// mode the worker would reject; workerhost's
+// TestProvisionAcceptsEveryDeclaredWorkspaceMode runs the same table through
+// the real provisioner, which is what keeps the two in agreement.
+var provisionableWorkspaceModes = map[apiv1.WorkspaceMode]bool{
+	"": true, apiv1.WorkspaceRepo: true, apiv1.WorkspaceScratch: true, apiv1.WorkspaceRepoReadOnly: true,
 }
 
 func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Workspace, error) {
@@ -42,15 +57,18 @@ func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Wor
 		f.provisionErrs = f.provisionErrs[1:]
 		return nil, err
 	}
+	if !provisionableWorkspaceModes[req.Mode] {
+		return nil, fmt.Errorf("fakeWorkspaces: unknown workspace mode %q for stage %q (workerhost.WorktreeWorkspaces would refuse it too)", req.Mode, req.Stage)
+	}
 	f.requests = append(f.requests, req)
 	if f.emptyPath {
-		return &fakeWorkspace{owner: f}, nil
+		return &fakeWorkspace{owner: f, stage: req.Stage}, nil
 	}
 	path, err := os.MkdirTemp(f.root, fmt.Sprintf("%s-%s-*", req.RunID, req.Stage))
 	if err != nil {
 		return nil, err
 	}
-	return &fakeWorkspace{owner: f, path: path}, nil
+	return &fakeWorkspace{owner: f, path: path, stage: req.Stage}, nil
 }
 
 func (f *fakeWorkspaces) provisioned() []WorkspaceRequest {
@@ -68,9 +86,21 @@ func (f *fakeWorkspaces) removedPaths() []string {
 type fakeWorkspace struct {
 	owner *fakeWorkspaces
 	path  string
+	stage string
 }
 
 func (w *fakeWorkspace) Path() string { return w.path }
+
+// PublishDelta implements DeltaPublisher through the owner's publish hook.
+func (w *fakeWorkspace) PublishDelta(context.Context) (WorkspaceDeltaPublication, error) {
+	w.owner.mu.Lock()
+	publish := w.owner.publish
+	w.owner.mu.Unlock()
+	if publish == nil {
+		return WorkspaceDeltaPublication{}, nil
+	}
+	return publish(w.stage)
+}
 
 func (w *fakeWorkspace) Remove(context.Context) error {
 	w.owner.mu.Lock()

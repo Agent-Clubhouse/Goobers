@@ -367,13 +367,11 @@ type stageProfile struct {
 //
 // taskWorkspaceIsRepoBacked reports whether a task's declared workspace needs a
 // repository checked out. Run.Workspace takes precedence over the task-level
-// declaration, matching the engine's own resolution order — an agentic task has
-// no DeterministicRun and can only express a workspace on the task.
+// declaration (apiv1.Task.EffectiveWorkspace, the engine's own resolution) —
+// an agentic task has no DeterministicRun and can only express a workspace on
+// the task.
 func taskWorkspaceIsRepoBacked(task apiv1.Task) bool {
-	workspace := task.Workspace
-	if task.Run != nil && task.Run.Workspace != "" {
-		workspace = task.Run.Workspace
-	}
+	workspace := task.EffectiveWorkspace()
 	// An UNSPECIFIED workspace does not qualify, even though the engine
 	// defaults a deterministic task to repo. The implicit grant follows an
 	// explicit declaration and nothing else, because §13 item 7 holds that a

@@ -264,6 +264,13 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.human.timeout` | 3.0 | ga | preview | dev |
 | `gate.maxRepasses` | 3.0 | ga | preview | dev |
 | `gate.name` | 3.0 | ga | preview | dev |
+| `gate.runsOn` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.capabilities` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.cpu` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.disk` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.memory` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.os` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.restrictions` | 3.0 | ga | preview | v0.4.0 |
 | `goober.spec.capabilities` | 3.0 | ga | preview | dev |
 | `goober.spec.conditionalPolicyActions` | 3.0 | ga | preview | dev |
 | `goober.spec.displayName` | 3.0 | ga | preview | dev |
@@ -389,6 +396,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 2.0 -> 3.0
 
-- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`
+- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`
 - Removed: `gaggle.spec.requiredCapabilities`, `gaggle.spec.sandbox`, `stage.run.network.none`, `task.experiment`, `task.requiredCapabilities`
 - Level changes: none

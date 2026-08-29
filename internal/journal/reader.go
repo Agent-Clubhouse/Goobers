@@ -512,6 +512,53 @@ func reconstructPhase(events []Event) RunPhase {
 	return PhaseRunning
 }
 
+// ParkedAtGate reports whether a run's log ends with the run WAITING at a gate
+// — parked for a verdict that has not been recorded yet. The stalled-run
+// sweeps use it as the one exemption from escalation: a run parked for a human
+// is not a run that stopped making progress, and escalating it destroys work
+// nobody asked to abandon.
+//
+// The scan runs newest-first and stops at the first event that says where the
+// run's CONTROL FLOW is. A gate.paused means parked. Anything that moves the
+// run off a gate — a verdict, an override, the runner picking the gate up
+// (gate.started), a resume, a stage, branch or parallel transition, a terminal
+// — means it is not. Everything else is skipped as OBSERVATIONAL:
+// artifact.recorded, span.recorded, agent.lifecycle, stage.heartbeat, runner
+// annotations, errors, redactions.
+//
+// The skip is the whole reason this exists rather than
+// `events[len(events)-1].Type == EventGatePaused`, which is what both sweeps
+// tested before. That test was sound only while ONE writer appended to a
+// runner-driven journal. A mode-3 stage runs in a pod and emits through the
+// journal PLANE into that same journal (livejournal.Writer.Adopt appends its
+// events on the runner's own handle), so an HTTP retry, a late agent.lifecycle
+// (#3774's lineage) or — once gates are placeable, decision 001 — a
+// pod-executed gate's own emits can land AFTER the runner's gate.paused. The
+// last-event test then reads false while the run is still parked, and
+// reconstructPhase's backward scan still reports running, so a gate held
+// longer than the stalled-run timeout is escalated.
+//
+// Unknown and unlisted event types are skipped rather than counted as
+// progress. That is the fail-safe direction, and the asymmetry is the same one
+// Run.IfLastActivityBefore records: declining to escalate a genuinely hung run
+// costs delay, while escalating a parked one destroys human-gated work and
+// cannot be configured away.
+func ParkedAtGate(events []Event) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case EventGatePaused:
+			return true
+		case EventGateStarted, EventGateEvaluated, EventGateOverridden,
+			EventRunStarted, EventRunResumed, EventRunFinished,
+			EventStageStarted, EventStageFinished, EventStageRerunRequested,
+			EventParallelStarted, EventParallelFinished,
+			EventBranchStarted, EventBranchFinished:
+			return false
+		}
+	}
+	return false
+}
+
 // terminalGateExecuted reports whether the gate.evaluated at index i was
 // produced by the RUNNER executing the gate, rather than by an out-of-band
 // human decision recorded onto a still-paused run.

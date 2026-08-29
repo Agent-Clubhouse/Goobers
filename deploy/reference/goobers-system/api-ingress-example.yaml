@@ -21,6 +21,17 @@ metadata:
     # whole host, not a subset of paths — see "HTTP Basic Auth at the edge"
     # in docs/guides/oidc-authentication.md. It is a network-level gate, not
     # a substitute for api.auth.oidc.
+    #
+    # #3806: this ingress's single `path: /` rule also republishes /healthz
+    # and /readyz externally — the daemon answers both with no credential by
+    # design (a kubelet probe cannot present one), but kubelet itself never
+    # reaches the daemon through this ingress; it probes podIP directly.
+    # There is no cost to excluding these two paths at the edge if your
+    # ingress controller supports it (e.g. an ingress-nginx
+    # server-snippet/configuration-snippet returning 404 for exactly
+    # /healthz and /readyz ahead of this rule) — consider adding one so an
+    # unauthenticated caller on the public host cannot use either as a
+    # liveness/readiness oracle for the daemon.
 spec:
   ingressClassName: CHANGE-ME
   tls:

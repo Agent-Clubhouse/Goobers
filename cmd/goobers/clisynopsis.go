@@ -73,6 +73,7 @@ var synopsisByID = map[string]string{
 	"select-source":          "  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)\n",
 	"validate-plan":          "  goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)\n",
 	"publish-batch":          "  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)\n",
+	"file-issues":            "  goobers file-issues [--check]          file a validated nominations artifact as deduped, budgeted issues (a workflow stage)\n",
 	"reconcile-branches":     "  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]\n                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)\n",
 	"push-branch":            "  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)\n",
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
