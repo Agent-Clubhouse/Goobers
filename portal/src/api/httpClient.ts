@@ -293,6 +293,7 @@ export class HttpDaemonClient implements DaemonClient {
         cursor: request.cursor,
         latestPerWorkflow: request.latestPerWorkflow ? "true" : undefined,
         showNoWork: request.showNoWork ? "true" : undefined,
+        orderByActivity: request.orderByActivity ? "true" : undefined,
       },
       options,
     );

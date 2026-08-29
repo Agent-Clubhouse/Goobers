@@ -1,13 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import type { UpdateModel } from "./api/types";
+import type { RunSummary, UpdateModel } from "./api/types";
 import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
 import {
   INVENTORY_CACHE_TTL_MS,
   loadOperationalOverview,
   loadOperationalSnapshot,
 } from "./operationalData";
-import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
+import {
+  emptyDaemonFixtures,
+  largeJournalFixtures,
+  populatedDaemonFixtures,
+} from "./test/daemonFixtures";
 
 describe("loadOperationalSnapshot", () => {
   it("fetches latest workflow outcomes in one request regardless of workflow count", async () => {
@@ -328,5 +332,113 @@ describe("operational inventory cache", () => {
       cache.dispose();
       vi.useRealTimers();
     }
+  });
+});
+
+// #1199: escalation is a permanent terminal phase with no time filter, so a
+// single old, still-unresolved escalation used to sit on the attention list
+// forever until 20 newer failures/escalations pushed it off. The fix filters
+// and orders escalated/failed candidates by last journal activity (not
+// start) within a 24h window, before the existing count cap applies.
+describe("loadOperationalOverview attention recency window (#1199)", () => {
+  const NOW = Date.parse("2026-08-01T12:00:00Z");
+  const STALE_STARTED_AT = "2026-01-01T00:00:00Z";
+
+  function attentionRun(
+    id: string,
+    phase: "escalated" | "failed",
+    lastActivityAt: string,
+  ): RunSummary {
+    return {
+      id,
+      workflow: "implementation",
+      workflowVersion: 7,
+      gaggle: "core",
+      trigger: { kind: "item", ref: id.slice(-3) },
+      phase,
+      terminal: true,
+      startedAt: STALE_STARTED_AT,
+      finishedAt: lastActivityAt,
+      durationMillis: Date.parse(lastActivityAt) - Date.parse(STALE_STARTED_AT),
+      lastActivityAt,
+      stale: false,
+      lastSeq: 1,
+      repassCount: 0,
+      retryCount: 0,
+      policyRetryCount: 0,
+      infraRetryCount: 0,
+      noWork: false,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a run whose last activity is just under the 24h boundary", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const justUnder = new Date(NOW - (24 * 60 * 60 * 1000 - 1)).toISOString();
+    fixtures.runs = { runs: [attentionRun("01JZ000JUSTUNDER", "escalated", justUnder)] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention.map((run) => run.id)).toEqual(["01JZ000JUSTUNDER"]);
+  });
+
+  it("ages out a run whose last activity is just over the 24h boundary", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const justOver = new Date(NOW - (24 * 60 * 60 * 1000 + 1)).toISOString();
+    fixtures.runs = { runs: [attentionRun("01JZ000JUSTOVER", "failed", justOver)] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toEqual([]);
+  });
+
+  it("keeps a run active regardless of how long ago it started, as long as it was touched recently", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const recentActivity = new Date(NOW - 60_000).toISOString();
+    fixtures.runs = {
+      // startedAt (STALE_STARTED_AT) is months old; only lastActivityAt is recent.
+      runs: [attentionRun("01JZ000STILLACTIVE", "escalated", recentActivity)],
+    };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention.map((run) => run.id)).toEqual(["01JZ000STILLACTIVE"]);
+  });
+
+  it("reads as empty, not an error, when every escalation/failure has aged out", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const longAgo = new Date(NOW - 7 * 24 * 60 * 60 * 1000).toISOString();
+    fixtures.runs = {
+      runs: [
+        attentionRun("01JZ000OLDESCALATE", "escalated", longAgo),
+        attentionRun("01JZ000OLDFAILED", "failed", longAgo),
+      ],
+    };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toEqual([]);
+    expect(overview.sectionErrors?.runs).toBeUndefined();
+  });
+
+  it("filters and orders escalated/failed queries by last activity within the window", async () => {
+    const client = new FixtureDaemonClient(emptyDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    await loadOperationalOverview(client);
+
+    const escalatedCall = listRuns.mock.calls.find(([request]) => request?.phase === "escalated");
+    const failedCall = listRuns.mock.calls.find(([request]) => request?.phase === "failed");
+    const expectedSince = new Date(NOW - 24 * 60 * 60 * 1000).toISOString();
+    expect(escalatedCall?.[0]).toMatchObject({ orderByActivity: true, since: expectedSince });
+    expect(failedCall?.[0]).toMatchObject({ orderByActivity: true, since: expectedSince });
   });
 });

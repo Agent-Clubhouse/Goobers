@@ -41,6 +41,14 @@ const HEALTH_REFRESH_INTERVAL_MS = 5_000;
 const ACTIVE_RUN_LIMIT = 50;
 const ATTENTION_RUN_LIMIT = 20;
 const RECENT_OUTCOME_LIMIT = 20;
+// An escalated/failed run is a candidate for the attention list only while it
+// has been touched — stage.started / stage.finished / escalated — in the last
+// 24h. Escalation is a permanent terminal phase with no dismissal otherwise,
+// so without this window a single old, still-unresolved escalation would sit
+// on the list forever until 20 newer ones happened to push it off (#1199).
+// This is additive filtering on top of the existing durable dismiss
+// (attentionDismissals.ts, #2563), not a replacement for it.
+const ATTENTION_RECENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
 export const INVENTORY_CACHE_TTL_MS = 5 * 60_000;
 const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
@@ -443,6 +451,17 @@ function sortRuns(runs: RunSummary[]): RunSummary[] {
     (left, right) =>
       Date.parse(right.finishedAt ?? right.startedAt) -
         Date.parse(left.finishedAt ?? left.startedAt) ||
+      right.id.localeCompare(left.id),
+  );
+}
+
+// The attention list orders by last journal activity, not start/finish
+// (#1199): an escalation that started long ago but was just touched is the
+// most urgent thing on the instance, and the least recent by sortRuns' axis.
+function sortRunsByActivity(runs: RunSummary[]): RunSummary[] {
+  return [...runs].sort(
+    (left, right) =>
+      Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt) ||
       right.id.localeCompare(left.id),
   );
 }
@@ -1337,14 +1356,23 @@ async function loadOverviewRunGroups(
 ): Promise<OperationalRunGroups> {
   const byPhase = (phase: RunPhase, limit: number) =>
     client.listRuns({ phase, limit }, { signal });
+  // Attention candidates are filtered/ordered by last activity rather than
+  // start (#1199) — the recency window is meaningless on the started_at axis,
+  // since it would drop an old-started run that escalated a minute ago before
+  // the portal ever saw it. This requires the read model (#1777); an instance
+  // without one refuses the request, which Promise.allSettled below treats
+  // like any other single-phase failure.
+  const attentionSince = new Date(Date.now() - ATTENTION_RECENCY_WINDOW_MS).toISOString();
+  const byRecentActivity = (phase: RunPhase, limit: number) =>
+    client.listRuns({ phase, limit, since: attentionSince, orderByActivity: true }, { signal });
   // One phase timing out must not void the other four: the phases are separate
   // queries backing separate groups, and losing "active runs" because the
   // "completed" page was slow discards exactly the data an operator is looking
   // at during an incident (#1709).
   const settled = await Promise.allSettled([
     byPhase("running", ACTIVE_RUN_LIMIT),
-    byPhase("escalated", ATTENTION_RUN_LIMIT),
-    byPhase("failed", ATTENTION_RUN_LIMIT),
+    byRecentActivity("escalated", ATTENTION_RUN_LIMIT),
+    byRecentActivity("failed", ATTENTION_RUN_LIMIT),
     byPhase("completed", RECENT_OUTCOME_LIMIT),
     byPhase("aborted", RECENT_OUTCOME_LIMIT),
   ]);
@@ -1359,7 +1387,7 @@ async function loadOverviewRunGroups(
   );
   return {
     active: sortRuns(running),
-    attention: sortRuns([...escalated, ...failed]).slice(0, ATTENTION_RUN_LIMIT),
+    attention: sortRunsByActivity([...escalated, ...failed]).slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
   };
 }

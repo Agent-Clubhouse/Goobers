@@ -183,7 +183,9 @@ export class FixtureDaemonClient implements DaemonClient {
         request,
       ),
     );
-    runs = [...runs].sort(compareRunsNewestFirst);
+    runs = [...runs].sort(
+      request?.orderByActivity ? compareRunsMostActiveFirst : compareRunsNewestFirst,
+    );
     if (request?.latestPerWorkflow) {
       const workflowActivity = Object.entries(this.fixtures.workflows ?? {})
         .flatMap(([, page]) => page.items)
@@ -378,14 +380,19 @@ function matchesRunRequest(
   usage: FixtureStageUsage[],
   request?: RunListOptions,
 ): boolean {
+  // orderByActivity moves since/until onto the last-activity axis (#1777):
+  // filtering the recency window by startedAt here would silently drop
+  // exactly the runs it exists to surface — an old-started run with recent
+  // activity.
+  const recencyKey = request?.orderByActivity ? run.lastActivityAt : run.startedAt;
   if (
     (!request?.showNoWork && run.noWork) ||
     (request?.gaggle && run.gaggle !== request.gaggle) ||
     (request?.workflow && run.workflow !== request.workflow) ||
     (request?.phase && run.phase !== request.phase) ||
     (request?.trigger && run.trigger.kind !== request.trigger) ||
-    (request?.since && Date.parse(run.startedAt) < Date.parse(request.since)) ||
-    (request?.until && Date.parse(run.startedAt) > Date.parse(request.until))
+    (request?.since && Date.parse(recencyKey) < Date.parse(request.since)) ||
+    (request?.until && Date.parse(recencyKey) > Date.parse(request.until))
   ) {
     return false;
   }
@@ -572,6 +579,13 @@ function throwIfCancelled(options?: RequestOptions): void {
 function compareRunsNewestFirst(left: RunSummary, right: RunSummary): number {
   return (
     Date.parse(right.startedAt) - Date.parse(left.startedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function compareRunsMostActiveFirst(left: RunSummary, right: RunSummary): number {
+  return (
+    Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt) ||
     left.id.localeCompare(right.id)
   );
 }
