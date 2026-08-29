@@ -300,7 +300,14 @@ func sweepStalledRuns(
 					sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 					continue
 				}
-				if events[len(events)-1].Type == journal.EventGatePaused {
+				// Parked at a gate is the sweep's one exemption, and it has to
+				// hold even when something other than the runner appended after
+				// the pause: a mode-3 pod emits into this journal through the
+				// write API's journal plane (livejournal.Writer.Adopt), so a
+				// retried emit or a pod-executed gate's own events can follow
+				// gate.paused. Testing only the last event escalated a run that
+				// was still waiting for a human. See journal.ParkedAtGate.
+				if journal.ParkedAtGate(events) {
 					continue
 				}
 				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {

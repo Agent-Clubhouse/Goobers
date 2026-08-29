@@ -234,12 +234,50 @@ type liveRun struct {
 	// (and must not) reach into. See Adopt.
 	clock *replayClock
 	// adopted marks jr as another driver's handle, on loan for the duration of
-	// an Adopt. The writer appends through it but never closes it and never
-	// releases its run-dir lock — CloseIdle, Close and finishRun all skip it.
-	adopted      bool
+	// an Adopt. The writer appends through it but NEVER closes it and never
+	// releases its run-dir lock — CloseIdle, Close and finishRun's terminal arm
+	// all skip it; only the loan's own release, or the owner having closed the
+	// handle behind the writer's back, drops the registration.
+	// Immutable after construction, so it is safe to read under the WRITER's mu
+	// (Adopt's conflict check) as well as under this run's.
+	adopted bool
+	// loans counts the outstanding Adopts of this same handle — a run's
+	// concurrent parallel branches each take one for their own pod attempt (see
+	// Adopt). Guarded by the WRITER's mu, not this run's.
+	loans        int
 	keys         map[string]uint64
 	artifactRefs map[string]journal.Ref
 	lastEmit     time.Time
+}
+
+// terminal reports whether the run's journal has reached its terminal event.
+// Caller holds run.mu.
+//
+// For a journal this writer OWNS, its own dedup state is the whole truth: it is
+// the only appender, so the marker applyOp latches on run.finished is complete.
+//
+// For an ADOPTED one it is not, and the gap is load-bearing. The owner appends
+// run.finished through its own handle — the stalled-run sweep and `goobers run
+// abort` terminalize exactly that way, and finishRun's doc says so — without
+// ever passing through applyOp, so the marker deriveDedupState latched at Adopt
+// time is a one-shot snapshot that never refreshes. The authority for a loaned
+// handle is therefore the HANDLE: journal.Run tracks the phase its own appends
+// imply and reports it through Phase(). Without this, a pod emit still in
+// flight when the runner terminalizes is appended AFTER run.finished — the
+// exact corruption ErrTerminal exists to refuse, and one the writer refuses
+// correctly on every journal it opened itself.
+//
+// The residual window is one both appenders share and neither can close from
+// here: the owner can append run.finished between this check and the append it
+// guards, because two writers on one handle serialize only inside
+// journal.Run's own mutex, one append at a time. That is orders of magnitude
+// narrower than a snapshot frozen at Adopt, and it is the same window every
+// check-then-append on a shared handle has.
+func (run *liveRun) terminal() bool {
+	if run.keys[terminalMarker] > 0 {
+		return true
+	}
+	return run.adopted && run.jr != nil && run.jr.Phase() != journal.PhaseRunning
 }
 
 // replayClock replays op timestamps into the journal writer, mirroring the
@@ -418,22 +456,51 @@ func (w *Writer) Reserve(runID string) (release func(), ok bool) {
 // only this writer ever writes an EmitKeyRunnerField, so the keys a concurrent
 // runner append could add are none.
 //
-// Refusals are fail-closed: an id/gaggle whose runs directory does not resolve,
-// a handle open on some other run's directory (which would land one run's pod
-// bytes in another's journal), a run this writer already holds (ErrAdoptConflict),
-// and a run under an external Reserve, whose directory a repair is about to
-// replace.
+// What is NOT a snapshot, and must not be, is the run's terminality: the owner
+// appends run.finished through its own handle, so the writer reads that off the
+// handle on every op rather than off the keys derived here (liveRun.terminal).
+// The artifact refs a later gate.evaluated names ARE snapshotted, and refresh
+// lazily from the journal on a miss (applyOp's gate.evaluated arm) for the same
+// reason: the owner keeps recording artifacts this writer never saw.
 //
-// release must be called exactly once, on every path; it is idempotent and
-// never touches jr. It only ends the loan, so an Emit already in flight
-// through the adopted handle completes on it, and a late emit arriving after
-// release falls back to today's rehydrate path.
+// CONCURRENT LOANS. A run's parallel branches each dispatch their own pod
+// attempt (internal/runner/parallel_run.go runs one goroutine per branch), so a
+// per-attempt Adopt/release seam issues overlapping Adopts for one run. Those
+// are not two writers — they are one handle, one lock, held once — so the loan
+// is REFCOUNTED for the identical *journal.Run: the second Adopt joins the
+// first, and the entry is dropped when the last release runs. A DIFFERENT
+// handle for a run this writer already holds is still ErrAdoptConflict, refused
+// rather than substituted, because that genuinely is two writers on one
+// events.jsonl.
+//
+// Refusals are fail-closed: an id/gaggle whose runs directory does not resolve,
+// a nil or already-CLOSED handle (a closed one can never accept an append, and
+// keeping it would wedge every later emit behind a dead handle), a handle open
+// on some other run's directory (which would land one run's pod bytes in
+// another's journal), a run this writer already holds through a different
+// handle (ErrAdoptConflict), and a run under an external Reserve, whose
+// directory a repair is about to replace.
+//
+// EmitResponse.Seq for an adopted run is the handle's seq observed after the
+// batch — a high-water mark of the whole journal, including events the owner
+// appended concurrently — not necessarily the seq of the batch's own last
+// event. The same is true of the seqs recorded in the dedup map, which are only
+// ever tested for presence. Do not read either as "the seq of this op".
+//
+// release must be called exactly once per Adopt, on every path; it is
+// idempotent and never touches jr. The LAST release ends the loan, and returns
+// only once no emit is still inside the run — so the owner may close the handle
+// the moment it returns. An emit arriving after that falls back to the ordinary
+// rehydrate path, whose lock the owner's close has by then released.
 func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), err error) {
 	if !apiv1.ValidRunID(runID) {
 		return nil, fmt.Errorf("livejournal: invalid run id %q", runID)
 	}
 	if jr == nil {
 		return nil, fmt.Errorf("livejournal: adopt run %s: no open journal handle", runID)
+	}
+	if jr.Closed() {
+		return nil, fmt.Errorf("livejournal: adopt run %s: journal handle is closed", runID)
 	}
 	runsDir, ok := w.runsDir(gaggle)
 	if !ok {
@@ -451,38 +518,98 @@ func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), e
 	if err != nil {
 		return nil, fmt.Errorf("livejournal: adopt run %s: read applied keys: %w", runID, err)
 	}
-	run := &liveRun{
+	fresh := &liveRun{
 		gaggle: gaggle, dir: dir, jr: jr, adopted: true,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 		lastEmit:     w.now(),
 	}
-	deriveDedupState(run, events)
+	deriveDedupState(fresh, events)
 
 	w.mu.Lock()
-	if _, held := w.open[runID]; held {
-		w.mu.Unlock()
-		return nil, fmt.Errorf("%w: run %s", ErrAdoptConflict, runID)
-	}
-	if _, reserved := w.reserved[runID]; reserved {
+	run := fresh
+	if existing, held := w.open[runID]; held {
+		// adopted is immutable after construction, so reading it here is safe;
+		// the short circuit is what keeps jr — which finishRun mutates under
+		// the RUN's mu — out of reach for a run this writer owns.
+		if !existing.adopted || existing.jr != jr {
+			w.mu.Unlock()
+			return nil, fmt.Errorf("%w: run %s", ErrAdoptConflict, runID)
+		}
+		// Same handle, already on loan: a concurrent branch's pod attempt.
+		// Join the existing loan (and its live dedup state, which is fresher
+		// than the derivation above) instead of refusing it.
+		run = existing
+	} else if _, reserved := w.reserved[runID]; reserved {
 		w.mu.Unlock()
 		return nil, fmt.Errorf("livejournal: adopt run %s: run is reserved for repair", runID)
+	} else {
+		w.open[runID] = fresh
 	}
-	w.open[runID] = run
+	run.loans++
 	w.mu.Unlock()
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			w.mu.Lock()
-			// Only this adoption's own entry: a re-adoption after release must
-			// not be dropped by a stale release closure.
-			if current, ok := w.open[runID]; ok && current == run {
-				delete(w.open, runID)
+			run.loans--
+			last := run.loans <= 0
+			if last {
+				// Only this adoption's own entry: a re-adoption after release
+				// must not be dropped by a stale release closure.
+				if current, ok := w.open[runID]; ok && current == run {
+					delete(w.open, runID)
+				}
 			}
 			w.mu.Unlock()
+			if !last {
+				return
+			}
+			// Quiescence, and it is the caller's whole safety margin: a release
+			// followed by jr.Close() must not race an emit that acquired this
+			// run before the delete above and is inside it now. Taking the
+			// run's own mutex waits that emit out. Nilling jr under it then
+			// makes any emit still holding a stale reference re-acquire (Emit's
+			// jr == nil loop) instead of appending through a handle the owner
+			// is about to close.
+			//
+			// w.mu is released FIRST: an emit inside the run takes the writer's
+			// mu (finishRun -> forget), so holding both here in the other order
+			// is the deadlock this ordering avoids.
+			run.mu.Lock()
+			run.jr = nil
+			run.mu.Unlock()
 		})
 	}, nil
+}
+
+// forgetLoan drops an adopted run's registration, but only while it is still
+// the entry this loan installed — a re-adoption that replaced it keeps its own.
+func (w *Writer) forgetLoan(runID string, run *liveRun) {
+	w.mu.Lock()
+	if current, ok := w.open[runID]; ok && current == run {
+		delete(w.open, runID)
+	}
+	w.mu.Unlock()
+}
+
+// refreshAdopted re-derives an adopted run's cached view from the journal
+// itself — the same lock-free read Adopt does, through the same derivation, so
+// the refreshed view and the initial one cannot drift. Caller holds run.mu.
+//
+// A failed read is not an error here: it leaves the cached view exactly as it
+// was, and the caller's own miss then produces the ordinary refusal.
+func (w *Writer) refreshAdopted(run *liveRun) {
+	reader, err := journal.OpenReadOnly(run.dir)
+	if err != nil {
+		return
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return
+	}
+	deriveDedupState(run, events)
 }
 
 // deriveDedupState reads a journal's own events back into a run's dedup view:
@@ -530,10 +657,11 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		return EmitResponse{}, err
 	}
 	run.mu.Lock()
-	for run.jr == nil && !terminalKeyed(run) {
+	for run.jr == nil && !run.terminal() {
 		// A concurrent CloseIdle released this journal between our acquire and
-		// lock. It was forgotten from the map, so another acquire rehydrates a
-		// fresh handle rather than returning this stale one.
+		// lock — or an adoption's release ended the loan, which nils jr for the
+		// same reason. It was forgotten from the map, so another acquire
+		// rehydrates a fresh handle rather than returning this stale one.
 		run.mu.Unlock()
 		run, err = w.acquire(req)
 		if err != nil {
@@ -565,23 +693,36 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 // terminal event, closes and forgets the run — the writer's map holds only
 // live journals; everything else is rehydrated from disk on demand.
 //
-// An ADOPTED run is neither closed nor forgotten on either count: the handle
-// and its lock belong to the runner, and the adoption ends only at release.
-// A terminal event reaching an adopted run is defensive — the runner writes
-// run.finished through its own handle, not through this plane — and still
-// latches the terminal marker, so a later op is refused with ErrTerminal
-// rather than appended after the terminal event.
+// An ADOPTED run is neither closed nor forgotten on the terminal count: the
+// handle and its lock belong to the runner, and the adoption ends only at
+// release. Terminality for such a run is read off the handle (liveRun.terminal),
+// so a run the runner terminalized through its OWN handle refuses later ops
+// with ErrTerminal too — not just one this plane happened to write
+// run.finished for. resp.Seq is the handle's seq observed after the batch,
+// which for an adopted run is a high-water mark of the whole journal (the owner
+// appends to it concurrently), not necessarily the seq of this batch's last op.
+//
+// The one case that DOES drop an adopted run is a handle its owner closed
+// without ending the loan. Nothing can be appended through it again, and its
+// run-dir lock went with the close, so holding it would wedge every later emit
+// behind a dead handle instead of letting the next one reopen the journal.
 func (w *Writer) finishRun(runID string, run *liveRun, resp *EmitResponse) {
 	if run.adopted {
 		if run.jr != nil {
 			resp.Seq = run.jr.Seq()
+			resp.Terminal = run.terminal()
+			if run.jr.Closed() {
+				run.jr = nil
+				w.forgetLoan(runID, run)
+			}
+			return
 		}
-		resp.Terminal = terminalKeyed(run)
+		resp.Terminal = run.terminal()
 		return
 	}
 	if run.jr != nil {
 		resp.Seq = run.jr.Seq()
-		if terminalKeyed(run) {
+		if run.terminal() {
 			_ = run.jr.Close()
 			run.jr = nil
 			w.forget(runID)
@@ -598,10 +739,6 @@ func (w *Writer) finishRun(runID string, run *liveRun, resp *EmitResponse) {
 	}
 	w.forget(runID)
 }
-
-func terminalKeyed(run *liveRun) bool { return run.terminalSeq() > 0 }
-
-func (run *liveRun) terminalSeq() uint64 { return run.keys[terminalMarker] }
 
 // terminalMarker is the internal dedup-map slot recording that run.finished
 // was applied. It is not a valid emitter key (emitter keys are never empty
@@ -812,7 +949,7 @@ func (w *Writer) applyOp(ctx context.Context, run *liveRun, op Op) (bool, error)
 		run.keys[op.Key] = 1
 		return false, nil
 	}
-	if run.jr == nil || terminalKeyed(run) {
+	if run.jr == nil || run.terminal() {
 		return false, fmt.Errorf("%w (op key %s)", ErrTerminal, op.Key)
 	}
 	if run.clock != nil {
@@ -829,6 +966,18 @@ func (w *Writer) applyOp(ctx context.Context, run *liveRun, op Op) (bool, error)
 		ev := *op.Event
 		if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
 			ref, ok := run.artifactRefs[ev.Name]
+			if !ok && run.adopted {
+				// The refs an adopted run starts with are a snapshot, and the
+				// handle's OWNER keeps recording artifacts through it without
+				// passing through this writer — a gate placed in a pod
+				// (decision 001) naming a verdict the runner recorded is the
+				// reachable shape. A name this writer never saw recorded is
+				// therefore not evidence that no such artifact exists, so
+				// re-derive from the journal before refusing. Only on a miss:
+				// the ordinary path stays a map lookup.
+				w.refreshAdopted(run)
+				ref, ok = run.artifactRefs[ev.Name]
+			}
 			if !ok {
 				return false, fmt.Errorf("gate.evaluated references unrecorded artifact %q", ev.Name)
 			}

@@ -608,6 +608,58 @@ func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
 	}
 }
 
+// TestSweepStalledRunsPreservesPausedGateBehindAPodPlaneEmit is the daemon-side
+// half of the same protection. A mode-3 stage emits into the run's own journal
+// through the write API's journal plane (livejournal.Writer.Adopt appends on
+// the runner's handle), so an event can land AFTER the runner's gate.paused.
+// While this sweep tested only the LAST event, such a run read "not parked" and
+// a gate held past the timeout was escalated and its claim released — work a
+// human was still deciding on, destroyed by the watchdog.
+func TestSweepStalledRunsPreservesPausedGateBehindAPodPlaneEmit(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	eventTime := now.Add(-2 * time.Hour)
+	layout := instance.NewLayout(t.TempDir())
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "paused-pod-run", Workflow: "implementation", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.SetMachineState("approval")
+	if err := run.Append(journal.Event{Type: journal.EventGatePaused, Gate: "approval"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordArtifactAnnotated("pr.json", []byte(`{"number":42}`),
+		apiv1.IntegrityDerived, map[string]any{"emitKey": "paused-pod-run|0|open-pr|1|0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	released := false
+	if err := sweepStalledRuns(
+		layout,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		func(string, string) { released = true },
+		now,
+		45*time.Minute,
+		0,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertWatchdogPhase(t, layout.RunsDir(), "paused-pod-run", journal.PhaseRunning)
+	if released {
+		t.Fatal("a gate still awaiting a human was escalated because a pod emit landed after gate.paused")
+	}
+}
+
 func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
 	layout := instance.NewLayout(t.TempDir())
