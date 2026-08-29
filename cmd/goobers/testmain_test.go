@@ -107,7 +107,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string) (harnessPreflightInfo, error) {
+	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string, func(context.Context) (string, error)) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
 

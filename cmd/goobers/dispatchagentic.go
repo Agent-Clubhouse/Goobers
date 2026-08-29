@@ -195,7 +195,12 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// The harness is PREFLIGHTED HERE, against the pod's own binary. Shipping
 	// the worker's preflight result would assert something false: it describes
 	// the worker's copilot, not this pod's.
-	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false)
+	//
+	// No modelCredential resolver: the minted credential was just applied to
+	// the ambient environment above, so the preflight's ambient-env-first
+	// lookup already finds it. There's no *instance.Config/StoreResolver in
+	// this pod-context function to build one anyway.
+	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}

@@ -125,13 +125,17 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
-	if err != nil {
-		return nil, fmt.Errorf("worker: harness preflight: %w", err)
-	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
+	}
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential)
+	if err != nil {
+		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
 
 	scoped := l.ForGaggle(gaggle)

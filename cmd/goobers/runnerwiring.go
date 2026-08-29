@@ -218,7 +218,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false, nil)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -640,7 +640,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	// goober declares spec.Model — so the launcher override must apply here too,
 	// or admission probes the wrong runtime (bare copilot on a wrapper-only
 	// host, or a divergent bare install beside the wrapper).
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery)
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
