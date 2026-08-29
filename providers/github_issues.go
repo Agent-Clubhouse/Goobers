@@ -38,6 +38,12 @@ const ErrorCodeAuthFailed = "github_auth_failed"
 // errors.As it to learn when the quota recovers, instead of parsing the
 // generic "status 403" string the non-2xx path used to fold this into.
 type RateLimitError struct {
+	// Provider names the forge that rate limited the request, so the
+	// message reads as itself for every provider rather than always
+	// claiming GitHub (#3647). Empty when the limit was recovered from an
+	// untyped non-2xx response whose forge is not identifiable at that
+	// boundary; Error() then says "provider" instead of naming one.
+	Provider  ProviderKind
 	Endpoint  string
 	Status    int
 	Remaining int
@@ -57,7 +63,11 @@ type RateLimitError struct {
 }
 
 func (e *RateLimitError) Error() string {
-	msg := fmt.Sprintf("github rate limited (%s): %s: status %d, remaining %d", ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
+	provider := string(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, remaining %d", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
 	if !e.Reset.IsZero() {
 		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
 	}
@@ -68,6 +78,7 @@ func (e *RateLimitError) Error() string {
 // record rateLimitPlan produced for telemetry.
 func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	return &RateLimitError{
+		Provider:      ev.Provider,
 		Endpoint:      ev.Endpoint,
 		Status:        ev.Status,
 		Remaining:     ev.Remaining,

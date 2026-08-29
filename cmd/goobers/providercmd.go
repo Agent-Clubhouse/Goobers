@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -338,7 +339,9 @@ const (
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
 	// status code attached — retryable, since the failure is unrelated to
-	// the request's content.
+	// the request's content. A 429 never lands here: it classifies as a
+	// rate limit ahead of this branch, whether typed or string-recovered
+	// (#3647).
 	errorCodeNetwork = "network_error"
 	// errorCodeBranchMergeQueued is GitHub's transient GH006 rejection when
 	// the branch being updated belongs to a pull request in the merge queue.
@@ -382,8 +385,7 @@ func statusCodeFrom(err error) (int, bool) {
 // retryable/non-retryable split, never a second, independent opinion on
 // whether the failure is retryable.
 func classifyProviderError(err error) (code string, retryable bool, extra map[string]interface{}) {
-	var rl *providers.RateLimitError
-	if errors.As(err, &rl) {
+	if rl, ok := providers.AsRateLimitError(err); ok {
 		extra = map[string]interface{}{}
 		if !rl.Reset.IsZero() {
 			extra["rateLimitReset"] = rl.Reset.UTC().Format(time.RFC3339)
@@ -404,6 +406,13 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		switch {
 		case status >= 500:
 			return errorCodeServerError, true, nil
+		case status == http.StatusTooManyRequests:
+			// A 429 whose typed error did not survive a subprocess
+			// boundary — only its message text did (#3647). Still a quota
+			// failure, never the generic network_error it used to fall
+			// through to; the reset metadata is unrecoverable from the
+			// string, so no extra fields here.
+			return providers.ErrorCodeRateLimited, true, nil
 		}
 	}
 	if providers.IsTransientError(err) {
