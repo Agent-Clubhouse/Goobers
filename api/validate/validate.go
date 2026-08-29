@@ -125,6 +125,18 @@ const (
 	// declared completion is therefore unreachable dead config (2026-08-08
 	// cold-start audit, swift #3's verified shape).
 	WarningGateCompletionHidesFailure WarningCode = "WF018"
+	// RunnerInstanceRootRequired (RNR005) identifies a 3.0 stage whose
+	// runsOn.restrictions guarantees it resolves off the daemon's own host
+	// — self enforces no restrictions implicitly, runnersolve.go — but whose
+	// command or built-in stage kind needs the daemon's instance root: the
+	// file claim ledger, a merge lock, an on-disk run journal, or a kind
+	// with no pod-side execution path (executor.StageRequiresInstanceRoot,
+	// decision 003 ruling 3). Always a WARNING, never promoted by
+	// inventory declaration the way RNR001/RNR003 are: the enforcement is
+	// at dispatch (a placed run of this workflow is refused loud, with the
+	// same named code, rather than running silently wrong), so this is
+	// advance notice at author time, not a second gate.
+	RunnerInstanceRootRequired WarningCode = "RNR005"
 	// WarningZeroMaxRunsPerHour identifies a workflow whose
 	// spec.readiness.maxRunsPerHour is explicitly written as 0 (or a
 	// negative value). Unlike instance.yaml's runConditions.maxParallelRuns

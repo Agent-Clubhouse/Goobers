@@ -150,6 +150,22 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		if executor.StageRequiresInstanceConfig(t.Run.Command) {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q runs %v, which reads the instance config directory; a stage pod has no config directory — place this stage on a self runner", t.Name, t.Run.Command)
 		}
+		// Decision 003 ruling 3: a ledger-touching, journal-reading, or
+		// telemetry-rollup-reading command — or a built-in stage KIND with no
+		// pod-side execution path (ci-poll, external-telemetry) — needs the
+		// daemon's instance root, which a stage pod does not have. Unlike the
+		// guards above (a misdeclared workspace, an empty command — bugs in
+		// how the stage was built), this is refused as a normal, JOURNALED
+		// stage outcome: dispatchInstanceRootRefusal routes it through
+		// dispatchWithRetry so stage.finished carries the named code and
+		// Task.ContinueOnError / gate branching apply exactly as they would
+		// to a real executor failure, rather than hard-failing the whole run
+		// over a placement the substrate cannot yet honour. No activity is
+		// executed, so ActDispatchStage's dispatcher is never reached and no
+		// pod is ever created.
+		if kind := t.Inputs["kind"]; executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
+			return dispatchInstanceRootRefusal(ctx, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
+		}
 	}
 	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
@@ -158,6 +174,49 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, dispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
+	}, deltaOut)
+}
+
+// instanceRootRefusalReason names the command (or stage kind) and why, for
+// stage.finished's ErrorInfo.Message — the operator-facing half of the
+// refusal, matching the "blame the substrate, not the workflow author" style
+// of the guards above it in dispatchRemoteTask.
+func instanceRootRefusalReason(taskName string, command []string, kind string) string {
+	if kind != "" && kind != executor.KindShell {
+		return fmt.Sprintf(
+			"task %q declares inputs.kind=%q, a built-in stage kind with no pod-side execution path (internal/executor dispatches it in-process only); place this stage on a self runner",
+			taskName, kind,
+		)
+	}
+	return fmt.Sprintf(
+		"task %q runs %v, which reads or writes the daemon's instance root (the file claim ledger, a merge lock, or an on-disk run journal); a stage pod has none — place this stage on a self runner",
+		taskName, command,
+	)
+}
+
+// dispatchInstanceRootRefusal journals a stage.finished FAILURE for a stage
+// refused before dispatch — the ActDispatchStage activity is never executed,
+// so the dispatcher is never consulted and no pod is ever created. Routed
+// through dispatchWithRetry (rather than returned as a plain error, as the
+// workspace/config/empty-command guards above do) so the outcome is a
+// normal, journaled ResultEnvelope: it respects Task.ContinueOnError and
+// gate branching exactly as a real executor failure would, instead of
+// hard-failing the whole run over a placement choice the substrate cannot
+// yet honour. The retry loop never actually fires: dispatchWithRetry only
+// retries a non-nil ACTIVITY error, and this synthesizes a clean (err ==
+// nil) ResultFailure on the first attempt — exactly the same shape a real
+// executor's ordinary command failure returns (shell.go's Run doc comment).
+func dispatchInstanceRootRefusal(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *string, reason string) (apiv1.ResultEnvelope, error) {
+	return dispatchWithRetry(ctx, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
+		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Summary: "stage requires the daemon's instance root; refused before a pod was created",
+			Error: &apiv1.ErrorInfo{
+				Code:      executor.StageRequiresInstanceRootCode,
+				Message:   reason,
+				Retryable: false,
+			},
+		}}, nil
 	}, deltaOut)
 }
 

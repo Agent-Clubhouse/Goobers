@@ -262,6 +262,110 @@ func StageRequiresInstanceConfig(command []string) bool {
 	return stageCommandsRequiringInstanceConfig[command[1]]
 }
 
+// stageCommandsRequiringInstanceRoot are goobers CLI subcommands that
+// UNCONDITIONALLY read or write state that lives only under the daemon's
+// instance root — the file claim ledger, a merge lock, the post-merge
+// reconcile ledger, an on-disk run journal, or the telemetry rollup
+// (decision 003 ruling 3; production-lanes-3.0 stillBroken #2). A stage pod
+// stamps no GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
+// providerStageRoot() falls back to "." and these commands would silently
+// operate on an empty, pod-local root instead of failing — the exact
+// "silent-wrong-result" class this refusal turns loud. None of them has a
+// pod-reachable plane yet: the claims plane has a server but no client, and
+// run-journal reads stay human-only (internal/httpapi/router.go).
+//
+// backlog-query and backlog-health are deliberately NOT here: only specific
+// FLAGS make them ledger/journal-touching, so StageRequiresInstanceRoot
+// matches them by name below instead of folding them into this
+// unconditional set.
+//
+// DERIVED, and re-derivable: per command, grep its handler for
+// SchedulerDir()/claimLedgerFileName/mergeLockFileName (a ledger or lock) or
+// journal.OpenRead (an on-disk run-journal read) — cmd/goobers/{prclaim,
+// prremediationlifecycle,prselect,updatebehindpr,mergepr,
+// postmergereconcile,applyverdict,respondtofindings,implementcontext,
+// issuecloseout,telemetryquery}.go.
+var stageCommandsRequiringInstanceRoot = map[string]bool{
+	"pr-claim":                 true, // always acquires, checks, or releases a claim-ledger lease, with or without --release (prremediationlifecycle.go)
+	"pr-select":                true, // leases the selected PR in the claim ledger before choosing it (prselect.go)
+	"update-behind-pr":         true, // selects/leases the PR via the claim ledger before its API update
+	"merge-pr":                 true, // instance-wide flock in SchedulerDir around poll->decide->merge (issue #719)
+	"reconcile-post-merge":     true, // reads/writes the post-merge reconcile ledger in SchedulerDir
+	"apply-verdict":            true, // reads the review gate's verdict from the on-disk run journal
+	"respond-to-findings":      true, // reads implement's outputs from the on-disk run journal, plain or --check ("validate-finding-responses" in the workflow DSL)
+	"gather-implement-context": true, // reads OTHER runs' on-disk journals
+	"issue-close-out":          true, // unconditionally releases the claim-ledger lease on every terminal status
+	"telemetry-query":          true, // reads the instance telemetry rollup under the instance root (also refused separately for its instance CONFIG read via StageRequiresInstanceConfig)
+}
+
+// StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
+// a refusal driven by StageRequiresInstanceRoot — shared by the engine's
+// dispatchRemoteTask (refuses before a pod is ever created) and the
+// pod-entrypoint backstop (cmd/goobers/dispatchexec.go, refuses in-pod on
+// version skew) so the SAME failure carries the SAME name on both sides of
+// the dispatch boundary, rather than two call sites inventing their own
+// spellings of one refusal.
+const StageRequiresInstanceRootCode = "instance_root_required"
+
+// StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
+// today because it needs the daemon's instance root: either its resolved
+// stage KIND is a built-in with no pod-side execution path (ci-poll,
+// external-telemetry — in-process Go executors selected by
+// Task.Inputs["kind"], see dispatch.go; kind == "" or KindShell is the
+// ordinary shell-command case and is never refused here), or its command is
+// a goobers CLI subcommand that reads/writes the file claim ledger, a merge
+// lock, or an on-disk run journal — none of which a stage pod has (decision
+// 003 ruling 3; production-lanes-3.0 stillBroken #2).
+//
+// DELIBERATELY one data-driven list (a package-level map plus two
+// flag-gated cases), not a switch spread across call sites: decision 003's
+// later runner branch (step 6) consumes this exact function so the two
+// dispatch paths — the engine's dispatchRemoteTask and the runner's — can
+// never silently diverge on which stages are refused.
+//
+// kind is the stage's resolved Task.Inputs["kind"]; pass "" for an ordinary
+// shell-command stage.
+func StageRequiresInstanceRoot(cmd []string, kind string) bool {
+	if kind != "" && kind != KindShell {
+		return true
+	}
+	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {
+		return false
+	}
+	switch cmd[1] {
+	case "backlog-query":
+		// Only --claim/--release/--reconcile touch the ledger; a read-only
+		// query (bare, --read-only, or --debug alone) is provider-only.
+		return commandDeclaresAnyFlag(cmd[2:], "claim", "release", "reconcile")
+	case "backlog-health":
+		// Only --feedback reads the instance telemetry rollup and run/error
+		// evidence; the bare ready-pool snapshot is provider-only.
+		return commandDeclaresAnyFlag(cmd[2:], "feedback")
+	default:
+		return stageCommandsRequiringInstanceRoot[cmd[1]]
+	}
+}
+
+// commandDeclaresAnyFlag reports whether args declares any of names as a
+// flag, in either Go flag package form (-name, --name, -name=value,
+// --name=value). Used only to discriminate backlog-query/backlog-health's
+// ledger/journal-touching modes from their read-only ones — every other
+// command in stageCommandsRequiringInstanceRoot is unconditional.
+func commandDeclaresAnyFlag(args []string, names ...string) bool {
+	for _, arg := range args {
+		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "--"), "-")
+		if eq := strings.IndexByte(trimmed, '='); eq >= 0 {
+			trimmed = trimmed[:eq]
+		}
+		for _, name := range names {
+			if trimmed == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // StageInvokesProviderBuiltin narrows transient stderr classification to the
 // built-in stages that call a provider. Other goobers subcommands can fail
 // with similar words but have separate retry contracts.

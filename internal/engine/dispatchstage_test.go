@@ -556,6 +556,103 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 	}
 }
 
+// Decision 003 ruling 3: a placed ledger-touching goobers-CLI stage —
+// backlog-query --claim, the shape every production backlog-curation lane
+// leads with — is refused BEFORE dispatch. The refusal carries the named
+// code in the run's failure (stage.finished's ErrorInfo.Code, surfaced here
+// as RunResult.FailureCode), and the dispatcher is never consulted: no
+// activity is executed, so no pod is ever created.
+func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "query-backlog",
+		Tasks: []apiv1.Task{
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities:  []string{"github:issues:write"},
+				PolicyActions: []string{"claim-backlog-items"}},
+		},
+	}
+	in := runInput("mode-three-instance-root", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "query-backlog", Queue: dispatcher.QueueName("web", "linux-toolchain"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	// The dispatcher would happily succeed if reached — the point of the
+	// test is that it is never asked to.
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-toolchain", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v (the refusal must be a normal stage failure, not a workflow-level error)", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want %q (ContinueOnError is unset on query-backlog)", result.Status, StatusFailed)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "backlog-query") {
+		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("the dispatcher must never be called for a stage refused before dispatch — no pod may be created")
+	}
+}
+
+// The kind-based half of the same refusal: a placed `inputs.kind: ci-poll`
+// stage has no pod-side execution path at all (no CLI subcommand backs it —
+// dispatch.go's TaskExecutor routes it in-process only) and must be refused
+// exactly like a ledger command, never dispatched to find out.
+func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "await-ci",
+		Tasks: []apiv1.Task{
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "ci-poll"},
+				Capabilities: []string{"provider:pr:write"}},
+		},
+	}
+	in := runInput("mode-three-instance-root-kind", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "ci-poll") {
+		t.Fatalf("failure message = %q, want it to name the refused kind", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("a kind=ci-poll stage must never reach the dispatcher")
+	}
+}
+
 // remotePlacementFor is the whole of the workflow's routing decision: pure
 // data from RunInput, no solve, no config, no I/O.
 func TestRemotePlacementFor(t *testing.T) {

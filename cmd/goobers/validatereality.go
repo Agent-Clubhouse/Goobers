@@ -144,6 +144,7 @@ func appendStaticRealityWarnings(
 		addSeverity(code, validate.Warning, kind, name, file, path, message)
 	}
 	appendPlacementFindings(root, configDir, cfg, set, goobers, advisory, addSeverity)
+	appendInstanceRootPlacementWarnings(root, configDir, set, add)
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
@@ -259,6 +260,64 @@ func appendPlacementFindings(
 				message += "; advisory on this inventory-less instance — the local runner admits runs against its claimed capabilities at schedule time (declare a runners: inventory to enforce placement here)"
 			}
 			add(code, severity, "Workflow", wf.Name, file, pathFor(placement.Stage), message)
+		}
+	}
+}
+
+// appendInstanceRootPlacementWarnings is decision 003 ruling 3's static
+// advance-notice half of the refusal that actually lives at dispatch
+// (executor.StageRequiresInstanceRoot, consumed by internal/engine's
+// dispatchRemoteTask before a pod is ever created): a 3.0 stage whose
+// runsOn.restrictions GUARANTEES it resolves off the daemon's own host
+// (self enforces no restrictions implicitly — the appendPlacementFindings
+// comment above states the same invariant), but whose command or built-in
+// stage kind needs the daemon's instance root — the file claim ledger, a
+// merge lock, an on-disk run journal, or a kind with no pod-side execution
+// path (ci-poll, external-telemetry).
+//
+// A bare runsOn with no restrictions is NOT flagged: self satisfies it
+// (inventory-order first-eligible), so whether the stage actually lands off
+// self depends on the instance's runner inventory, which is not
+// statically decidable here.
+//
+// Always a WARNING (RNR005), never promoted the way RNR001/RNR003 are on a
+// declared inventory: dispatch is the enforcement — a placed run of this
+// workflow is refused loud with the same named code, never silently wrong —
+// so this is advance notice at author time, not a second gate.
+func appendInstanceRootPlacementWarnings(
+	root, configDir string,
+	set *instance.ConfigSet,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if set == nil {
+		return
+	}
+	for i := range set.Workflows {
+		wf := &set.Workflows[i]
+		var file string
+		for ti, task := range wf.Spec.Tasks {
+			if task.Type != apiv1.TaskDeterministic || task.Run == nil ||
+				task.RunsOn == nil || len(task.RunsOn.Restrictions) == 0 {
+				continue
+			}
+			kind := task.Inputs["kind"]
+			if !executor.StageRequiresInstanceRoot(task.Run.Command, kind) {
+				continue
+			}
+			if file == "" {
+				source, _ := set.WorkflowSource(wf.Spec.Gaggle, wf.Name)
+				file = configSourceDiagnosticFile(root, configDir, source)
+			}
+			why := fmt.Sprintf("command %v", task.Run.Command)
+			if kind != "" && kind != executor.KindShell {
+				why = fmt.Sprintf("inputs.kind=%q", kind)
+			}
+			add(validate.RunnerInstanceRootRequired, "Workflow", wf.Name, file,
+				fmt.Sprintf("/spec/tasks/%d/runsOn", ti),
+				fmt.Sprintf(
+					"declares runsOn.restrictions %v, which places it off the daemon's own host, but its %s needs the daemon's instance root (the file claim ledger, a merge lock, an on-disk run journal, or a built-in stage kind with no pod-side execution path); it will be refused at dispatch (decision 003, code %q) — drop runsOn so it pins to self",
+					task.RunsOn.Restrictions, why, executor.StageRequiresInstanceRootCode,
+				))
 		}
 	}
 }

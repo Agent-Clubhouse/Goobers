@@ -228,6 +228,145 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 	}
 }
 
+// TestAppendInstanceRootPlacementWarnings is decision 003 ruling 3's static
+// half: a 3.0 stage whose runsOn.restrictions guarantees it resolves off the
+// daemon's own host, but whose command or built-in kind needs the daemon's
+// instance root, warns (RNR005) — always a warning, never promoted, and
+// never firing for a bare runsOn (self-satisfiable) or an unrelated command.
+func TestAppendInstanceRootPlacementWarnings(t *testing.T) {
+	claimTask := apiv1.Task{
+		Name: "query-backlog", Type: apiv1.TaskDeterministic,
+		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+		RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+	}
+	tests := []struct {
+		name        string
+		task        apiv1.Task
+		wantWarning bool
+		wantText    []string
+	}{
+		{
+			name:        "ledger command with restrictions warns",
+			task:        claimTask,
+			wantWarning: true,
+			wantText: []string{
+				`declares runsOn.restrictions [network:allowlist]`,
+				"places it off the daemon's own host",
+				`command [goobers backlog-query --claim]`,
+				"refused at dispatch",
+				"instance_root_required",
+			},
+		},
+		{
+			name: "kind with restrictions warns naming the kind",
+			task: apiv1.Task{
+				Name:   "await-ci",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+				Inputs: map[string]string{"kind": "ci-poll"},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: true,
+			wantText:    []string{`inputs.kind="ci-poll"`},
+		},
+		{
+			name: "bare runsOn with no restrictions can still land on self",
+			task: apiv1.Task{
+				Name:   "query-backlog",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				RunsOn: &apiv1.RunsOn{Capabilities: []string{"git"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "restrictions on a command that does not need the instance root",
+			task: apiv1.Task{
+				Name:   "push-branch",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "push-branch"}},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "restrictions on a read-only backlog-query does not warn",
+			task: apiv1.Task{
+				Name:   "sample-ready-pool",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "no runsOn at all does not warn (2.0 shape)",
+			task: apiv1.Task{
+				Name: "query-backlog",
+				Type: apiv1.TaskDeterministic,
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+			},
+			wantWarning: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{
+				Workflows: []apiv1.Workflow{{
+					ObjectMeta: metav1.ObjectMeta{Name: "backlog-curation"},
+					DSLVersion: "3.0",
+					Spec: apiv1.WorkflowSpec{
+						Gaggle: "example",
+						Start:  tc.task.Name,
+						Tasks:  []apiv1.Task{tc.task},
+					},
+				}},
+			}
+			var got []struct {
+				code    validate.WarningCode
+				kind    string
+				name    string
+				path    string
+				message string
+			}
+			add := func(code validate.WarningCode, kind, name, file, path, message string) {
+				got = append(got, struct {
+					code    validate.WarningCode
+					kind    string
+					name    string
+					path    string
+					message string
+				}{code, kind, name, path, message})
+			}
+			appendInstanceRootPlacementWarnings("", "config", set, add)
+			if (len(got) != 0) != tc.wantWarning {
+				t.Fatalf("warnings = %#v, want warning %t", got, tc.wantWarning)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("warnings = %#v, want exactly one", got)
+			}
+			w := got[0]
+			if w.code != validate.RunnerInstanceRootRequired {
+				t.Errorf("code = %q, want %q", w.code, validate.RunnerInstanceRootRequired)
+			}
+			if w.kind != "Workflow" || w.name != "backlog-curation" {
+				t.Errorf("scope = %s/%s, want Workflow/backlog-curation", w.kind, w.name)
+			}
+			if w.path != "/spec/tasks/0/runsOn" {
+				t.Errorf("path = %q, want /spec/tasks/0/runsOn", w.path)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(w.message, want) {
+					t.Errorf("message missing %q: %s", want, w.message)
+				}
+			}
+		})
+	}
+}
+
 // wireLocalCIGate rewires the scaffolded default-implement workflow so
 // open-pr flows into a deterministic local-ci stage gated by a status-equals
 // gate — the canonical local-gate shape of cold-start swift #3 — with the
