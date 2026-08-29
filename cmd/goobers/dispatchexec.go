@@ -80,6 +80,19 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	}
 
 	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken}
+
+	// #3480: a Windows stage pod says once, in its OWN log, whether the
+	// workspace, temp and profile it is about to write-then-read are
+	// excluded from real-time scanning — the far-side evidence for the
+	// advisory, readable with `kubectl logs` after the fact. Printed before
+	// the stage so it precedes any git error the race would otherwise
+	// surface as. Advisory: bounded by avexclusion.StagePodQueryTimeout (the
+	// pod pays this probe on every stage attempt, so its bound is tighter
+	// than the daemon's), never fails the stage, silent off Windows.
+	if line := stagePodAVExclusionAdvisory(ctx, realStagePodAVExclusionDeps(), os.Getwd, os.Getenv); line != "" {
+		pf(stderr, "dispatch-exec: %s\n", line)
+	}
+
 	outcome := runStage(ctx, stdout, stderr)
 	envelope := outcome.Result
 

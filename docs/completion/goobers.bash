@@ -58,7 +58,7 @@ _goobers_completion()
             flags+=" --to --write"
             ;;
         doctor)
-            flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
+            flags+=" --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
         netpol-render)
             flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
