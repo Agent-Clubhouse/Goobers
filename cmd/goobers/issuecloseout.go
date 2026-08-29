@@ -159,6 +159,84 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
 
+// issueCloseOutReviewVerdict returns the last reviewer verdict journaled for
+// the run, with the gate that produced it. #3564: the concrete verdict that
+// drove a repass-exhaustion escalation lived only in a content-addressed run
+// artifact, so a human triaging the parked issue saw a generic comment and had
+// to spelunk events.jsonl to learn what was actually wrong.
+func issueCloseOutReviewVerdict(runsDir, runID string) (apiv1.Verdict, string, bool, error) {
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		return apiv1.Verdict{}, "", false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return apiv1.Verdict{}, "", false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated || event.Ref == nil {
+			continue
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("read verdict for gate %q: %w", event.Gate, err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
+		}
+		if len(verdict.Findings) == 0 && strings.TrimSpace(verdict.Rationale) == "" &&
+			strings.TrimSpace(verdict.Summary) == "" {
+			continue
+		}
+		return verdict, event.Gate, true, nil
+	}
+	return apiv1.Verdict{}, "", false, nil
+}
+
+// issueCloseOutVerdictDetail renders the reviewer verdict a park comment
+// embeds: decision, rationale, and every finding's severity, message, and
+// location, plus the run id for traceability (#3564).
+func issueCloseOutVerdictDetail(verdict apiv1.Verdict, gateName, runID string) string {
+	var b strings.Builder
+	b.WriteString("\n\n---\n\n**Last review verdict**")
+	var qualifiers []string
+	if gateName != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("gate `%s`", gateName))
+	}
+	if decision := strings.TrimSpace(string(verdict.Decision)); decision != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("decision `%s`", decision))
+	}
+	if runID != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("run `%s`", runID))
+	}
+	if len(qualifiers) > 0 {
+		fmt.Fprintf(&b, " (%s)", strings.Join(qualifiers, ", "))
+	}
+	b.WriteString("\n")
+	if rationale := strings.TrimSpace(verdict.Rationale); rationale != "" {
+		fmt.Fprintf(&b, "\n%s\n", rationale)
+	} else if summary := strings.TrimSpace(verdict.Summary); summary != "" {
+		fmt.Fprintf(&b, "\n%s\n", summary)
+	}
+	if len(verdict.Findings) > 0 {
+		b.WriteString("\nFindings:\n\n")
+		for _, finding := range verdict.Findings {
+			severity := strings.TrimSpace(string(finding.Severity))
+			if severity == "" {
+				severity = "finding"
+			}
+			fmt.Fprintf(&b, "- **%s:** %s", severity, strings.TrimSpace(finding.Message))
+			if location := strings.TrimSpace(finding.Location); location != "" {
+				fmt.Fprintf(&b, " (`%s`)", location)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEscalationState, bool, error) {
 	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
@@ -374,6 +452,20 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 						return failProviderStage(stderr, "record escalated diff on pull request", err, "")
 					}
 				}
+			}
+			// #3564: embed the reviewer's actual verdict — rationale and every
+			// finding's severity/message/location — plus the run id, so the
+			// parked issue is self-contained instead of pointing a human at
+			// run artifacts they'd have to parse by hand. Appended after the
+			// question validation above so a needs-human park still states its
+			// question, and the evidence follows it.
+			verdict, gateName, found, err := issueCloseOutReviewVerdict(runsDir, runID)
+			if err != nil {
+				pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+				return 1
+			}
+			if found {
+				comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
 			}
 		}
 		// #2028: needs-remediation never gets the configured human assignee —

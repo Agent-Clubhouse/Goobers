@@ -168,6 +168,38 @@ func (r *Run) Seq() uint64 {
 	return r.seq
 }
 
+// Phase reports the run's lifecycle phase as THIS HANDLE knows it: the phase
+// the log showed when the handle was opened (Create starts running; Recover
+// reconstructs it from the events), advanced by every lifecycle event appended
+// through this handle since (Append's own switch — run.finished, run.resumed,
+// gate.overridden, stage.rerun.requested).
+//
+// It is the live counterpart to Reader.Phase, and the difference is the point:
+// Reader.Phase re-reads the file, while this answers from the writer that is
+// appending to it. A SECOND writer on the same run journal — the pod-plane
+// writer that borrows this handle, livejournal.Writer.Adopt — cannot see the
+// owner's appends any other way, and a snapshot it took earlier goes stale the
+// moment the owner terminalizes the run. It is not a substitute for the log:
+// a phase reconstructed from events is authoritative for a run this process
+// does not hold open.
+func (r *Run) Phase() RunPhase {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.phase
+}
+
+// Closed reports whether Close has released this handle's events file and its
+// run-dir lock. Every write method returns ErrClosed afterwards. A borrower of
+// a handle it does not own (livejournal.Writer.Adopt) checks this: a closed
+// handle can never accept another append, so continuing to hold it would wedge
+// the run rather than fall back to reopening the journal — whose lock the
+// close just released.
+func (r *Run) Closed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
 // RunCreationStagingDir returns the hidden sibling directory where Create
 // assembles unpublished runs before their atomic rename into runsDir.
 func RunCreationStagingDir(runsDir string) string {

@@ -118,6 +118,60 @@ func TestRunDeclaredStageMalformedCommandJSONIsAFailureEnvelope(t *testing.T) {
 	}
 }
 
+// Decision 003 ruling 3, pod-entrypoint backstop: a ledger-touching
+// goobers-CLI command reaching the pod with GOOBERS_INSTANCE_ROOT unset
+// (which the dispatcher never stamps — the engine's dispatchRemoteTask is
+// supposed to have refused this before a pod existed) is refused HERE too,
+// before any credential resolution or checkout is attempted.
+func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","backlog-query","--claim"]`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
+
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
+		t.Fatalf("result = %+v, want an instance_root_required failure", result)
+	}
+	if !strings.Contains(result.Error.Message, "backlog-query") {
+		t.Fatalf("error message = %q, want it to name the refused command", result.Error.Message)
+	}
+}
+
+// The kind-based half of the same backstop: inputs.kind=ci-poll has no
+// pod-side execution path regardless of GOOBERS_INSTANCE_ROOT, and the
+// dispatcher stamps a declared input as GOOBERS_INPUT_<KEY> exactly as the
+// local executor does (buildStageEnv), so GOOBERS_INPUT_KIND is what a real
+// ci-poll pod would actually carry.
+func TestRunDeclaredStageRefusesKindWithoutInstanceRoot(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","ci-poll"]`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
+	t.Setenv("GOOBERS_INPUT_KIND", "ci-poll")
+
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
+		t.Fatalf("result = %+v, want an instance_root_required failure", result)
+	}
+}
+
+// An ordinary command with no ledger/journal reach — the common case, `make
+// ci` and every provider-only CLI stage — must never trip the backstop just
+// because GOOBERS_INSTANCE_ROOT happens to be unset (true for every pod
+// today).
+func TestRunDeclaredStageOrdinaryCommandIgnoresMissingInstanceRoot(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","true"]`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
+
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if result.Error != nil && result.Error.Code == "instance_root_required" {
+		t.Fatalf("result = %+v, an unrelated command must not trip the instance-root backstop", result)
+	}
+}
+
 // End to end: identity present, daemon reachable, stage runs, and the
 // surrendered envelope reaches the write API's surrender plane — the exact
 // wiring #3699 was missing. Exit is 0 once the PUT succeeds, regardless of

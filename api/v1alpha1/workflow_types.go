@@ -580,6 +580,47 @@ func (m WorkspaceMode) IsRepoBacked() bool {
 // branch with the intent that it commit there.
 func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
+// EffectiveWorkspace resolves the workspace mode a task DECLARES, applying
+// the one precedence Task.Workspace documents: Run.Workspace when set
+// (authoritative for a deterministic task), else Task.Workspace. Empty means
+// the task declared nothing — and what "" provisions is the substrate's
+// reading, not this function's: the local runner and the worker treat it as
+// the historical writable repo worktree, a stage pod checks nothing out.
+//
+// This is the ONE resolution of that precedence. The runner, the engine's
+// continuity record, its pod dispatch and the credential plane all decide
+// something from the declared workspace (which worktree to cut, whether to
+// hand the stage its predecessor's commits, which capability the checkout
+// needs), and the first divergent private copy — reading Run.Workspace alone
+// — silently dropped a predecessor's commits for a task-level `workspace:
+// repo` (#3803 review). A shared method makes that divergence impossible to
+// write rather than something a review has to catch.
+func (t Task) EffectiveWorkspace() WorkspaceMode {
+	return EffectiveWorkspace(t.Workspace, t.Run)
+}
+
+// EffectiveWorkspace is Task.EffectiveWorkspace over the two declarations
+// carried separately, for a caller that holds them apart from the Task (the
+// engine's pod dispatch input carries Run and the task-level Workspace as
+// two fields).
+func EffectiveWorkspace(task WorkspaceMode, run *DeterministicRun) WorkspaceMode {
+	if run != nil && run.Workspace != "" {
+		return run.Workspace
+	}
+	return task
+}
+
+// EffectiveWorkspace resolves the workspace an agentic gate's reviewer
+// declares (AgenticGate.Workspace). Empty for an unset declaration and for a
+// non-agentic gate, which evaluates in no workspace at all; as with
+// Task.EffectiveWorkspace, what "" provisions is the substrate's reading.
+func (g Gate) EffectiveWorkspace() WorkspaceMode {
+	if g.Agentic == nil {
+		return ""
+	}
+	return g.Agentic.Workspace
+}
+
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
 type EvaluatorKind string
@@ -597,6 +638,7 @@ const (
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
 // +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
+// +kubebuilder:validation:XValidation:rule="!has(self.runsOn) || self.evaluator == 'agentic'",message="runsOn is only valid for agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -626,6 +668,29 @@ type Gate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// RunsOn declares the placement an AGENTIC gate's reviewer requires (DSL
+	// 3.0, dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the
+	// identical placement block tasks carry, with the identical gaggle-floor
+	// merge and the derived harness:<reviewer goober's harness> tag. Optional
+	// — absent, the reviewer evaluates in the daemon/control plane exactly as
+	// before the field existed. Valid only when evaluator=agentic (automated
+	// and human gates are control-plane by definition, ruling 2), and a
+	// declared block must carry cpu AND memory (ruling 5: the gaggle floor
+	// has no quantities and a review is the most expensive stage class in a
+	// lane, so an inherited envelope would silently under-provision).
+	//
+	// NOT YET HONOURED AT EXECUTION: the block is validated, solved
+	// (RNR001/RNR003) and pinned by name, but the engine's gate evaluator has
+	// no placement arm until decision 001's engine/pod half (rulings 7–8)
+	// lands. Until then `goobers validate` warns (WF024) and the start seams
+	// fail closed — a gate placement self cannot satisfy is refused (the
+	// workflow is marked refused for daemon-scheduled runs; engine-start
+	// returns a named error) rather than run the reviewer outside its
+	// declared isolation; a placement self satisfies pins self and evaluates
+	// in-process. Interpreters before 3.0 refuse the field; the compiler
+	// enforces that, not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.
