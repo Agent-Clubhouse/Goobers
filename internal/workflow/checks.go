@@ -119,20 +119,6 @@ func CheckGateRunsOn(def Definition) []string {
 	return interpreter.checkGateRunsOn(def)
 }
 
-// CheckGatePlacementWarnings reports WF024 on a 3.0 document: one warning per
-// agentic gate that declares runsOn while no execution path honours a gate
-// placement (decision 001 rulings 7–8 unlanded — the reviewer still
-// evaluates in the control plane; a placement self cannot satisfy is refused
-// at start). A pre-3.0 document cannot carry the field, so this reports
-// nothing there. Retires with the engine half.
-func CheckGatePlacementWarnings(def Definition) []string {
-	interpreter, err := interpreterForDefinition(def)
-	if err != nil {
-		return []string{err.Error()}
-	}
-	return interpreter.checkGatePlacementWarnings(def)
-}
-
 // CheckGateParameters reports invalid built-in gate parameters.
 func CheckGateParameters(def Definition) []string {
 	interpreter, err := interpreterForDefinition(def)

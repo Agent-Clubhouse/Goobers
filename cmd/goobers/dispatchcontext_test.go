@@ -280,7 +280,7 @@ func TestRunAgenticStageMaterializesContextBeforeBuildingTheExecutor(t *testing.
 	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceScratch))
 	t.Setenv(dispatcher.EnvDaemonAPI, "")
 
-	got := runAgenticStage(context.Background(), &strings.Builder{}, &strings.Builder{})
+	got := runAgenticStage(context.Background(), &strings.Builder{}, &strings.Builder{}).Result
 	if got.Status != apiv1.ResultFailure || got.Error == nil {
 		t.Fatalf("envelope = %+v, want a failure naming the missing context", got)
 	}

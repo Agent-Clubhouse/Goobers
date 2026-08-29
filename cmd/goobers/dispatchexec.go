@@ -93,7 +93,8 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		pf(stderr, "dispatch-exec: %s\n", line)
 	}
 
-	envelope := runDeclaredStage(ctx, stdout, stderr)
+	outcome := runStage(ctx, stdout, stderr)
+	envelope := outcome.Result
 
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
@@ -106,8 +107,13 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// A publish failure converts the stage to a FAILURE. The commits exist and
 	// nothing else will carry them, so surrendering success here would strand
 	// exactly the diff this mechanism protects — the silent shape #3763 is about.
+	//
+	// NEVER for a review (decision 001 ruling 7): a reviewer returns a verdict
+	// and must not commit — the self arm's ReviewGoober publishes nothing —
+	// so a review pod's writable checkout is not bundled, and the engine
+	// refuses a review surrender that carries a delta anyway.
 	var delta publishedWorkspaceDelta
-	if envelope.Status == apiv1.ResultSuccess {
+	if envelope.Status == apiv1.ResultSuccess && outcome.Verdict == nil {
 		published, derr := publishWorkspaceDelta(ctx, ".", stderr)
 		if derr != nil {
 			pf(stderr, "dispatch-exec: %v\n", derr)
@@ -123,6 +129,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
 		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
+		Verdict:                 outcome.Verdict,
 	})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)
@@ -138,22 +145,34 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// stageOutcome is what one pod stage produced and owes the surrender plane:
+// its ResultEnvelope and, for an agentic stage dispatched in review mode
+// (agentickit.ModeReview), the reviewer's Verdict. Verdict is nil for every
+// deterministic stage and every invoke-mode agentic stage.
+type stageOutcome struct {
+	Result  apiv1.ResultEnvelope
+	Verdict *apiv1.Verdict
+}
+
+// runStage executes whatever this pod was dispatched to run. An AGENTIC stage
+// has no declared command: it executes by invoking a goober through its
+// harness, using the kit the dispatcher published. The kit digest is what
+// distinguishes the two, and it is stamped only for agentic attempts.
+func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
+		return runAgenticStage(ctx, stdout, stderr)
+	}
+	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
+}
+
 // runDeclaredStage builds and runs the pinned Command/Script, and always
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
 func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
-	// An AGENTIC stage has no declared command: it executes by invoking a
-	// goober through its harness, using the kit the dispatcher published. The
-	// kit digest is what distinguishes the two, and it is stamped only for
-	// agentic attempts.
-	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
-		return runAgenticStage(ctx, stdout, stderr)
-	}
-
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
-	// next change: only the agentic branch above materializes this stage's
+	// next change: only the agentic branch (runStage) materializes this stage's
 	// ContextPointers (dispatchcontext.go). A deterministic stage does not need
 	// it because internal/executor never resolves them — `grep -rn
 	// ContextPointers internal/executor/ internal/dispatcher/` returns nothing,
