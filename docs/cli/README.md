@@ -124,6 +124,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
+| [`goobers file-issues`](#goobers-file-issues) | file a validated nominations artifact as deduped, budgeted issues (a workflow stage) |
 | [`goobers gate-removal-guard`](#goobers-gate-removal-guard) | block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage) |
 | [`goobers gather-ci-failures`](#goobers-gather-ci-failures) | add failing CI diagnostics to a remediation brief (a workflow stage) |
 | [`goobers gather-implement-context`](#goobers-gather-implement-context) | load first-pass implementation review and hot-file context (a workflow stage) |
@@ -1414,6 +1415,41 @@ config, 2 = usage/IO error.
 $ goobers features
 $ goobers features --json --dsl-version 2.0
 $ goobers features --used
+~~~
+
+## `goobers file-issues`
+
+file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+
+~~~text
+Usage: goobers file-issues [--check] [--auto-approve] [path]
+
+file-issues is the nomination workflows' deterministic issue filer —
+TBH-1 #2251's first slice, built on the decomposition binding (a typed
+goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher
+that owns every goobers:* label). The finder proposes area/type labels
+and evidence; this stage dedupes by body marker against every issue
+carrying the nominated label, excludes anything flake-watch already
+fingerprints, enforces maxPerRun, and creates issues with a retry-safe
+idempotency key.
+
+With --check, only validate the artifact and run the read-only dedupe
+scan (github:issues:read); nothing is created. --auto-approve (or the
+autoApprove=low-risk-only input) applies goobers:approved with the
+github:issues:approve credential, and only to low-risk nominations that
+clear every precondition; the default never approves.
+
+Inputs: nominationsFile (nominations.json), partitionLabel (required),
+maxPerRun (3), dedupeWindowDays (21), backlogLabel (goobers),
+nominatedLabel, autoApprove (never), resultFile (filed-nominations.json).
+Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers file-issues --check
+$ goobers file-issues
 ~~~
 
 ## `goobers fix`

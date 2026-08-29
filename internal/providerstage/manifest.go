@@ -164,6 +164,14 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
 		},
 	},
+	"file-issues": {
+		ResultFile: "filed-nominations.json",
+		Capabilities: []CapabilityUse{
+			requiredExactWhenAnyFlag(capability.GitHubIssuesRead, []string{"check"}, "the read-only capability-scoped credential is not injected, so the nomination dedupe scan fails at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so nomination issue creation fails at runtime"),
+			requiredWhenAnyFlag(capability.GitHubIssuesApprove, []string{"auto-approve"}, "the approve capability-scoped credential is not injected, so every nomination files unapproved at runtime"),
+		},
+	},
 	"select-source": {
 		ResultFile:         "selection.json",
 		mutatesClaimLedger: true,

@@ -1,0 +1,37 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FILE ISSUES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers file-issues \- file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers file-issues\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers file-issues [--check] [--auto-approve] [path]
+
+file-issues is the nomination workflows' deterministic issue filer —
+TBH-1 #2251's first slice, built on the decomposition binding (a typed
+goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher
+that owns every goobers:* label). The finder proposes area/type labels
+and evidence; this stage dedupes by body marker against every issue
+carrying the nominated label, excludes anything flake-watch already
+fingerprints, enforces maxPerRun, and creates issues with a retry-safe
+idempotency key.
+
+With --check, only validate the artifact and run the read-only dedupe
+scan (github:issues:read); nothing is created. --auto-approve (or the
+autoApprove=low-risk-only input) applies goobers:approved with the
+github:issues:approve credential, and only to low-risk nominations that
+clear every precondition; the default never approves.
+
+Inputs: nominationsFile (nominations.json), partitionLabel (required),
+maxPerRun (3), dedupeWindowDays (21), backlogLabel (goobers),
+nominatedLabel, autoApprove (never), resultFile (filed-nominations.json).
+Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers file-issues --check
+goobers file-issues
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

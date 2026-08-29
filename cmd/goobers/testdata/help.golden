@@ -207,6 +207,8 @@ Workflow-stage and connector commands:
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  goobers file-issues [--check] [--auto-approve]
+                                file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -266,6 +268,8 @@ Usage:
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  goobers file-issues [--check] [--auto-approve]
+                                file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -1076,6 +1080,29 @@ human-readable table. With --used, list only the features the instance at path (
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
+
+### file-issues
+Usage: goobers file-issues [--check] [--auto-approve] [path]
+
+file-issues is the nomination workflows' deterministic issue filer —
+TBH-1 #2251's first slice, built on the decomposition binding (a typed
+goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher
+that owns every goobers:* label). The finder proposes area/type labels
+and evidence; this stage dedupes by body marker against every issue
+carrying the nominated label, excludes anything flake-watch already
+fingerprints, enforces maxPerRun, and creates issues with a retry-safe
+idempotency key.
+
+With --check, only validate the artifact and run the read-only dedupe
+scan (github:issues:read); nothing is created. --auto-approve (or the
+autoApprove=low-risk-only input) applies goobers:approved with the
+github:issues:approve credential, and only to low-risk nominations that
+clear every precondition; the default never approves.
+
+Inputs: nominationsFile (nominations.json), partitionLabel (required),
+maxPerRun (3), dedupeWindowDays (21), backlogLabel (goobers),
+nominatedLabel, autoApprove (never), resultFile (filed-nominations.json).
+Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 
 ### fix
 Usage: goobers fix --to <version> [--write] [path]
