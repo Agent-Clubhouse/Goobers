@@ -199,7 +199,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	var behindBase func(providers.PullRequestSummary) (bool, error)
 	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
-			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+			layoutFor(root).SchedulerDir(), providerGaggle(), repo.Provider, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
@@ -228,7 +228,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -533,7 +533,7 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 	candidates := nonBlocked
 	if !hasPinnedCandidate {
 		nonBlocked, err = filterClaimAvailablePullRequests(
-			layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+			layoutFor(root).SchedulerDir(), providerGaggle(), repo.Provider, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
@@ -557,7 +557,7 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1

@@ -124,7 +124,7 @@ func observePRSelectEligibility(
 		gaggle := providerGaggle()
 		currentRunID := os.Getenv("GOOBERS_RUN_ID")
 		observation.CurrentRunHasLiveClaim = currentRunHasLivePullRequestClaim(
-			ledger, gaggle, currentRunID, now,
+			ledger, gaggle, repo.Provider, currentRunID, now,
 		)
 		observedNumbers := make(map[int]bool, len(observed))
 		for _, pr := range observed {
@@ -149,7 +149,7 @@ func observePRSelectEligibility(
 		observation.EligibleSince = make(map[int]time.Time, len(eligible))
 		for _, pr := range eligible {
 			claimed, ownedByCurrentRun := pullRequestClaimStatus(
-				ledger, gaggle, pr.Number, currentRunID, now,
+				ledger, gaggle, repo.Provider, pr.Number, currentRunID, now,
 			)
 			if claimed {
 				if ownedByCurrentRun {
@@ -182,6 +182,7 @@ func observePRSelectEligibility(
 func currentRunHasLivePullRequestClaim(
 	ledger *localscheduler.ClaimLedger,
 	gaggle string,
+	provider providers.ProviderKind,
 	currentRunID string,
 	now time.Time,
 ) bool {
@@ -192,7 +193,7 @@ func currentRunHasLivePullRequestClaim(
 		if !entry.ExpiresAt.After(now) || !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 			continue
 		}
-		if entry.Gaggle == "" || (entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub)) {
+		if entry.Gaggle == "" || (entry.Gaggle == gaggle && entry.Provider == string(provider)) {
 			return true
 		}
 	}
@@ -202,6 +203,7 @@ func currentRunHasLivePullRequestClaim(
 func pullRequestClaimStatus(
 	ledger *localscheduler.ClaimLedger,
 	gaggle string,
+	provider providers.ProviderKind,
 	number int,
 	currentRunID string,
 	now time.Time,
@@ -218,7 +220,7 @@ func pullRequestClaimStatus(
 		}
 		entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
 			Gaggle:     gaggle,
-			Provider:   string(providers.ProviderGitHub),
+			Provider:   string(provider),
 			ExternalID: pullRequestClaimKey(number),
 		})
 	}

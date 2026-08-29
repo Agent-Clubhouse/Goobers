@@ -19,12 +19,16 @@ func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)
 }
 
-func claimEligiblePullRequestInOrder(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
+func claimEligiblePullRequestInOrder(
+	root string,
+	repo providers.RepositoryRef,
+	eligible []providers.PullRequestSummary,
+) (*providers.PullRequestSummary, error) {
 	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
 	if err != nil {
 		return nil, err
 	}
-	return claimPullRequestInOrder(root, eligible, runID, workflow, leaseDuration)
+	return claimPullRequestInOrder(root, repo, eligible, runID, workflow, leaseDuration)
 }
 
 func pullRequestClaimParameters() (runID, workflow string, leaseDuration time.Duration, err error) {
@@ -130,6 +134,7 @@ func pullRequestClaimLease() (time.Duration, error) {
 
 func claimPullRequestInOrder(
 	root string,
+	repo providers.RepositoryRef,
 	candidates []providers.PullRequestSummary,
 	runID, workflow string,
 	leaseDuration time.Duration,
@@ -154,9 +159,19 @@ func claimPullRequestInOrder(
 			itemID := pullRequestClaimKey(candidate.Number)
 			var ok bool
 			if gaggle := providerGaggle(); gaggle != "" {
+				// The claim namespace must carry the repository's actual
+				// provider (#3649): hardcoding github let an ADO or Gitea
+				// repository's PR claim collide with a GitHub one of the same
+				// number, so one provider's run could suppress another's.
+				if repo.Provider == "" {
+					return fmt.Errorf(
+						"claim PR #%d in ledger: repository provider identity is required for gaggle-scoped claims",
+						candidate.Number,
+					)
+				}
 				ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
 					Gaggle:     gaggle,
-					Provider:   string(providers.ProviderGitHub),
+					Provider:   string(repo.Provider),
 					ExternalID: itemID,
 				}, runID, workflow, leaseDuration)
 			} else {

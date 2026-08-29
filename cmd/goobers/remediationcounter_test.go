@@ -146,6 +146,7 @@ func TestFilterClaimAvailablePullRequestsSurfacesLedgerErrors(t *testing.T) {
 	_, err := filterClaimAvailablePullRequests(
 		schedulerDir,
 		"goobers",
+		providers.ProviderGitHub,
 		"",
 		[]providers.PullRequestSummary{{Number: 1}},
 		time.Now(),

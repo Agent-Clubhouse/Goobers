@@ -92,7 +92,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
 	}
 	prs, err = filterClaimAvailablePullRequests(
-		layoutFor(root).SchedulerDir(), providerGaggle(), os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
+		layoutFor(root).SchedulerDir(), providerGaggle(), repo.Provider, os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
 	)
 	if err != nil {
 		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
@@ -118,7 +118,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1

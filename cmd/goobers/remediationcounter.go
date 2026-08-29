@@ -48,7 +48,7 @@ func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, erro
 	if c.now != nil {
 		now = c.now()
 	}
-	prs, err = filterClaimAvailablePullRequests(c.schedulerDir, c.gaggle, "", prs, now)
+	prs, err = filterClaimAvailablePullRequests(c.schedulerDir, c.gaggle, c.repo.Provider, "", prs, now)
 	if err != nil {
 		return 0, err
 	}
@@ -69,6 +69,7 @@ func (c *remediationDemandCounter) ProviderQuotaGuarded() bool {
 func filterClaimAvailablePullRequests(
 	schedulerDir string,
 	gaggle string,
+	provider providers.ProviderKind,
 	currentRunID string,
 	candidates []providers.PullRequestSummary,
 	now time.Time,
@@ -80,7 +81,7 @@ func filterClaimAvailablePullRequests(
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
 		for _, candidate := range candidates {
-			claimed, ownedByCurrentRun := pullRequestClaimStatus(ledger, gaggle, candidate.Number, currentRunID, now)
+			claimed, ownedByCurrentRun := pullRequestClaimStatus(ledger, gaggle, provider, candidate.Number, currentRunID, now)
 			if !claimed || ownedByCurrentRun {
 				available = append(available, candidate)
 			}
