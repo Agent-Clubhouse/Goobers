@@ -41,7 +41,7 @@ const (
 // Temporal RetryPolicy: Temporal's single MaximumAttempts cannot express the
 // split policy/infrastructure budgets, while this loop keeps every history
 // attempt 1:1 with a journal attempt whose class is derivable from the prior
-// attempt's recorded failure type (attemptFailureClass). Each dispatch still
+// attempt's recorded failure type (ClassifyDispatchFailure). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
 // deltaOut, when non-nil, receives the workspace delta digest the winning
@@ -146,7 +146,7 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			continue
 		}
 		lastErr = err
-		failureClass, cerr := attemptFailureClass(err)
+		failureClass, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
@@ -194,10 +194,20 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 	return backoff
 }
 
-// attemptFailureClass maps one failed dispatch to the journal attempt class
-// its retry would consume, derived purely from the error shape Temporal
+// ClassifyDispatchFailure maps one failed dispatch to the journal attempt
+// class its retry would consume, derived purely from the error shape Temporal
 // records in history — no side-channel state, so the projection (#629) can
-// re-derive the identical classes:
+// re-derive the identical classes.
+//
+// EXPORTED for decision 003 ruling 2: the daemon's runner blocks on a
+// DispatchOne workflow and gets back the SAME error shapes this reads
+// (Temporal surfaces the activity's application error and its timeouts
+// through the workflow's own failure), so it must classify the attempt with
+// this function rather than a second copy. Two copies is how the runner and
+// the engine would start disagreeing about which retries cost the policy
+// budget — the exact drift D15 names.
+//
+// The classes:
 //
 //   - an application error typed FailureTypeInfrastructure is infrastructure;
 //   - any other application error is policy (the local runner's
@@ -211,7 +221,7 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     declaring policyActions is therefore stopped before retry;
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
-func attemptFailureClass(err error) (journal.AttemptClass, error) {
+func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {

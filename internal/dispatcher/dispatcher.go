@@ -476,6 +476,14 @@ type Report struct {
 	Local bool
 	// Pod is the created pod's name ("" when Local).
 	Pod string
+	// Image is the image the stage container was created with ("" when Local
+	// or when the attempt failed before a pod was rendered). Read back off
+	// the RENDERED pod rather than off RunnerSpec.Host, because the two
+	// differ for a deployment-templated runner: Host is the Deployment name
+	// and the image comes from its pod template. Decision 009 makes the tag
+	// load-bearing (it IS the skew comparison), so the provenance has to name
+	// the image that actually ran.
+	Image string
 	// Phase is the pod's terminal phase.
 	Phase corev1.PodPhase
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
@@ -583,6 +591,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	if err != nil {
 		return report, err
 	}
+	// Stamped from the rendered spec BEFORE the create call, so an IN-PROCESS
+	// caller that inspects the returned report after a create failure still
+	// sees which image was about to run.
+	//
+	// Scope note, because the comment used to over-promise: this does NOT
+	// reach the engine's callers. engine.DispatchStage discards the report on
+	// every error that left surrender unconfirmed, so the only reports whose
+	// Image crosses that activity boundary are settled ones, which by
+	// definition already created their pod (see engine.StagePlacement). The
+	// stamp stays here regardless: it costs nothing, it is the honest ordering
+	// for a direct caller, and it is what a future failure-carrying seam would
+	// read.
+	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -635,6 +656,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
 	return report, nil
+}
+
+// stageContainerImage reads the stage container's image off a rendered pod.
+func stageContainerImage(pod *corev1.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	if stage := stageContainerIn(pod.Spec.Containers); stage != nil {
+		return stage.Image
+	}
+	return ""
 }
 
 // renderFor renders the fresh pod for the resolved runner's host kind:
